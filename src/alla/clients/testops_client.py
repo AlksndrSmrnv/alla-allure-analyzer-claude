@@ -63,7 +63,7 @@ class AllureTestOpsClient:
             "GET", f"{self.TESTRESULT_ENDPOINT}/{test_result_id}/execution",
         )
         logger.debug(
-            "Execution response for test_result %d: type=%s, data=%s",
+            "Ответ выполнения для результата теста %d: тип=%s, данные=%s",
             test_result_id,
             type(data).__name__,
             str(data)[:2000],
@@ -121,7 +121,7 @@ class AllureTestOpsClient:
             all_results.extend(page_resp.content)
 
             logger.debug(
-                "Fetched page %d/%d (%d results so far)",
+                "Получена страница %d/%d (пока собрано %d результатов)",
                 page + 1,
                 page_resp.total_pages,
                 len(all_results),
@@ -133,19 +133,19 @@ class AllureTestOpsClient:
             page += 1
             if page >= self._max_pages:
                 logger.warning(
-                    "Reached max_pages limit (%d). %d/%d total results fetched.",
+                    "Достигнут лимит max_pages (%d). Получено %d/%d результатов.",
                     self._max_pages,
                     len(all_results),
                     page_resp.total_elements,
                 )
                 raise PaginationLimitError(
-                    f"Exceeded max_pages={self._max_pages}. "
-                    f"Fetched {len(all_results)}/{page_resp.total_elements} results. "
-                    f"Increase ALLURE_MAX_PAGES if needed."
+                    f"Превышен max_pages={self._max_pages}. "
+                    f"Получено {len(all_results)}/{page_resp.total_elements} "
+                    f"результатов. Увеличьте ALLURE_MAX_PAGES при необходимости."
                 )
 
         logger.info(
-            "Fetched %d test results for launch %d (%d pages)",
+            "Получено %d результатов тестов для запуска %d (%d страниц)",
             len(all_results),
             launch_id,
             page + 1,
@@ -172,7 +172,7 @@ class AllureTestOpsClient:
         url = f"{self._endpoint}{path}"
         auth_header = await self._auth.get_auth_header()
 
-        logger.debug("%s %s params=%s", method, url, params)
+        logger.debug("HTTP-запрос: %s %s параметры=%s", method, url, params)
 
         try:
             resp = await self._http.request(
@@ -183,7 +183,7 @@ class AllureTestOpsClient:
 
         # Одноразовый повтор при 401 (истёкший JWT)
         if resp.status_code == 401:
-            logger.debug("Got 401, re-authenticating and retrying")
+            logger.debug("Получен 401, выполняем повторную аутентификацию и повтор запроса")
             self._auth.invalidate()
             auth_header = await self._auth.get_auth_header()
             try:
@@ -196,7 +196,7 @@ class AllureTestOpsClient:
         if resp.status_code == 404:
             raise AllureApiError(
                 404,
-                f"Endpoint not found. Check your Allure TestOps version. "
+                f"Эндпоинт не найден. Проверьте версию Allure TestOps. "
                 f"Swagger UI: {self._endpoint}/swagger-ui.html",
                 path,
             )
