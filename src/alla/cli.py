@@ -21,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
         "launch_id",
         nargs="?",
         type=int,
-        help="ID запуска для анализа (переопределяет ALLURE_LAUNCH_ID если задан)",
+        help="ID запуска для анализа",
     )
     parser.add_argument(
         "--log-level",
@@ -70,7 +70,7 @@ async def async_main(args: argparse.Namespace) -> int:
         print(
             f"Ошибка конфигурации: {exc}\n\n"
             f"Обязательные переменные окружения: "
-            f"ALLURE_ENDPOINT, ALLURE_TOKEN, ALLURE_PROJECT_ID\n"
+            f"ALLURE_ENDPOINT, ALLURE_TOKEN\n"
             f"Подробности см. в .env.example.",
             file=sys.stderr,
         )
