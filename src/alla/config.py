@@ -26,3 +26,4 @@ class Settings(BaseSettings):
     max_pages: int = Field(default=50, description="Safety limit on pagination iterations")
 
     log_level: str = Field(default="INFO", description="Logging level")
+    ssl_verify: bool = Field(default=True, description="Verify SSL certificates (disable for corporate proxies)")

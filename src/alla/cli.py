@@ -92,6 +92,7 @@ async def async_main(args: argparse.Namespace) -> int:
         endpoint=settings.endpoint,
         api_token=settings.token,
         timeout=settings.request_timeout,
+        ssl_verify=settings.ssl_verify,
     )
 
     try:

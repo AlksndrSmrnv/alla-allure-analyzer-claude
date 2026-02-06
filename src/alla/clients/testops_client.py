@@ -33,7 +33,10 @@ class AllureTestOpsClient:
         self._auth = auth_manager
         self._page_size = settings.page_size
         self._max_pages = settings.max_pages
-        self._http = httpx.AsyncClient(timeout=settings.request_timeout)
+        self._http = httpx.AsyncClient(
+            timeout=settings.request_timeout,
+            verify=settings.ssl_verify,
+        )
 
     # --- Public API (TestResultsProvider protocol) ---
 
