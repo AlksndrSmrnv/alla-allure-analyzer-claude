@@ -122,6 +122,31 @@ async def async_main(args: argparse.Namespace) -> int:
             launch_id, report.failed_tests,
         )
 
+    # 5.5. Поиск по базе знаний
+    kb_results: dict[str, list] = {}
+    if settings.kb_enabled and clustering_report is not None:
+        from alla.knowledge.matcher import MatcherConfig
+        from alla.knowledge.yaml_kb import YamlKnowledgeBase
+
+        try:
+            kb = YamlKnowledgeBase(
+                kb_path=settings.kb_path,
+                matcher_config=MatcherConfig(
+                    min_score=settings.kb_min_score,
+                    max_results=settings.kb_max_results,
+                ),
+            )
+            for cluster in clustering_report.clusters:
+                matches = kb.search_by_failure(
+                    status_message=cluster.example_message,
+                    status_trace=cluster.example_trace_snippet,
+                    category=cluster.signature.category,
+                )
+                if matches:
+                    kb_results[cluster.cluster_id] = matches
+        except Exception as exc:
+            logger.warning("Ошибка при поиске по базе знаний: %s", exc)
+
     # 6. Вывод отчёта
     if args.output_format == "json":
         import json
@@ -129,11 +154,16 @@ async def async_main(args: argparse.Namespace) -> int:
         output = {"triage_report": report.model_dump()}
         if clustering_report is not None:
             output["clustering_report"] = clustering_report.model_dump()
+        if kb_results:
+            output["kb_matches"] = {
+                cid: [m.model_dump() for m in matches]
+                for cid, matches in kb_results.items()
+            }
         print(json.dumps(output, indent=2, ensure_ascii=False, default=str))
     else:
         _print_text_report(report)
         if clustering_report is not None:
-            _print_clustering_report(clustering_report)
+            _print_clustering_report(clustering_report, kb_results)
 
     return 0
 
@@ -175,7 +205,10 @@ def _print_text_report(report: TriageReport) -> None:  # noqa: F821
     print()
 
 
-def _print_clustering_report(report: ClusteringReport) -> None:  # noqa: F821
+def _print_clustering_report(
+    report: ClusteringReport,  # noqa: F821
+    kb_results: dict[str, list] | None = None,
+) -> None:
     """Вывод отчёта кластеризации ошибок в stdout."""
 
     print(
@@ -199,6 +232,24 @@ def _print_clustering_report(report: ClusteringReport) -> None:  # noqa: F821
             ids_str += ", ..."
         cluster_lines.append(f"Тесты: {ids_str}")
 
+        # KB-совпадения
+        matches = (kb_results or {}).get(cluster.cluster_id, [])
+        if matches:
+            cluster_lines.append("")
+            count_label = _pluralize_matches(len(matches))
+            cluster_lines.append(f"База знаний ({count_label}):")
+            for m in matches:
+                cluster_lines.append(
+                    f"  [{m.score:.2f}] {m.entry.title}"
+                )
+                cluster_lines.append(
+                    f"         Причина: {m.entry.root_cause.value}"
+                    f" | Срочность: {m.entry.severity.value}"
+                )
+                for step in m.entry.resolution_steps[:2]:
+                    step_text = step if len(step) <= 80 else step[:77] + "..."
+                    cluster_lines.append(f"         -> {step_text}")
+
         for line in _render_box(cluster_lines):
             print(line)
         print()
@@ -207,6 +258,15 @@ def _print_clustering_report(report: ClusteringReport) -> None:  # noqa: F821
 def _normalize_single_line(value: str) -> str:
     """Схлопнуть переводы строк/табуляцию в одну строку для рамочного вывода."""
     return " ".join(value.replace("\t", " ").split())
+
+
+def _pluralize_matches(count: int) -> str:
+    """Склонение слова 'совпадение' по числу."""
+    if count % 10 == 1 and count % 100 != 11:
+        return f"{count} совпадение"
+    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return f"{count} совпадения"
+    return f"{count} совпадений"
 
 
 def _render_box(lines: list[str]) -> list[str]:

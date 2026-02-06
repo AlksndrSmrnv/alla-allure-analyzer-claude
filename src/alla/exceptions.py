@@ -24,3 +24,7 @@ class AllureApiError(AllaError):
 
 class PaginationLimitError(AllaError):
     """Превышен максимальный лимит страниц (защитный механизм)."""
+
+
+class KnowledgeBaseError(AllaError):
+    """Ошибка при работе с базой знаний."""
