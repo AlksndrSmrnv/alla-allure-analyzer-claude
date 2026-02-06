@@ -52,13 +52,27 @@ class TextMatcher:
         query_trace: str | None,
         query_category: str | None,
         entries: list[KBEntry],
+        *,
+        min_score: float | None = None,
+        max_results: int | None = None,
     ) -> list[KBMatchResult]:
         """Сопоставить ошибку со списком записей KB.
+
+        Args:
+            query_message: Сообщение об ошибке.
+            query_trace: Стек-трейс.
+            query_category: Категория ошибки.
+            entries: Записи KB для сопоставления.
+            min_score: Переопределить MatcherConfig.min_score для этого вызова.
+            max_results: Переопределить MatcherConfig.max_results для этого вызова.
 
         Returns:
             Список KBMatchResult, отсортированный по score (desc),
             отфильтрованный по min_score и ограниченный max_results.
         """
+        effective_min_score = min_score if min_score is not None else self._config.min_score
+        effective_max_results = max_results if max_results is not None else self._config.max_results
+
         if not entries:
             return []
 
@@ -85,7 +99,7 @@ class TextMatcher:
             kw_score, matched_on = keyword_scores[i]
             tf_score = tfidf_scores[i] if tfidf_scores else 0.0
             blended = kw_w * kw_score + tf_w * tf_score
-            if blended >= self._config.min_score:
+            if blended >= effective_min_score:
                 results.append(KBMatchResult(
                     entry=entry,
                     score=round(blended, 4),
@@ -93,7 +107,7 @@ class TextMatcher:
                 ))
 
         results.sort(key=lambda r: r.score, reverse=True)
-        return results[: self._config.max_results]
+        return results[:effective_max_results]
 
     def _keyword_match(
         self,

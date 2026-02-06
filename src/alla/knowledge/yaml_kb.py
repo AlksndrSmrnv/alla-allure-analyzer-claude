@@ -101,15 +101,14 @@ class YamlKnowledgeBase:
         min_score: float = 0.0,
     ) -> list[KBMatchResult]:
         """Поиск по произвольному тексту."""
-        results = self._matcher.match(
+        return self._matcher.match(
             query_message=query_text,
             query_trace=None,
             query_category=None,
             entries=self._entries,
+            min_score=min_score,
+            max_results=max_results,
         )
-        if min_score > 0.0:
-            results = [r for r in results if r.score >= min_score]
-        return results[:max_results]
 
     def get_all_entries(self) -> list[KBEntry]:
         """Вернуть все записи."""
