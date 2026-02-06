@@ -1,4 +1,4 @@
-"""Shared enums and generic models."""
+"""Общие перечисления и обобщённые модели."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ T = TypeVar("T")
 
 
 class TestStatus(str, Enum):
-    """Allure TestOps test result statuses."""
+    """Статусы результатов тестов Allure TestOps."""
 
     PASSED = "passed"
     FAILED = "failed"
@@ -21,12 +21,12 @@ class TestStatus(str, Enum):
 
     @classmethod
     def failure_statuses(cls) -> set[TestStatus]:
-        """Statuses considered as failures for triage purposes."""
+        """Статусы, считающиеся падениями для целей триажа."""
         return {cls.FAILED, cls.BROKEN}
 
 
 class PageResponse(BaseModel, Generic[T]):
-    """Generic paginated response from Allure TestOps API."""
+    """Обобщённый пагинированный ответ от Allure TestOps API."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -34,4 +34,4 @@ class PageResponse(BaseModel, Generic[T]):
     total_elements: int = Field(alias="totalElements")
     total_pages: int = Field(alias="totalPages")
     size: int
-    number: int  # 0-based current page
+    number: int  # Номер текущей страницы (с 0)

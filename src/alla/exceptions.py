@@ -1,20 +1,20 @@
-"""Custom exception hierarchy for the alla package."""
+"""Иерархия пользовательских исключений пакета alla."""
 
 
 class AllaError(Exception):
-    """Base exception for all alla errors."""
+    """Базовое исключение для всех ошибок alla."""
 
 
 class ConfigurationError(AllaError):
-    """Missing or invalid configuration."""
+    """Отсутствующая или некорректная конфигурация."""
 
 
 class AuthenticationError(AllaError):
-    """Failed to authenticate with Allure TestOps."""
+    """Не удалось аутентифицироваться в Allure TestOps."""
 
 
 class AllureApiError(AllaError):
-    """HTTP error from Allure TestOps API."""
+    """HTTP-ошибка от Allure TestOps API."""
 
     def __init__(self, status_code: int, message: str, endpoint: str) -> None:
         self.status_code = status_code
@@ -23,4 +23,4 @@ class AllureApiError(AllaError):
 
 
 class PaginationLimitError(AllaError):
-    """Exceeded maximum page limit (safety valve)."""
+    """Превышен максимальный лимит страниц (защитный механизм)."""

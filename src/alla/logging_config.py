@@ -1,14 +1,14 @@
-"""Logging configuration for the alla application."""
+"""Настройка логирования для приложения alla."""
 
 import logging
 import sys
 
 
 def setup_logging(level: str = "INFO") -> None:
-    """Configure the root logger with a structured format.
+    """Настроить корневой логгер со структурированным форматом.
 
     Args:
-        level: Logging level name (DEBUG, INFO, WARNING, ERROR).
+        level: Имя уровня логирования (DEBUG, INFO, WARNING, ERROR).
     """
     numeric_level = getattr(logging, level.upper(), logging.INFO)
 
@@ -22,10 +22,10 @@ def setup_logging(level: str = "INFO") -> None:
 
     root = logging.getLogger()
     root.setLevel(numeric_level)
-    # Avoid duplicate handlers on repeated calls
+    # Избежать дублирования обработчиков при повторных вызовах
     root.handlers.clear()
     root.addHandler(handler)
 
-    # Quiet noisy third-party loggers
+    # Приглушить шумные сторонние логгеры
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

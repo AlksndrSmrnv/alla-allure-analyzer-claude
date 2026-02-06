@@ -1,4 +1,4 @@
-"""CLI entry point for the alla triage agent."""
+"""Точка входа CLI для агента триажа alla."""
 
 from __future__ import annotations
 
@@ -15,31 +15,31 @@ logger = logging.getLogger(__name__)
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="alla",
-        description="AI Test Failure Triage Agent — analyze failed tests from Allure TestOps",
+        description="AI-агент триажа упавших тестов — анализ результатов из Allure TestOps",
     )
     parser.add_argument(
         "launch_id",
         nargs="?",
         type=int,
-        help="Launch ID to analyze (overrides ALLURE_LAUNCH_ID env var if set)",
+        help="ID запуска для анализа (переопределяет ALLURE_LAUNCH_ID если задан)",
     )
     parser.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default=None,
-        help="Logging verbosity (overrides ALLURE_LOG_LEVEL)",
+        help="Уровень логирования (переопределяет ALLURE_LOG_LEVEL)",
     )
     parser.add_argument(
         "--output-format",
         choices=["text", "json"],
         default="text",
-        help="Output format (default: text)",
+        help="Формат вывода (по умолчанию: text)",
     )
     parser.add_argument(
         "--page-size",
         type=int,
         default=None,
-        help="Results per page (overrides ALLURE_PAGE_SIZE)",
+        help="Результатов на страницу (переопределяет ALLURE_PAGE_SIZE)",
     )
     parser.add_argument(
         "--version",
@@ -50,8 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def async_main(args: argparse.Namespace) -> int:
-    """Wire up dependencies and run triage. Returns exit code."""
-    # Import here to defer heavy imports and keep --help fast
+    """Собрать зависимости и запустить триаж. Возвращает код выхода."""
+    # Отложенные импорты — чтобы --help работал быстро
     from alla.clients.auth import AllureAuthManager
     from alla.clients.testops_client import AllureTestOpsClient
     from alla.config import Settings
@@ -59,14 +59,14 @@ async def async_main(args: argparse.Namespace) -> int:
     from alla.logging_config import setup_logging
     from alla.services.triage_service import TriageService
 
-    # 1. Load settings
+    # 1. Загрузка настроек
     try:
         overrides: dict[str, object] = {}
         if args.page_size is not None:
             overrides["page_size"] = args.page_size
         settings = Settings(**overrides)  # type: ignore[arg-type]
     except Exception as exc:
-        # pydantic-settings raises ValidationError for missing fields
+        # pydantic-settings выбрасывает ValidationError при отсутствии обязательных полей
         print(
             f"Configuration error: {exc}\n\n"
             f"Required env vars: ALLURE_ENDPOINT, ALLURE_TOKEN, ALLURE_PROJECT_ID\n"
@@ -75,11 +75,11 @@ async def async_main(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # 2. Setup logging
+    # 2. Настройка логирования
     log_level = args.log_level or settings.log_level
     setup_logging(log_level)
 
-    # 3. Determine launch ID
+    # 3. Определение ID запуска
     launch_id = args.launch_id
     if launch_id is None:
         logger.error(
@@ -87,7 +87,7 @@ async def async_main(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # 4. Run triage
+    # 4. Запуск триажа
     auth = AllureAuthManager(
         endpoint=settings.endpoint,
         api_token=settings.token,
@@ -109,7 +109,7 @@ async def async_main(args: argparse.Namespace) -> int:
         logger.info("Interrupted by user")
         return 130
 
-    # 5. Output report
+    # 5. Вывод отчёта
     if args.output_format == "json":
         print(report.model_dump_json(indent=2))
     else:
@@ -119,7 +119,7 @@ async def async_main(args: argparse.Namespace) -> int:
 
 
 def _print_text_report(report: TriageReport) -> None:  # noqa: F821
-    """Print a human-readable triage report to stdout."""
+    """Вывод человекочитаемого отчёта триажа в stdout."""
 
     print()
     print("=== Allure Triage Report ===")
@@ -144,7 +144,7 @@ def _print_text_report(report: TriageReport) -> None:  # noqa: F821
             if t.link:
                 print(f"            {t.link}")
             if t.status_message:
-                # Truncate long messages
+                # Обрезка длинных сообщений
                 msg = t.status_message
                 if len(msg) > 200:
                     msg = msg[:200] + "..."
@@ -156,7 +156,7 @@ def _print_text_report(report: TriageReport) -> None:  # noqa: F821
 
 
 def main() -> None:
-    """Sync entry point for the CLI."""
+    """Синхронная точка входа для CLI."""
     parser = build_parser()
     args = parser.parse_args()
     exit_code = asyncio.run(async_main(args))

@@ -1,14 +1,14 @@
-"""Application configuration loaded from environment variables."""
+"""Конфигурация приложения, загружаемая из переменных окружения."""
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Configuration for the alla application.
+    """Конфигурация приложения alla.
 
-    All values can be set via environment variables with the ``ALLURE_`` prefix
-    or through a ``.env`` file in the working directory.
+    Все значения задаются через переменные окружения с префиксом ``ALLURE_``
+    или через файл ``.env`` в рабочей директории.
     """
 
     model_config = SettingsConfigDict(
@@ -17,15 +17,15 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
     )
 
-    endpoint: str = Field(description="Allure TestOps server URL")
-    token: str = Field(description="API token for authentication")
-    project_id: int = Field(description="Project ID in Allure TestOps")
+    endpoint: str = Field(description="URL сервера Allure TestOps")
+    token: str = Field(description="API-токен для аутентификации")
+    project_id: int = Field(description="ID проекта в Allure TestOps")
 
-    request_timeout: int = Field(default=30, description="HTTP request timeout in seconds")
-    page_size: int = Field(default=100, description="Results per page for paginated requests")
-    max_pages: int = Field(default=50, description="Safety limit on pagination iterations")
+    request_timeout: int = Field(default=30, description="Таймаут HTTP-запросов в секундах")
+    page_size: int = Field(default=100, description="Результатов на страницу при пагинации")
+    max_pages: int = Field(default=50, description="Защитный лимит на количество страниц пагинации")
 
-    detail_concurrency: int = Field(default=10, description="Max concurrent requests when fetching individual test result details")
+    detail_concurrency: int = Field(default=10, description="Макс. параллельных запросов при получении деталей отдельных результатов тестов")
 
-    log_level: str = Field(default="INFO", description="Logging level")
-    ssl_verify: bool = Field(default=True, description="Verify SSL certificates (disable for corporate proxies)")
+    log_level: str = Field(default="INFO", description="Уровень логирования")
+    ssl_verify: bool = Field(default=True, description="Проверка SSL-сертификатов (отключить для корпоративных прокси)")

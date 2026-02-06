@@ -1,29 +1,31 @@
-"""Abstract interface for test results data sources."""
+"""Абстрактный интерфейс для источников данных о результатах тестов."""
 
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
 from alla.models.common import PageResponse
-from alla.models.testops import LaunchResponse, TestResultResponse
+from alla.models.testops import ExecutionStep, LaunchResponse, TestResultResponse
 
 
 @runtime_checkable
 class TestResultsProvider(Protocol):
-    """Protocol defining what any test-results data source must provide.
+    """Протокол, определяющий контракт любого источника данных о результатах тестов.
 
-    Implementations:
-    - AllureTestOpsClient (MVP): fetches from Allure TestOps HTTP API
-    - Future: LocalAllureReportClient (reads allure-report JSON files)
-    - Future: CachedTestResultsClient (reads from local DB/cache)
+    Реализации:
+    - AllureTestOpsClient (MVP): получает данные из HTTP API Allure TestOps
+    - Будущее: LocalAllureReportClient (читает JSON-файлы allure-report)
+    - Будущее: CachedTestResultsClient (читает из локальной БД/кэша)
     """
 
     async def get_launch(self, launch_id: int) -> LaunchResponse:
-        """Fetch launch metadata by ID."""
+        """Получить метаданные запуска по ID."""
         ...
 
-    async def get_test_result(self, test_result_id: int) -> TestResultResponse:
-        """Fetch full details for a single test result by ID."""
+    async def get_test_result_execution(
+        self, test_result_id: int,
+    ) -> list[ExecutionStep]:
+        """Получить дерево шагов выполнения теста по ID результата."""
         ...
 
     async def get_test_results_for_launch(
@@ -32,11 +34,11 @@ class TestResultsProvider(Protocol):
         page: int = 0,
         size: int = 100,
     ) -> PageResponse[TestResultResponse]:
-        """Fetch a page of test results for a given launch."""
+        """Получить одну страницу результатов тестов для заданного запуска."""
         ...
 
     async def get_all_test_results_for_launch(
         self, launch_id: int,
     ) -> list[TestResultResponse]:
-        """Fetch ALL test results for a launch, handling pagination."""
+        """Получить ВСЕ результаты тестов для запуска с обработкой пагинации."""
         ...

@@ -1,4 +1,4 @@
-"""Triage service: fetch test results, filter failures, produce summary."""
+"""Сервис триажа: получение результатов тестов, фильтрация падений, формирование сводки."""
 
 from __future__ import annotations
 
@@ -9,16 +9,21 @@ from collections import Counter
 from alla.clients.base import TestResultsProvider
 from alla.config import Settings
 from alla.models.common import TestStatus
-from alla.models.testops import FailedTestSummary, TestResultResponse, TriageReport
+from alla.models.testops import (
+    ExecutionStep,
+    FailedTestSummary,
+    TestResultResponse,
+    TriageReport,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class TriageService:
-    """Orchestrates the test failure triage workflow.
+    """Оркестрирует процесс триажа упавших тестов.
 
-    Phase 1 (MVP): fetch and summarize failed tests.
-    Future phases will add clustering, LLM analysis, knowledge base lookup.
+    Фаза 1 (MVP): получение и формирование сводки по упавшим тестам.
+    Будущие фазы добавят кластеризацию, LLM-анализ, поиск по базе знаний.
     """
 
     def __init__(self, client: TestResultsProvider, settings: Settings) -> None:
@@ -27,34 +32,34 @@ class TriageService:
         self._detail_concurrency = settings.detail_concurrency
 
     async def analyze_launch(self, launch_id: int) -> TriageReport:
-        """Fetch test results for a launch and produce a triage report.
+        """Получить результаты тестов для запуска и сформировать отчёт триажа.
 
-        Steps:
-            1. Fetch launch metadata (name, closed status).
-            2. Fetch all test results for the launch (paginated).
-            3. Count results by status.
-            4. Build FailedTestSummary for each failed/broken test.
-            5. Return TriageReport.
+        Шаги:
+            1. Получить метаданные запуска (имя, статус закрытия).
+            2. Получить все результаты тестов для запуска (пагинация).
+            3. Подсчитать результаты по статусам.
+            4. Создать FailedTestSummary для каждого упавшего/сломанного теста.
+            5. Вернуть TriageReport.
         """
-        # 1. Launch metadata
+        # 1. Метаданные запуска
         launch = await self._client.get_launch(launch_id)
         logger.info("Analyzing launch #%d (%s)", launch_id, launch.name or "unnamed")
 
-        # 2. All test results
+        # 2. Все результаты тестов
         results = await self._client.get_all_test_results_for_launch(launch_id)
 
-        # 3. Count by status
+        # 3. Подсчёт по статусам
         status_counts = Counter(
             self._normalize_status(r.status) for r in results
         )
 
-        # 4. Fetch full details for failed/broken tests (statusDetails)
-        detailed_failures = await self._fetch_failed_details(results)
+        # 4. Получить execution-данные для упавших/сломанных тестов
+        failures_with_execution = await self._fetch_failed_executions(results)
 
-        # 5. Build summaries from detailed results
+        # 5. Сформировать сводки из результатов + execution-шагов
         failed_tests = [
-            self._build_failed_summary(r, launch_id)
-            for r in detailed_failures
+            self._build_failed_summary(r, steps, launch_id)
+            for r, steps in failures_with_execution
         ]
 
         report = TriageReport(
@@ -72,11 +77,11 @@ class TriageService:
         self._log_report(report)
         return report
 
-    # --- Internal helpers ---
+    # --- Внутренние вспомогательные методы ---
 
     @staticmethod
     def _normalize_status(raw: str | None) -> TestStatus:
-        """Convert raw status string to TestStatus enum, defaulting to UNKNOWN."""
+        """Преобразовать сырую строку статуса в TestStatus enum, по умолчанию UNKNOWN."""
         if raw is None:
             return TestStatus.UNKNOWN
         try:
@@ -84,15 +89,17 @@ class TriageService:
         except ValueError:
             return TestStatus.UNKNOWN
 
-    async def _fetch_failed_details(
+    async def _fetch_failed_executions(
         self,
         results: list[TestResultResponse],
-    ) -> list[TestResultResponse]:
-        """Fetch full details for failed/broken tests in parallel.
+    ) -> list[tuple[TestResultResponse, list[ExecutionStep]]]:
+        """Получить execution-шаги для упавших/сломанных тестов параллельно.
 
-        The list endpoint omits ``statusDetails``. This method fetches
-        individual test results to get error messages and stack traces.
-        Uses a semaphore to limit concurrency.
+        Вызывает ``GET /api/testresult/{id}/execution`` для каждого упавшего
+        теста. Именно этот эндпоинт содержит ``statusDetails`` с сообщениями
+        об ошибках и стек-трейсами. Семафор ограничивает параллелизм.
+
+        Возвращает список пар (TestResultResponse, list[ExecutionStep]).
         """
         failure_statuses = TestStatus.failure_statuses()
         failed_results = [
@@ -104,43 +111,79 @@ class TriageService:
             return []
 
         logger.info(
-            "Fetching details for %d failed/broken tests (concurrency=%d)",
+            "Fetching execution details for %d failed/broken tests (concurrency=%d)",
             len(failed_results),
             self._detail_concurrency,
         )
 
         semaphore = asyncio.Semaphore(self._detail_concurrency)
 
-        async def fetch_one(test_result_id: int) -> TestResultResponse:
+        async def fetch_one(test_result_id: int) -> list[ExecutionStep]:
             async with semaphore:
-                return await self._client.get_test_result(test_result_id)
+                return await self._client.get_test_result_execution(test_result_id)
 
         tasks = [fetch_one(r.id) for r in failed_results]
-        detailed = await asyncio.gather(*tasks, return_exceptions=True)
+        execution_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        final: list[TestResultResponse] = []
-        for original, detail_or_exc in zip(failed_results, detailed):
-            if isinstance(detail_or_exc, Exception):
+        final: list[tuple[TestResultResponse, list[ExecutionStep]]] = []
+        for original, exec_or_exc in zip(failed_results, execution_results):
+            if isinstance(exec_or_exc, Exception):
                 logger.warning(
-                    "Failed to fetch details for test result %d: %s. Using summary data.",
+                    "Failed to fetch execution for test result %d: %s. "
+                    "Error details will be unavailable.",
                     original.id,
-                    detail_or_exc,
+                    exec_or_exc,
                 )
-                final.append(original)
+                final.append((original, []))
             else:
-                final.append(detail_or_exc)
+                final.append((original, exec_or_exc))
 
         return final
 
+    @staticmethod
+    def _find_failure_in_steps(
+        steps: list[ExecutionStep],
+    ) -> tuple[str | None, str | None]:
+        """Рекурсивно найти первый упавший шаг и извлечь message/trace.
+
+        Обходит дерево шагов в глубину. Возвращает (message, trace) из
+        ``statusDetails`` первого шага со статусом failed/broken.
+        Если ни один шаг не содержит ошибку — возвращает (None, None).
+        """
+        failure_statuses = {"failed", "broken"}
+        for step in steps:
+            if (
+                step.status
+                and step.status.lower() in failure_statuses
+                and step.status_details
+                and isinstance(step.status_details, dict)
+            ):
+                message = step.status_details.get("message")
+                trace = step.status_details.get("trace")
+                if message or trace:
+                    return message, trace
+            # Рекурсия во вложенные шаги
+            if step.steps:
+                message, trace = TriageService._find_failure_in_steps(step.steps)
+                if message or trace:
+                    return message, trace
+        return None, None
+
     def _build_failed_summary(
-        self, result: TestResultResponse, launch_id: int,
+        self,
+        result: TestResultResponse,
+        execution_steps: list[ExecutionStep],
+        launch_id: int,
     ) -> FailedTestSummary:
-        """Convert a raw test result into a triage-focused summary."""
-        status_message = None
-        status_trace = None
-        if result.status_details and isinstance(result.status_details, dict):
-            status_message = result.status_details.get("message")
-            status_trace = result.status_details.get("trace")
+        """Преобразовать результат теста + execution-шаги в сводку для триажа."""
+        # Попытка 1: извлечь ошибку из execution-шагов
+        status_message, status_trace = self._find_failure_in_steps(execution_steps)
+
+        # Попытка 2 (fallback): из statusDetails самого результата, если есть
+        if not status_message and not status_trace:
+            if result.status_details and isinstance(result.status_details, dict):
+                status_message = result.status_details.get("message")
+                status_trace = result.status_details.get("trace")
 
         link = (
             f"{self._endpoint}/launch/{launch_id}/testresult/{result.id}"
@@ -154,6 +197,7 @@ class TriageService:
             category=result.category,
             status_message=status_message,
             status_trace=status_trace,
+            execution_steps=execution_steps or None,
             test_case_id=result.test_case_id,
             link=link,
             duration_ms=result.duration,
@@ -161,7 +205,7 @@ class TriageService:
 
     @staticmethod
     def _log_report(report: TriageReport) -> None:
-        """Log the triage report summary."""
+        """Залогировать сводку отчёта триажа."""
         logger.info(
             "Launch #%d (%s): %d total | passed=%d failed=%d broken=%d skipped=%d unknown=%d",
             report.launch_id,
