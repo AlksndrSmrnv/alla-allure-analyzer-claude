@@ -62,14 +62,20 @@ class AllureTestOpsClient:
         data = await self._request(
             "GET", f"{self.TESTRESULT_ENDPOINT}/{test_result_id}/execution",
         )
+        logger.debug(
+            "Execution response for test_result %d: type=%s, data=%s",
+            test_result_id,
+            type(data).__name__,
+            str(data)[:2000],
+        )
         # Ответ — JSON-массив шагов
         if isinstance(data, list):
             return [ExecutionStep.model_validate(step) for step in data]
-        # Если API вернул объект-обёртку — пробуем достать steps
+        # Если API вернул объект-обёртку — сам объект может содержать
+        # statusDetails с ошибкой. Возвращаем его как корневой шаг,
+        # чтобы _find_failure_in_steps мог найти ошибку на любом уровне.
         if isinstance(data, dict):
-            steps_raw = data.get("steps", data.get("content", [data]))
-            if isinstance(steps_raw, list):
-                return [ExecutionStep.model_validate(step) for step in steps_raw]
+            return [ExecutionStep.model_validate(data)]
         return []
 
     async def get_test_results_for_launch(
