@@ -1,4 +1,4 @@
-"""Allure TestOps JWT authentication manager."""
+"""Менеджер JWT-аутентификации Allure TestOps."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class _TokenInfo:
-    """Cached JWT token with expiry tracking."""
+    """Кэшированный JWT-токен с отслеживанием срока действия."""
 
     __slots__ = ("access_token", "obtained_at", "expires_in")
 
@@ -24,15 +24,15 @@ class _TokenInfo:
 
     @property
     def is_expired(self) -> bool:
-        """True if the token expires within the next 5 minutes."""
+        """True, если токен истекает в ближайшие 5 минут."""
         return time.time() > (self.obtained_at + self.expires_in - 300)
 
 
 class AllureAuthManager:
-    """Manages Allure TestOps JWT authentication.
+    """Управление JWT-аутентификацией Allure TestOps.
 
-    Exchanges an API token for a JWT via ``POST /api/uaa/oauth/token``,
-    caches the JWT, and refreshes it before expiry.
+    Обменивает API-токен на JWT через ``POST /api/uaa/oauth/token``,
+    кэширует JWT и обновляет его до истечения срока действия.
     """
 
     TOKEN_ENDPOINT = "/api/uaa/oauth/token"
@@ -51,17 +51,17 @@ class AllureAuthManager:
         self._http = httpx.AsyncClient(timeout=timeout, verify=ssl_verify)
 
     async def get_auth_header(self) -> dict[str, str]:
-        """Return the ``Authorization`` header with a valid JWT.
+        """Вернуть заголовок ``Authorization`` с валидным JWT.
 
-        Exchanges the API token for a JWT if no cached token exists
-        or the cached token is about to expire.
+        Обменивает API-токен на JWT, если кэшированного токена нет
+        или кэшированный токен скоро истекает.
         """
         if self._token_info is None or self._token_info.is_expired:
             self._token_info = await self._exchange_token()
         return {"Authorization": f"Bearer {self._token_info.access_token}"}
 
     async def _exchange_token(self) -> _TokenInfo:
-        """Exchange API token for JWT via the OAuth endpoint."""
+        """Обменять API-токен на JWT через OAuth-эндпоинт."""
         url = f"{self._endpoint}{self.TOKEN_ENDPOINT}"
         logger.debug("Exchanging API token for JWT at %s", url)
 
@@ -97,9 +97,9 @@ class AllureAuthManager:
         return _TokenInfo(access_token=access_token, expires_in=expires_in)
 
     def invalidate(self) -> None:
-        """Force re-authentication on the next request."""
+        """Принудительная повторная аутентификация при следующем запросе."""
         self._token_info = None
 
     async def close(self) -> None:
-        """Release HTTP client resources."""
+        """Освободить ресурсы HTTP-клиента."""
         await self._http.aclose()

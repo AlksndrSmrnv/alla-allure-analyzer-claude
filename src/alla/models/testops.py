@@ -1,4 +1,4 @@
-"""Pydantic models for Allure TestOps API responses and domain objects."""
+"""Pydantic-модели для ответов Allure TestOps API и доменных объектов."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from alla.models.common import TestStatus
 
 
 class TestResultResponse(BaseModel):
-    """Raw test result from Allure TestOps API.
+    """Сырой результат теста из Allure TestOps API.
 
-    Fields are intentionally Optional where the API might not return them,
-    making the model resilient to API variations. ``extra="allow"`` captures
-    any undocumented fields without validation errors.
+    Поля намеренно Optional там, где API может их не вернуть,
+    что делает модель устойчивой к вариациям API. ``extra="allow"``
+    захватывает любые недокументированные поля без ошибок валидации.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
@@ -33,7 +33,7 @@ class TestResultResponse(BaseModel):
 
 
 class LaunchResponse(BaseModel):
-    """Launch metadata from Allure TestOps API."""
+    """Метаданные запуска из Allure TestOps API."""
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
@@ -43,8 +43,26 @@ class LaunchResponse(BaseModel):
     created_date: int | None = Field(None, alias="createdDate")
 
 
+class ExecutionStep(BaseModel):
+    """Шаг выполнения теста из ``/api/testresult/{id}/execution``.
+
+    Ответ эндпоинта — дерево шагов. Каждый шаг может содержать вложенные
+    ``steps``, а также ``statusDetails`` с сообщением об ошибке и стек-трейсом.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    name: str | None = None
+    status: str | None = None
+    status_details: dict | None = Field(None, alias="statusDetails")
+    steps: list[ExecutionStep] | None = None
+    duration: int | None = None
+    parameters: list[dict] | None = None
+    attachments: list[dict] | None = None
+
+
 class FailedTestSummary(BaseModel):
-    """Domain model: summarized view of a failed test for triage output."""
+    """Доменная модель: краткое описание упавшего теста для вывода триажа."""
 
     test_result_id: int
     name: str
@@ -53,13 +71,14 @@ class FailedTestSummary(BaseModel):
     category: str | None = None
     status_message: str | None = None
     status_trace: str | None = None
+    execution_steps: list[ExecutionStep] | None = None
     test_case_id: int | None = None
     link: str | None = None
     duration_ms: int | None = None
 
 
 class TriageReport(BaseModel):
-    """Output of the triage step: summary of a launch's failures."""
+    """Результат шага триажа: сводка падений запуска."""
 
     launch_id: int
     launch_name: str | None = None

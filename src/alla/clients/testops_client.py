@@ -1,4 +1,4 @@
-"""Allure TestOps HTTP client implementation."""
+"""Реализация HTTP-клиента Allure TestOps."""
 
 from __future__ import annotations
 
@@ -11,18 +11,18 @@ from alla.clients.auth import AllureAuthManager
 from alla.config import Settings
 from alla.exceptions import AllureApiError, PaginationLimitError
 from alla.models.common import PageResponse
-from alla.models.testops import LaunchResponse, TestResultResponse
+from alla.models.testops import ExecutionStep, LaunchResponse, TestResultResponse
 
 logger = logging.getLogger(__name__)
 
 
 class AllureTestOpsClient:
-    """HTTP client for Allure TestOps REST API.
+    """HTTP-клиент для REST API Allure TestOps.
 
-    Implements the :class:`~alla.clients.base.TestResultsProvider` protocol.
+    Реализует протокол :class:`~alla.clients.base.TestResultsProvider`.
 
-    Endpoint paths are class attributes so they can be overridden if the
-    target Allure TestOps version uses a different API structure.
+    Пути эндпоинтов — атрибуты класса, чтобы их можно было переопределить,
+    если целевая версия Allure TestOps использует другую структуру API.
     """
 
     LAUNCH_ENDPOINT = "/api/launch"
@@ -38,27 +38,39 @@ class AllureTestOpsClient:
             verify=settings.ssl_verify,
         )
 
-    # --- Public API (TestResultsProvider protocol) ---
+    # --- Публичный API (протокол TestResultsProvider) ---
 
     async def get_launch(self, launch_id: int) -> LaunchResponse:
-        """Fetch launch metadata by ID.
+        """Получить метаданные запуска по ID.
 
         ``GET /api/launch/{id}``
         """
         data = await self._request("GET", f"{self.LAUNCH_ENDPOINT}/{launch_id}")
         return LaunchResponse.model_validate(data)
 
-    async def get_test_result(self, test_result_id: int) -> TestResultResponse:
-        """Fetch full details for a single test result by ID.
+    async def get_test_result_execution(
+        self, test_result_id: int,
+    ) -> list[ExecutionStep]:
+        """Получить дерево шагов выполнения теста.
 
-        ``GET /api/testresult/{id}``
+        ``GET /api/testresult/{id}/execution``
 
-        The detail endpoint returns the complete test result including
-        ``statusDetails`` (error message and stack trace), which the list
-        endpoint omits.
+        Возвращает список корневых шагов (execution steps) с вложенными
+        ``steps``, ``statusDetails`` (сообщение об ошибке и стек-трейс),
+        ``attachments`` и другими деталями исполнения.
         """
-        data = await self._request("GET", f"{self.TESTRESULT_ENDPOINT}/{test_result_id}")
-        return TestResultResponse.model_validate(data)
+        data = await self._request(
+            "GET", f"{self.TESTRESULT_ENDPOINT}/{test_result_id}/execution",
+        )
+        # Ответ — JSON-массив шагов
+        if isinstance(data, list):
+            return [ExecutionStep.model_validate(step) for step in data]
+        # Если API вернул объект-обёртку — пробуем достать steps
+        if isinstance(data, dict):
+            steps_raw = data.get("steps", data.get("content", [data]))
+            if isinstance(steps_raw, list):
+                return [ExecutionStep.model_validate(step) for step in steps_raw]
+        return []
 
     async def get_test_results_for_launch(
         self,
@@ -66,7 +78,7 @@ class AllureTestOpsClient:
         page: int = 0,
         size: int | None = None,
     ) -> PageResponse[TestResultResponse]:
-        """Fetch a single page of test results for a given launch.
+        """Получить одну страницу результатов тестов для заданного запуска.
 
         ``GET /api/testresult?launchId={id}&page={page}&size={size}``
         """
@@ -81,10 +93,10 @@ class AllureTestOpsClient:
     async def get_all_test_results_for_launch(
         self, launch_id: int,
     ) -> list[TestResultResponse]:
-        """Fetch ALL test results for a launch, iterating through pages.
+        """Получить ВСЕ результаты тестов для запуска, итерируя по страницам.
 
-        Stops when all pages are retrieved or ``max_pages`` safety limit
-        is reached.
+        Останавливается, когда все страницы получены или достигнут защитный
+        лимит ``max_pages``.
         """
         all_results: list[TestResultResponse] = []
         page = 0
@@ -127,7 +139,7 @@ class AllureTestOpsClient:
         )
         return all_results
 
-    # --- Internal HTTP ---
+    # --- Внутренний HTTP ---
 
     async def _request(
         self,
@@ -135,12 +147,14 @@ class AllureTestOpsClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Execute an authenticated HTTP request with retry on 401.
+    ) -> Any:
+        """Выполнить аутентифицированный HTTP-запрос с повтором при 401.
+
+        Возвращает десериализованный JSON (dict или list в зависимости от эндпоинта).
 
         Raises:
-            AllureApiError: On HTTP error responses.
-            AuthenticationError: If re-authentication also fails.
+            AllureApiError: При HTTP-ошибках в ответе.
+            AuthenticationError: Если повторная аутентификация тоже не удалась.
         """
         url = f"{self._endpoint}{path}"
         auth_header = await self._auth.get_auth_header()
@@ -154,7 +168,7 @@ class AllureTestOpsClient:
         except httpx.RequestError as exc:
             raise AllureApiError(0, str(exc), path) from exc
 
-        # Retry once on 401 (expired JWT)
+        # Одноразовый повтор при 401 (истёкший JWT)
         if resp.status_code == 401:
             logger.debug("Got 401, re-authenticating and retrying")
             self._auth.invalidate()
@@ -180,10 +194,10 @@ class AllureTestOpsClient:
 
         return resp.json()  # type: ignore[no-any-return]
 
-    # --- Lifecycle ---
+    # --- Жизненный цикл ---
 
     async def close(self) -> None:
-        """Release HTTP client and auth manager resources."""
+        """Освободить ресурсы HTTP-клиента и менеджера аутентификации."""
         await self._http.aclose()
         await self._auth.close()
 
