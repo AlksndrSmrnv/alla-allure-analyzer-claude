@@ -148,9 +148,15 @@ class TriageService:
 
         Обходит дерево шагов в глубину. Возвращает (message, trace) из
         ``statusDetails`` первого шага со статусом failed/broken.
+
+        Если явного статуса нет (корневой execution-объект), но есть
+        ``statusDetails`` с данными — тоже извлекает.
+
         Если ни один шаг не содержит ошибку — возвращает (None, None).
         """
         failure_statuses = {"failed", "broken"}
+
+        # Первый проход: шаги с явным failure-статусом (приоритет)
         for step in steps:
             if (
                 step.status
@@ -167,6 +173,19 @@ class TriageService:
                 message, trace = TriageService._find_failure_in_steps(step.steps)
                 if message or trace:
                     return message, trace
+
+        # Второй проход: шаги без статуса, но с statusDetails
+        # (корневой execution-объект может не иметь поля status)
+        for step in steps:
+            if (
+                step.status_details
+                and isinstance(step.status_details, dict)
+            ):
+                message = step.status_details.get("message")
+                trace = step.status_details.get("trace")
+                if message or trace:
+                    return message, trace
+
         return None, None
 
     def _build_failed_summary(
@@ -184,6 +203,16 @@ class TriageService:
             if result.status_details and isinstance(result.status_details, dict):
                 status_message = result.status_details.get("message")
                 status_trace = result.status_details.get("trace")
+
+        logger.debug(
+            "Build summary for test %d: exec_steps=%d, "
+            "status_message=%s, status_trace=%s, result.status_details=%s",
+            result.id,
+            len(execution_steps),
+            repr(status_message[:100]) if status_message else None,
+            repr(status_trace[:100]) if status_trace else None,
+            repr(str(result.status_details)[:200]) if result.status_details else None,
+        )
 
         link = (
             f"{self._endpoint}/launch/{launch_id}/testresult/{result.id}"
