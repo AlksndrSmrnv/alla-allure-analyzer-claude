@@ -32,3 +32,4 @@ class Settings(BaseSettings):
 
     clustering_enabled: bool = Field(default=True, description="Включить/выключить кластеризацию ошибок")
     clustering_threshold: float = Field(default=0.60, description="Порог схожести для группировки ошибок в кластеры (0.0-1.0)")
+    clustering_min_signal_count: int = Field(default=1, description="Минимум непустых сигналов (exception/message/trace/category) для участия в кластеризации")

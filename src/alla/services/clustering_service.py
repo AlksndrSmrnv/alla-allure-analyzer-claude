@@ -1,8 +1,12 @@
 """Сервис кластеризации похожих ошибок тестов по корневой причине.
 
-Алгоритм: multi-signal fingerprinting + single-pass greedy clustering.
-Без внешних ML-зависимостей — чистый Python, regex, set operations.
-Детерминированный, воспроизводимый результат.
+Алгоритм: agglomerative clustering (complete linkage) по композитной
+multi-signal метрике расстояния. TF-IDF + cosine для сообщений об ошибках,
+set Jaccard для стек-трейс фреймов, exact match для типа исключения и категории.
+
+Отсутствующие сигналы исключаются из сравнения, а их вес перераспределяется
+между оставшимися. Если ВСЕ сигналы отсутствуют — расстояние = 1.0
+(тесты не кластеризуются).
 """
 
 from __future__ import annotations
@@ -11,6 +15,11 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
+
+import numpy as np
+from scipy.cluster.hierarchy import fcluster, linkage
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 from alla.models.clustering import (
     ClusteringReport,
@@ -32,14 +41,20 @@ class ClusteringConfig:
 
     similarity_threshold: float = 0.60
 
-    weight_exception_type: float = 0.30
-    weight_message: float = 0.35
+    weight_exception_type: float = 0.35
+    weight_message: float = 0.30
     weight_trace: float = 0.25
     weight_category: float = 0.10
 
-    trace_root_frames: int = 5
+    trace_root_frames: int = 8
     max_label_length: int = 120
     trace_snippet_lines: int = 5
+
+    min_signal_count: int = 1
+
+    tfidf_max_features: int = 500
+    tfidf_min_df: int = 1
+    tfidf_ngram_range: tuple[int, int] = (1, 2)
 
     ignored_frame_packages: tuple[str, ...] = (
         "java.lang.reflect",
@@ -56,20 +71,42 @@ class ClusteringConfig:
         "pluggy",
     )
 
+    @property
+    def distance_threshold(self) -> float:
+        """Перевод similarity_threshold в distance_threshold для scipy."""
+        return 1.0 - self.similarity_threshold
+
 
 # ---------------------------------------------------------------------------
-# ErrorFingerprint — extracted features for comparison
+# FailureFeatures — extracted features for comparison
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class ErrorFingerprint:
-    """Извлечённые фичи одной ошибки для сравнения."""
+class FailureFeatures:
+    """Извлечённые фичи одной ошибки для вычисления расстояний."""
 
+    test_result_id: int
     exception_type: str | None
+    normalized_message: str | None
     message_tokens: frozenset[str]
-    root_frames: tuple[str, ...]
+    trace_frame_set: frozenset[str]
+    trace_frames_ordered: tuple[str, ...]
     category: str | None
     raw_message_prefix: str | None
+
+    @property
+    def signal_count(self) -> int:
+        """Количество непустых сигналов."""
+        count = 0
+        if self.exception_type is not None:
+            count += 1
+        if self.normalized_message:
+            count += 1
+        if self.trace_frame_set:
+            count += 1
+        if self.category is not None:
+            count += 1
+        return count
 
 
 # ---------------------------------------------------------------------------
@@ -116,19 +153,27 @@ class FeatureExtractor:
     def __init__(self, config: ClusteringConfig) -> None:
         self._config = config
 
-    def extract(self, failure: FailedTestSummary) -> ErrorFingerprint:
-        """Извлечь ``ErrorFingerprint`` из ``FailedTestSummary``."""
+    def extract(self, failure: FailedTestSummary) -> FailureFeatures:
+        """Извлечь ``FailureFeatures`` из ``FailedTestSummary``."""
         exception_type = self.extract_exception_type(
             failure.status_message, failure.status_trace,
         )
-        message_tokens = self.normalize_message(failure.status_message)
-        root_frames = self.normalize_trace(failure.status_trace)
+
+        normalized_msg = self._normalize_message_text(failure.status_message)
+        message_tokens = self._tokenize(normalized_msg) if normalized_msg else frozenset()
+
+        trace_frames_ordered = self.normalize_trace(failure.status_trace)
+        trace_frame_set = frozenset(trace_frames_ordered)
+
         raw_prefix = failure.status_message[:100] if failure.status_message else None
 
-        return ErrorFingerprint(
+        return FailureFeatures(
+            test_result_id=failure.test_result_id,
             exception_type=exception_type,
+            normalized_message=normalized_msg,
             message_tokens=message_tokens,
-            root_frames=root_frames,
+            trace_frame_set=trace_frame_set,
+            trace_frames_ordered=trace_frames_ordered,
             category=failure.category,
             raw_message_prefix=raw_prefix,
         )
@@ -139,8 +184,6 @@ class FeatureExtractor:
         trace: str | None,
     ) -> str | None:
         """Определить тип исключения из сообщения или трейса."""
-        # Приоритет: первая строка trace (обычно содержит класс исключения),
-        # затем message.
         sources = []
         if trace:
             sources.append(trace.strip().splitlines()[0] if trace.strip() else "")
@@ -148,22 +191,18 @@ class FeatureExtractor:
             sources.append(message)
 
         for text in sources:
-            # Java-style: com.example.SomeException: msg
             m = _JAVA_EXCEPTION_RE.search(text)
             if m:
                 return m.group(1)
 
-            # Python-style: SomeError: msg
             m = _PYTHON_EXCEPTION_RE.search(text)
             if m:
                 return m.group(1)
 
-        # Специальные паттерны, если стандартные не сработали
         combined = " ".join(s for s in sources if s)
         if _TIMEOUT_RE.search(combined):
             return "TimeoutError"
 
-        # Приоритет: статус ошибки (после "got"/"received"), затем любой статус
         m = _HTTP_STATUS_ERROR_RE.search(combined)
         if m:
             return f"HTTPStatus{m.group(1)}"
@@ -173,30 +212,30 @@ class FeatureExtractor:
 
         return None
 
-    def normalize_message(self, message: str | None) -> frozenset[str]:
-        """Токенизировать и нормализовать сообщение об ошибке для сравнения."""
+    def _normalize_message_text(self, message: str | None) -> str | None:
+        """Нормализовать сообщение об ошибке для TF-IDF: замена волатильных частей."""
         if not message:
-            return frozenset()
+            return None
 
         text = message.lower()
-        text = _UUID_RE.sub("<uuid>", text)
-        text = _TIMESTAMP_RE.sub("<ts>", text)
-        text = _IP_RE.sub("<ip>", text)
-        text = _PATH_RE.sub("<path>", text)
-        text = _NUMBER_RE.sub("<num>", text)
+        text = _UUID_RE.sub("UUID", text)
+        text = _TIMESTAMP_RE.sub("TIMESTAMP", text)
+        text = _IP_RE.sub("IPADDR", text)
+        text = _PATH_RE.sub("FILEPATH", text)
+        text = _NUMBER_RE.sub("NUM", text)
 
-        tokens = re.findall(r"[a-z_<>]+(?:\d+)?", text)
+        return text.strip() if text.strip() else None
+
+    @staticmethod
+    def _tokenize(text: str) -> frozenset[str]:
+        """Извлечь набор токенов (для генерации меток кластеров)."""
+        tokens = re.findall(r"[a-z_]+(?:\d+)?", text)
         return frozenset(
             t for t in tokens if t not in _STOP_WORDS and len(t) > 1
         )
 
     def normalize_trace(self, trace: str | None) -> tuple[str, ...]:
-        """Извлечь и нормализовать N фреймов стек-трейса, ближайших к причине ошибки.
-
-        В Java traceback причина (innermost frame) — вверху списка фреймов.
-        В Python traceback причина — внизу (most recent call last).
-        Метод автоматически определяет формат и берёт фреймы со стороны причины.
-        """
+        """Извлечь и нормализовать N фреймов стек-трейса, ближайших к причине ошибки."""
         if not trace:
             return ()
 
@@ -206,29 +245,23 @@ class FeatureExtractor:
         for line in trace.strip().splitlines():
             line = line.strip()
 
-            # Java: at com.example.Class.method(File.java:42)
             m = _JAVA_FRAME_RE.search(line)
             if m:
                 java_frames.append(m.group(1))
                 continue
 
-            # Python: File "/path/to/module.py", line 42, in func_name
             m = _PYTHON_FRAME_RE.search(line)
             if m:
                 python_frames.append(f"{m.group(1)}:{m.group(2)}")
                 continue
 
-        # Определяем формат trace по тому, какой паттерн нашёл больше фреймов
         if python_frames and len(python_frames) >= len(java_frames):
-            # Python: причина внизу → берём последние N фреймов
             frames = python_frames
             is_python = True
         else:
-            # Java (или смешанный): причина вверху → берём первые N фреймов
             frames = java_frames
             is_python = False
 
-        # Фильтрация фреймворк-пакетов
         frames = [
             f for f in frames
             if not any(f.startswith(pkg) for pkg in self._config.ignored_frame_packages)
@@ -236,10 +269,8 @@ class FeatureExtractor:
 
         root_count = self._config.trace_root_frames
         if is_python:
-            # Python: корневая причина в конце, берём последние N
             root_frames = frames[-root_count:] if frames else []
         else:
-            # Java: корневая причина в начале, берём первые N
             root_frames = frames[:root_count]
 
         return tuple(root_frames)
@@ -252,8 +283,9 @@ class FeatureExtractor:
 class ClusteringService:
     """Группирует похожие ошибки тестов в кластеры по корневой причине.
 
-    Алгоритм: single-pass greedy assignment с взвешенной
-    multi-signal метрикой схожести. Детерминированный, без зависимостей.
+    Алгоритм: agglomerative clustering (complete linkage) по композитной
+    multi-signal метрике расстояния. Complete linkage гарантирует, что
+    КАЖДАЯ пара тестов внутри кластера имеет расстояние < порога.
     """
 
     def __init__(self, config: ClusteringConfig | None = None) -> None:
@@ -273,62 +305,76 @@ class ClusteringService:
                 cluster_count=0,
             )
 
-        # 1. Извлечение fingerprint для каждого теста
-        items: list[tuple[FailedTestSummary, ErrorFingerprint]] = [
-            (f, self._extractor.extract(f)) for f in failures
-        ]
+        # 1. Извлечение features для каждого теста
+        features_list = [self._extractor.extract(f) for f in failures]
+        failure_map = {f.test_result_id: f for f in failures}
 
-        # 2. Сортировка по test_result_id для детерминизма
-        items.sort(key=lambda pair: pair[0].test_result_id)
-
-        # 3. Greedy single-pass clustering
-        # Каждый кластер: (representative_fp, representative_failure, member_ids)
-        clusters: list[tuple[ErrorFingerprint, FailedTestSummary, list[int]]] = []
-
-        for failure, fp in items:
-            best_idx = -1
-            best_score = 0.0
-
-            for idx, (rep_fp, _, _) in enumerate(clusters):
-                score = self._compute_similarity(fp, rep_fp)
-                if score > best_score:
-                    best_score = score
-                    best_idx = idx
-
-            if best_score >= self._config.similarity_threshold and best_idx >= 0:
-                clusters[best_idx][2].append(failure.test_result_id)
+        # 2. Разделение на clusterable и singletons
+        clusterable: list[FailureFeatures] = []
+        singleton_features: list[FailureFeatures] = []
+        for feat in features_list:
+            if feat.signal_count >= self._config.min_signal_count:
+                clusterable.append(feat)
             else:
-                clusters.append((fp, failure, [failure.test_result_id]))
+                singleton_features.append(feat)
+
+        # Сортировка для детерминизма
+        clusterable.sort(key=lambda f: f.test_result_id)
+        singleton_features.sort(key=lambda f: f.test_result_id)
+
+        # 3. Кластеризация clusterable элементов
+        cluster_groups: dict[int, list[FailureFeatures]] = {}
+
+        if len(clusterable) == 0:
+            pass
+        elif len(clusterable) == 1:
+            cluster_groups[0] = [clusterable[0]]
+        else:
+            # 3a. TF-IDF для сообщений
+            tfidf_matrix = self._build_tfidf_vectors(clusterable)
+
+            # 3b. Cosine similarity matrix для сообщений
+            message_sim_matrix = None
+            if tfidf_matrix is not None:
+                message_sim_matrix = cosine_similarity(tfidf_matrix)
+
+            # 3c. Condensed distance matrix
+            condensed_dist = self._build_condensed_distance_matrix(
+                clusterable, message_sim_matrix,
+            )
+
+            # 3d. Agglomerative clustering
+            linkage_matrix = linkage(condensed_dist, method="complete")
+            labels = fcluster(
+                linkage_matrix,
+                t=self._config.distance_threshold,
+                criterion="distance",
+            ).tolist()
+
+            for feat, label in zip(clusterable, labels):
+                cluster_groups.setdefault(label, []).append(feat)
 
         # 4. Конвертация в выходные модели
         result_clusters: list[FailureCluster] = []
-        for rep_fp, rep_failure, member_ids in clusters:
-            signature = ClusterSignature(
-                exception_type=rep_fp.exception_type,
-                message_pattern=rep_fp.raw_message_prefix,
-                common_frames=list(rep_fp.root_frames),
-                category=rep_fp.category,
-            )
-            result_clusters.append(FailureCluster(
-                cluster_id=self._generate_cluster_id(signature),
-                label=self._generate_label(signature),
-                signature=signature,
-                member_test_ids=member_ids,
-                member_count=len(member_ids),
-                example_message=rep_failure.status_message,
-                example_trace_snippet=_first_n_lines(
-                    rep_failure.status_trace,
-                    self._config.trace_snippet_lines,
-                ),
-            ))
+
+        for group_features in cluster_groups.values():
+            cluster = self._build_cluster(group_features, failure_map)
+            result_clusters.append(cluster)
+
+        for feat in singleton_features:
+            cluster = self._build_cluster([feat], failure_map)
+            result_clusters.append(cluster)
 
         # Сортировка: самые крупные кластеры первыми
-        result_clusters.sort(key=lambda c: c.member_count, reverse=True)
+        result_clusters.sort(key=lambda c: (-c.member_count, c.cluster_id))
+
+        unclustered = sum(1 for c in result_clusters if c.member_count == 1)
 
         logger.info(
-            "Clustered %d failures into %d clusters",
+            "Clustered %d failures into %d clusters (%d singletons)",
             len(failures),
             len(result_clusters),
+            unclustered,
         )
 
         return ClusteringReport(
@@ -336,57 +382,153 @@ class ClusteringService:
             total_failures=len(failures),
             cluster_count=len(result_clusters),
             clusters=result_clusters,
+            unclustered_count=unclustered,
         )
 
-    def _compute_similarity(
+    # --- TF-IDF ---
+
+    def _build_tfidf_vectors(
         self,
-        a: ErrorFingerprint,
-        b: ErrorFingerprint,
+        features: list[FailureFeatures],
+    ):
+        """Построить TF-IDF матрицу для сообщений об ошибках."""
+        messages = [f.normalized_message or "" for f in features]
+
+        if not any(m.strip() for m in messages):
+            return None
+
+        vectorizer = TfidfVectorizer(
+            max_features=self._config.tfidf_max_features,
+            min_df=self._config.tfidf_min_df,
+            ngram_range=self._config.tfidf_ngram_range,
+            token_pattern=r"[a-z_]+(?:\d+)?",
+            stop_words=list(_STOP_WORDS),
+        )
+
+        try:
+            return vectorizer.fit_transform(messages)
+        except ValueError:
+            return None
+
+    # --- Distance matrix ---
+
+    def _build_condensed_distance_matrix(
+        self,
+        features: list[FailureFeatures],
+        message_sim_matrix: np.ndarray | None,
+    ) -> np.ndarray:
+        """Построить condensed distance matrix для scipy linkage.
+
+        Возвращает 1-D массив из n*(n-1)/2 попарных расстояний.
+        """
+        n = len(features)
+        condensed = np.zeros(n * (n - 1) // 2, dtype=np.float64)
+
+        idx = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                msg_sim = (
+                    float(message_sim_matrix[i, j])
+                    if message_sim_matrix is not None
+                    else None
+                )
+                condensed[idx] = self._pairwise_distance(
+                    features[i], features[j], msg_sim,
+                )
+                idx += 1
+
+        return condensed
+
+    def _pairwise_distance(
+        self,
+        a: FailureFeatures,
+        b: FailureFeatures,
+        message_cosine_sim: float | None,
     ) -> float:
-        """Взвешенная multi-signal метрика схожести двух fingerprints."""
+        """Композитное расстояние между двумя ошибками.
+
+        Отсутствующие сигналы исключаются, их вес перераспределяется.
+        Если нет ни одного активного сигнала — возвращает 1.0.
+        """
         cfg = self._config
-        score = 0.0
+        active: list[tuple[float, float]] = []  # (weight, distance)
 
-        # Сигнал 1: совпадение типа исключения (binary)
-        if a.exception_type and b.exception_type:
-            if a.exception_type == b.exception_type:
-                score += cfg.weight_exception_type
-        elif a.exception_type is None and b.exception_type is None:
-            score += cfg.weight_exception_type * 0.5
+        # Сигнал 1: тип исключения (exact match)
+        if a.exception_type is not None and b.exception_type is not None:
+            d = 0.0 if a.exception_type == b.exception_type else 1.0
+            active.append((cfg.weight_exception_type, d))
 
-        # Сигнал 2: Jaccard similarity по токенам сообщения
-        if a.message_tokens and b.message_tokens:
-            intersection = len(a.message_tokens & b.message_tokens)
-            union = len(a.message_tokens | b.message_tokens)
-            jaccard = intersection / union if union > 0 else 0.0
-            score += cfg.weight_message * jaccard
-        elif not a.message_tokens and not b.message_tokens:
-            score += cfg.weight_message * 0.5
+        # Сигнал 2: сообщение (TF-IDF cosine distance)
+        if a.normalized_message and b.normalized_message:
+            if message_cosine_sim is not None:
+                d = 1.0 - max(0.0, min(1.0, message_cosine_sim))
+            else:
+                d = 1.0
+            active.append((cfg.weight_message, d))
 
-        # Сигнал 3: совпадение корневых фреймов стек-трейса
-        if a.root_frames and b.root_frames:
-            common = 0
-            for fa, fb in zip(a.root_frames, b.root_frames):
-                if fa == fb:
-                    common += 1
-                else:
-                    break
-            max_len = max(len(a.root_frames), len(b.root_frames))
-            frame_ratio = common / max_len if max_len > 0 else 0.0
-            score += cfg.weight_trace * frame_ratio
-        elif not a.root_frames and not b.root_frames:
-            score += cfg.weight_trace * 0.5
+        # Сигнал 3: фреймы трейса (set Jaccard distance)
+        if a.trace_frame_set and b.trace_frame_set:
+            intersection = len(a.trace_frame_set & b.trace_frame_set)
+            union = len(a.trace_frame_set | b.trace_frame_set)
+            jaccard_sim = intersection / union if union > 0 else 0.0
+            d = 1.0 - jaccard_sim
+            active.append((cfg.weight_trace, d))
 
-        # Сигнал 4: совпадение категории (binary)
-        if a.category and b.category:
-            if a.category == b.category:
-                score += cfg.weight_category
-        elif a.category is None and b.category is None:
-            score += cfg.weight_category * 0.5
+        # Сигнал 4: категория (exact match)
+        if a.category is not None and b.category is not None:
+            d = 0.0 if a.category == b.category else 1.0
+            active.append((cfg.weight_category, d))
 
-        return score
+        if not active:
+            return 1.0
 
-    def _generate_label(self, signature: ClusterSignature) -> str:
+        total_weight = sum(w for w, _ in active)
+        return sum(w * d for w, d in active) / total_weight
+
+    # --- Cluster building ---
+
+    def _build_cluster(
+        self,
+        group_features: list[FailureFeatures],
+        failure_map: dict[int, FailedTestSummary],
+    ) -> FailureCluster:
+        """Создать FailureCluster из группы features."""
+        # Представитель: больше всего сигналов, при равенстве — меньший ID
+        representative = max(
+            group_features,
+            key=lambda f: (f.signal_count, -f.test_result_id),
+        )
+
+        member_ids = sorted(f.test_result_id for f in group_features)
+        rep_failure = failure_map[representative.test_result_id]
+
+        signature = ClusterSignature(
+            exception_type=representative.exception_type,
+            message_pattern=representative.raw_message_prefix,
+            common_frames=list(representative.trace_frames_ordered),
+            category=representative.category,
+        )
+
+        label = self._generate_label(signature, group_features)
+
+        return FailureCluster(
+            cluster_id=self._generate_cluster_id(signature),
+            label=label,
+            signature=signature,
+            member_test_ids=member_ids,
+            member_count=len(member_ids),
+            example_message=rep_failure.status_message,
+            example_trace_snippet=_first_n_lines(
+                rep_failure.status_trace,
+                self._config.trace_snippet_lines,
+            ),
+        )
+
+    def _generate_label(
+        self,
+        signature: ClusterSignature,
+        group_features: list[FailureFeatures],
+    ) -> str:
         """Сгенерировать человекочитаемую метку кластера."""
         parts: list[str] = []
 
@@ -395,19 +537,25 @@ class ClusteringService:
 
         if signature.common_frames:
             location = signature.common_frames[0]
-            # Сократить до последних 2 сегментов: com.example.UserService.getUser → UserService.getUser
             segments = location.rsplit(".", 2)
             short = ".".join(segments[-2:]) if len(segments) >= 2 else location
             parts.append(f"in {short}")
 
         if not parts and signature.message_pattern:
-            parts.append(signature.message_pattern[:80])
+            msg = signature.message_pattern.strip()
+            if len(msg) > 80:
+                msg = msg[:77] + "..."
+            parts.append(msg)
 
         if not parts and signature.category:
             parts.append(f"Category: {signature.category}")
 
         if not parts:
-            parts.append("Unknown error")
+            if group_features:
+                best = max(group_features, key=lambda f: f.signal_count)
+                parts.append(f"Test: {best.test_result_id}")
+            else:
+                parts.append("Unclassified failure")
 
         label = " ".join(parts)
         return label[: self._config.max_label_length]
