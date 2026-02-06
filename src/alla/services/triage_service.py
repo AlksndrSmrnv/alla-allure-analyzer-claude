@@ -177,6 +177,8 @@ class TriageService:
         # Второй проход: шаги без статуса, но с statusDetails
         # (корневой execution-объект может не иметь поля status)
         for step in steps:
+            if step.status is not None:
+                continue
             if (
                 step.status_details
                 and isinstance(step.status_details, dict)
