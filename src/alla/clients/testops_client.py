@@ -71,13 +71,22 @@ class AllureTestOpsClient:
         # Ответ — JSON-массив шагов
         if isinstance(data, list):
             return [ExecutionStep.model_validate(step) for step in data]
-        # API может вернуть объект-обёртку {"steps": [...], ...}
-        # Извлекаем вложенные steps; если их нет — оборачиваем сам объект как шаг
+        # API может вернуть объект-обёртку {"steps": [...], "statusDetails": {...}, ...}
+        # Wrapper сам может содержать данные об ошибке — сохраняем его как шаг,
+        # а также извлекаем вложенные steps.
         if isinstance(data, dict):
-            steps_raw = data.get("steps") or data.get("content")
+            result_steps: list[ExecutionStep] = []
+            wrapper = ExecutionStep.model_validate(data)
+            if wrapper.status_details or wrapper.message or wrapper.trace:
+                result_steps.append(wrapper)
+            steps_raw = data.get("steps")
+            if steps_raw is None:
+                steps_raw = data.get("content")
             if isinstance(steps_raw, list):
-                return [ExecutionStep.model_validate(step) for step in steps_raw]
-            return [ExecutionStep.model_validate(data)]
+                result_steps.extend(
+                    ExecutionStep.model_validate(step) for step in steps_raw
+                )
+            return result_steps if result_steps else [wrapper]
         return []
 
     async def get_test_results_for_launch(
