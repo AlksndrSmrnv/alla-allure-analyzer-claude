@@ -184,17 +184,41 @@ def _print_clustering_report(report: ClusteringReport) -> None:  # noqa: F821
     print()
 
     for i, cluster in enumerate(report.clusters, 1):
-        print(f"  Cluster #{i}: {cluster.label} ({cluster.member_count} tests)")
+        cluster_lines = [
+            f"Cluster #{i}: {cluster.label} ({cluster.member_count} tests)",
+            f"Cluster ID: {cluster.cluster_id}",
+        ]
         if cluster.example_message:
-            msg = cluster.example_message
+            msg = _normalize_single_line(cluster.example_message)
             if len(msg) > 200:
                 msg = msg[:200] + "..."
-            print(f"    Example: {msg}")
+            cluster_lines.append(f"Example: {msg}")
         ids_str = ", ".join(str(tid) for tid in cluster.member_test_ids[:10])
         if len(cluster.member_test_ids) > 10:
             ids_str += ", ..."
-        print(f"    Tests: {ids_str}")
+        cluster_lines.append(f"Tests: {ids_str}")
+
+        for line in _render_box(cluster_lines):
+            print(line)
         print()
+
+
+def _normalize_single_line(value: str) -> str:
+    """Схлопнуть переводы строк/табуляцию в одну строку для рамочного вывода."""
+    return " ".join(value.replace("\t", " ").split())
+
+
+def _render_box(lines: list[str]) -> list[str]:
+    """Отрендерить список строк в Unicode-рамку."""
+    if not lines:
+        return []
+
+    width = max(len(line) for line in lines)
+    top = f"╔{'═' * (width + 2)}╗"
+    bottom = f"╚{'═' * (width + 2)}╝"
+    body = [f"║ {line.ljust(width)} ║" for line in lines]
+
+    return [top, *body, bottom]
 
 
 def main() -> None:

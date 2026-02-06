@@ -165,13 +165,19 @@ Failures (42):
 
 === Failure Clusters (2 unique problems from 42 failures) ===
 
-  Cluster #1: NullPointerException in UserService.getUser (28 tests)
-    Example: Expected non-null value from UserService.getUser()
-    Tests: 98765, 98770, 98771, ...
+╔════════════════════════════════════════════════════════════════════════════════════╗
+║ Cluster #1: NullPointerException in UserService.getUser (28 tests)               ║
+║ Cluster ID: a1b2c3d4e5f60789                                                     ║
+║ Example: Expected non-null value from UserService.getUser()                      ║
+║ Tests: 98765, 98770, 98771, ...                                                  ║
+╚════════════════════════════════════════════════════════════════════════════════════╝
 
-  Cluster #2: TimeoutError in PaymentGateway.process (14 tests)
-    Example: Connection timed out after 30000ms
-    Tests: 98766, 98780, ...
+╔════════════════════════════════════════════════════════════════════════════════════╗
+║ Cluster #2: TimeoutError in PaymentGateway.process (14 tests)                    ║
+║ Cluster ID: 0f9e8d7c6b5a4321                                                     ║
+║ Example: Connection timed out after 30000ms                                      ║
+║ Tests: 98766, 98780, ...                                                         ║
+╚════════════════════════════════════════════════════════════════════════════════════╝
 ```
 
 ## Allure TestOps API
