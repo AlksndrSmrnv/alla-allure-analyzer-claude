@@ -27,12 +27,13 @@ alla <launch_id>
      ▼                  ▼
 ┌──────────────────────────────┐
 │    ClusteringService         │
-│  (fingerprint → similarity   │
-│   → greedy single-pass)     │
+│  (TF-IDF + cosine distance,  │
+│   agglomerative clustering   │
+│   complete linkage, scipy)   │
 │                              │
 │  FeatureExtractor            │
 │  (exception type, message    │
-│   tokens, stack frames,      │
+│   TF-IDF, stack frames set,  │
 │   category)                  │
 └──────────────────────────────┘
                 │
@@ -102,6 +103,7 @@ alla <launch_id>
 | `ALLURE_MAX_PAGES` | нет | `50` | Максимум страниц при пагинации (защита от бесконечных циклов) |
 | `ALLURE_CLUSTERING_ENABLED` | нет | `true` | Включить/выключить кластеризацию ошибок |
 | `ALLURE_CLUSTERING_THRESHOLD` | нет | `0.60` | Порог схожести для кластеризации (0.0–1.0). Ниже = более агрессивное слияние |
+| `ALLURE_CLUSTERING_MIN_SIGNAL_COUNT` | нет | `1` | Минимум непустых сигналов для участия в кластеризации (0–4) |
 
 ## Установка и запуск
 
@@ -300,9 +302,75 @@ example_trace_snippet: str | None
 
 6. **Endpoint paths как class attributes** — `AllureTestOpsClient.LAUNCH_ENDPOINT`, `TESTRESULT_ENDPOINT` можно переопределить в подклассе, если API-структура другой версии TestOps отличается.
 
-7. **Кластеризация без ML-зависимостей** — multi-signal fingerprinting + greedy single-pass clustering. Чистый Python (regex, set operations), детерминированный результат. Weighted similarity из 4 сигналов: тип исключения (0.30), Jaccard по токенам сообщения (0.35), совпадение фреймов стек-трейса (0.25), категория (0.10). Порог настраивается через `ALLURE_CLUSTERING_THRESHOLD`.
+7. **Кластеризация через agglomerative clustering (complete linkage)** — scikit-learn TF-IDF + cosine для сообщений, set Jaccard для стек-трейс фреймов, exact match для типа исключения и категории. Scipy `linkage(method="complete")` + `fcluster(criterion="distance")`. Complete linkage гарантирует, что каждая пара тестов в кластере ближе порога — precision важнее recall. Детерминированный результат. Подробнее см. раздел «Алгоритм кластеризации» ниже.
 
 8. **FeatureExtractor отделён от ClusteringService** — при добавлении сигналов из логов или Allure-отчётов создаётся новый extractor, алгоритм кластеризации не меняется.
+
+## Алгоритм кластеризации
+
+Реализация: `alla/services/clustering_service.py`.
+
+### Общая схема
+
+1. **Извлечение фич** (`FeatureExtractor`) — из каждого `FailedTestSummary` извлекаются 4 сигнала:
+   - `exception_type` — тип исключения (regex по Java/Python трейсу и сообщению, + специальные паттерны TimeoutError, HTTPStatus)
+   - `normalized_message` — нормализованное сообщение (lowercase, замена UUID/timestamps/IP/path/numbers плейсхолдерами)
+   - `trace_frame_set` — множество фреймов стек-трейса (ближайших к root cause, с фильтрацией фреймворк-пакетов)
+   - `category` — категория ошибки из Allure
+
+2. **Фильтрация** — тесты с количеством непустых сигналов < `min_signal_count` становятся автоматическими singleton-кластерами (не участвуют в сравнении).
+
+3. **TF-IDF** (`sklearn.TfidfVectorizer`) — нормализованные сообщения векторизуются. Общие слова ("error", "expected") получают низкий IDF и не раздувают схожесть. Bigrams (`ngram_range=(1,2)`) захватывают фразы вроде "null pointer", "timed out".
+
+4. **Матрица расстояний** — для каждой пары тестов вычисляется композитное расстояние (см. ниже).
+
+5. **Agglomerative clustering** — `scipy.cluster.hierarchy.linkage(method="complete")` + `fcluster(criterion="distance", t=distance_threshold)`. Complete linkage гарантирует, что **максимальное** расстояние между любыми двумя тестами внутри кластера < порога.
+
+### Метрика расстояния
+
+Для каждой пары `(a, b)` вычисляется взвешенное расстояние по активным сигналам:
+
+| Сигнал | Вес | Метрика | Формула distance |
+|--------|-----|---------|-----------------|
+| exception_type | 0.35 | exact match | 0.0 если совпадают, 1.0 если нет |
+| message | 0.30 | TF-IDF cosine | `1.0 - cosine_similarity(tfidf_a, tfidf_b)` |
+| trace frames | 0.25 | set Jaccard | `1.0 - |A∩B| / |A∪B|` |
+| category | 0.10 | exact match | 0.0 если совпадают, 1.0 если нет |
+
+**Обработка отсутствующих сигналов:** если у одного или обоих тестов сигнал отсутствует (None / пусто), этот сигнал **исключается** из сравнения, а его вес **перераспределяется** между оставшимися. Если ВСЕ сигналы отсутствуют — расстояние = 1.0 (тесты никогда не кластеризуются вместе).
+
+```
+distance = Σ(weight_i × distance_i) / Σ(weight_i)   # только по активным сигналам
+distance_threshold = 1.0 - similarity_threshold       # 0.60 → 0.40
+```
+
+### Настройка кластеризации
+
+| Параметр | Env var | По умолчанию | Эффект изменения |
+|----------|---------|:---:|---|
+| Порог схожести | `ALLURE_CLUSTERING_THRESHOLD` | `0.60` | **Выше** (0.70–0.80) — более строгие кластеры, больше singleton'ов. **Ниже** (0.40–0.50) — более агрессивное слияние, меньше кластеров. |
+| Минимум сигналов | `ALLURE_CLUSTERING_MIN_SIGNAL_COUNT` | `1` | `0` — все тесты участвуют (включая пустые). `2` — для кластеризации нужно хотя бы 2 из 4 сигналов. `4` — только тесты со всеми 4 сигналами. |
+| Вкл/выкл | `ALLURE_CLUSTERING_ENABLED` | `true` | `false` — кластеризация полностью отключена, выводятся только отдельные тесты. |
+
+**Рекомендации по тюнингу:**
+- Если слишком много мелких кластеров → понизить `ALLURE_CLUSTERING_THRESHOLD` до 0.50.
+- Если разные ошибки всё ещё попадают в один кластер → повысить до 0.70–0.80.
+- Если тесты без сообщений/трейсов засоряют кластеры → повысить `ALLURE_CLUSTERING_MIN_SIGNAL_COUNT` до 2.
+
+### Внутренние параметры (ClusteringConfig)
+
+Дополнительные параметры доступны только программно (не через env vars):
+
+| Параметр | По умолчанию | Назначение |
+|----------|:---:|---|
+| `weight_exception_type` | 0.35 | Вес сигнала типа исключения |
+| `weight_message` | 0.30 | Вес сигнала сообщения (TF-IDF cosine) |
+| `weight_trace` | 0.25 | Вес сигнала стек-трейса (set Jaccard) |
+| `weight_category` | 0.10 | Вес сигнала категории |
+| `trace_root_frames` | 8 | Количество фреймов стек-трейса для анализа |
+| `tfidf_max_features` | 500 | Размер словаря TF-IDF |
+| `tfidf_ngram_range` | (1, 2) | N-граммы: unigrams + bigrams |
+| `ignored_frame_packages` | (12 пакетов) | Фреймворк-пакеты, исключаемые из анализа трейса |
 
 ## Что сделано (MVP Step 1–2)
 
@@ -315,7 +383,7 @@ example_trace_snippet: str | None
 - [x] Сводка со ссылками на Allure TestOps UI
 - [x] Конфигурация через env vars / .env файл
 - [x] Отключение SSL-верификации для корпоративных сетей (`ALLURE_SSL_VERIFY=false`)
-- [x] **Кластеризация падений** — группировка по похожим ошибкам (exception type, message, stacktrace, category). Multi-signal fingerprinting + greedy single-pass clustering без ML-зависимостей.
+- [x] **Кластеризация падений** — группировка по похожим ошибкам (exception type, message TF-IDF, stacktrace frames, category). Agglomerative clustering (complete linkage) через scipy/scikit-learn. Отсутствующие сигналы исключаются из сравнения с перераспределением весов.
 
 ## Что не сделано (план на следующие фазы)
 
@@ -336,6 +404,7 @@ example_trace_snippet: str | None
 | httpx | >=0.27,<1.0 | Async HTTP клиент |
 | pydantic | >=2.5,<3.0 | Валидация данных, API-модели |
 | pydantic-settings | >=2.1,<3.0 | Конфиг из env vars + .env |
+| scikit-learn | >=1.4,<2.0 | TF-IDF векторизация, cosine similarity для кластеризации |
 
 ### Dev (опциональные)
 
