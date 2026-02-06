@@ -29,3 +29,6 @@ class Settings(BaseSettings):
 
     log_level: str = Field(default="INFO", description="Уровень логирования")
     ssl_verify: bool = Field(default=True, description="Проверка SSL-сертификатов (отключить для корпоративных прокси)")
+
+    clustering_enabled: bool = Field(default=True, description="Включить/выключить кластеризацию ошибок")
+    clustering_threshold: float = Field(default=0.60, description="Порог схожести для группировки ошибок в кластеры (0.0-1.0)")
