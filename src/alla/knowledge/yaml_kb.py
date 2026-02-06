@@ -64,6 +64,13 @@ class YamlKnowledgeBase:
             for item in items:
                 try:
                     entry = KBEntry.model_validate(item)
+                    if entry.id in self._entries_by_id:
+                        logger.warning(
+                            "Дублирующийся ID '%s' в %s. "
+                            "Запись пропущена (оставлена первая).",
+                            entry.id, path,
+                        )
+                        continue
                     self._entries.append(entry)
                     self._entries_by_id[entry.id] = entry
                     logger.debug("Загружена KB-запись: %s из %s", entry.id, path)
