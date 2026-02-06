@@ -143,7 +143,7 @@ class FeatureExtractor:
         # затем message.
         sources = []
         if trace:
-            sources.append(trace.splitlines()[0] if trace.strip() else "")
+            sources.append(trace.strip().splitlines()[0] if trace.strip() else "")
         if message:
             sources.append(message)
 
