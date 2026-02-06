@@ -25,5 +25,7 @@ class Settings(BaseSettings):
     page_size: int = Field(default=100, description="Results per page for paginated requests")
     max_pages: int = Field(default=50, description="Safety limit on pagination iterations")
 
+    detail_concurrency: int = Field(default=10, description="Max concurrent requests when fetching individual test result details")
+
     log_level: str = Field(default="INFO", description="Logging level")
     ssl_verify: bool = Field(default=True, description="Verify SSL certificates (disable for corporate proxies)")

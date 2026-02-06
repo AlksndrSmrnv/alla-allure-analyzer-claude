@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import Counter
 
@@ -23,6 +24,7 @@ class TriageService:
     def __init__(self, client: TestResultsProvider, settings: Settings) -> None:
         self._client = client
         self._endpoint = str(settings.endpoint).rstrip("/")
+        self._detail_concurrency = settings.detail_concurrency
 
     async def analyze_launch(self, launch_id: int) -> TriageReport:
         """Fetch test results for a launch and produce a triage report.
@@ -46,12 +48,13 @@ class TriageService:
             self._normalize_status(r.status) for r in results
         )
 
-        # 4. Failed/broken summaries
-        failure_statuses = TestStatus.failure_statuses()
+        # 4. Fetch full details for failed/broken tests (statusDetails)
+        detailed_failures = await self._fetch_failed_details(results)
+
+        # 5. Build summaries from detailed results
         failed_tests = [
             self._build_failed_summary(r, launch_id)
-            for r in results
-            if self._normalize_status(r.status) in failure_statuses
+            for r in detailed_failures
         ]
 
         report = TriageReport(
@@ -81,13 +84,63 @@ class TriageService:
         except ValueError:
             return TestStatus.UNKNOWN
 
+    async def _fetch_failed_details(
+        self,
+        results: list[TestResultResponse],
+    ) -> list[TestResultResponse]:
+        """Fetch full details for failed/broken tests in parallel.
+
+        The list endpoint omits ``statusDetails``. This method fetches
+        individual test results to get error messages and stack traces.
+        Uses a semaphore to limit concurrency.
+        """
+        failure_statuses = TestStatus.failure_statuses()
+        failed_results = [
+            r for r in results
+            if self._normalize_status(r.status) in failure_statuses
+        ]
+
+        if not failed_results:
+            return []
+
+        logger.info(
+            "Fetching details for %d failed/broken tests (concurrency=%d)",
+            len(failed_results),
+            self._detail_concurrency,
+        )
+
+        semaphore = asyncio.Semaphore(self._detail_concurrency)
+
+        async def fetch_one(test_result_id: int) -> TestResultResponse:
+            async with semaphore:
+                return await self._client.get_test_result(test_result_id)
+
+        tasks = [fetch_one(r.id) for r in failed_results]
+        detailed = await asyncio.gather(*tasks, return_exceptions=True)
+
+        final: list[TestResultResponse] = []
+        for original, detail_or_exc in zip(failed_results, detailed):
+            if isinstance(detail_or_exc, Exception):
+                logger.warning(
+                    "Failed to fetch details for test result %d: %s. Using summary data.",
+                    original.id,
+                    detail_or_exc,
+                )
+                final.append(original)
+            else:
+                final.append(detail_or_exc)
+
+        return final
+
     def _build_failed_summary(
         self, result: TestResultResponse, launch_id: int,
     ) -> FailedTestSummary:
         """Convert a raw test result into a triage-focused summary."""
         status_message = None
+        status_trace = None
         if result.status_details and isinstance(result.status_details, dict):
             status_message = result.status_details.get("message")
+            status_trace = result.status_details.get("trace")
 
         link = (
             f"{self._endpoint}/launch/{launch_id}/testresult/{result.id}"
@@ -100,6 +153,7 @@ class TriageService:
             status=self._normalize_status(result.status),
             category=result.category,
             status_message=status_message,
+            status_trace=status_trace,
             test_case_id=result.test_case_id,
             link=link,
             duration_ms=result.duration,

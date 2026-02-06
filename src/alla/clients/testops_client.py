@@ -48,6 +48,18 @@ class AllureTestOpsClient:
         data = await self._request("GET", f"{self.LAUNCH_ENDPOINT}/{launch_id}")
         return LaunchResponse.model_validate(data)
 
+    async def get_test_result(self, test_result_id: int) -> TestResultResponse:
+        """Fetch full details for a single test result by ID.
+
+        ``GET /api/testresult/{id}``
+
+        The detail endpoint returns the complete test result including
+        ``statusDetails`` (error message and stack trace), which the list
+        endpoint omits.
+        """
+        data = await self._request("GET", f"{self.TESTRESULT_ENDPOINT}/{test_result_id}")
+        return TestResultResponse.model_validate(data)
+
     async def get_test_results_for_launch(
         self,
         launch_id: int,
