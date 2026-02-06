@@ -205,7 +205,14 @@ class AllureTestOpsClient:
             body_text = resp.text[:500]
             raise AllureApiError(resp.status_code, body_text, path)
 
-        return resp.json()  # type: ignore[no-any-return]
+        try:
+            return resp.json()  # type: ignore[no-any-return]
+        except Exception as exc:
+            raise AllureApiError(
+                resp.status_code,
+                f"Ответ не является валидным JSON: {resp.text[:200]}",
+                path,
+            ) from exc
 
     # --- Жизненный цикл ---
 

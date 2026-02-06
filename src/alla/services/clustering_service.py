@@ -1,15 +1,18 @@
 """Сервис кластеризации похожих ошибок тестов по корневой причине.
 
-Алгоритм: text-first подход.
-1. Из каждого упавшего теста собирается один текстовый документ
-   (message + trace + category) без разбора на составные части.
+Алгоритм: message-first подход.
+1. Для каждого падения строятся два канала текста:
+   - message-document: status_message + category
+   - trace-document: status_trace (с компактацией длинных трасс)
 2. Минимальная нормализация: замена волатильных данных (UUID, timestamps,
    длинные числа, IP) плейсхолдерами.
-3. TF-IDF + cosine distance — TF-IDF сам определяет, какие слова/фразы
-   важны для различения ошибок. Работает с любым языком (латиница,
-   кириллица, смешанный) и любым форматом ошибок.
-4. Agglomerative clustering (complete linkage) — гарантирует, что каждая
-   пара тестов в кластере имеет расстояние < порога.
+3. TF-IDF + cosine similarity по каждому каналу отдельно.
+4. Итоговая similarity для пары:
+   - если message есть у обоих и message similarity ниже порога,
+     trace игнорируется (пара не может быть склеена)
+   - иначе взвешенная комбинация message/trace
+   - если message у одного/обоих пустой, fallback только на trace
+5. Agglomerative clustering (complete linkage) по итоговой distance.
 """
 
 from __future__ import annotations
@@ -46,6 +49,10 @@ class ClusteringConfig:
 
     tfidf_max_features: int = 1000
     tfidf_ngram_range: tuple[int, int] = (1, 2)
+    message_similarity_weight: float = 0.85
+    trace_similarity_weight: float = 0.15
+    trace_compact_head_lines: int = 30
+    trace_compact_tail_lines: int = 30
 
     max_label_length: int = 120
     trace_snippet_lines: int = 5
@@ -82,25 +89,55 @@ def _normalize_text(text: str) -> str:
     return text
 
 
-def _build_document(failure: FailedTestSummary) -> str:
-    """Собрать один текстовый документ из всей доступной информации об ошибке.
-
-    Конкатенация: message + trace + category.
-    Без парсинга, без извлечения типов исключений, без разбора фреймов.
-    """
+def _build_message_document(failure: FailedTestSummary) -> str:
+    """Собрать message-документ (message + category)."""
     parts: list[str] = []
 
     if failure.status_message:
         parts.append(failure.status_message)
-
-    if failure.status_trace:
-        parts.append(failure.status_trace)
 
     if failure.category:
         parts.append(failure.category)
 
     raw = "\n".join(parts)
     return _normalize_text(raw) if raw else ""
+
+
+def _compact_trace(trace: str, head_lines: int, tail_lines: int) -> str:
+    """Сжать длинный stack trace: оставить head и tail непустых строк."""
+    lines = [line for line in trace.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    head = max(head_lines, 0)
+    tail = max(tail_lines, 0)
+    if head == 0 and tail == 0:
+        return ""
+
+    if tail == 0:
+        return "\n".join(lines[:head])
+    if head == 0:
+        return "\n".join(lines[-tail:])
+    if len(lines) <= head + tail:
+        return "\n".join(lines)
+    return "\n".join(lines[:head] + lines[-tail:])
+
+
+def _build_trace_document(
+    failure: FailedTestSummary,
+    *,
+    head_lines: int,
+    tail_lines: int,
+) -> str:
+    """Собрать trace-документ из status_trace с предварительной компактацией."""
+    if not failure.status_trace:
+        return ""
+    compacted = _compact_trace(
+        failure.status_trace,
+        head_lines=head_lines,
+        tail_lines=tail_lines,
+    )
+    return _normalize_text(compacted) if compacted else ""
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +147,7 @@ def _build_document(failure: FailedTestSummary) -> str:
 class ClusteringService:
     """Группирует похожие ошибки тестов в кластеры по корневой причине.
 
-    Алгоритм: TF-IDF по полному тексту ошибки + agglomerative clustering
+    Алгоритм: message-first двухканальный TF-IDF + agglomerative clustering
     (complete linkage). Универсальный — работает с любым языком и форматом.
     """
 
@@ -130,14 +167,24 @@ class ClusteringService:
                 cluster_count=0,
             )
 
-        # 1. Собрать текстовые документы
-        documents: list[str] = [_build_document(f) for f in failures]
+        # 1. Собрать документы по двум каналам
+        message_documents: list[str] = [_build_message_document(f) for f in failures]
+        trace_documents: list[str] = [
+            _build_trace_document(
+                f,
+                head_lines=self._config.trace_compact_head_lines,
+                tail_lines=self._config.trace_compact_tail_lines,
+            )
+            for f in failures
+        ]
 
-        # 2. Разделить на тесты с текстом и без
+        # 2. Разделить на тесты с текстом и без (в любом канале)
         has_text_indices: list[int] = []
         empty_indices: list[int] = []
-        for i, doc in enumerate(documents):
-            if doc.strip():
+        for i, (message_doc, trace_doc) in enumerate(
+            zip(message_documents, trace_documents)
+        ):
+            if message_doc.strip() or trace_doc.strip():
                 has_text_indices.append(i)
             else:
                 empty_indices.append(i)
@@ -150,8 +197,9 @@ class ClusteringService:
         elif len(has_text_indices) == 1:
             cluster_groups[0] = [has_text_indices[0]]
         else:
-            text_docs = [documents[i] for i in has_text_indices]
-            labels = self._cluster_texts(text_docs)
+            message_docs = [message_documents[i] for i in has_text_indices]
+            trace_docs = [trace_documents[i] for i in has_text_indices]
+            labels = self._cluster_texts(message_docs, trace_docs)
 
             for idx, label in zip(has_text_indices, labels):
                 cluster_groups.setdefault(label, []).append(idx)
@@ -190,32 +238,60 @@ class ClusteringService:
 
     # --- Clustering ---
 
-    def _cluster_texts(self, documents: list[str]) -> list[int]:
-        """TF-IDF + agglomerative clustering по текстам.
+    def _cluster_texts(
+        self,
+        message_documents: list[str],
+        trace_documents: list[str],
+    ) -> list[int]:
+        """Message-first TF-IDF + agglomerative clustering.
 
         Возвращает список меток кластеров (одна метка на документ).
         """
-        # TF-IDF с Unicode token_pattern — работает с любым языком
-        vectorizer = TfidfVectorizer(
-            max_features=self._config.tfidf_max_features,
-            ngram_range=self._config.tfidf_ngram_range,
-            token_pattern=r"(?u)\b\w\w+\b",
-            lowercase=True,
-        )
+        n = len(message_documents)
+        message_sim = self._pairwise_similarity(message_documents)
+        trace_sim = self._pairwise_similarity(trace_documents)
 
-        try:
-            tfidf_matrix = vectorizer.fit_transform(documents)
-        except ValueError:
-            # Все документы пустые после токенизации
-            return list(range(len(documents)))
+        message_weight = self._config.message_similarity_weight
+        trace_weight = self._config.trace_similarity_weight
+        weight_sum = message_weight + trace_weight
+        if weight_sum > 0:
+            message_weight /= weight_sum
+            trace_weight /= weight_sum
+        else:
+            message_weight = 1.0
+            trace_weight = 0.0
 
-        # Cosine distance matrix
-        sim_matrix = cosine_similarity(tfidf_matrix)
-        np.clip(sim_matrix, 0.0, 1.0, out=sim_matrix)
-        dist_matrix = 1.0 - sim_matrix
+        final_sim = np.eye(n, dtype=np.float64)
+        has_message = [bool(doc.strip()) for doc in message_documents]
+        has_trace = [bool(doc.strip()) for doc in trace_documents]
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                if has_message[i] and has_message[j]:
+                    if message_sim[i, j] < self._config.similarity_threshold:
+                        # Message gate: если сообщения различаются ниже порога,
+                        # trace не может "перетащить" пару в один кластер.
+                        pair_sim = message_sim[i, j]
+                    elif not (has_trace[i] and has_trace[j]):
+                        # Если у пары нет trace-канала, не штрафуем similarity.
+                        pair_sim = message_sim[i, j]
+                    else:
+                        pair_sim = (
+                            message_weight * message_sim[i, j]
+                            + trace_weight * trace_sim[i, j]
+                        )
+                else:
+                    pair_sim = trace_sim[i, j]
+
+                final_sim[i, j] = pair_sim
+                final_sim[j, i] = pair_sim
+
+        self._log_similarity_stats(message_sim, trace_sim, final_sim)
+
+        np.clip(final_sim, 0.0, 1.0, out=final_sim)
+        dist_matrix = 1.0 - final_sim
 
         # Condensed form для scipy
-        n = len(documents)
         condensed = np.zeros(n * (n - 1) // 2, dtype=np.float64)
         idx = 0
         for i in range(n):
@@ -232,6 +308,77 @@ class ClusteringService:
         )
 
         return labels.tolist()
+
+    def _pairwise_similarity(self, documents: list[str]) -> np.ndarray:
+        """Cosine similarity matrix по списку документов.
+
+        Пустые документы не участвуют в векторизации и имеют similarity=0
+        с любыми другими документами (кроме диагонали=1).
+        """
+        n = len(documents)
+        sim_matrix = np.eye(n, dtype=np.float64)
+        non_empty_indices = [i for i, doc in enumerate(documents) if doc.strip()]
+
+        if len(non_empty_indices) <= 1:
+            return sim_matrix
+
+        vectorizer = TfidfVectorizer(
+            max_features=self._config.tfidf_max_features,
+            ngram_range=self._config.tfidf_ngram_range,
+            token_pattern=r"(?u)\b\w\w+\b",
+            lowercase=True,
+        )
+        subset_docs = [documents[i] for i in non_empty_indices]
+        try:
+            tfidf_matrix = vectorizer.fit_transform(subset_docs)
+        except ValueError:
+            return sim_matrix
+
+        subset_sim = cosine_similarity(tfidf_matrix)
+        np.clip(subset_sim, 0.0, 1.0, out=subset_sim)
+        sim_matrix[np.ix_(non_empty_indices, non_empty_indices)] = subset_sim
+        return sim_matrix
+
+    @staticmethod
+    def _similarity_stats(matrix: np.ndarray) -> tuple[float, float, float]:
+        """Вернуть min/avg/max по попарным similarity без диагонали."""
+        if matrix.shape[0] < 2:
+            return 1.0, 1.0, 1.0
+
+        values = matrix[np.triu_indices(matrix.shape[0], k=1)]
+        if values.size == 0:
+            return 1.0, 1.0, 1.0
+
+        return float(values.min()), float(values.mean()), float(values.max())
+
+    def _log_similarity_stats(
+        self,
+        message_sim: np.ndarray,
+        trace_sim: np.ndarray,
+        final_sim: np.ndarray,
+    ) -> None:
+        """DEBUG-лог статистики similarity матриц для диагностики кластеризации."""
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+
+        msg_min, msg_avg, msg_max = self._similarity_stats(message_sim)
+        trace_min, trace_avg, trace_max = self._similarity_stats(trace_sim)
+        final_min, final_avg, final_max = self._similarity_stats(final_sim)
+        logger.debug(
+            "Similarity stats: "
+            "message(min=%.4f avg=%.4f max=%.4f), "
+            "trace(min=%.4f avg=%.4f max=%.4f), "
+            "final(min=%.4f avg=%.4f max=%.4f)",
+            msg_min,
+            msg_avg,
+            msg_max,
+            trace_min,
+            trace_avg,
+            trace_max,
+            final_min,
+            final_avg,
+            final_max,
+        )
 
     # --- Cluster building ---
 
@@ -264,7 +411,7 @@ class ClusteringService:
         label = self._generate_label(representative)
 
         return FailureCluster(
-            cluster_id=self._generate_cluster_id(signature),
+            cluster_id=self._generate_cluster_id(signature, member_ids),
             label=label,
             signature=signature,
             member_test_ids=member_ids,
@@ -299,14 +446,24 @@ class ClusteringService:
         return f"Тест: {representative.test_result_id}"
 
     @staticmethod
-    def _generate_cluster_id(signature: ClusterSignature) -> str:
-        """Детерминированный ID кластера на основе SHA-256 хеша сигнатуры."""
+    def _generate_cluster_id(
+        signature: ClusterSignature,
+        member_ids: list[int] | None = None,
+    ) -> str:
+        """Детерминированный ID кластера на основе SHA-256 хеша сигнатуры.
+
+        Для кластеров с пустой сигнатурой (нет message/trace/category)
+        member_ids включаются в хеш для гарантии уникальности.
+        """
         components = [
             signature.exception_type or "",
             signature.category or "",
             "|".join(signature.common_frames),
             signature.message_pattern or "",
         ]
+        has_content = any(components)
+        if not has_content and member_ids:
+            components.append("|".join(str(tid) for tid in sorted(member_ids)))
         raw = "\n".join(components)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 

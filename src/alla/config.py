@@ -19,13 +19,13 @@ class Settings(BaseSettings):
 
     endpoint: str = Field(description="URL сервера Allure TestOps")
     token: str = Field(description="API-токен для аутентификации")
-    project_id: int = Field(description="ID проекта в Allure TestOps")
+    project_id: int | None = Field(default=None, description="ID проекта в Allure TestOps")
 
     request_timeout: int = Field(default=30, description="Таймаут HTTP-запросов в секундах")
     page_size: int = Field(default=100, description="Результатов на страницу при пагинации")
     max_pages: int = Field(default=50, description="Защитный лимит на количество страниц пагинации")
 
-    detail_concurrency: int = Field(default=10, description="Макс. параллельных запросов при получении деталей отдельных результатов тестов")
+    detail_concurrency: int = Field(default=10, ge=1, description="Макс. параллельных запросов при получении деталей отдельных результатов тестов")
 
     log_level: str = Field(default="INFO", description="Уровень логирования")
     ssl_verify: bool = Field(default=True, description="Проверка SSL-сертификатов (отключить для корпоративных прокси)")

@@ -86,7 +86,12 @@ class AllureAuthManager:
                 f"Ошибка запроса при обмене API-токена на JWT: {exc}"
             ) from exc
 
-        body = resp.json()
+        try:
+            body = resp.json()
+        except Exception as exc:
+            raise AuthenticationError(
+                f"Ответ аутентификации не является валидным JSON: {resp.text[:200]}"
+            ) from exc
         access_token = body.get("access_token")
         if not access_token:
             raise AuthenticationError(
