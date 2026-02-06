@@ -43,11 +43,12 @@ class AllureAuthManager:
         api_token: str,
         *,
         timeout: int = 30,
+        ssl_verify: bool = True,
     ) -> None:
         self._endpoint = endpoint.rstrip("/")
         self._api_token = api_token
         self._token_info: _TokenInfo | None = None
-        self._http = httpx.AsyncClient(timeout=timeout)
+        self._http = httpx.AsyncClient(timeout=timeout, verify=ssl_verify)
 
     async def get_auth_header(self) -> dict[str, str]:
         """Return the ``Authorization`` header with a valid JWT.
