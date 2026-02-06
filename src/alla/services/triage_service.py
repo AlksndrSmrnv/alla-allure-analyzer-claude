@@ -43,7 +43,7 @@ class TriageService:
         """
         # 1. Метаданные запуска
         launch = await self._client.get_launch(launch_id)
-        logger.info("Analyzing launch #%d (%s)", launch_id, launch.name or "unnamed")
+        logger.info("Анализ запуска #%d (%s)", launch_id, launch.name or "без названия")
 
         # 2. Все результаты тестов
         results = await self._client.get_all_test_results_for_launch(launch_id)
@@ -111,7 +111,8 @@ class TriageService:
             return []
 
         logger.info(
-            "Fetching execution details for %d failed/broken tests (concurrency=%d)",
+            "Получение execution-деталей для %d упавших/сломанных тестов "
+            "(параллелизм=%d)",
             len(failed_results),
             self._detail_concurrency,
         )
@@ -129,8 +130,8 @@ class TriageService:
         for original, exec_or_exc in zip(failed_results, execution_results):
             if isinstance(exec_or_exc, Exception):
                 logger.warning(
-                    "Failed to fetch execution for test result %d: %s. "
-                    "Error details will be unavailable.",
+                    "Не удалось получить execution для результата теста %d: %s. "
+                    "Детали ошибки будут недоступны.",
                     original.id,
                     exec_or_exc,
                 )
@@ -219,8 +220,8 @@ class TriageService:
                 status_trace = result.status_details.get("trace")
 
         logger.debug(
-            "Build summary for test %d: exec_steps=%d, "
-            "status_message=%s, status_trace=%s, result.status_details=%s",
+            "Сборка сводки для теста %d: шагов=%d, "
+            "сообщение=%s, трейс=%s, status_details результата=%s",
             result.id,
             len(execution_steps),
             repr(status_message[:100]) if status_message else None,
@@ -250,9 +251,10 @@ class TriageService:
     def _log_report(report: TriageReport) -> None:
         """Залогировать сводку отчёта триажа."""
         logger.info(
-            "Launch #%d (%s): %d total | passed=%d failed=%d broken=%d skipped=%d unknown=%d",
+            "Запуск #%d (%s): всего=%d | успешно=%d | провалено=%d "
+            "| сломано=%d | пропущено=%d | неизвестно=%d",
             report.launch_id,
-            report.launch_name or "unnamed",
+            report.launch_name or "без названия",
             report.total_results,
             report.passed_count,
             report.failed_count,
@@ -262,7 +264,7 @@ class TriageService:
         )
 
         if report.failed_tests:
-            logger.info("Failures (%d):", report.failure_count)
+            logger.info("Падения (%d):", report.failure_count)
             for t in report.failed_tests:
                 logger.info(
                     "  [%s] %s (ID: %d) %s",
@@ -272,4 +274,4 @@ class TriageService:
                     t.link or "",
                 )
         else:
-            logger.info("No failures found.")
+            logger.info("Падения не найдены.")

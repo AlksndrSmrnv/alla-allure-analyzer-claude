@@ -174,7 +174,7 @@ class ClusteringService:
         unclustered = sum(1 for c in result_clusters if c.member_count == 1)
 
         logger.info(
-            "Clustered %d failures into %d clusters (%d singletons)",
+            "Сгруппировано %d падений в %d кластеров (%d одиночных)",
             len(failures),
             len(result_clusters),
             unclustered,
@@ -294,9 +294,9 @@ class ClusteringService:
             return first_line
 
         if representative.category:
-            return f"Category: {representative.category}"
+            return f"Категория: {representative.category}"
 
-        return f"Test: {representative.test_result_id}"
+        return f"Тест: {representative.test_result_id}"
 
     @staticmethod
     def _generate_cluster_id(signature: ClusterSignature) -> str:

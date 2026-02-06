@@ -152,31 +152,31 @@ alla --help                             # справка
 ### Пример вывода (text)
 
 ```
-=== Allure Triage Report ===
-Launch: #12345 (Nightly Regression Run)
-Total: 847 | Passed: 801 | Failed: 30 | Broken: 12 | Skipped: 4 | Unknown: 0
+=== Отчёт триажа Allure ===
+Запуск: #12345 (Nightly Regression Run)
+Всего: 847 | Успешно: 801 | Провалено: 30 | Сломано: 12 | Пропущено: 4 | Неизвестно: 0
 
-Failures (42):
+Падения (42):
   [FAILED]  test_login_with_invalid_credentials (ID: 98765)
             https://allure.company.com/launch/12345/testresult/98765
             Expected status 200 but got 401
   [BROKEN]  test_payment_processing_timeout (ID: 98766)
             https://allure.company.com/launch/12345/testresult/98766
 
-=== Failure Clusters (2 unique problems from 42 failures) ===
+=== Кластеры падений (2 уникальных проблем из 42 падений) ===
 
 ╔════════════════════════════════════════════════════════════════════════════════════╗
-║ Cluster #1: NullPointerException in UserService.getUser (28 tests)               ║
-║ Cluster ID: a1b2c3d4e5f60789                                                     ║
-║ Example: Expected non-null value from UserService.getUser()                      ║
-║ Tests: 98765, 98770, 98771, ...                                                  ║
+║ Кластер #1: NullPointerException in UserService.getUser (28 тестов)              ║
+║ ID кластера: a1b2c3d4e5f60789                                                    ║
+║ Пример: Expected non-null value from UserService.getUser()                       ║
+║ Тесты: 98765, 98770, 98771, ...                                                  ║
 ╚════════════════════════════════════════════════════════════════════════════════════╝
 
 ╔════════════════════════════════════════════════════════════════════════════════════╗
-║ Cluster #2: TimeoutError in PaymentGateway.process (14 tests)                    ║
-║ Cluster ID: 0f9e8d7c6b5a4321                                                     ║
-║ Example: Connection timed out after 30000ms                                      ║
-║ Tests: 98766, 98780, ...                                                         ║
+║ Кластер #2: TimeoutError in PaymentGateway.process (14 тестов)                   ║
+║ ID кластера: 0f9e8d7c6b5a4321                                                    ║
+║ Пример: Connection timed out after 30000ms                                       ║
+║ Тесты: 98766, 98780, ...                                                         ║
 ╚════════════════════════════════════════════════════════════════════════════════════╝
 ```
 

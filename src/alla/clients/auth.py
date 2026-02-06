@@ -63,7 +63,7 @@ class AllureAuthManager:
     async def _exchange_token(self) -> _TokenInfo:
         """Обменять API-токен на JWT через OAuth-эндпоинт."""
         url = f"{self._endpoint}{self.TOKEN_ENDPOINT}"
-        logger.debug("Exchanging API token for JWT at %s", url)
+        logger.debug("Обмен API-токена на JWT по адресу %s", url)
 
         try:
             resp = await self._http.post(
@@ -78,22 +78,23 @@ class AllureAuthManager:
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise AuthenticationError(
-                f"JWT exchange failed: HTTP {exc.response.status_code} from {url}"
+                f"Не удалось обменять API-токен на JWT: HTTP "
+                f"{exc.response.status_code} от {url}"
             ) from exc
         except httpx.RequestError as exc:
             raise AuthenticationError(
-                f"JWT exchange request failed: {exc}"
+                f"Ошибка запроса при обмене API-токена на JWT: {exc}"
             ) from exc
 
         body = resp.json()
         access_token = body.get("access_token")
         if not access_token:
             raise AuthenticationError(
-                f"JWT exchange response missing 'access_token': {body}"
+                f"В ответе обмена JWT отсутствует 'access_token': {body}"
             )
 
         expires_in = int(body.get("expires_in", 3600))
-        logger.debug("JWT obtained, expires in %d seconds", expires_in)
+        logger.debug("JWT получен, срок действия %d секунд", expires_in)
         return _TokenInfo(access_token=access_token, expires_in=expires_in)
 
     def invalidate(self) -> None:

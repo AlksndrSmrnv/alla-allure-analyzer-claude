@@ -41,13 +41,13 @@ def test_single_cluster_box_contains_all_core_lines(capsys) -> None:
     _print_clustering_report(report)
     output = capsys.readouterr().out
 
-    assert "=== Failure Clusters (1 unique problems from 3 failures) ===" in output
+    assert "=== Кластеры падений (1 уникальных проблем из 3 падений) ===" in output
     assert output.count("╔") == 1
     assert output.count("╚") == 1
-    assert "Cluster #1: NullPointerException (3 tests)" in output
-    assert "Cluster ID: abc1234567890def" in output
-    assert "Example: first line second line" in output
-    assert "Tests: 101, 102, 103" in output
+    assert "Кластер #1: NullPointerException (3 тестов)" in output
+    assert "ID кластера: abc1234567890def" in output
+    assert "Пример: first line second line" in output
+    assert "Тесты: 101, 102, 103" in output
 
 
 def test_multiple_clusters_have_separate_boxes_with_blank_line_between(capsys) -> None:
@@ -88,7 +88,7 @@ def test_cluster_without_example_does_not_render_example_line(capsys) -> None:
 
     assert output.count("╔") == 1
     assert output.count("╚") == 1
-    assert "Example:" not in output
+    assert "Пример:" not in output
 
 
 def test_example_message_is_truncated_to_200_chars(capsys) -> None:
@@ -109,10 +109,10 @@ def test_example_message_is_truncated_to_200_chars(capsys) -> None:
 
     _print_clustering_report(report)
     output = capsys.readouterr().out
-    expected = f"Example: {'x' * 200}..."
+    expected = f"Пример: {'x' * 200}..."
 
     assert expected in output
-    assert f"Example: {'x' * 201}" not in output
+    assert f"Пример: {'x' * 201}" not in output
 
 
 def test_member_test_ids_are_limited_to_first_10_with_ellipsis(capsys) -> None:
@@ -132,7 +132,7 @@ def test_member_test_ids_are_limited_to_first_10_with_ellipsis(capsys) -> None:
     _print_clustering_report(report)
     output = capsys.readouterr().out
 
-    assert "Tests: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, ..." in output
+    assert "Тесты: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, ..." in output
 
 
 def test_cyrillic_label_is_rendered_inside_box(capsys) -> None:

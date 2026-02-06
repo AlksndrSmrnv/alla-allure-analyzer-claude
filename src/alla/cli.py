@@ -68,9 +68,10 @@ async def async_main(args: argparse.Namespace) -> int:
     except Exception as exc:
         # pydantic-settings выбрасывает ValidationError при отсутствии обязательных полей
         print(
-            f"Configuration error: {exc}\n\n"
-            f"Required env vars: ALLURE_ENDPOINT, ALLURE_TOKEN, ALLURE_PROJECT_ID\n"
-            f"See .env.example for details.",
+            f"Ошибка конфигурации: {exc}\n\n"
+            f"Обязательные переменные окружения: "
+            f"ALLURE_ENDPOINT, ALLURE_TOKEN, ALLURE_PROJECT_ID\n"
+            f"Подробности см. в .env.example.",
             file=sys.stderr,
         )
         return 2
@@ -83,7 +84,7 @@ async def async_main(args: argparse.Namespace) -> int:
     launch_id = args.launch_id
     if launch_id is None:
         logger.error(
-            "No launch_id provided. Pass it as a positional argument: alla <launch_id>"
+            "Не указан launch_id. Передайте его позиционным аргументом: alla <launch_id>"
         )
         return 2
 
@@ -100,13 +101,13 @@ async def async_main(args: argparse.Namespace) -> int:
             service = TriageService(client, settings)
             report = await service.analyze_launch(launch_id)
     except ConfigurationError as exc:
-        logger.error("Configuration error: %s", exc)
+        logger.error("Ошибка конфигурации: %s", exc)
         return 2
     except AllaError as exc:
-        logger.error("Error: %s", exc)
+        logger.error("Ошибка: %s", exc)
         return 1
     except KeyboardInterrupt:
-        logger.info("Interrupted by user")
+        logger.info("Прервано пользователем")
         return 130
 
     # 5. Кластеризация ошибок
@@ -141,23 +142,23 @@ def _print_text_report(report: TriageReport) -> None:  # noqa: F821
     """Вывод человекочитаемого отчёта триажа в stdout."""
 
     print()
-    print("=== Allure Triage Report ===")
-    launch_label = f"Launch: #{report.launch_id}"
+    print("=== Отчёт триажа Allure ===")
+    launch_label = f"Запуск: #{report.launch_id}"
     if report.launch_name:
         launch_label += f" ({report.launch_name})"
     print(launch_label)
     print(
-        f"Total: {report.total_results}"
-        f" | Passed: {report.passed_count}"
-        f" | Failed: {report.failed_count}"
-        f" | Broken: {report.broken_count}"
-        f" | Skipped: {report.skipped_count}"
-        f" | Unknown: {report.unknown_count}"
+        f"Всего: {report.total_results}"
+        f" | Успешно: {report.passed_count}"
+        f" | Провалено: {report.failed_count}"
+        f" | Сломано: {report.broken_count}"
+        f" | Пропущено: {report.skipped_count}"
+        f" | Неизвестно: {report.unknown_count}"
     )
     print()
 
     if report.failed_tests:
-        print(f"Failures ({report.failure_count}):")
+        print(f"Падения ({report.failure_count}):")
         for t in report.failed_tests:
             print(f"  [{t.status.value.upper()}]  {t.name} (ID: {t.test_result_id})")
             if t.link:
@@ -169,7 +170,7 @@ def _print_text_report(report: TriageReport) -> None:  # noqa: F821
                     msg = msg[:200] + "..."
                 print(f"            {msg}")
     else:
-        print("No failures found.")
+        print("Падения не найдены.")
 
     print()
 
@@ -178,25 +179,25 @@ def _print_clustering_report(report: ClusteringReport) -> None:  # noqa: F821
     """Вывод отчёта кластеризации ошибок в stdout."""
 
     print(
-        f"=== Failure Clusters "
-        f"({report.cluster_count} unique problems from {report.total_failures} failures) ==="
+        f"=== Кластеры падений "
+        f"({report.cluster_count} уникальных проблем из {report.total_failures} падений) ==="
     )
     print()
 
     for i, cluster in enumerate(report.clusters, 1):
         cluster_lines = [
-            f"Cluster #{i}: {cluster.label} ({cluster.member_count} tests)",
-            f"Cluster ID: {cluster.cluster_id}",
+            f"Кластер #{i}: {cluster.label} ({cluster.member_count} тестов)",
+            f"ID кластера: {cluster.cluster_id}",
         ]
         if cluster.example_message:
             msg = _normalize_single_line(cluster.example_message)
             if len(msg) > 200:
                 msg = msg[:200] + "..."
-            cluster_lines.append(f"Example: {msg}")
+            cluster_lines.append(f"Пример: {msg}")
         ids_str = ", ".join(str(tid) for tid in cluster.member_test_ids[:10])
         if len(cluster.member_test_ids) > 10:
             ids_str += ", ..."
-        cluster_lines.append(f"Tests: {ids_str}")
+        cluster_lines.append(f"Тесты: {ids_str}")
 
         for line in _render_box(cluster_lines):
             print(line)
