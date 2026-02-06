@@ -109,11 +109,30 @@ async def async_main(args: argparse.Namespace) -> int:
         logger.info("Interrupted by user")
         return 130
 
-    # 5. Вывод отчёта
+    # 5. Кластеризация ошибок
+    clustering_report = None
+    if settings.clustering_enabled and report.failed_tests:
+        from alla.services.clustering_service import ClusteringConfig, ClusteringService
+
+        clustering_service = ClusteringService(
+            ClusteringConfig(similarity_threshold=settings.clustering_threshold)
+        )
+        clustering_report = clustering_service.cluster_failures(
+            launch_id, report.failed_tests,
+        )
+
+    # 6. Вывод отчёта
     if args.output_format == "json":
-        print(report.model_dump_json(indent=2))
+        import json
+
+        output = {"triage_report": report.model_dump()}
+        if clustering_report is not None:
+            output["clustering_report"] = clustering_report.model_dump()
+        print(json.dumps(output, indent=2, ensure_ascii=False, default=str))
     else:
         _print_text_report(report)
+        if clustering_report is not None:
+            _print_clustering_report(clustering_report)
 
     return 0
 
@@ -153,6 +172,29 @@ def _print_text_report(report: TriageReport) -> None:  # noqa: F821
         print("No failures found.")
 
     print()
+
+
+def _print_clustering_report(report: ClusteringReport) -> None:  # noqa: F821
+    """Вывод отчёта кластеризации ошибок в stdout."""
+
+    print(
+        f"=== Failure Clusters "
+        f"({report.cluster_count} unique problems from {report.total_failures} failures) ==="
+    )
+    print()
+
+    for i, cluster in enumerate(report.clusters, 1):
+        print(f"  Cluster #{i}: {cluster.label} ({cluster.member_count} tests)")
+        if cluster.example_message:
+            msg = cluster.example_message
+            if len(msg) > 200:
+                msg = msg[:200] + "..."
+            print(f"    Example: {msg}")
+        ids_str = ", ".join(str(tid) for tid in cluster.member_test_ids[:10])
+        if len(cluster.member_test_ids) > 10:
+            ids_str += ", ..."
+        print(f"    Tests: {ids_str}")
+        print()
 
 
 def main() -> None:
