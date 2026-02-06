@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from alla.exceptions import KnowledgeBaseError
 from alla.knowledge.matcher import MatcherConfig, TextMatcher
 from alla.knowledge.models import KBEntry, KBMatchResult
 
@@ -35,24 +36,43 @@ class YamlKnowledgeBase:
         self._load()
 
     def _load(self) -> None:
-        """Загрузить все YAML-файлы из директории KB."""
-        if not self._kb_path.is_dir():
+        """Загрузить все YAML-файлы из директории KB.
+
+        Raises:
+            KnowledgeBaseError: Если путь существует, но не является директорией,
+                или если нет прав доступа к директории.
+        """
+        if not self._kb_path.exists():
             logger.warning(
                 "Директория базы знаний не найдена: %s. KB будет пустой.",
                 self._kb_path,
             )
             return
 
-        yaml_files = sorted(
-            p for p in self._kb_path.rglob("*")
-            if p.suffix in (".yaml", ".yml") and p.is_file()
-        )
+        if not self._kb_path.is_dir():
+            raise KnowledgeBaseError(
+                f"Путь к базе знаний не является директорией: {self._kb_path}"
+            )
+
+        try:
+            yaml_files = sorted(
+                p for p in self._kb_path.rglob("*")
+                if p.suffix in (".yaml", ".yml") and p.is_file()
+            )
+        except PermissionError as exc:
+            raise KnowledgeBaseError(
+                f"Нет прав доступа к директории базы знаний: {self._kb_path}"
+            ) from exc
 
         for path in yaml_files:
             try:
                 with open(path, encoding="utf-8") as f:
                     data = yaml.safe_load(f)
-            except Exception as exc:
+            except PermissionError as exc:
+                raise KnowledgeBaseError(
+                    f"Нет прав доступа к KB-файлу: {path}"
+                ) from exc
+            except (yaml.YAMLError, OSError) as exc:
                 logger.warning("Ошибка чтения KB-файла %s: %s. Пропущен.", path, exc)
                 continue
 

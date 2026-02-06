@@ -125,6 +125,7 @@ async def async_main(args: argparse.Namespace) -> int:
     # 5.5. Поиск по базе знаний
     kb_results: dict[str, list] = {}
     if settings.kb_enabled and clustering_report is not None:
+        from alla.exceptions import KnowledgeBaseError
         from alla.knowledge.matcher import MatcherConfig
         from alla.knowledge.yaml_kb import YamlKnowledgeBase
 
@@ -136,7 +137,12 @@ async def async_main(args: argparse.Namespace) -> int:
                     max_results=settings.kb_max_results,
                 ),
             )
-            for cluster in clustering_report.clusters:
+        except KnowledgeBaseError as exc:
+            logger.error("Ошибка инициализации базы знаний: %s", exc)
+            return 1
+
+        for cluster in clustering_report.clusters:
+            try:
                 matches = kb.search_by_failure(
                     status_message=cluster.example_message,
                     status_trace=cluster.example_trace_snippet,
@@ -144,8 +150,11 @@ async def async_main(args: argparse.Namespace) -> int:
                 )
                 if matches:
                     kb_results[cluster.cluster_id] = matches
-        except Exception as exc:
-            logger.warning("Ошибка при поиске по базе знаний: %s", exc)
+            except Exception as exc:
+                logger.warning(
+                    "Ошибка KB-поиска для кластера %s: %s",
+                    cluster.cluster_id, exc,
+                )
 
     # 6. Вывод отчёта
     if args.output_format == "json":
