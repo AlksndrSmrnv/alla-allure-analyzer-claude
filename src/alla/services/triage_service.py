@@ -141,16 +141,39 @@ class TriageService:
         return final
 
     @staticmethod
+    def _extract_error_from_step(
+        step: ExecutionStep,
+    ) -> tuple[str | None, str | None]:
+        """Извлечь message/trace из шага.
+
+        Allure TestOps может хранить ошибку в двух форматах:
+        - Прямые поля ``message`` и ``trace`` на шаге
+        - Вложенный dict ``statusDetails`` с ключами ``message``/``trace``
+        """
+        message = step.message
+        trace = step.trace
+        if message or trace:
+            return message, trace
+
+        if step.status_details and isinstance(step.status_details, dict):
+            message = step.status_details.get("message")
+            trace = step.status_details.get("trace")
+            if message or trace:
+                return message, trace
+
+        return None, None
+
+    @staticmethod
     def _find_failure_in_steps(
         steps: list[ExecutionStep],
     ) -> tuple[str | None, str | None]:
         """Рекурсивно найти первый упавший шаг и извлечь message/trace.
 
         Обходит дерево шагов в глубину. Возвращает (message, trace) из
-        ``statusDetails`` первого шага со статусом failed/broken.
+        первого шага со статусом failed/broken.
 
         Если явного статуса нет (корневой execution-объект), но есть
-        ``statusDetails`` с данными — тоже извлекает.
+        данные об ошибке — тоже извлекает.
 
         Если ни один шаг не содержит ошибку — возвращает (None, None).
         """
@@ -158,14 +181,8 @@ class TriageService:
 
         # Первый проход: шаги с явным failure-статусом (приоритет)
         for step in steps:
-            if (
-                step.status
-                and step.status.lower() in failure_statuses
-                and step.status_details
-                and isinstance(step.status_details, dict)
-            ):
-                message = step.status_details.get("message")
-                trace = step.status_details.get("trace")
+            if step.status and step.status.lower() in failure_statuses:
+                message, trace = TriageService._extract_error_from_step(step)
                 if message or trace:
                     return message, trace
             # Рекурсия во вложенные шаги
@@ -174,19 +191,14 @@ class TriageService:
                 if message or trace:
                     return message, trace
 
-        # Второй проход: шаги без статуса, но с statusDetails
+        # Второй проход: шаги без статуса, но с данными об ошибке
         # (корневой execution-объект может не иметь поля status)
         for step in steps:
             if step.status is not None:
                 continue
-            if (
-                step.status_details
-                and isinstance(step.status_details, dict)
-            ):
-                message = step.status_details.get("message")
-                trace = step.status_details.get("trace")
-                if message or trace:
-                    return message, trace
+            message, trace = TriageService._extract_error_from_step(step)
+            if message or trace:
+                return message, trace
 
         return None, None
 

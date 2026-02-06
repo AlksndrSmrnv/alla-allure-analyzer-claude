@@ -71,10 +71,12 @@ class AllureTestOpsClient:
         # Ответ — JSON-массив шагов
         if isinstance(data, list):
             return [ExecutionStep.model_validate(step) for step in data]
-        # Если API вернул объект-обёртку — сам объект может содержать
-        # statusDetails с ошибкой. Возвращаем его как корневой шаг,
-        # чтобы _find_failure_in_steps мог найти ошибку на любом уровне.
+        # API может вернуть объект-обёртку {"steps": [...], ...}
+        # Извлекаем вложенные steps; если их нет — оборачиваем сам объект как шаг
         if isinstance(data, dict):
+            steps_raw = data.get("steps") or data.get("content")
+            if isinstance(steps_raw, list):
+                return [ExecutionStep.model_validate(step) for step in steps_raw]
             return [ExecutionStep.model_validate(data)]
         return []
 

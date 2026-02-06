@@ -55,6 +55,8 @@ class ExecutionStep(BaseModel):
     name: str | None = None
     status: str | None = None
     status_details: dict | None = Field(None, alias="statusDetails")
+    message: str | None = None
+    trace: str | None = None
     steps: list[ExecutionStep] | None = None
     duration: int | None = None
     parameters: list[dict] | None = None
