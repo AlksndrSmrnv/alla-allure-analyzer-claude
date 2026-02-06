@@ -36,6 +36,18 @@ alla <launch_id>
                 ▼
          ClusteringReport
          (Pydantic model)
+                │
+                ▼
+┌──────────────────────────────┐     ┌───────────────────────┐
+│    YamlKnowledgeBase         │────▶│  knowledge_base/      │
+│  (KnowledgeBaseProvider      │     │  entries.yaml          │
+│   Protocol impl)             │     │  (YAML-файлы с         │
+│   keyword + TF-IDF matching  │     │   известными ошибками) │
+└──────────────────────────────┘     └───────────────────────┘
+                │
+                ▼
+         KB Match Results
+         (в рамках кластеров)
 ```
 
 ### Слои
@@ -45,6 +57,7 @@ alla <launch_id>
 | **CLI** | `alla/cli.py` | Точка входа. argparse + asyncio.run(). Вывод text/json. |
 | **Сервисы** | `alla/services/` | Бизнес-логика. Не знает про HTTP. Оперирует доменными моделями. |
 | **Клиенты** | `alla/clients/` | Интеграции с внешними системами. Сейчас — Allure TestOps HTTP API. |
+| **База знаний** | `alla/knowledge/` | Хранилище известных ошибок. Protocol + YAML-реализация + TextMatcher. |
 | **Модели** | `alla/models/` | Pydantic-модели: API-ответы и доменные объекты. |
 | **Конфиг** | `alla/config.py` | Единый `Settings` через pydantic-settings (env vars + .env). |
 | **Исключения** | `alla/exceptions.py` | Иерархия ошибок: `AllaError` → `AuthenticationError`, `AllureApiError` и т.д. |
@@ -54,6 +67,9 @@ alla <launch_id>
 `TestResultsProvider` — это `Protocol` (интерфейс). `AllureTestOpsClient` его реализует.
 Любой будущий источник данных (локальный allure-report, БД, другая TMS) реализует тот же Protocol, и `TriageService` работает с ним без изменений.
 
+`KnowledgeBaseProvider` — аналогичный Protocol для базы знаний. `YamlKnowledgeBase` его реализует.
+Будущая реализация через RAG (vector DB) реализует тот же Protocol без изменений в CLI или сервисах.
+
 ## Структура файлов
 
 ```
@@ -61,13 +77,15 @@ alla <launch_id>
 ├── .env.example                    # Шаблон переменных окружения
 ├── .gitignore
 ├── CLAUDE.md                       # Этот файл
+├── knowledge_base/
+│   └── entries.yaml                # YAML-файл с записями базы знаний
 └── src/
     └── alla/
         ├── __init__.py             # __version__ = "0.1.0"
         ├── cli.py                  # CLI: argparse → Settings → Auth → Client → Service → Report
         ├── config.py               # Settings(BaseSettings) — все ALLURE_* env vars
         ├── exceptions.py           # AllaError, ConfigurationError, AuthenticationError,
-        │                           #   AllureApiError, PaginationLimitError
+        │                           #   AllureApiError, PaginationLimitError, KnowledgeBaseError
         ├── logging_config.py       # setup_logging() — stdlib logging, формат с timestamp
         ├── models/
         │   ├── common.py           # TestStatus(Enum), PageResponse[T](Generic)
@@ -78,6 +96,11 @@ alla <launch_id>
         │   ├── base.py             # TestResultsProvider(Protocol) — интерфейс
         │   ├── auth.py             # AllureAuthManager — JWT exchange через /api/uaa/oauth/token
         │   └── testops_client.py   # AllureTestOpsClient — HTTP клиент (httpx async)
+        ├── knowledge/
+        │   ├── base.py             # KnowledgeBaseProvider(Protocol) — интерфейс KB
+        │   ├── models.py           # KBEntry, KBMatchResult, RootCauseCategory, SeverityHint
+        │   ├── matcher.py          # TextMatcher — keyword + TF-IDF matching
+        │   └── yaml_kb.py          # YamlKnowledgeBase — файловая реализация KB
         └── services/
             ├── triage_service.py      # TriageService.analyze_launch() — основная логика
             └── clustering_service.py  # ClusteringService — кластеризация ошибок
@@ -99,6 +122,10 @@ alla <launch_id>
 | `ALLURE_MAX_PAGES` | нет | `50` | Максимум страниц при пагинации (защита от бесконечных циклов) |
 | `ALLURE_CLUSTERING_ENABLED` | нет | `true` | Включить/выключить кластеризацию ошибок |
 | `ALLURE_CLUSTERING_THRESHOLD` | нет | `0.60` | Порог схожести для кластеризации (0.0–1.0). Ниже = более агрессивное слияние |
+| `ALLURE_KB_ENABLED` | нет | `false` | Включить/выключить поиск по базе знаний |
+| `ALLURE_KB_PATH` | нет | `knowledge_base` | Путь к директории с YAML-файлами базы знаний |
+| `ALLURE_KB_MIN_SCORE` | нет | `0.15` | Минимальный score для включения KB-совпадения в отчёт |
+| `ALLURE_KB_MAX_RESULTS` | нет | `3` | Максимум KB-совпадений на один кластер |
 
 ## Установка и запуск
 
@@ -352,7 +379,94 @@ example_trace_snippet: str | None
 | `tfidf_ngram_range` | (1, 2) | N-граммы: unigrams + bigrams |
 | `max_label_length` | 120 | Максимальная длина метки кластера |
 
-## Что сделано (MVP Step 1–2)
+## База знаний (KB)
+
+Реализация: `alla/knowledge/`.
+
+### Назначение
+
+Хранилище известных ошибок с критериями сопоставления и рекомендациями по устранению. После кластеризации для каждого кластера ищутся релевантные записи KB. Результаты выводятся внутри рамок кластеров.
+
+### Модели данных KB
+
+**KBEntry** — запись базы знаний:
+```python
+id: str                          # Уникальный slug
+title: str                       # Название проблемы
+description: str                 # Подробное описание
+root_cause: RootCauseCategory    # test / app / env / data
+severity: SeverityHint           # critical / high / medium / low / info
+match_criteria: KBEntryMatchCriteria  # Критерии сопоставления
+resolution_steps: list[str]      # Шаги по устранению
+related_links: list[str]         # Ссылки
+tags: list[str]                  # Теги
+```
+
+**KBEntryMatchCriteria** — критерии:
+```python
+keywords: list[str]              # Ключевые слова
+message_patterns: list[str]      # Паттерны в сообщении ошибки
+trace_patterns: list[str]        # Паттерны в стек-трейсе
+exception_types: list[str]       # Типы исключений
+categories: list[str]            # Категории ошибок из Allure
+```
+
+**KBMatchResult** — результат сопоставления:
+```python
+entry: KBEntry                   # Совпавшая запись KB
+score: float                     # 0.0–1.0
+matched_on: list[str]            # Объяснение: какие критерии совпали
+```
+
+### Алгоритм сопоставления (TextMatcher)
+
+Двухэтапный алгоритм в `alla/knowledge/matcher.py`:
+
+**Этап 1 — Keyword/Pattern matching (детерминистический):**
+- `exception_types` → поиск подстроки в message/trace (вес 0.35)
+- `message_patterns` → подстрока в message (вес 0.25)
+- `trace_patterns` → подстрока в trace (вес 0.15)
+- `categories` → сравнение с category (вес 0.10)
+- `keywords` → поиск в объединённом тексте (вес 0.15)
+
+**Этап 2 — TF-IDF cosine similarity (нечёткий):**
+- Query: `message + trace + category`
+- KB document: `keywords + patterns + title + description`
+- `TfidfVectorizer(token_pattern=r"(?u)\b\w\w+\b", ngram_range=(1,2))`
+
+**Итоговый score** = 0.6 × keyword_score + 0.4 × tfidf_score
+
+### Формат записей KB
+
+Все записи в файле `knowledge_base/entries.yaml` (YAML-список):
+
+```yaml
+- id: dns_resolution_failure
+  title: "Ошибка DNS-резолвинга"
+  description: "Тесты не могут резолвить DNS-имена сервисов"
+  root_cause: env
+  severity: high
+  match_criteria:
+    keywords: [dns, resolve, nameserver]
+    message_patterns: ["UnknownHostException"]
+    trace_patterns: ["java.net.UnknownHostException"]
+    exception_types: ["UnknownHostException"]
+    categories: ["Infrastructure defects"]
+  resolution_steps:
+    - "Проверить доступность DNS-серверов"
+  tags: [infrastructure, network]
+```
+
+### Миграция на RAG
+
+При миграции на vector DB (RAG):
+- `match_criteria` поля → текст для генерации embedding
+- `root_cause`, `severity`, `tags`, `categories` → metadata filters в vector DB
+- `resolution_steps`, `related_links`, `title`, `description` → payload
+- `KnowledgeBaseProvider` Protocol остаётся без изменений
+- YAML-файлы используются как seed для наполнения vector DB
+
+## Что сделано (MVP Step 1–3)
 
 - [x] CLI с аргументами и двумя форматами вывода (text / json)
 - [x] JWT-аутентификация с кэшированием и автообновлением
@@ -364,16 +478,17 @@ example_trace_snippet: str | None
 - [x] Конфигурация через env vars / .env файл
 - [x] Отключение SSL-верификации для корпоративных сетей (`ALLURE_SSL_VERIFY=false`)
 - [x] **Кластеризация падений** — text-first подход: весь текст ошибки берётся целиком (без разбора на exception type / frames). TF-IDF с Unicode-токенизацией + agglomerative clustering (complete linkage) через scipy/scikit-learn. Универсально: работает с любым языком, форматом ошибок, кириллицей.
+- [x] **База знаний (KB)** — YAML-хранилище известных ошибок с рекомендациями. `KnowledgeBaseProvider` Protocol для расширяемости. Двухэтапный matching: keyword/pattern + TF-IDF cosine similarity. Готово к миграции на RAG.
 
 ## Что не сделано (план на следующие фазы)
 
-- [ ] **База знаний (KB)** — хранилище известных паттернов ошибок + решений. Добавить пакет `alla/knowledge/`. Поиск по statusMessage и category.
 - [ ] **GigaChat LLM** — языковая модель для формулировки рекомендаций. Добавить `alla/llm/` с `LLMProvider` Protocol. Модель получает короткий сжатый контекст (не сырые данные), большая часть работы — детерминистическая.
 - [ ] **Обновление TestOps** — запись причины/рекомендации обратно в Allure TestOps. Расширить `AllureTestOpsClient` методами PATCH/POST.
 - [ ] **Корреляция с логами** — подключение логов приложения по transactionId/correlationId. Добавить `alla/clients/log_client.py` с `LogProvider` Protocol.
 - [ ] **Интеграция с дефект-трекером** — создание/привязка багов в Jira/другой системе.
 - [ ] **Автоматические действия** — ремедиация, перезапуск тестов.
 - [ ] **Тесты** — pytest + pytest-asyncio + pytest-httpx. Зависимости в `[project.optional-dependencies] dev`.
+- [ ] **RAG для KB** — миграция базы знаний на vector DB для семантического поиска при росте KB.
 
 ## Зависимости
 
@@ -384,7 +499,8 @@ example_trace_snippet: str | None
 | httpx | >=0.27,<1.0 | Async HTTP клиент |
 | pydantic | >=2.5,<3.0 | Валидация данных, API-модели |
 | pydantic-settings | >=2.1,<3.0 | Конфиг из env vars + .env |
-| scikit-learn | >=1.4,<2.0 | TF-IDF векторизация, cosine similarity для кластеризации |
+| scikit-learn | >=1.4,<2.0 | TF-IDF векторизация, cosine similarity для кластеризации и KB matching |
+| PyYAML | >=6.0,<7.0 | Парсинг YAML-файлов базы знаний |
 
 ### Dev (опциональные)
 
