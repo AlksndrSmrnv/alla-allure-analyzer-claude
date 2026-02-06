@@ -191,25 +191,42 @@ class FeatureExtractor:
         )
 
     def normalize_trace(self, trace: str | None) -> tuple[str, ...]:
-        """Извлечь и нормализовать top-N фреймов стек-трейса (причина ошибки)."""
+        """Извлечь и нормализовать N фреймов стек-трейса, ближайших к причине ошибки.
+
+        В Java traceback причина (innermost frame) — вверху списка фреймов.
+        В Python traceback причина — внизу (most recent call last).
+        Метод автоматически определяет формат и берёт фреймы со стороны причины.
+        """
         if not trace:
             return ()
 
-        frames: list[str] = []
+        java_frames: list[str] = []
+        python_frames: list[str] = []
+
         for line in trace.strip().splitlines():
             line = line.strip()
 
             # Java: at com.example.Class.method(File.java:42)
             m = _JAVA_FRAME_RE.search(line)
             if m:
-                frames.append(m.group(1))
+                java_frames.append(m.group(1))
                 continue
 
             # Python: File "/path/to/module.py", line 42, in func_name
             m = _PYTHON_FRAME_RE.search(line)
             if m:
-                frames.append(f"{m.group(1)}:{m.group(2)}")
+                python_frames.append(f"{m.group(1)}:{m.group(2)}")
                 continue
+
+        # Определяем формат trace по тому, какой паттерн нашёл больше фреймов
+        if python_frames and len(python_frames) >= len(java_frames):
+            # Python: причина внизу → берём последние N фреймов
+            frames = python_frames
+            is_python = True
+        else:
+            # Java (или смешанный): причина вверху → берём первые N фреймов
+            frames = java_frames
+            is_python = False
 
         # Фильтрация фреймворк-пакетов
         frames = [
@@ -217,10 +234,15 @@ class FeatureExtractor:
             if not any(f.startswith(pkg) for pkg in self._config.ignored_frame_packages)
         ]
 
-        # Top-N фреймов — ближайшие к причине ошибки
-        # В Java trace причина вверху, в Python — тоже (последний вызов = верх)
         root_count = self._config.trace_root_frames
-        return tuple(frames[:root_count])
+        if is_python:
+            # Python: корневая причина в конце, берём последние N
+            root_frames = frames[-root_count:] if frames else []
+        else:
+            # Java: корневая причина в начале, берём первые N
+            root_frames = frames[:root_count]
+
+        return tuple(root_frames)
 
 
 # ---------------------------------------------------------------------------
