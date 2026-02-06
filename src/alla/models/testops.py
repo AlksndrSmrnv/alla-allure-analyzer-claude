@@ -52,6 +52,7 @@ class FailedTestSummary(BaseModel):
     status: TestStatus
     category: str | None = None
     status_message: str | None = None
+    status_trace: str | None = None
     test_case_id: int | None = None
     link: str | None = None
     duration_ms: int | None = None

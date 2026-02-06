@@ -22,6 +22,10 @@ class TestResultsProvider(Protocol):
         """Fetch launch metadata by ID."""
         ...
 
+    async def get_test_result(self, test_result_id: int) -> TestResultResponse:
+        """Fetch full details for a single test result by ID."""
+        ...
+
     async def get_test_results_for_launch(
         self,
         launch_id: int,
