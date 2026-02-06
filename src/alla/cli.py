@@ -115,10 +115,7 @@ async def async_main(args: argparse.Namespace) -> int:
         from alla.services.clustering_service import ClusteringConfig, ClusteringService
 
         clustering_service = ClusteringService(
-            ClusteringConfig(
-                similarity_threshold=settings.clustering_threshold,
-                min_signal_count=settings.clustering_min_signal_count,
-            )
+            ClusteringConfig(similarity_threshold=settings.clustering_threshold)
         )
         clustering_report = clustering_service.cluster_failures(
             launch_id, report.failed_tests,

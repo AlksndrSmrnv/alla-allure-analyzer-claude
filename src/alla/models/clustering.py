@@ -12,6 +12,7 @@ class ClusterSignature(BaseModel):
     message_pattern: str | None = None
     common_frames: list[str] = Field(default_factory=list)
     category: str | None = None
+    representative_message: str | None = None
 
 
 class FailureCluster(BaseModel):
