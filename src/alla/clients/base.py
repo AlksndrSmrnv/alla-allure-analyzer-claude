@@ -22,6 +22,12 @@ class TestResultsProvider(Protocol):
         """Получить метаданные запуска по ID."""
         ...
 
+    async def get_test_result_detail(
+        self, test_result_id: int,
+    ) -> TestResultResponse:
+        """Получить детальный результат теста по ID (GET /api/testresult/{id})."""
+        ...
+
     async def get_test_result_execution(
         self, test_result_id: int,
     ) -> list[ExecutionStep]:
