@@ -251,8 +251,14 @@ class AllureTestOpsClient:
             body_text = resp.text[:500]
             raise AllureApiError(resp.status_code, body_text, path)
 
-        if not resp.content and not expect_json:
-            return None
+        if not resp.content:
+            if not expect_json:
+                return None
+            raise AllureApiError(
+                resp.status_code,
+                "Ответ не содержит тела (пустой content)",
+                path,
+            )
 
         try:
             return resp.json()  # type: ignore[no-any-return]
