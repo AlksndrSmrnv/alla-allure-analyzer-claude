@@ -174,10 +174,15 @@ class AllureTestOpsClient:
         self,
         test_result_id: int,
         description: str,
+        *,
+        name: str,
     ) -> None:
         """Обновить description результата теста.
 
         ``PATCH /api/testresult/{id}``
+
+        Allure TestOps требует обязательное поле ``name`` в теле PATCH-запроса,
+        иначе возвращает 409 Validation Error.
 
         Raises:
             AllureApiError: При HTTP-ошибках.
@@ -185,7 +190,7 @@ class AllureTestOpsClient:
         await self._request(
             "PATCH",
             f"{self.TESTRESULT_ENDPOINT}/{test_result_id}",
-            json={"description": description},
+            json={"name": name, "description": description},
             expect_json=False,
         )
         logger.debug(

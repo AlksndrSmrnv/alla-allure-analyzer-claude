@@ -64,6 +64,14 @@ class TestResultsUpdater(Protocol):
         self,
         test_result_id: int,
         description: str,
+        *,
+        name: str,
     ) -> None:
-        """Обновить поле description у результата теста."""
+        """Обновить поле description у результата теста.
+
+        Args:
+            test_result_id: ID результата теста.
+            description: Новое значение description.
+            name: Имя теста (обязательное поле в PATCH-запросе Allure TestOps).
+        """
         ...

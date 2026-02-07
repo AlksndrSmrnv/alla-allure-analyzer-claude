@@ -166,6 +166,7 @@ async def async_main(args: argparse.Namespace) -> int:
                     kb_push_result = await push_service.push_kb_results(
                         clustering_report,
                         kb_results,
+                        report,
                     )
                 except Exception as exc:
                     logger.warning("KB push: ошибка при записи рекомендаций: %s", exc)

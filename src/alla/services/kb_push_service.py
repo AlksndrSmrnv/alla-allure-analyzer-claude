@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from alla.clients.base import TestResultsUpdater
 from alla.knowledge.models import KBMatchResult
 from alla.models.clustering import ClusteringReport
+from alla.models.testops import TriageReport
 
 logger = logging.getLogger(__name__)
 
@@ -86,16 +87,23 @@ class KBPushService:
         self,
         clustering_report: ClusteringReport,
         kb_results: dict[str, list[KBMatchResult]],
+        triage_report: TriageReport,
     ) -> KBPushResult:
         """Обновить description для всех тестов в кластерах с KB-совпадениями.
 
         Args:
             clustering_report: Отчёт кластеризации.
             kb_results: cluster_id → list[KBMatchResult].
+            triage_report: Отчёт триажа (для получения имён тестов).
 
         Returns:
             KBPushResult со статистикой обновлений.
         """
+        # Маппинг test_result_id → name (обязательное поле в PATCH)
+        test_names: dict[int, str] = {
+            t.test_result_id: t.name for t in triage_report.failed_tests
+        }
+
         updates: dict[int, str] = {}
         skipped = 0
 
@@ -137,10 +145,11 @@ class KBPushService:
         failed = 0
 
         async def update_one(test_id: int, desc: str) -> bool:
+            name = test_names.get(test_id, f"test-result-{test_id}")
             async with semaphore:
                 try:
                     await self._updater.update_test_result_description(
-                        test_id, desc,
+                        test_id, desc, name=name,
                     )
                     return True
                 except Exception as exc:
