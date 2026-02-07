@@ -27,6 +27,7 @@ class AllureTestOpsClient:
 
     LAUNCH_ENDPOINT = "/api/launch"
     TESTRESULT_ENDPOINT = "/api/testresult"
+    COMMENT_ENDPOINT = "/api/comment"
 
     def __init__(self, settings: Settings, auth_manager: AllureAuthManager) -> None:
         self._endpoint = str(settings.endpoint).rstrip("/")
@@ -170,32 +171,37 @@ class AllureTestOpsClient:
 
     # --- Запись данных (протокол TestResultsUpdater) ---
 
-    async def update_test_result_description(
+    async def post_comment(
         self,
-        test_result_id: int,
-        description: str,
-        *,
-        name: str,
+        test_case_id: int,
+        body: str,
     ) -> None:
-        """Обновить description результата теста.
+        """Добавить комментарий к тест-кейсу.
 
-        ``PATCH /api/testresult/{id}``
+        ``POST /api/comment``
 
-        Allure TestOps требует обязательное поле ``name`` в теле PATCH-запроса,
-        иначе возвращает 409 Validation Error.
+        Args:
+            test_case_id: ID тест-кейса (не test_result_id).
+            body: Текст комментария.
 
         Raises:
             AllureApiError: При HTTP-ошибках.
         """
+        payload = {"testCaseId": test_case_id, "body": body}
+        logger.debug(
+            "POST comment для test_case %d: body=%s",
+            test_case_id,
+            body[:100] + "..." if len(body) > 100 else body,
+        )
         result = await self._request(
-            "PATCH",
-            f"{self.TESTRESULT_ENDPOINT}/{test_result_id}",
-            json={"name": name, "description": description},
+            "POST",
+            self.COMMENT_ENDPOINT,
+            json=payload,
             expect_json=False,
         )
         logger.debug(
-            "PATCH testresult %d: ответ=%s",
-            test_result_id,
+            "POST comment для test_case %d: ответ=%s",
+            test_case_id,
             str(result)[:500] if result is not None else "None (пустое тело)",
         )
 
