@@ -203,7 +203,7 @@ async def async_main(args: argparse.Namespace) -> int:
             _print_clustering_report(clustering_report, kb_results)
         if kb_push_result is not None:
             print(
-                f"[KB Push] Обновлено: {kb_push_result.updated_count}"
+                f"[KB Push] Комментариев: {kb_push_result.updated_count}"
                 f" | Ошибок: {kb_push_result.failed_count}"
                 f" | Пропущено: {kb_push_result.skipped_count}"
             )

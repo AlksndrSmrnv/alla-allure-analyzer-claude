@@ -54,7 +54,7 @@ alla <launch_id>
 │    KBPushService             │
 │  (запись рекомендаций KB     │
 │   обратно в TestOps через    │
-│   PATCH /api/testresult/{id})│
+│   POST /api/comment)         │
 └──────────────────────────────┘
                 │
                 ▼
@@ -143,7 +143,7 @@ alla <launch_id>
 | `ALLURE_KB_PATH` | нет | `knowledge_base` | Путь к директории с YAML-файлами базы знаний |
 | `ALLURE_KB_MIN_SCORE` | нет | `0.15` | Минимальный score для включения KB-совпадения в отчёт |
 | `ALLURE_KB_MAX_RESULTS` | нет | `3` | Максимум KB-совпадений на один кластер |
-| `ALLURE_KB_PUSH_ENABLED` | нет | `false` | Записывать рекомендации KB обратно в description результатов тестов в Allure TestOps |
+| `ALLURE_KB_PUSH_ENABLED` | нет | `false` | Записывать рекомендации KB обратно в Allure TestOps через комментарии к тест-кейсам |
 
 ## Установка и запуск
 
@@ -245,7 +245,7 @@ grant_type=apitoken&scope=openid&token={ALLURE_TOKEN}
 | GET | `/api/testresult` | `launchId`, `page`, `size`, `sort` | Результаты тестов по запуску (пагинация) |
 | GET | `/api/testresult/{id}` | — | Детальный результат теста (fallback для получения `trace`) |
 | GET | `/api/testresult/{id}/execution` | — | Дерево шагов выполнения теста (основной источник ошибок) |
-| PATCH | `/api/testresult/{id}` | JSON body: `{"description": "..."}` | Обновление description результата теста (KB push) |
+| POST | `/api/comment` | JSON body: `{"testCaseId": 1337, "body": "..."}` | Добавление комментария к тест-кейсу (KB push) |
 
 ### Пагинация
 
@@ -509,7 +509,7 @@ matched_on: list[str]            # Объяснение: какие критер
 - [x] **База знаний (KB)** — YAML-хранилище известных ошибок с рекомендациями. `KnowledgeBaseProvider` Protocol для расширяемости. Двухэтапный matching: keyword/pattern + TF-IDF cosine similarity. Готово к миграции на RAG.
 - [x] **Fallback получения trace** — трёхуровневая цепочка извлечения ошибки: execution steps → statusDetails → `GET /api/testresult/{id}` (top-level `trace`). Покрывает случай, когда все шаги execution passed, а ошибка только в индивидуальном результате.
 - [x] **Нормализация UUID без дефисов** — 32-символьные hex-строки (session ID и т.п.) нормализуются в `<ID>` наравне со стандартными UUID.
-- [x] **KB Push в TestOps** — запись рекомендаций KB обратно в Allure TestOps через `PATCH /api/testresult/{id}` (поле `description`). `TestResultsUpdater` Protocol для write-операций. `KBPushService` с параллельными обновлениями и per-test error resilience. Управляется настройкой `ALLURE_KB_PUSH_ENABLED` (по умолчанию выключено).
+- [x] **KB Push в TestOps** — запись рекомендаций KB обратно в Allure TestOps через `POST /api/comment` (комментарий к тест-кейсу). `TestResultsUpdater` Protocol для write-операций. `KBPushService` с дедупликацией по test_case_id, параллельными запросами и per-test error resilience. Управляется настройкой `ALLURE_KB_PUSH_ENABLED` (по умолчанию выключено).
 
 ## Что не сделано (план на следующие фазы)
 

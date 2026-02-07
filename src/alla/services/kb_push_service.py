@@ -1,4 +1,4 @@
-"""Сервис записи рекомендаций KB обратно в Allure TestOps."""
+"""Сервис записи рекомендаций KB обратно в Allure TestOps через комментарии."""
 
 from __future__ import annotations
 
@@ -28,13 +28,13 @@ class KBPushResult:
 
 
 def format_kb_description(matches: list[KBMatchResult]) -> str:
-    """Отформатировать KB-совпадения в текст для поля description.
+    """Отформатировать KB-совпадения в текст комментария.
 
     Args:
         matches: Список KB-совпадений для одного кластера.
 
     Returns:
-        Отформатированный текст description.
+        Отформатированный текст комментария.
     """
     if not matches:
         return ""
@@ -67,10 +67,12 @@ def format_kb_description(matches: list[KBMatchResult]) -> str:
 
 
 class KBPushService:
-    """Записывает рекомендации KB обратно в Allure TestOps.
+    """Записывает рекомендации KB обратно в Allure TestOps через комментарии.
 
-    Обновляет поле description для каждого результата теста,
-    входящего в кластер с KB-совпадениями. Ошибки отдельных
+    Добавляет комментарий (``POST /api/comment``) к каждому уникальному
+    тест-кейсу, входящему в кластер с KB-совпадениями. Дедупликация:
+    один комментарий на уникальный test_case_id в рамках кластера.
+    Тесты без test_case_id пропускаются. Ошибки отдельных
     обновлений не прерывают весь процесс.
     """
 
@@ -89,22 +91,23 @@ class KBPushService:
         kb_results: dict[str, list[KBMatchResult]],
         triage_report: TriageReport,
     ) -> KBPushResult:
-        """Обновить description для всех тестов в кластерах с KB-совпадениями.
+        """Добавить комментарии для всех тест-кейсов в кластерах с KB-совпадениями.
 
         Args:
             clustering_report: Отчёт кластеризации.
             kb_results: cluster_id → list[KBMatchResult].
-            triage_report: Отчёт триажа (для получения имён тестов).
+            triage_report: Отчёт триажа (для получения test_case_id).
 
         Returns:
             KBPushResult со статистикой обновлений.
         """
-        # Маппинг test_result_id → name (обязательное поле в PATCH)
-        test_names: dict[int, str] = {
-            t.test_result_id: t.name for t in triage_report.failed_tests
+        # Маппинг test_result_id → test_case_id
+        test_case_ids: dict[int, int | None] = {
+            t.test_result_id: t.test_case_id for t in triage_report.failed_tests
         }
 
-        updates: dict[int, str] = {}
+        # Собрать уникальные (test_case_id, comment_text) для отправки
+        comments: dict[int, str] = {}  # test_case_id → comment text
         skipped = 0
 
         for cluster in clustering_report.clusters:
@@ -113,18 +116,32 @@ class KBPushService:
                 skipped += len(cluster.member_test_ids)
                 continue
 
-            description = format_kb_description(matches)
-            if not description:
+            comment_text = format_kb_description(matches)
+            if not comment_text:
                 skipped += len(cluster.member_test_ids)
                 continue
 
             for test_id in cluster.member_test_ids:
-                updates[test_id] = description
+                tc_id = test_case_ids.get(test_id)
+                if tc_id is None:
+                    logger.warning(
+                        "KB push: test_result %d не имеет test_case_id, пропуск",
+                        test_id,
+                    )
+                    skipped += 1
+                    continue
 
-        if not updates:
+                if tc_id in comments:
+                    # Дедупликация: этот test_case_id уже запланирован
+                    skipped += 1
+                    continue
+
+                comments[tc_id] = comment_text
+
+        if not comments:
             logger.info(
-                "KB push: нет обновлений для записи "
-                "(0 кластеров с KB-совпадениями)"
+                "KB push: нет комментариев для записи "
+                "(0 кластеров с KB-совпадениями или нет test_case_id)"
             )
             return KBPushResult(
                 total_tests=clustering_report.total_failures,
@@ -134,9 +151,9 @@ class KBPushService:
             )
 
         logger.info(
-            "KB push: обновление description для %d результатов тестов "
+            "KB push: отправка комментариев для %d тест-кейсов "
             "(параллелизм=%d)",
-            len(updates),
+            len(comments),
             self._concurrency,
         )
 
@@ -144,24 +161,21 @@ class KBPushService:
         updated = 0
         failed = 0
 
-        async def update_one(test_id: int, desc: str) -> bool:
-            name = test_names.get(test_id, f"test-result-{test_id}")
+        async def post_one(tc_id: int, text: str) -> bool:
             async with semaphore:
                 try:
-                    await self._updater.update_test_result_description(
-                        test_id, desc, name=name,
-                    )
+                    await self._updater.post_comment(tc_id, text)
                     return True
                 except Exception as exc:
                     logger.warning(
-                        "KB push: не удалось обновить description "
-                        "для теста %d: %s",
-                        test_id,
+                        "KB push: не удалось добавить комментарий "
+                        "для тест-кейса %d: %s",
+                        tc_id,
                         exc,
                     )
                     return False
 
-        tasks = [update_one(tid, desc) for tid, desc in updates.items()]
+        tasks = [post_one(tc_id, text) for tc_id, text in comments.items()]
         results = await asyncio.gather(*tasks)
 
         for success in results:
@@ -171,7 +185,7 @@ class KBPushService:
                 failed += 1
 
         logger.info(
-            "KB push: завершено. Обновлено: %d, ошибок: %d, пропущено: %d",
+            "KB push: завершено. Комментариев: %d, ошибок: %d, пропущено: %d",
             updated,
             failed,
             skipped,

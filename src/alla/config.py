@@ -39,5 +39,5 @@ class Settings(BaseSettings):
     kb_max_results: int = Field(default=3, description="Максимум KB-совпадений на один кластер/ошибку")
     kb_push_enabled: bool = Field(
         default=False,
-        description="Записывать рекомендации KB обратно в description результатов тестов в Allure TestOps",
+        description="Записывать рекомендации KB обратно в Allure TestOps через комментарии к тест-кейсам",
     )

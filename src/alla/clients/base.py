@@ -57,21 +57,18 @@ class TestResultsUpdater(Protocol):
     Разделён от TestResultsProvider для сохранения read/write separation.
 
     Реализации:
-    - AllureTestOpsClient (MVP): PATCH через HTTP API Allure TestOps
+    - AllureTestOpsClient (MVP): POST /api/comment через HTTP API Allure TestOps
     """
 
-    async def update_test_result_description(
+    async def post_comment(
         self,
-        test_result_id: int,
-        description: str,
-        *,
-        name: str,
+        test_case_id: int,
+        body: str,
     ) -> None:
-        """Обновить поле description у результата теста.
+        """Добавить комментарий к тест-кейсу.
 
         Args:
-            test_result_id: ID результата теста.
-            description: Новое значение description.
-            name: Имя теста (обязательное поле в PATCH-запросе Allure TestOps).
+            test_case_id: ID тест-кейса (не test_result_id).
+            body: Текст комментария.
         """
         ...
