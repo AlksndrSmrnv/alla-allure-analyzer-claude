@@ -10,6 +10,10 @@ from alla.models.common import TestStatus
 class TestResultResponse(BaseModel):
     """Сырой результат теста из Allure TestOps API.
 
+    Используется для двух эндпоинтов:
+    - ``GET /api/testresult?launchId=X`` (пагинированный список, ``trace`` обычно пустой)
+    - ``GET /api/testresult/{id}`` (индивидуальный результат, содержит top-level ``trace``)
+
     Поля намеренно Optional там, где API может их не вернуть,
     что делает модель устойчивой к вариациям API. ``extra="allow"``
     захватывает любые недокументированные поля без ошибок валидации.
@@ -65,7 +69,13 @@ class ExecutionStep(BaseModel):
 
 
 class FailedTestSummary(BaseModel):
-    """Доменная модель: краткое описание упавшего теста для вывода триажа."""
+    """Доменная модель: краткое описание упавшего теста для вывода триажа.
+
+    ``status_message`` и ``status_trace`` заполняются трёхуровневым fallback:
+    1. Из execution-шагов (``GET /api/testresult/{id}/execution``).
+    2. Из ``statusDetails`` результата (пагинированный список).
+    3. Из top-level ``trace`` индивидуального результата (``GET /api/testresult/{id}``).
+    """
 
     test_result_id: int
     name: str
