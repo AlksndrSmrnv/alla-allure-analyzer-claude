@@ -194,14 +194,12 @@ alla --help                             # справка
 
 ╔════════════════════════════════════════════════════════════════════════════════════╗
 ║ Кластер #1: NullPointerException in UserService.getUser (28 тестов)              ║
-║ ID кластера: a1b2c3d4e5f60789                                                    ║
 ║ Пример: Expected non-null value from UserService.getUser()                       ║
 ║ Тесты: 98765, 98770, 98771, ...                                                  ║
 ╚════════════════════════════════════════════════════════════════════════════════════╝
 
 ╔════════════════════════════════════════════════════════════════════════════════════╗
 ║ Кластер #2: TimeoutError in PaymentGateway.process (14 тестов)                   ║
-║ ID кластера: 0f9e8d7c6b5a4321                                                    ║
 ║ Пример: Connection timed out after 30000ms                                       ║
 ║ Тесты: 98766, 98780, ...                                                         ║
 ╚════════════════════════════════════════════════════════════════════════════════════╝
@@ -226,7 +224,9 @@ grant_type=apitoken&scope=openid&token={ALLURE_TOKEN}
 | Метод | Путь | Параметры | Назначение |
 |-------|------|-----------|------------|
 | GET | `/api/launch/{id}` | — | Метаданные запуска |
-| GET | `/api/testresult` | `launchId`, `page`, `size`, `sort` | Результаты тестов по запуску |
+| GET | `/api/testresult` | `launchId`, `page`, `size`, `sort` | Результаты тестов по запуску (пагинация) |
+| GET | `/api/testresult/{id}` | — | Детальный результат теста (fallback для получения `trace`) |
+| GET | `/api/testresult/{id}/execution` | — | Дерево шагов выполнения теста (основной источник ошибок) |
 
 ### Пагинация
 
@@ -258,6 +258,7 @@ name: str | None                 # Имя теста
 full_name: str | None            # Полное имя (alias: fullName)
 status: str | None               # passed / failed / broken / skipped / unknown
 status_details: dict | None      # { "message": "...", "trace": "..." } (alias: statusDetails)
+trace: str | None                # Top-level trace (доступен на GET /api/testresult/{id})
 duration: int | None             # Длительность в мс
 test_case_id: int | None         # ID тест-кейса (alias: testCaseId)
 launch_id: int | None            # ID запуска (alias: launchId)
@@ -286,13 +287,19 @@ name: str
 full_name: str | None
 status: TestStatus               # FAILED или BROKEN
 category: str | None
-status_message: str | None       # Из statusDetails.message
-status_trace: str | None         # Из statusDetails.trace
+status_message: str | None       # Трёхуровневый fallback (см. ниже)
+status_trace: str | None         # Трёхуровневый fallback (см. ниже)
 execution_steps: list[ExecutionStep] | None  # Дерево шагов выполнения
 test_case_id: int | None
 link: str | None                 # URL на тест в Allure TestOps
 duration_ms: int | None
 ```
+
+**Извлечение ошибки — трёхуровневый fallback:**
+1. Из execution-шагов (`GET /api/testresult/{id}/execution`) — рекурсивный обход дерева.
+2. Из `statusDetails` результата (пагинированный список `GET /api/testresult`).
+3. Из top-level `trace` индивидуального результата (`GET /api/testresult/{id}`).
+   Срабатывает только если шаги 1-2 не дали результата. Первая строка trace → `status_message`.
 
 ### ClusteringReport (результат кластеризации)
 
@@ -332,6 +339,8 @@ example_trace_snippet: str | None
 
 7. **Кластеризация: text-first подход** — весь текст ошибки (message + trace + category) берётся целиком, без разбора на типы исключений или фреймы стек-трейса. TF-IDF с Unicode-совместимой токенизацией (`(?u)\b\w\w+\b`) работает с любым языком (латиница, кириллица, смешанный) и любым форматом ошибок. Agglomerative clustering (complete linkage) через scipy гарантирует, что каждая пара тестов в кластере ближе порога. Никаких захардкоженных regex для конкретных языков/фреймворков. Подробнее см. раздел «Алгоритм кластеризации».
 
+8. **Трёхуровневый fallback извлечения ошибки** — некоторые тесты падают, но execution steps все в статусе passed. Цепочка: (1) execution-шаги `GET /api/testresult/{id}/execution`, (2) `statusDetails` из пагинированного списка, (3) `GET /api/testresult/{id}` → top-level `trace`. Третий уровень делает HTTP-запрос **только** для тестов без ошибки после шагов 1-2, что минимизирует нагрузку.
+
 ## Алгоритм кластеризации
 
 Реализация: `alla/services/clustering_service.py`.
@@ -345,7 +354,7 @@ example_trace_snippet: str | None
 1. **Сборка документа** — из каждого `FailedTestSummary` собирается один текстовый документ: конкатенация `status_message` + `status_trace` + `category` (что есть).
 
 2. **Нормализация** — минимальная замена волатильных данных, уникальных для конкретного запуска:
-   - UUID → `<ID>`
+   - UUID (с дефисами и без, 32 hex-символа) → `<ID>`
    - Timestamps → `<TS>`
    - Длинные числа (4+ цифр) → `<NUM>`
    - IP-адреса → `<IP>`
@@ -479,6 +488,8 @@ matched_on: list[str]            # Объяснение: какие критер
 - [x] Отключение SSL-верификации для корпоративных сетей (`ALLURE_SSL_VERIFY=false`)
 - [x] **Кластеризация падений** — text-first подход: весь текст ошибки берётся целиком (без разбора на exception type / frames). TF-IDF с Unicode-токенизацией + agglomerative clustering (complete linkage) через scipy/scikit-learn. Универсально: работает с любым языком, форматом ошибок, кириллицей.
 - [x] **База знаний (KB)** — YAML-хранилище известных ошибок с рекомендациями. `KnowledgeBaseProvider` Protocol для расширяемости. Двухэтапный matching: keyword/pattern + TF-IDF cosine similarity. Готово к миграции на RAG.
+- [x] **Fallback получения trace** — трёхуровневая цепочка извлечения ошибки: execution steps → statusDetails → `GET /api/testresult/{id}` (top-level `trace`). Покрывает случай, когда все шаги execution passed, а ошибка только в индивидуальном результате.
+- [x] **Нормализация UUID без дефисов** — 32-символьные hex-строки (session ID и т.п.) нормализуются в `<ID>` наравне со стандартными UUID.
 
 ## Что не сделано (план на следующие фазы)
 

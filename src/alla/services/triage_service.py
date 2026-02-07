@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 class TriageService:
     """Оркестрирует процесс триажа упавших тестов.
 
-    Фаза 1 (MVP): получение и формирование сводки по упавшим тестам.
-    Будущие фазы добавят кластеризацию, LLM-анализ, поиск по базе знаний.
+    Получение результатов тестов, извлечение ошибок (трёхуровневый fallback),
+    формирование сводки по упавшим тестам.
     """
 
     def __init__(self, client: TestResultsProvider, settings: Settings) -> None:
@@ -38,8 +38,10 @@ class TriageService:
             1. Получить метаданные запуска (имя, статус закрытия).
             2. Получить все результаты тестов для запуска (пагинация).
             3. Подсчитать результаты по статусам.
-            4. Создать FailedTestSummary для каждого упавшего/сломанного теста.
-            5. Вернуть TriageReport.
+            4. Получить execution-шаги для упавших/сломанных тестов.
+            5. Создать FailedTestSummary для каждого упавшего/сломанного теста.
+            5.5. Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}.
+            6. Вернуть TriageReport.
         """
         # 1. Метаданные запуска
         launch = await self._client.get_launch(launch_id)
@@ -134,7 +136,7 @@ class TriageService:
             if isinstance(exec_or_exc, Exception):
                 logger.warning(
                     "Не удалось получить execution для результата теста %d: %s. "
-                    "Детали ошибки будут недоступны.",
+                    "Ошибка может быть получена через fallback (GET /api/testresult/{id}).",
                     original.id,
                     exec_or_exc,
                 )
@@ -263,7 +265,14 @@ class TriageService:
         execution_steps: list[ExecutionStep],
         launch_id: int,
     ) -> FailedTestSummary:
-        """Преобразовать результат теста + execution-шаги в сводку для триажа."""
+        """Преобразовать результат теста + execution-шаги в сводку для триажа.
+
+        Извлечение ошибки — двухуровневый fallback (третий уровень
+        обрабатывается позже в ``_fetch_missing_traces``):
+            1. Из execution-шагов (дерево шагов ``GET /api/testresult/{id}/execution``).
+            2. Из ``statusDetails`` результата (пагинированный список).
+            3. (позже) Из ``trace`` индивидуального результата (``GET /api/testresult/{id}``).
+        """
         # Попытка 1: извлечь ошибку из execution-шагов
         status_message, status_trace = self._find_failure_in_steps(execution_steps)
 
