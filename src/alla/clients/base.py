@@ -48,3 +48,22 @@ class TestResultsProvider(Protocol):
     ) -> list[TestResultResponse]:
         """Получить ВСЕ результаты тестов для запуска с обработкой пагинации."""
         ...
+
+
+@runtime_checkable
+class TestResultsUpdater(Protocol):
+    """Протокол для записи данных обратно в источник результатов тестов.
+
+    Разделён от TestResultsProvider для сохранения read/write separation.
+
+    Реализации:
+    - AllureTestOpsClient (MVP): PATCH через HTTP API Allure TestOps
+    """
+
+    async def update_test_result_description(
+        self,
+        test_result_id: int,
+        description: str,
+    ) -> None:
+        """Обновить поле description у результата теста."""
+        ...

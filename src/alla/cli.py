@@ -96,10 +96,80 @@ async def async_main(args: argparse.Namespace) -> int:
         ssl_verify=settings.ssl_verify,
     )
 
+    clustering_report = None
+    kb_results: dict[str, list] = {}
+    kb_push_result = None
+
     try:
         async with AllureTestOpsClient(settings, auth) as client:
             service = TriageService(client, settings)
             report = await service.analyze_launch(launch_id)
+
+            # 5. Кластеризация ошибок
+            if settings.clustering_enabled and report.failed_tests:
+                from alla.services.clustering_service import ClusteringConfig, ClusteringService
+
+                clustering_service = ClusteringService(
+                    ClusteringConfig(similarity_threshold=settings.clustering_threshold)
+                )
+                clustering_report = clustering_service.cluster_failures(
+                    launch_id, report.failed_tests,
+                )
+
+            # 5.5. Поиск по базе знаний
+            if settings.kb_enabled and clustering_report is not None:
+                from alla.exceptions import KnowledgeBaseError
+                from alla.knowledge.matcher import MatcherConfig
+                from alla.knowledge.yaml_kb import YamlKnowledgeBase
+
+                try:
+                    kb = YamlKnowledgeBase(
+                        kb_path=settings.kb_path,
+                        matcher_config=MatcherConfig(
+                            min_score=settings.kb_min_score,
+                            max_results=settings.kb_max_results,
+                        ),
+                    )
+                except KnowledgeBaseError as exc:
+                    logger.error("Ошибка инициализации базы знаний: %s", exc)
+                    return 1
+
+                for cluster in clustering_report.clusters:
+                    try:
+                        matches = kb.search_by_failure(
+                            status_message=cluster.example_message,
+                            status_trace=cluster.example_trace_snippet,
+                            category=cluster.signature.category,
+                        )
+                        if matches:
+                            kb_results[cluster.cluster_id] = matches
+                    except Exception as exc:
+                        logger.warning(
+                            "Ошибка KB-поиска для кластера %s: %s",
+                            cluster.cluster_id, exc,
+                        )
+
+            # 5.6. Запись рекомендаций KB в TestOps
+            if (
+                settings.kb_push_enabled
+                and settings.kb_enabled
+                and kb_results
+                and clustering_report is not None
+            ):
+                from alla.services.kb_push_service import KBPushService
+
+                push_service = KBPushService(
+                    client,
+                    concurrency=settings.detail_concurrency,
+                )
+                try:
+                    kb_push_result = await push_service.push_kb_results(
+                        clustering_report,
+                        kb_results,
+                    )
+                except Exception as exc:
+                    logger.warning("KB push: ошибка при записи рекомендаций: %s", exc)
+
     except ConfigurationError as exc:
         logger.error("Ошибка конфигурации: %s", exc)
         return 2
@@ -109,52 +179,6 @@ async def async_main(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         logger.info("Прервано пользователем")
         return 130
-
-    # 5. Кластеризация ошибок
-    clustering_report = None
-    if settings.clustering_enabled and report.failed_tests:
-        from alla.services.clustering_service import ClusteringConfig, ClusteringService
-
-        clustering_service = ClusteringService(
-            ClusteringConfig(similarity_threshold=settings.clustering_threshold)
-        )
-        clustering_report = clustering_service.cluster_failures(
-            launch_id, report.failed_tests,
-        )
-
-    # 5.5. Поиск по базе знаний
-    kb_results: dict[str, list] = {}
-    if settings.kb_enabled and clustering_report is not None:
-        from alla.exceptions import KnowledgeBaseError
-        from alla.knowledge.matcher import MatcherConfig
-        from alla.knowledge.yaml_kb import YamlKnowledgeBase
-
-        try:
-            kb = YamlKnowledgeBase(
-                kb_path=settings.kb_path,
-                matcher_config=MatcherConfig(
-                    min_score=settings.kb_min_score,
-                    max_results=settings.kb_max_results,
-                ),
-            )
-        except KnowledgeBaseError as exc:
-            logger.error("Ошибка инициализации базы знаний: %s", exc)
-            return 1
-
-        for cluster in clustering_report.clusters:
-            try:
-                matches = kb.search_by_failure(
-                    status_message=cluster.example_message,
-                    status_trace=cluster.example_trace_snippet,
-                    category=cluster.signature.category,
-                )
-                if matches:
-                    kb_results[cluster.cluster_id] = matches
-            except Exception as exc:
-                logger.warning(
-                    "Ошибка KB-поиска для кластера %s: %s",
-                    cluster.cluster_id, exc,
-                )
 
     # 6. Вывод отчёта
     if args.output_format == "json":
@@ -168,11 +192,20 @@ async def async_main(args: argparse.Namespace) -> int:
                 cid: [m.model_dump() for m in matches]
                 for cid, matches in kb_results.items()
             }
+        if kb_push_result is not None:
+            from dataclasses import asdict
+            output["kb_push_result"] = asdict(kb_push_result)
         print(json.dumps(output, indent=2, ensure_ascii=False, default=str))
     else:
         _print_text_report(report)
         if clustering_report is not None:
             _print_clustering_report(clustering_report, kb_results)
+        if kb_push_result is not None:
+            print(
+                f"[KB Push] Обновлено: {kb_push_result.updated_count}"
+                f" | Ошибок: {kb_push_result.failed_count}"
+                f" | Пропущено: {kb_push_result.skipped_count}"
+            )
 
     return 0
 
