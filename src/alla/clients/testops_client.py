@@ -187,16 +187,16 @@ class AllureTestOpsClient:
         Raises:
             AllureApiError: При HTTP-ошибках.
         """
-        await self._request(
+        result = await self._request(
             "PATCH",
             f"{self.TESTRESULT_ENDPOINT}/{test_result_id}",
             json={"name": name, "description": description},
             expect_json=False,
         )
         logger.debug(
-            "Обновлён description для результата теста %d (%d символов)",
+            "PATCH testresult %d: ответ=%s",
             test_result_id,
-            len(description),
+            str(result)[:500] if result is not None else "None (пустое тело)",
         )
 
     # --- Внутренний HTTP ---
@@ -243,6 +243,11 @@ class AllureTestOpsClient:
                 )
             except httpx.RequestError as exc:
                 raise AllureApiError(0, str(exc), path) from exc
+
+        logger.debug(
+            "HTTP-ответ: %s %s status=%d content_length=%d",
+            method, path, resp.status_code, len(resp.content),
+        )
 
         if resp.status_code == 404:
             raise AllureApiError(
