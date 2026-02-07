@@ -37,3 +37,7 @@ class Settings(BaseSettings):
     kb_path: str = Field(default="knowledge_base", description="Путь к директории с YAML-файлами базы знаний")
     kb_min_score: float = Field(default=0.15, description="Минимальный score для включения KB-совпадения в отчёт (0.0-1.0)")
     kb_max_results: int = Field(default=3, description="Максимум KB-совпадений на один кластер/ошибку")
+    kb_push_enabled: bool = Field(
+        default=False,
+        description="Записывать рекомендации KB обратно в description результатов тестов в Allure TestOps",
+    )

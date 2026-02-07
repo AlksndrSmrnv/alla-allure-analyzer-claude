@@ -168,6 +168,31 @@ class AllureTestOpsClient:
         )
         return all_results
 
+    # --- Запись данных (протокол TestResultsUpdater) ---
+
+    async def update_test_result_description(
+        self,
+        test_result_id: int,
+        description: str,
+    ) -> None:
+        """Обновить description результата теста.
+
+        ``PATCH /api/testresult/{id}``
+
+        Raises:
+            AllureApiError: При HTTP-ошибках.
+        """
+        await self._request(
+            "PATCH",
+            f"{self.TESTRESULT_ENDPOINT}/{test_result_id}",
+            json={"description": description},
+        )
+        logger.debug(
+            "Обновлён description для результата теста %d (%d символов)",
+            test_result_id,
+            len(description),
+        )
+
     # --- Внутренний HTTP ---
 
     async def _request(
@@ -176,10 +201,12 @@ class AllureTestOpsClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
     ) -> Any:
         """Выполнить аутентифицированный HTTP-запрос с повтором при 401.
 
         Возвращает десериализованный JSON (dict или list в зависимости от эндпоинта).
+        Для ответов без тела (например, 204 No Content) возвращает ``None``.
 
         Raises:
             AllureApiError: При HTTP-ошибках в ответе.
@@ -188,11 +215,11 @@ class AllureTestOpsClient:
         url = f"{self._endpoint}{path}"
         auth_header = await self._auth.get_auth_header()
 
-        logger.debug("HTTP-запрос: %s %s параметры=%s", method, url, params)
+        logger.debug("HTTP-запрос: %s %s параметры=%s json=%s", method, url, params, json)
 
         try:
             resp = await self._http.request(
-                method, url, params=params, headers=auth_header,
+                method, url, params=params, json=json, headers=auth_header,
             )
         except httpx.RequestError as exc:
             raise AllureApiError(0, str(exc), path) from exc
@@ -204,7 +231,7 @@ class AllureTestOpsClient:
             auth_header = await self._auth.get_auth_header()
             try:
                 resp = await self._http.request(
-                    method, url, params=params, headers=auth_header,
+                    method, url, params=params, json=json, headers=auth_header,
                 )
             except httpx.RequestError as exc:
                 raise AllureApiError(0, str(exc), path) from exc
@@ -220,6 +247,9 @@ class AllureTestOpsClient:
         if resp.status_code >= 400:
             body_text = resp.text[:500]
             raise AllureApiError(resp.status_code, body_text, path)
+
+        if not resp.content:
+            return None
 
         try:
             return resp.json()  # type: ignore[no-any-return]

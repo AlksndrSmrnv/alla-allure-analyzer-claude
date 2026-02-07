@@ -48,6 +48,19 @@ alla <launch_id>
                 ▼
          KB Match Results
          (в рамках кластеров)
+                │
+                ▼
+┌──────────────────────────────┐
+│    KBPushService             │
+│  (запись рекомендаций KB     │
+│   обратно в TestOps через    │
+│   PATCH /api/testresult/{id})│
+└──────────────────────────────┘
+                │
+                ▼
+         AllureTestOpsClient
+         (TestResultsUpdater
+          Protocol impl)
 ```
 
 ### Слои
@@ -64,8 +77,10 @@ alla <launch_id>
 
 ### Ключевой принцип расширяемости
 
-`TestResultsProvider` — это `Protocol` (интерфейс). `AllureTestOpsClient` его реализует.
+`TestResultsProvider` — это `Protocol` (интерфейс) для чтения данных. `AllureTestOpsClient` его реализует.
 Любой будущий источник данных (локальный allure-report, БД, другая TMS) реализует тот же Protocol, и `TriageService` работает с ним без изменений.
+
+`TestResultsUpdater` — отдельный `Protocol` для записи данных обратно в источник. Разделение read/write позволяет реализовать только чтение для источников, не поддерживающих запись. `AllureTestOpsClient` реализует оба протокола.
 
 `KnowledgeBaseProvider` — аналогичный Protocol для базы знаний. `YamlKnowledgeBase` его реализует.
 Будущая реализация через RAG (vector DB) реализует тот же Protocol без изменений в CLI или сервисах.
@@ -93,7 +108,8 @@ alla <launch_id>
         │   │                       #   FailedTestSummary, TriageReport
         │   └── clustering.py       # ClusterSignature, FailureCluster, ClusteringReport
         ├── clients/
-        │   ├── base.py             # TestResultsProvider(Protocol) — интерфейс
+        │   ├── base.py             # TestResultsProvider(Protocol) — чтение,
+        │   │                       #   TestResultsUpdater(Protocol) — запись
         │   ├── auth.py             # AllureAuthManager — JWT exchange через /api/uaa/oauth/token
         │   └── testops_client.py   # AllureTestOpsClient — HTTP клиент (httpx async)
         ├── knowledge/
@@ -103,7 +119,8 @@ alla <launch_id>
         │   └── yaml_kb.py          # YamlKnowledgeBase — файловая реализация KB
         └── services/
             ├── triage_service.py      # TriageService.analyze_launch() — основная логика
-            └── clustering_service.py  # ClusteringService — кластеризация ошибок
+            ├── clustering_service.py  # ClusteringService — кластеризация ошибок
+            └── kb_push_service.py     # KBPushService — запись рекомендаций KB в TestOps
 ```
 
 ## Конфигурация
@@ -126,6 +143,7 @@ alla <launch_id>
 | `ALLURE_KB_PATH` | нет | `knowledge_base` | Путь к директории с YAML-файлами базы знаний |
 | `ALLURE_KB_MIN_SCORE` | нет | `0.15` | Минимальный score для включения KB-совпадения в отчёт |
 | `ALLURE_KB_MAX_RESULTS` | нет | `3` | Максимум KB-совпадений на один кластер |
+| `ALLURE_KB_PUSH_ENABLED` | нет | `false` | Записывать рекомендации KB обратно в description результатов тестов в Allure TestOps |
 
 ## Установка и запуск
 
@@ -227,6 +245,7 @@ grant_type=apitoken&scope=openid&token={ALLURE_TOKEN}
 | GET | `/api/testresult` | `launchId`, `page`, `size`, `sort` | Результаты тестов по запуску (пагинация) |
 | GET | `/api/testresult/{id}` | — | Детальный результат теста (fallback для получения `trace`) |
 | GET | `/api/testresult/{id}/execution` | — | Дерево шагов выполнения теста (основной источник ошибок) |
+| PATCH | `/api/testresult/{id}` | JSON body: `{"description": "..."}` | Обновление description результата теста (KB push) |
 
 ### Пагинация
 
@@ -490,11 +509,12 @@ matched_on: list[str]            # Объяснение: какие критер
 - [x] **База знаний (KB)** — YAML-хранилище известных ошибок с рекомендациями. `KnowledgeBaseProvider` Protocol для расширяемости. Двухэтапный matching: keyword/pattern + TF-IDF cosine similarity. Готово к миграции на RAG.
 - [x] **Fallback получения trace** — трёхуровневая цепочка извлечения ошибки: execution steps → statusDetails → `GET /api/testresult/{id}` (top-level `trace`). Покрывает случай, когда все шаги execution passed, а ошибка только в индивидуальном результате.
 - [x] **Нормализация UUID без дефисов** — 32-символьные hex-строки (session ID и т.п.) нормализуются в `<ID>` наравне со стандартными UUID.
+- [x] **KB Push в TestOps** — запись рекомендаций KB обратно в Allure TestOps через `PATCH /api/testresult/{id}` (поле `description`). `TestResultsUpdater` Protocol для write-операций. `KBPushService` с параллельными обновлениями и per-test error resilience. Управляется настройкой `ALLURE_KB_PUSH_ENABLED` (по умолчанию выключено).
 
 ## Что не сделано (план на следующие фазы)
 
 - [ ] **GigaChat LLM** — языковая модель для формулировки рекомендаций. Добавить `alla/llm/` с `LLMProvider` Protocol. Модель получает короткий сжатый контекст (не сырые данные), большая часть работы — детерминистическая.
-- [ ] **Обновление TestOps** — запись причины/рекомендации обратно в Allure TestOps. Расширить `AllureTestOpsClient` методами PATCH/POST.
+- [ ] **Обновление TestOps (расширение)** — запись дополнительных полей (category, comment) обратно в Allure TestOps. Сейчас реализована запись `description` через KB Push.
 - [ ] **Корреляция с логами** — подключение логов приложения по transactionId/correlationId. Добавить `alla/clients/log_client.py` с `LogProvider` Protocol.
 - [ ] **Интеграция с дефект-трекером** — создание/привязка багов в Jira/другой системе.
 - [ ] **Автоматические действия** — ремедиация, перезапуск тестов.
