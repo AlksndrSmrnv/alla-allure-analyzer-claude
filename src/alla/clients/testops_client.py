@@ -186,6 +186,7 @@ class AllureTestOpsClient:
             "PATCH",
             f"{self.TESTRESULT_ENDPOINT}/{test_result_id}",
             json={"description": description},
+            expect_json=False,
         )
         logger.debug(
             "Обновлён description для результата теста %d (%d символов)",
@@ -202,11 +203,13 @@ class AllureTestOpsClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        expect_json: bool = True,
     ) -> Any:
         """Выполнить аутентифицированный HTTP-запрос с повтором при 401.
 
         Возвращает десериализованный JSON (dict или list в зависимости от эндпоинта).
-        Для ответов без тела (например, 204 No Content) возвращает ``None``.
+        Если ``expect_json=False``, пустое тело ответа возвращается как ``None``
+        (для write-операций, которые могут вернуть 204 No Content).
 
         Raises:
             AllureApiError: При HTTP-ошибках в ответе.
@@ -249,7 +252,13 @@ class AllureTestOpsClient:
             raise AllureApiError(resp.status_code, body_text, path)
 
         if not resp.content:
-            return None
+            if not expect_json:
+                return None
+            raise AllureApiError(
+                resp.status_code,
+                "Ответ не содержит тела (пустой content)",
+                path,
+            )
 
         try:
             return resp.json()  # type: ignore[no-any-return]
