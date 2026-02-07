@@ -6,7 +6,7 @@ import pytest
 
 from alla.config import Settings
 from alla.models.common import TestStatus
-from alla.models.testops import ExecutionStep, TestResultResponse
+from alla.models.testops import ExecutionStep, FailedTestSummary, TestResultResponse
 from alla.services.triage_service import TriageService
 from conftest import make_execution_step
 
@@ -180,3 +180,108 @@ def test_build_summary_fallback_to_result_status_details(monkeypatch, tmp_path) 
 
     assert summary.status_message == "timeout"
     assert summary.status_trace == "at Gateway.java:55"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_missing_traces (fallback на GET /api/testresult/{id})
+# ---------------------------------------------------------------------------
+
+def _make_summary(
+    test_result_id: int,
+    *,
+    status_message: str | None = None,
+    status_trace: str | None = None,
+) -> FailedTestSummary:
+    return FailedTestSummary(
+        test_result_id=test_result_id,
+        name=f"test-{test_result_id}",
+        status=TestStatus.FAILED,
+        status_message=status_message,
+        status_trace=status_trace,
+    )
+
+
+def _make_triage_service_with_client(monkeypatch, tmp_path, client):
+    """Создать TriageService с заданным клиентом."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ALLURE_ENDPOINT", "https://allure.test")
+    monkeypatch.setenv("ALLURE_TOKEN", "test-token")
+    settings = Settings()
+    return TriageService(client, settings)
+
+
+@pytest.mark.asyncio
+async def test_fetch_missing_traces_skips_when_all_have_errors(monkeypatch, tmp_path) -> None:
+    """Fallback не делает запросов, если у всех тестов уже есть ошибка."""
+    call_count = 0
+
+    class _Client:
+        async def get_test_result_detail(self, test_result_id):
+            nonlocal call_count
+            call_count += 1
+
+    service = _make_triage_service_with_client(monkeypatch, tmp_path, _Client())
+    summaries = [
+        _make_summary(1, status_message="error msg"),
+        _make_summary(2, status_trace="error trace"),
+    ]
+
+    await service._fetch_missing_traces(summaries)
+
+    assert call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_missing_traces_fills_trace_from_detail(monkeypatch, tmp_path) -> None:
+    """Fallback заполняет trace и message из GET /api/testresult/{id}."""
+    class _Client:
+        async def get_test_result_detail(self, test_result_id):
+            return TestResultResponse.model_validate({
+                "id": test_result_id,
+                "trace": "java.lang.NullPointerException\n\tat com.example.Test.run(Test.java:42)",
+            })
+
+    service = _make_triage_service_with_client(monkeypatch, tmp_path, _Client())
+    summaries = [_make_summary(100)]
+
+    await service._fetch_missing_traces(summaries)
+
+    assert summaries[0].status_trace == (
+        "java.lang.NullPointerException\n\tat com.example.Test.run(Test.java:42)"
+    )
+    assert summaries[0].status_message == "java.lang.NullPointerException"
+
+
+@pytest.mark.asyncio
+async def test_fetch_missing_traces_graceful_on_api_error(monkeypatch, tmp_path) -> None:
+    """Fallback не падает при ошибке API — summary остаётся без изменений."""
+    class _Client:
+        async def get_test_result_detail(self, test_result_id):
+            raise RuntimeError("API unavailable")
+
+    service = _make_triage_service_with_client(monkeypatch, tmp_path, _Client())
+    summaries = [_make_summary(200)]
+
+    await service._fetch_missing_traces(summaries)
+
+    assert summaries[0].status_trace is None
+    assert summaries[0].status_message is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_missing_traces_ignores_empty_trace(monkeypatch, tmp_path) -> None:
+    """Fallback не заполняет summary, если trace в ответе пустой."""
+    class _Client:
+        async def get_test_result_detail(self, test_result_id):
+            return TestResultResponse.model_validate({
+                "id": test_result_id,
+                "trace": None,
+            })
+
+    service = _make_triage_service_with_client(monkeypatch, tmp_path, _Client())
+    summaries = [_make_summary(300)]
+
+    await service._fetch_missing_traces(summaries)
+
+    assert summaries[0].status_trace is None
+    assert summaries[0].status_message is None

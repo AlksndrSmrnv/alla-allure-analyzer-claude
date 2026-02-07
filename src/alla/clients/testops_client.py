@@ -48,6 +48,22 @@ class AllureTestOpsClient:
         data = await self._request("GET", f"{self.LAUNCH_ENDPOINT}/{launch_id}")
         return LaunchResponse.model_validate(data)
 
+    async def get_test_result_detail(
+        self, test_result_id: int,
+    ) -> TestResultResponse:
+        """Получить детальный результат теста по ID.
+
+        ``GET /api/testresult/{id}``
+
+        Используется как fallback для получения top-level ``trace``, когда
+        execution steps и statusDetails из пагинированного списка не содержат
+        информации об ошибке.
+        """
+        data = await self._request(
+            "GET", f"{self.TESTRESULT_ENDPOINT}/{test_result_id}",
+        )
+        return TestResultResponse.model_validate(data)
+
     async def get_test_result_execution(
         self, test_result_id: int,
     ) -> list[ExecutionStep]:

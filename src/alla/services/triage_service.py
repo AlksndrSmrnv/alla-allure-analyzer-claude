@@ -62,6 +62,9 @@ class TriageService:
             for r, steps in failures_with_execution
         ]
 
+        # 5.5. Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}
+        await self._fetch_missing_traces(failed_tests)
+
         report = TriageReport(
             launch_id=launch_id,
             launch_name=launch.name,
@@ -140,6 +143,57 @@ class TriageService:
                 final.append((original, exec_or_exc))
 
         return final
+
+    async def _fetch_missing_traces(
+        self,
+        summaries: list[FailedTestSummary],
+    ) -> None:
+        """Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}.
+
+        Некоторые тесты имеют все execution steps в статусе passed, а statusDetails
+        в пагинированном списке пустой. В таких случаях trace доступен только
+        на индивидуальном эндпоинте ``GET /api/testresult/{id}``.
+
+        Мутирует объекты summaries in-place, заполняя status_trace и status_message.
+        """
+        missing = [s for s in summaries if not s.status_message and not s.status_trace]
+        if not missing:
+            return
+
+        logger.info(
+            "Fallback: %d тестов без информации об ошибке, "
+            "запрос GET /api/testresult/{id} для каждого",
+            len(missing),
+        )
+
+        semaphore = asyncio.Semaphore(self._detail_concurrency)
+
+        async def fetch_one(test_result_id: int) -> TestResultResponse | None:
+            async with semaphore:
+                try:
+                    return await self._client.get_test_result_detail(test_result_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Не удалось получить детали результата теста %d: %s",
+                        test_result_id,
+                        exc,
+                    )
+                    return None
+
+        tasks = [fetch_one(s.test_result_id) for s in missing]
+        results = await asyncio.gather(*tasks)
+
+        for summary, detail in zip(missing, results):
+            if detail is None or not detail.trace:
+                continue
+            summary.status_trace = detail.trace
+            first_line = detail.trace.strip().split("\n", 1)[0]
+            if first_line:
+                summary.status_message = first_line
+            logger.debug(
+                "Fallback: получен trace для теста %d из GET /api/testresult/{id}",
+                summary.test_result_id,
+            )
 
     @staticmethod
     def _extract_error_from_step(

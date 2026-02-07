@@ -22,6 +22,7 @@ class TestResultResponse(BaseModel):
     full_name: str | None = Field(None, alias="fullName")
     status: str | None = None
     status_details: dict | None = Field(None, alias="statusDetails")
+    trace: str | None = None
     duration: int | None = None
     test_case_id: int | None = Field(None, alias="testCaseId")
     test_case_name: str | None = Field(None, alias="testCaseName")
