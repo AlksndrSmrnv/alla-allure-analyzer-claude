@@ -123,6 +123,19 @@ def test_empty_messages_fallback_to_trace_and_split_when_trace_is_different() ->
     assert member_sets == [(21,), (22,)]
 
 
+def test_hyphenless_uuids_are_normalized() -> None:
+    failures = [
+        _failure(40, status_message="Failed for session a1b2c3d4e5f6789012345678abcdef90"),
+        _failure(41, status_message="Failed for session ff00ff00ff00ff00ff00ff00ff00ff00"),
+    ]
+
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.9))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 1
+    assert report.clusters[0].member_test_ids == [40, 41]
+
+
 def test_empty_messages_fallback_to_trace_and_merge_when_trace_is_similar() -> None:
     shared_tail = (
         "at net.client.Call.execute\n"

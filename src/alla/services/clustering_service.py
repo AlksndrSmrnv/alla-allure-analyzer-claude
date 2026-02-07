@@ -71,6 +71,7 @@ _UUID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
     re.IGNORECASE,
 )
+_UUID_NOHYPHEN_RE = re.compile(r"\b[0-9a-f]{32}\b", re.IGNORECASE)
 _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}")
 _LONG_NUMBER_RE = re.compile(r"\b\d{4,}\b")
 _IP_RE = re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
@@ -83,6 +84,7 @@ def _normalize_text(text: str) -> str:
     не приводим к lowercase — всё это делает TfidfVectorizer.
     """
     text = _UUID_RE.sub("<ID>", text)
+    text = _UUID_NOHYPHEN_RE.sub("<ID>", text)
     text = _TIMESTAMP_RE.sub("<TS>", text)
     text = _IP_RE.sub("<IP>", text)
     text = _LONG_NUMBER_RE.sub("<NUM>", text)
