@@ -44,8 +44,8 @@ def test_single_cluster_box_contains_all_core_lines(capsys) -> None:
     assert "=== Кластеры падений (1 уникальных проблем из 3 падений) ===" in output
     assert output.count("╔") == 1
     assert output.count("╚") == 1
-    assert "Кластер #1: NullPointerException (3 тестов)" in output
-    assert "ID кластера: abc1234567890def" in output
+    assert "Кластер #1 (3 тестов)" in output
+    assert "ID кластера" not in output
     assert "Пример: first line second line" in output
     assert "Тесты: 101, 102, 103" in output
 
@@ -115,16 +115,17 @@ def test_example_message_is_truncated_to_200_chars(capsys) -> None:
     assert f"Пример: {'x' * 201}" not in output
 
 
-def test_member_test_ids_are_limited_to_first_10_with_ellipsis(capsys) -> None:
+def test_all_member_test_ids_are_displayed(capsys) -> None:
+    all_ids = list(range(1, 25))
     report = ClusteringReport(
         launch_id=1,
-        total_failures=12,
+        total_failures=24,
         cluster_count=1,
         clusters=[
             _build_cluster(
                 cluster_id="many-tests",
                 label="Massive cluster",
-                member_test_ids=list(range(1, 13)),
+                member_test_ids=all_ids,
             )
         ],
     )
@@ -132,11 +133,38 @@ def test_member_test_ids_are_limited_to_first_10_with_ellipsis(capsys) -> None:
     _print_clustering_report(report)
     output = capsys.readouterr().out
 
-    assert "Тесты: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, ..." in output
+    for tid in all_ids:
+        assert str(tid) in output
+    assert "..." not in output
+
+
+def test_test_ids_wrap_to_multiple_lines(capsys) -> None:
+    ids = list(range(100000, 100020))
+    report = ClusteringReport(
+        launch_id=1,
+        total_failures=20,
+        cluster_count=1,
+        clusters=[
+            _build_cluster(
+                cluster_id="wrap-test",
+                label="Wrap cluster",
+                member_test_ids=ids,
+            )
+        ],
+    )
+
+    _print_clustering_report(report)
+    output = capsys.readouterr().out
+
+    for tid in ids:
+        assert str(tid) in output
+
+    box_lines = [line for line in output.splitlines() if line.startswith("║")]
+    test_lines = [line for line in box_lines if "Тесты:" in line or line.strip().startswith("║        ")]
+    assert len(test_lines) >= 2, "Expected test IDs to wrap to multiple lines"
 
 
 def test_cyrillic_label_is_rendered_inside_box(capsys) -> None:
-    label = "Ошибка авторизации в сервисе"
     report = ClusteringReport(
         launch_id=1,
         total_failures=1,
@@ -144,7 +172,7 @@ def test_cyrillic_label_is_rendered_inside_box(capsys) -> None:
         clusters=[
             _build_cluster(
                 cluster_id="ru-label",
-                label=label,
+                label="Ошибка авторизации в сервисе",
                 member_test_ids=[1001],
             )
         ],
@@ -153,6 +181,6 @@ def test_cyrillic_label_is_rendered_inside_box(capsys) -> None:
     _print_clustering_report(report)
     output = capsys.readouterr().out
 
-    assert label in output
+    assert "Кластер #1 (1 тестов)" in output
     assert output.count("╔") == 1
     assert output.count("╚") == 1

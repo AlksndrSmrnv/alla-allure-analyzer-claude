@@ -228,18 +228,16 @@ def _print_clustering_report(
 
     for i, cluster in enumerate(report.clusters, 1):
         cluster_lines = [
-            f"Кластер #{i}: {cluster.label} ({cluster.member_count} тестов)",
-            f"ID кластера: {cluster.cluster_id}",
+            f"Кластер #{i} ({cluster.member_count} тестов)",
         ]
         if cluster.example_message:
             msg = _normalize_single_line(cluster.example_message)
             if len(msg) > 200:
                 msg = msg[:200] + "..."
             cluster_lines.append(f"Пример: {msg}")
-        ids_str = ", ".join(str(tid) for tid in cluster.member_test_ids[:10])
-        if len(cluster.member_test_ids) > 10:
-            ids_str += ", ..."
-        cluster_lines.append(f"Тесты: {ids_str}")
+        cluster_lines.extend(
+            _wrap_test_ids(cluster.member_test_ids)
+        )
 
         # KB-совпадения
         matches = (kb_results or {}).get(cluster.cluster_id, [])
@@ -262,6 +260,32 @@ def _print_clustering_report(
         for line in _render_box(cluster_lines):
             print(line)
         print()
+
+
+def _wrap_test_ids(
+    test_ids: list[int],
+    max_width: int = 80,
+) -> list[str]:
+    """Отформатировать список ID тестов с переносом строк."""
+    prefix = "Тесты: "
+    indent = " " * len(prefix)
+
+    all_ids = [str(tid) for tid in test_ids]
+    lines: list[str] = []
+    current = prefix
+
+    for i, tid in enumerate(all_ids):
+        separator = ", " if i > 0 else ""
+        candidate = current + separator + tid
+
+        if len(candidate) > max_width and current != prefix and current != indent:
+            lines.append(current + ",")
+            current = indent + tid
+        else:
+            current = candidate
+
+    lines.append(current)
+    return lines
 
 
 def _normalize_single_line(value: str) -> str:
