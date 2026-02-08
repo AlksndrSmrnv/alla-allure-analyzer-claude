@@ -57,7 +57,6 @@ async def async_main(args: argparse.Namespace) -> int:
     from alla.config import Settings
     from alla.exceptions import AllaError, ConfigurationError
     from alla.logging_config import setup_logging
-    from alla.services.triage_service import TriageService
 
     # 1. Загрузка настроек
     try:
@@ -96,80 +95,20 @@ async def async_main(args: argparse.Namespace) -> int:
         ssl_verify=settings.ssl_verify,
     )
 
-    clustering_report = None
-    kb_results: dict[str, list] = {}
-    kb_push_result = None
-
     try:
         async with AllureTestOpsClient(settings, auth) as client:
-            service = TriageService(client, settings)
-            report = await service.analyze_launch(launch_id)
+            from alla.orchestrator import analyze_launch
 
-            # 5. Кластеризация ошибок
-            if settings.clustering_enabled and report.failed_tests:
-                from alla.services.clustering_service import ClusteringConfig, ClusteringService
-
-                clustering_service = ClusteringService(
-                    ClusteringConfig(similarity_threshold=settings.clustering_threshold)
-                )
-                clustering_report = clustering_service.cluster_failures(
-                    launch_id, report.failed_tests,
-                )
-
-            # 5.5. Поиск по базе знаний
-            if settings.kb_enabled and clustering_report is not None:
-                from alla.exceptions import KnowledgeBaseError
-                from alla.knowledge.matcher import MatcherConfig
-                from alla.knowledge.yaml_kb import YamlKnowledgeBase
-
-                try:
-                    kb = YamlKnowledgeBase(
-                        kb_path=settings.kb_path,
-                        matcher_config=MatcherConfig(
-                            min_score=settings.kb_min_score,
-                            max_results=settings.kb_max_results,
-                        ),
-                    )
-                except KnowledgeBaseError as exc:
-                    logger.error("Ошибка инициализации базы знаний: %s", exc)
-                    return 1
-
-                for cluster in clustering_report.clusters:
-                    try:
-                        matches = kb.search_by_failure(
-                            status_message=cluster.example_message,
-                            status_trace=cluster.example_trace_snippet,
-                            category=cluster.signature.category,
-                        )
-                        if matches:
-                            kb_results[cluster.cluster_id] = matches
-                    except Exception as exc:
-                        logger.warning(
-                            "Ошибка KB-поиска для кластера %s: %s",
-                            cluster.cluster_id, exc,
-                        )
-
-            # 5.6. Запись рекомендаций KB в TestOps
-            if (
-                settings.kb_push_enabled
-                and settings.kb_enabled
-                and kb_results
-                and clustering_report is not None
-            ):
-                from alla.services.kb_push_service import KBPushService
-
-                push_service = KBPushService(
-                    client,
-                    concurrency=settings.detail_concurrency,
-                )
-                try:
-                    kb_push_result = await push_service.push_kb_results(
-                        clustering_report,
-                        kb_results,
-                        report,
-                    )
-                except Exception as exc:
-                    logger.warning("KB push: ошибка при записи рекомендаций: %s", exc)
+            result = await analyze_launch(
+                launch_id=launch_id,
+                client=client,
+                settings=settings,
+                updater=client,
+            )
+            report = result.triage_report
+            clustering_report = result.clustering_report
+            kb_results = result.kb_results
+            kb_push_result = result.kb_push_result
 
     except ConfigurationError as exc:
         logger.error("Ошибка конфигурации: %s", exc)

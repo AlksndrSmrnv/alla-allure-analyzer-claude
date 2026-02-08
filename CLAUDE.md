@@ -67,7 +67,9 @@ alla <launch_id>
 
 | Слой | Пакет | Назначение |
 |------|-------|------------|
-| **CLI** | `alla/cli.py` | Точка входа. argparse + asyncio.run(). Вывод text/json. |
+| **CLI** | `alla/cli.py` | Точка входа CLI. argparse + asyncio.run(). Вывод text/json. |
+| **HTTP-сервер** | `alla/server.py` | Точка входа REST API. FastAPI + uvicorn. JSON-ответы. |
+| **Оркестратор** | `alla/orchestrator.py` | Общий pipeline анализа, вызывается из CLI и сервера. |
 | **Сервисы** | `alla/services/` | Бизнес-логика. Не знает про HTTP. Оперирует доменными моделями. |
 | **Клиенты** | `alla/clients/` | Интеграции с внешними системами. Сейчас — Allure TestOps HTTP API. |
 | **База знаний** | `alla/knowledge/` | Хранилище известных ошибок. Protocol + YAML-реализация + TextMatcher. |
@@ -98,6 +100,8 @@ alla <launch_id>
     └── alla/
         ├── __init__.py             # __version__ = "0.1.0"
         ├── cli.py                  # CLI: argparse → Settings → Auth → Client → Service → Report
+        ├── orchestrator.py         # Общий pipeline анализа (CLI + HTTP-сервер)
+        ├── server.py               # HTTP-сервер (FastAPI + uvicorn)
         ├── config.py               # Settings(BaseSettings) — все ALLURE_* env vars
         ├── exceptions.py           # AllaError, ConfigurationError, AuthenticationError,
         │                           #   AllureApiError, PaginationLimitError, KnowledgeBaseError
@@ -144,6 +148,8 @@ alla <launch_id>
 | `ALLURE_KB_MIN_SCORE` | нет | `0.15` | Минимальный score для включения KB-совпадения в отчёт |
 | `ALLURE_KB_MAX_RESULTS` | нет | `3` | Максимум KB-совпадений на один кластер |
 | `ALLURE_KB_PUSH_ENABLED` | нет | `false` | Записывать рекомендации KB обратно в Allure TestOps через комментарии к тест-кейсам |
+| `ALLURE_SERVER_HOST` | нет | `0.0.0.0` | Хост для HTTP-сервера (alla-server) |
+| `ALLURE_SERVER_PORT` | нет | `8090` | Порт для HTTP-сервера (alla-server) |
 
 ## Установка и запуск
 
@@ -183,6 +189,32 @@ alla 12345 --log-level DEBUG            # подробные HTTP-логи
 alla 12345 --page-size 50               # 50 результатов на страницу
 alla --version                          # версия
 alla --help                             # справка
+```
+
+### Запуск HTTP-сервера
+
+```bash
+alla-server                             # FastAPI-сервер на 0.0.0.0:8090
+# или с настройкой через env vars:
+ALLURE_SERVER_PORT=9000 alla-server
+# или напрямую через uvicorn:
+uvicorn alla.server:app --host 0.0.0.0 --port 8090
+```
+
+REST API:
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| GET | `/health` | `{"status": "ok", "version": "..."}` |
+| POST | `/api/v1/analyze/{launch_id}` | Полный pipeline анализа, возвращает JSON |
+| GET | `/docs` | Swagger UI (автогенерация FastAPI) |
+
+```bash
+# Анализ запуска
+curl -X POST http://localhost:8090/api/v1/analyze/12345
+
+# Health check
+curl http://localhost:8090/health
 ```
 
 ### Выходные коды
@@ -510,6 +542,7 @@ matched_on: list[str]            # Объяснение: какие критер
 - [x] **Fallback получения trace** — трёхуровневая цепочка извлечения ошибки: execution steps → statusDetails → `GET /api/testresult/{id}` (top-level `trace`). Покрывает случай, когда все шаги execution passed, а ошибка только в индивидуальном результате.
 - [x] **Нормализация UUID без дефисов** — 32-символьные hex-строки (session ID и т.п.) нормализуются в `<ID>` наравне со стандартными UUID.
 - [x] **KB Push в TestOps** — запись рекомендаций KB обратно в Allure TestOps через `POST /api/comment` (комментарий к тест-кейсу). `TestResultsUpdater` Protocol для write-операций. `KBPushService` с дедупликацией по test_case_id, параллельными запросами и per-test error resilience. Управляется настройкой `ALLURE_KB_PUSH_ENABLED` (по умолчанию выключено).
+- [x] **HTTP-сервер** — REST API через FastAPI + uvicorn. `POST /api/v1/analyze/{launch_id}` запускает полный pipeline и возвращает JSON. Общая логика вынесена в `orchestrator.py`, используется и CLI, и сервером. Swagger UI на `/docs`. Настройки `ALLURE_SERVER_HOST` / `ALLURE_SERVER_PORT`.
 
 ## Что не сделано (план на следующие фазы)
 
@@ -532,6 +565,8 @@ matched_on: list[str]            # Объяснение: какие критер
 | pydantic-settings | >=2.1,<3.0 | Конфиг из env vars + .env |
 | scikit-learn | >=1.4,<2.0 | TF-IDF векторизация, cosine similarity для кластеризации и KB matching |
 | PyYAML | >=6.0,<7.0 | Парсинг YAML-файлов базы знаний |
+| fastapi | >=0.110,<1.0 | HTTP-сервер (REST API) |
+| uvicorn | >=0.29,<1.0 | ASGI-сервер для FastAPI |
 
 ### Dev (опциональные)
 
