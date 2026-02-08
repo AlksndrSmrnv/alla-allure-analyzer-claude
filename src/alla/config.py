@@ -41,3 +41,6 @@ class Settings(BaseSettings):
         default=False,
         description="Записывать рекомендации KB обратно в Allure TestOps через комментарии к тест-кейсам",
     )
+
+    server_host: str = Field(default="0.0.0.0", description="Хост для HTTP-сервера")
+    server_port: int = Field(default=8090, ge=1, le=65535, description="Порт для HTTP-сервера")
