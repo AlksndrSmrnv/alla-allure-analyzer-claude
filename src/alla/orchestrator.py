@@ -145,10 +145,17 @@ async def analyze_launch(
         and clustering_report is not None
         and clustering_report.clusters
     ):
-        if not settings.langflow_base_url or not settings.langflow_flow_id:
-            logger.warning(
-                "LLM включён, но не заданы ALLURE_LANGFLOW_BASE_URL "
-                "и/или ALLURE_LANGFLOW_FLOW_ID — пропуск"
+        from alla.exceptions import ConfigurationError as _CfgError
+
+        missing: list[str] = []
+        if not settings.langflow_base_url:
+            missing.append("ALLURE_LANGFLOW_BASE_URL")
+        if not settings.langflow_flow_id:
+            missing.append("ALLURE_LANGFLOW_FLOW_ID")
+        if missing:
+            raise _CfgError(
+                f"LLM включён (ALLURE_LLM_ENABLED=true), но не заданы: "
+                f"{', '.join(missing)}"
             )
         else:
             from alla.clients.langflow_client import LangflowClient
