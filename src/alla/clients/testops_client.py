@@ -11,7 +11,7 @@ from alla.clients.auth import AllureAuthManager
 from alla.config import Settings
 from alla.exceptions import AllureApiError, PaginationLimitError
 from alla.models.common import PageResponse
-from alla.models.testops import ExecutionStep, LaunchResponse, TestResultResponse
+from alla.models.testops import AttachmentMeta, ExecutionStep, LaunchResponse, TestResultResponse
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class AllureTestOpsClient:
     LAUNCH_ENDPOINT = "/api/launch"
     TESTRESULT_ENDPOINT = "/api/testresult"
     COMMENT_ENDPOINT = "/api/comment"
-    ATTACHMENT_CONTENT_ENDPOINT = "/api/attachments"
+    ATTACHMENT_ENDPOINT = "/api/testresult/attachment"
 
     def __init__(self, settings: Settings, auth_manager: AllureAuthManager) -> None:
         self._endpoint = str(settings.endpoint).rstrip("/")
@@ -208,18 +208,53 @@ class AllureTestOpsClient:
 
     # --- Аттачменты (протокол AttachmentProvider) ---
 
-    async def get_attachment_content(
+    async def get_attachments_for_test_result(
         self,
         test_result_id: int,
-        attachment_source: str,
+    ) -> list[AttachmentMeta]:
+        """Получить список аттачментов для результата теста.
+
+        ``GET /api/testresult/attachment?testResultId={id}&size=1000``
+
+        Args:
+            test_result_id: ID результата теста.
+
+        Returns:
+            Список AttachmentMeta с метаданными аттачментов.
+
+        Raises:
+            AllureApiError: При HTTP-ошибках.
+        """
+        params = {
+            "testResultId": test_result_id,
+            "size": 1000,  # Достаточно большой размер для получения всех аттачментов
+        }
+        logger.debug(
+            "Получение списка аттачментов для результата теста %d",
+            test_result_id,
+        )
+        data = await self._request("GET", self.ATTACHMENT_ENDPOINT, params=params)
+
+        content = data.get("content", []) if isinstance(data, dict) else []
+        attachments = [AttachmentMeta.model_validate(item) for item in content]
+
+        logger.debug(
+            "Получено %d аттачментов для результата теста %d",
+            len(attachments),
+            test_result_id,
+        )
+        return attachments
+
+    async def get_attachment_content(
+        self,
+        attachment_id: int,
     ) -> bytes:
         """Скачать бинарное содержимое аттачмента.
 
-        ``GET /api/attachments/{attachment_source}``
+        ``GET /api/testresult/attachment/{id}/content``
 
         Args:
-            test_result_id: ID результата теста (для логирования).
-            attachment_source: Идентификатор аттачмента (поле ``source``).
+            attachment_id: ID аттачмента (поле ``id`` из AttachmentMeta).
 
         Returns:
             Сырые байты содержимого аттачмента.
@@ -227,13 +262,10 @@ class AllureTestOpsClient:
         Raises:
             AllureApiError: При HTTP-ошибках.
         """
-        logger.debug(
-            "Скачивание аттачмента %s для результата теста %d",
-            attachment_source, test_result_id,
-        )
+        logger.debug("Скачивание аттачмента %d", attachment_id)
         return await self._request_raw(
             "GET",
-            f"{self.ATTACHMENT_CONTENT_ENDPOINT}/{attachment_source}",
+            f"{self.ATTACHMENT_ENDPOINT}/{attachment_id}/content",
         )
 
     # --- Внутренний HTTP ---

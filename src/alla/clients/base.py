@@ -52,27 +52,39 @@ class TestResultsProvider(Protocol):
 
 @runtime_checkable
 class AttachmentProvider(Protocol):
-    """Протокол для скачивания аттачментов результатов тестов.
+    """Протокол для получения аттачментов результатов тестов.
 
     Разделён от TestResultsProvider для backward-compatibility:
     источники данных, не поддерживающие аттачменты, не обязаны реализовывать
     этот протокол. Проверка через ``isinstance(client, AttachmentProvider)``.
 
     Реализации:
-    - AllureTestOpsClient (MVP): GET /api/attachments/{source}
+    - AllureTestOpsClient: GET /api/testresult/attachment?testResultId={id}
+                           GET /api/testresult/attachment/{id}/content
     """
+
+    async def get_attachments_for_test_result(
+        self,
+        test_result_id: int,
+    ) -> list:
+        """Получить список аттачментов для результата теста.
+
+        Args:
+            test_result_id: ID результата теста.
+
+        Returns:
+            Список AttachmentMeta с метаданными аттачментов.
+        """
+        ...
 
     async def get_attachment_content(
         self,
-        test_result_id: int,
-        attachment_source: str,
+        attachment_id: int,
     ) -> bytes:
         """Скачать бинарное содержимое аттачмента.
 
         Args:
-            test_result_id: ID результата теста (для логирования/контекста).
-            attachment_source: Идентификатор аттачмента (поле ``source``
-                из метаданных аттачмента в execution-шагах).
+            attachment_id: ID аттачмента (поле ``id`` из AttachmentMeta).
 
         Returns:
             Бинарное содержимое файла аттачмента.
