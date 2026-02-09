@@ -41,7 +41,7 @@ async def analyze_launch(
 ) -> AnalysisResult:
     """Запустить полный pipeline анализа для одного запуска.
 
-    Цепочка: триаж → кластеризация → KB-поиск → KB-push → LLM-анализ → LLM-push.
+    Цепочка: триаж → кластеризация → KB-поиск → LLM-анализ → LLM-push → KB-push (fallback).
 
     Args:
         launch_id: ID запуска в Allure TestOps.
@@ -110,33 +110,7 @@ async def analyze_launch(
                     cluster.cluster_id, exc,
                 )
 
-    # 4. Запись рекомендаций KB в TestOps
-    #    Пропускается если LLM включён — KB-данные интегрируются в LLM-анализ,
-    #    и в TestOps пушится единый комментарий от LLM (Stage 6).
-    if (
-        settings.kb_push_enabled
-        and settings.kb_enabled
-        and not settings.llm_enabled
-        and kb_results
-        and clustering_report is not None
-        and updater is not None
-    ):
-        from alla.services.kb_push_service import KBPushService
-
-        push_service = KBPushService(
-            updater,
-            concurrency=settings.detail_concurrency,
-        )
-        try:
-            kb_push_result = await push_service.push_kb_results(
-                clustering_report,
-                kb_results,
-                report,
-            )
-        except Exception as exc:
-            logger.warning("KB push: ошибка при записи рекомендаций: %s", exc)
-
-    # 5. LLM-анализ кластеров через Langflow
+    # 4. LLM-анализ кластеров через Langflow
     llm_result = None
     llm_push_result = None
 
@@ -180,7 +154,7 @@ async def analyze_launch(
                 except Exception as exc:
                     logger.warning("LLM анализ: ошибка: %s", exc)
 
-    # 6. Запись LLM-рекомендаций в TestOps
+    # 5. Запись LLM-рекомендаций в TestOps
     if (
         settings.llm_push_enabled
         and settings.llm_enabled
@@ -200,6 +174,36 @@ async def analyze_launch(
             )
         except Exception as exc:
             logger.warning("LLM push: ошибка при записи рекомендаций: %s", exc)
+
+    # 6. Fallback: запись рекомендаций KB в TestOps
+    #    Выполняется только если LLM не включён или не дал успешных результатов.
+    #    Когда LLM работает — KB-данные интегрируются в LLM-анализ (Stage 4),
+    #    и дублирующий KB push не нужен.
+    llm_succeeded = (
+        llm_result is not None and llm_result.analyzed_count > 0
+    )
+    if (
+        settings.kb_push_enabled
+        and settings.kb_enabled
+        and not llm_succeeded
+        and kb_results
+        and clustering_report is not None
+        and updater is not None
+    ):
+        from alla.services.kb_push_service import KBPushService
+
+        push_service = KBPushService(
+            updater,
+            concurrency=settings.detail_concurrency,
+        )
+        try:
+            kb_push_result = await push_service.push_kb_results(
+                clustering_report,
+                kb_results,
+                report,
+            )
+        except Exception as exc:
+            logger.warning("KB push: ошибка при записи рекомендаций: %s", exc)
 
     return AnalysisResult(
         triage_report=report,
