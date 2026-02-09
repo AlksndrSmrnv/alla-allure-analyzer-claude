@@ -109,6 +109,8 @@ async def async_main(args: argparse.Namespace) -> int:
             clustering_report = result.clustering_report
             kb_results = result.kb_results
             kb_push_result = result.kb_push_result
+            llm_result = result.llm_result
+            llm_push_result = result.llm_push_result
 
     except ConfigurationError as exc:
         logger.error("Ошибка конфигурации: %s", exc)
@@ -132,19 +134,45 @@ async def async_main(args: argparse.Namespace) -> int:
                 cid: [m.model_dump() for m in matches]
                 for cid, matches in kb_results.items()
             }
-        if kb_push_result is not None:
+        if kb_push_result is not None or llm_push_result is not None:
             from dataclasses import asdict
+        if kb_push_result is not None:
             output["kb_push_result"] = asdict(kb_push_result)
+        if llm_result is not None:
+            output["llm_result"] = {
+                "total_clusters": llm_result.total_clusters,
+                "analyzed_count": llm_result.analyzed_count,
+                "failed_count": llm_result.failed_count,
+                "skipped_count": llm_result.skipped_count,
+                "cluster_analyses": {
+                    cid: a.model_dump()
+                    for cid, a in llm_result.cluster_analyses.items()
+                },
+            }
+        if llm_push_result is not None:
+            output["llm_push_result"] = asdict(llm_push_result)
         print(json.dumps(output, indent=2, ensure_ascii=False, default=str))
     else:
         _print_text_report(report)
         if clustering_report is not None:
-            _print_clustering_report(clustering_report, kb_results)
+            _print_clustering_report(clustering_report, kb_results, llm_result)
         if kb_push_result is not None:
             print(
                 f"[KB Push] Комментариев: {kb_push_result.updated_count}"
                 f" | Ошибок: {kb_push_result.failed_count}"
                 f" | Пропущено: {kb_push_result.skipped_count}"
+            )
+        if llm_result is not None:
+            print(
+                f"[LLM] Проанализировано: {llm_result.analyzed_count}"
+                f" | Ошибок: {llm_result.failed_count}"
+                f" | Пропущено: {llm_result.skipped_count}"
+            )
+        if llm_push_result is not None:
+            print(
+                f"[LLM Push] Комментариев: {llm_push_result.updated_count}"
+                f" | Ошибок: {llm_push_result.failed_count}"
+                f" | Пропущено: {llm_push_result.skipped_count}"
             )
 
     return 0
@@ -190,6 +218,7 @@ def _print_text_report(report: TriageReport) -> None:  # noqa: F821
 def _print_clustering_report(
     report: ClusteringReport,  # noqa: F821
     kb_results: dict[str, list] | None = None,
+    llm_result: LLMAnalysisResult | None = None,  # noqa: F821
 ) -> None:
     """Вывод отчёта кластеризации ошибок в stdout."""
 
@@ -229,6 +258,15 @@ def _print_clustering_report(
                 for step in m.entry.resolution_steps[:2]:
                     step_text = step if len(step) <= 80 else step[:77] + "..."
                     cluster_lines.append(f"         -> {step_text}")
+
+        # LLM-анализ
+        if llm_result is not None:
+            analysis = llm_result.cluster_analyses.get(cluster.cluster_id)
+            if analysis and analysis.analysis_text:
+                cluster_lines.append("")
+                cluster_lines.append("LLM-анализ:")
+                for line in analysis.analysis_text.split("\n"):
+                    cluster_lines.append(f"  {line}")
 
         for line in _render_box(cluster_lines):
             print(line)

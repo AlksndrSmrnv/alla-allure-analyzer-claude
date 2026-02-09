@@ -5,12 +5,17 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from typing import TYPE_CHECKING
+
 from alla.clients.base import TestResultsProvider, TestResultsUpdater
 from alla.config import Settings
 from alla.knowledge.models import KBMatchResult
 from alla.models.clustering import ClusteringReport
 from alla.models.testops import TriageReport
 from alla.services.kb_push_service import KBPushResult
+
+if TYPE_CHECKING:
+    from alla.models.llm import LLMAnalysisResult, LLMPushResult
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +28,8 @@ class AnalysisResult:
     clustering_report: ClusteringReport | None = None
     kb_results: dict[str, list[KBMatchResult]] = field(default_factory=dict)
     kb_push_result: KBPushResult | None = None
+    llm_result: LLMAnalysisResult | None = None
+    llm_push_result: LLMPushResult | None = None
 
 
 async def analyze_launch(
@@ -34,7 +41,7 @@ async def analyze_launch(
 ) -> AnalysisResult:
     """Запустить полный pipeline анализа для одного запуска.
 
-    Цепочка: триаж → кластеризация → KB-поиск → KB-push.
+    Цепочка: триаж → кластеризация → KB-поиск → KB-push → LLM-анализ → LLM-push.
 
     Args:
         launch_id: ID запуска в Allure TestOps.
@@ -126,9 +133,68 @@ async def analyze_launch(
         except Exception as exc:
             logger.warning("KB push: ошибка при записи рекомендаций: %s", exc)
 
+    # 5. LLM-анализ кластеров через Langflow
+    llm_result = None
+    llm_push_result = None
+
+    if (
+        settings.llm_enabled
+        and clustering_report is not None
+        and clustering_report.clusters
+    ):
+        if not settings.langflow_base_url or not settings.langflow_flow_id:
+            logger.warning(
+                "LLM включён, но не заданы ALLURE_LANGFLOW_BASE_URL "
+                "и/или ALLURE_LANGFLOW_FLOW_ID — пропуск"
+            )
+        else:
+            from alla.clients.langflow_client import LangflowClient
+            from alla.services.llm_service import LLMService
+
+            async with LangflowClient(
+                base_url=settings.langflow_base_url,
+                flow_id=settings.langflow_flow_id,
+                api_key=settings.langflow_api_key,
+                timeout=settings.llm_timeout,
+            ) as langflow:
+                llm_service = LLMService(
+                    langflow,
+                    concurrency=settings.llm_concurrency,
+                )
+                try:
+                    llm_result = await llm_service.analyze_clusters(
+                        clustering_report,
+                        kb_results=kb_results or None,
+                    )
+                except Exception as exc:
+                    logger.warning("LLM анализ: ошибка: %s", exc)
+
+    # 6. Запись LLM-рекомендаций в TestOps
+    if (
+        settings.llm_push_enabled
+        and settings.llm_enabled
+        and llm_result is not None
+        and llm_result.analyzed_count > 0
+        and updater is not None
+    ):
+        from alla.services.llm_service import push_llm_results
+
+        try:
+            llm_push_result = await push_llm_results(
+                clustering_report,
+                llm_result,
+                report,
+                updater,
+                concurrency=settings.detail_concurrency,
+            )
+        except Exception as exc:
+            logger.warning("LLM push: ошибка при записи рекомендаций: %s", exc)
+
     return AnalysisResult(
         triage_report=report,
         clustering_report=clustering_report,
         kb_results=kb_results,
         kb_push_result=kb_push_result,
+        llm_result=llm_result,
+        llm_push_result=llm_push_result,
     )
