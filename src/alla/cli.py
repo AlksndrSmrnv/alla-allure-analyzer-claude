@@ -358,9 +358,11 @@ def _wrap_text(text: str, max_width: int, indent: str = "") -> list[str]:
             current_line = word_indent + word
             
             # Если даже одно слово не помещается — принудительный разрыв
+            # Используем безопасный отступ, чтобы избежать бесконечного цикла
+            safe_indent = indent if len(indent) < max_width else ""
             while len(current_line) > max_width:
                 lines.append(current_line[:max_width])
-                current_line = indent + current_line[max_width:]
+                current_line = safe_indent + current_line[max_width:]
 
     if current_line:
         lines.append(current_line)

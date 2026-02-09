@@ -251,3 +251,28 @@ def test_first_line_indent_preserved_when_first_word_exceeds_max_width() -> None
         assert result[1].startswith("  ") and not result[1].startswith("    "), \
             f"Continuation line should use continuation indent: '{result[1][:10]}...'"
 
+
+def test_no_infinite_loop_when_indent_exceeds_max_width() -> None:
+    """Проверка, что функция не зависает, когда indent >= max_width."""
+    from alla.cli import _wrap_text
+    import signal
+
+    def timeout_handler(signum, frame):
+        raise TimeoutError("_wrap_text timed out — likely infinite loop")
+
+    # Устанавливаем таймаут в 1 секунду
+    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(1)
+
+    try:
+        # Случай, который ранее вызывал бесконечный цикл
+        result = _wrap_text("hello world", max_width=5, indent="      ")  # indent (6) > max_width (5)
+        # Должны получить результат без зависания
+        assert len(result) > 0
+        # Все строки должны быть не длиннее max_width
+        for line in result:
+            assert len(line) <= 5, f"Line exceeds max_width: '{line}'"
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+
