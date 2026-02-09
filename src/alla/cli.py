@@ -125,6 +125,7 @@ async def async_main(args: argparse.Namespace) -> int:
     # 6. Вывод отчёта
     if args.output_format == "json":
         import json
+        from dataclasses import asdict
 
         output = {"triage_report": report.model_dump()}
         if clustering_report is not None:
@@ -134,8 +135,6 @@ async def async_main(args: argparse.Namespace) -> int:
                 cid: [m.model_dump() for m in matches]
                 for cid, matches in kb_results.items()
             }
-        if kb_push_result is not None or llm_push_result is not None:
-            from dataclasses import asdict
         if kb_push_result is not None:
             output["kb_push_result"] = asdict(kb_push_result)
         if llm_result is not None:
