@@ -111,9 +111,12 @@ async def analyze_launch(
                 )
 
     # 4. Запись рекомендаций KB в TestOps
+    #    Пропускается если LLM включён — KB-данные интегрируются в LLM-анализ,
+    #    и в TestOps пушится единый комментарий от LLM (Stage 6).
     if (
         settings.kb_push_enabled
         and settings.kb_enabled
+        and not settings.llm_enabled
         and kb_results
         and clustering_report is not None
         and updater is not None

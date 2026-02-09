@@ -52,17 +52,25 @@ def build_cluster_prompt(
 
     if kb_matches:
         parts.append("")
-        parts.append("Совпадения из базы знаний:")
+        parts.append("Известные проблемы из базы знаний:")
         for m in kb_matches[:3]:
-            parts.append(f"  - {m.entry.title} (score: {m.score:.2f})")
+            parts.append(f"  [{m.score:.2f}] {m.entry.title}")
+            parts.append(f"    Описание: {m.entry.description}")
+            parts.append(f"    Причина: {m.entry.root_cause.value}")
+            parts.append(f"    Срочность: {m.entry.severity.value}")
             if m.entry.resolution_steps:
-                parts.append(f"    Шаги: {'; '.join(m.entry.resolution_steps[:2])}")
+                parts.append("    Шаги по устранению:")
+                for step in m.entry.resolution_steps:
+                    parts.append(f"      - {step}")
+            if m.entry.related_links:
+                parts.append(f"    Ссылки: {', '.join(m.entry.related_links)}")
 
     parts.append("")
     parts.append(
-        "Определи вероятную корневую причину (тест/приложение/окружение/данные), "
-        "сформулируй краткую рекомендацию по устранению, "
-        "и оцени критичность (critical/high/medium/low)."
+        "На основе ошибки и информации из базы знаний (если есть):\n"
+        "1. Определи вероятную корневую причину (тест/приложение/окружение/данные).\n"
+        "2. Сформулируй конкретную рекомендацию по устранению.\n"
+        "3. Оцени критичность (critical/high/medium/low)."
     )
 
     return "\n".join(parts)
