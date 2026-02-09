@@ -329,13 +329,17 @@ def _wrap_text(text: str, max_width: int, indent: str = "") -> list[str]:
     if len(text) <= max_width:
         return [text]
 
-    words = text.split()
+    # Сохраняем ведущие пробелы для первой строки
+    stripped = text.lstrip()
+    first_line_indent = text[: len(text) - len(stripped)]
+
+    words = stripped.split()
     lines: list[str] = []
     current_line = ""
 
     for word in words:
-        # Определяем текущий отступ
-        current_indent = indent if lines else ""
+        # Определяем текущий отступ: для первой строки — исходный, для остальных — переданный
+        current_indent = first_line_indent if not lines and not current_line else ""
         
         # Проверяем, поместится ли слово
         if not current_line:
@@ -349,7 +353,7 @@ def _wrap_text(text: str, max_width: int, indent: str = "") -> list[str]:
             # Сохраняем текущую строку, если она не пуста
             if current_line:
                 lines.append(current_line)
-            # Начинаем новую строку с отступом
+            # Начинаем новую строку с отступом (continuation indent)
             current_line = indent + word
             
             # Если даже одно слово не помещается — принудительный разрыв

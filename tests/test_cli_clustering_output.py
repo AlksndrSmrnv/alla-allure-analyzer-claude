@@ -218,3 +218,19 @@ def test_long_example_message_wraps_in_box(capsys) -> None:
     assert output.count("╔") == 1
     assert output.count("╚") == 1
 
+
+def test_leading_indentation_preserved_on_first_wrapped_line() -> None:
+    """Проверка, что ведущие пробелы сохраняются на первой строке при переносе."""
+    from alla.cli import _wrap_text
+
+    # Строка с ведущими пробелами, которая превышает max_width
+    text = "  [0.85] " + "x" * 100  # Ведущие 2 пробела + длинный текст
+    result = _wrap_text(text, max_width=50, indent="  ")
+
+    # Первая строка должна начинаться с исходных ведущих пробелов
+    assert result[0].startswith("  [0.85]"), f"First line lost leading indent: {result[0]}"
+    
+    # Последующие строки должны использовать continuation indent
+    if len(result) > 1:
+        assert result[1].startswith("  "), f"Continuation line missing indent: {result[1]}"
+
