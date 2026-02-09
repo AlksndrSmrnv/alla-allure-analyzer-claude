@@ -11,7 +11,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from alla.clients.base import AttachmentProvider
 from alla.models.testops import AttachmentMeta, ExecutionStep, FailedTestSummary
@@ -36,7 +36,7 @@ class LogExtractionConfig:
 _TS_ISO_RE = re.compile(
     r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})"
     r"(?:[.,](\d{1,6}))?"
-    r"(?:Z|[+-]\d{2}:?\d{2})?"
+    r"(Z|[+-]\d{2}:?\d{2})?"
 )
 
 # Log4j/Logback: 2026-02-09 10:23:45,123 (без timezone)
@@ -68,7 +68,7 @@ def _parse_timestamp_ms(line: str) -> int | None:
     # 2. ISO 8601
     m = _TS_ISO_RE.search(line)
     if m:
-        ts = _parse_datetime_group(m.group(1), m.group(2))
+        ts = _parse_datetime_group(m.group(1), m.group(2), m.group(3))
         if ts is not None:
             return ts
 
@@ -82,12 +82,29 @@ def _parse_timestamp_ms(line: str) -> int | None:
     return None
 
 
-def _parse_datetime_group(base: str, frac: str | None) -> int | None:
-    """Распарсить datetime-строку с опциональной дробной частью секунд."""
+def _parse_datetime_group(
+    base: str,
+    frac: str | None,
+    tz_str: str | None = None,
+) -> int | None:
+    """Распарсить datetime-строку с опциональной дробной частью секунд и timezone."""
     try:
         normalized = base.replace("T", " ")
         dt = datetime.strptime(normalized, _TS_FMT_ISO)
-        dt = dt.replace(tzinfo=timezone.utc)
+
+        # Определяем timezone
+        if tz_str is None or tz_str == "" or tz_str == "Z":
+            tz = timezone.utc
+        else:
+            # Парсим +HH:MM, +HHMM, -HH:MM, -HHMM
+            sign = 1 if tz_str[0] == "+" else -1
+            tz_digits = tz_str[1:].replace(":", "")
+            hours = int(tz_digits[:2])
+            minutes = int(tz_digits[2:4]) if len(tz_digits) >= 4 else 0
+            offset = timedelta(hours=sign * hours, minutes=sign * minutes)
+            tz = timezone(offset)
+
+        dt = dt.replace(tzinfo=tz)
         ms = int(dt.timestamp() * 1000)
         if frac:
             # Дробная часть может быть 1-6 знаков; приводим к миллисекундам
