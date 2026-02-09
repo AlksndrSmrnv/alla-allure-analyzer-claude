@@ -46,10 +46,10 @@ class LangflowClient:
         Raises:
             LangflowApiError: При HTTP-ошибках или неожиданном формате ответа.
         """
-        url = f"{self._base_url}/api/v1/run/{self._flow_id}"
+        url = f"{self._base_url}/langflow/api/v1/run/{self._flow_id}"
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+            headers["x-api-key"] = self._api_key
 
         payload = {
             "input_value": input_value,
