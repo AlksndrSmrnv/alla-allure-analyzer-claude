@@ -123,8 +123,8 @@ async def health() -> HealthResponse:
 async def analyze_launch(launch_id: int) -> dict[str, Any]:
     """Анализ запуска — эквивалент ``alla <launch_id> --output-format json``.
 
-    Запускает полный pipeline: триаж → кластеризация → KB-поиск → KB-push →
-    LLM-анализ → LLM-push. Возвращает объединённый JSON-результат.
+    Запускает полный pipeline: триаж → кластеризация → KB-поиск →
+    LLM-анализ → LLM-push → KB-push (fallback). Возвращает объединённый JSON-результат.
     """
     from alla.exceptions import (
         AllureApiError,
