@@ -224,6 +224,13 @@ class TestNormalizeDateFormats:
         assert result == "at <TS> done"
         assert result.count("<TS>") == 1
 
+    def test_date_only_iso_followed_by_space_and_digit(self) -> None:
+        """Дата + пробел + цифра (не время) — дата должна нормализоваться."""
+        assert (
+            _normalize_text("error on 2026-02-06 2 retries left")
+            == "error on <TS> 2 retries left"
+        )
+
     # --- Слэш-даты ---
 
     def test_slash_date_mdy(self) -> None:
