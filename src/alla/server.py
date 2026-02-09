@@ -25,6 +25,8 @@ class AnalysisResponse(BaseModel):
     clustering_report: dict[str, Any] | None = None
     kb_matches: dict[str, list[dict[str, Any]]] | None = None
     kb_push_result: dict[str, Any] | None = None
+    llm_result: dict[str, Any] | None = None
+    llm_push_result: dict[str, Any] | None = None
 
 
 class HealthResponse(BaseModel):
@@ -121,8 +123,8 @@ async def health() -> HealthResponse:
 async def analyze_launch(launch_id: int) -> dict[str, Any]:
     """Анализ запуска — эквивалент ``alla <launch_id> --output-format json``.
 
-    Запускает полный pipeline: триаж → кластеризация → KB-поиск → KB-push.
-    Возвращает объединённый JSON-результат.
+    Запускает полный pipeline: триаж → кластеризация → KB-поиск →
+    LLM-анализ → LLM-push → KB-push (fallback). Возвращает объединённый JSON-результат.
     """
     from alla.exceptions import (
         AllureApiError,
@@ -168,6 +170,21 @@ async def analyze_launch(launch_id: int) -> dict[str, Any]:
 
     if result.kb_push_result is not None:
         response["kb_push_result"] = asdict(result.kb_push_result)
+
+    if result.llm_result is not None:
+        response["llm_result"] = {
+            "total_clusters": result.llm_result.total_clusters,
+            "analyzed_count": result.llm_result.analyzed_count,
+            "failed_count": result.llm_result.failed_count,
+            "skipped_count": result.llm_result.skipped_count,
+            "cluster_analyses": {
+                cid: a.model_dump()
+                for cid, a in result.llm_result.cluster_analyses.items()
+            },
+        }
+
+    if result.llm_push_result is not None:
+        response["llm_push_result"] = asdict(result.llm_push_result)
 
     return response
 

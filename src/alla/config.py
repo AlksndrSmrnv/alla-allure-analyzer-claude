@@ -44,3 +44,14 @@ class Settings(BaseSettings):
 
     server_host: str = Field(default="0.0.0.0", description="Хост для HTTP-сервера")
     server_port: int = Field(default=8090, ge=1, le=65535, description="Порт для HTTP-сервера")
+
+    llm_enabled: bool = Field(default=False, description="Включить/выключить LLM-анализ кластеров через Langflow")
+    langflow_base_url: str = Field(default="", description="Базовый URL Langflow API (например http://langflow.company.com)")
+    langflow_flow_id: str = Field(default="", description="ID flow в Langflow для анализа ошибок")
+    langflow_api_key: str = Field(default="", description="API-ключ для аутентификации в Langflow (Bearer token)")
+    llm_timeout: int = Field(default=120, ge=10, description="Таймаут одного LLM-запроса в секундах")
+    llm_concurrency: int = Field(default=3, ge=1, description="Макс. параллельных запросов к Langflow API")
+    llm_push_enabled: bool = Field(
+        default=False,
+        description="Записывать результаты LLM-анализа в Allure TestOps через комментарии к тест-кейсам",
+    )
