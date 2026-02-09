@@ -155,17 +155,18 @@ class LogExtractionService:
 
         async def fetch_and_filter(summary: FailedTestSummary) -> None:
             # Шаг 1: получить список аттачментов для теста
-            try:
-                all_attachments = await self._provider.get_attachments_for_test_result(
-                    summary.test_result_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Логи: не удалось получить список аттачментов для теста %d: %s",
-                    summary.test_result_id,
-                    exc,
-                )
-                return
+            async with semaphore:
+                try:
+                    all_attachments = await self._provider.get_attachments_for_test_result(
+                        summary.test_result_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Логи: не удалось получить список аттачментов для теста %d: %s",
+                        summary.test_result_id,
+                        exc,
+                    )
+                    return
 
             # Фильтрация по text/plain
             text_attachments = [
