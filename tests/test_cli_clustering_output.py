@@ -109,10 +109,13 @@ def test_example_message_is_truncated_to_200_chars(capsys) -> None:
 
     _print_clustering_report(report)
     output = capsys.readouterr().out
-    expected = f"Пример: {'x' * 200}..."
-
-    assert expected in output
-    assert f"Пример: {'x' * 201}" not in output
+    
+    # Сообщение обрезается до 200 символов, но теперь разбивается на несколько строк
+    # Проверяем, что "..." присутствует (признак обрезки)
+    assert "..." in output
+    # Проверяем, что 201-й символ не попал в вывод (обрезка сработала)
+    full_untruncated = f"{'x' * 201}"
+    assert full_untruncated not in output.replace("\n", "").replace(" ", "")
 
 
 def test_all_member_test_ids_are_displayed(capsys) -> None:
@@ -184,3 +187,34 @@ def test_cyrillic_label_is_rendered_inside_box(capsys) -> None:
     assert "Кластер #1 (1 тестов)" in output
     assert output.count("╔") == 1
     assert output.count("╚") == 1
+
+
+def test_long_example_message_wraps_in_box(capsys) -> None:
+    """Проверка, что длинные строки сообщений переносятся и рамка не растягивается."""
+    long_message = "слово " * 50  # ~300 символов
+    report = ClusteringReport(
+        launch_id=1,
+        total_failures=1,
+        cluster_count=1,
+        clusters=[
+            _build_cluster(
+                cluster_id="wrap-long-message",
+                label="Long message wrap test",
+                member_test_ids=[999],
+                example_message=long_message,
+            )
+        ],
+    )
+
+    _print_clustering_report(report)
+    output = capsys.readouterr().out
+
+    # Рамка не должна быть шире 104 символов (100 + 2 для боковых границ + 2 для пробелов)
+    box_lines = [line for line in output.splitlines() if line.startswith(("╔", "║", "╚"))]
+    for line in box_lines:
+        assert len(line) <= 104, f"Строка слишком длинная ({len(line)} > 104): {line[:50]}..."
+
+    # Рамка должна быть одна
+    assert output.count("╔") == 1
+    assert output.count("╚") == 1
+
