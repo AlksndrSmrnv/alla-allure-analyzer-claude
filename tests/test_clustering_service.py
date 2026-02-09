@@ -208,6 +208,22 @@ class TestNormalizeDateFormats:
     def test_iso_datetime_negative_tz(self) -> None:
         assert _normalize_text("at 2026-02-06T10:12:13-05:00") == "at <TS>"
 
+    # --- ISO 8601 datetime без секунд (HH:MM) ---
+
+    def test_iso_datetime_hhmm_t_separator(self) -> None:
+        assert _normalize_text("at 2026-02-06T10:12 done") == "at <TS> done"
+
+    def test_iso_datetime_hhmm_space_separator(self) -> None:
+        assert _normalize_text("error at 2026-02-06 10:12 done") == "error at <TS> done"
+
+    def test_iso_datetime_hhmm_with_tz(self) -> None:
+        assert _normalize_text("at 2026-02-06T10:12Z end") == "at <TS> end"
+
+    def test_iso_datetime_hhmm_single_replacement(self) -> None:
+        """HH:MM datetime → один <TS>, а не дата + остаток."""
+        result = _normalize_text("at 2026-02-06 10:12 done")
+        assert result.count("<TS>") == 1
+
     # --- Java / Log4j запятая перед миллисекундами ---
 
     def test_java_log4j_comma_millis(self) -> None:

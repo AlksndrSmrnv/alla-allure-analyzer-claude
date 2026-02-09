@@ -75,10 +75,11 @@ _UUID_NOHYPHEN_RE = re.compile(r"\b[0-9a-f]{32}\b", re.IGNORECASE)
 
 # --- Даты и время (от более специфичных к менее специфичным) ---
 
-# ISO 8601 полный datetime + опциональные millis/micros и timezone.
-# Также ловит Java/Log4j формат с запятой: 2026-02-06 10:12:13,123
+# ISO 8601 полный datetime + опциональные секунды, millis/micros и timezone.
+# Ловит HH:MM и HH:MM:SS, а также Java/Log4j запятую: 2026-02-06 10:12:13,123
 _DATETIME_ISO_RE = re.compile(
-    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"
+    r"(?::\d{2})?"
     r"(?:[.,]\d{1,6})?"
     r"(?:Z|[+-]\d{2}:?\d{2})?"
 )
@@ -112,9 +113,9 @@ _DATE_DOT_RE = re.compile(
 )
 
 # ISO дата без времени: 2026-02-06
-# Lookahead: не совпадать, если далее идёт компонент времени (T12:34 или " 12:34").
-# _DATETIME_ISO_RE уже обработал полные datetime, здесь ловим остаток.
-_DATE_ISO_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b(?![T ]\d{2}:\d{2})")
+# Lookahead: не совпадать, если далее идёт компонент времени (T12:34:56 или " 12:34:56"
+# либо HH:MM без секунд). _DATETIME_ISO_RE уже обработал полные datetime, здесь остаток.
+_DATE_ISO_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b(?![T ]\d{2}:\d{2}:\d{2})")
 
 # Standalone время: 10:12:13, 10:12:13.123, 10:12:13,456
 _TIME_ONLY_RE = re.compile(
