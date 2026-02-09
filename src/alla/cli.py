@@ -353,8 +353,9 @@ def _wrap_text(text: str, max_width: int, indent: str = "") -> list[str]:
             # Сохраняем текущую строку, если она не пуста
             if current_line:
                 lines.append(current_line)
-            # Начинаем новую строку с отступом (continuation indent)
-            current_line = indent + word
+            # Выбираем отступ: first_line_indent для первого слова, indent для остальных
+            word_indent = first_line_indent if not lines else indent
+            current_line = word_indent + word
             
             # Если даже одно слово не помещается — принудительный разрыв
             while len(current_line) > max_width:

@@ -234,3 +234,20 @@ def test_leading_indentation_preserved_on_first_wrapped_line() -> None:
     if len(result) > 1:
         assert result[1].startswith("  "), f"Continuation line missing indent: {result[1]}"
 
+
+def test_first_line_indent_preserved_when_first_word_exceeds_max_width() -> None:
+    """Проверка, что ведущие пробелы сохраняются, даже если первое слово превышает max_width."""
+    from alla.cli import _wrap_text
+
+    # Текст с 4 ведущими пробелами, где первое слово длиннее max_width
+    text = "    " + "x" * 100  # 4 пробела + 100 символов
+    result = _wrap_text(text, max_width=50, indent="  ")
+
+    # Первая строка должна начинаться с 4 пробелов (исходный отступ)
+    assert result[0].startswith("    "), f"First line uses wrong indent: '{result[0][:10]}...'"
+    
+    # Последующие строки должны использовать continuation indent (2 пробела)
+    if len(result) > 1:
+        assert result[1].startswith("  ") and not result[1].startswith("    "), \
+            f"Continuation line should use continuation indent: '{result[1][:10]}...'"
+
