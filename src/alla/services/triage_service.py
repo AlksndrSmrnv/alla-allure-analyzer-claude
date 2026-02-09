@@ -308,6 +308,7 @@ class TriageService:
             test_case_id=result.test_case_id,
             link=link,
             duration_ms=result.duration,
+            test_start_ms=result.created_date,
         )
 
     @staticmethod

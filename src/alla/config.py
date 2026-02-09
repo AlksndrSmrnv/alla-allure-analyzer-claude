@@ -45,6 +45,24 @@ class Settings(BaseSettings):
     server_host: str = Field(default="0.0.0.0", description="Хост для HTTP-сервера")
     server_port: int = Field(default=8090, ge=1, le=65535, description="Порт для HTTP-сервера")
 
+    logs_enabled: bool = Field(default=False, description="Включить/выключить извлечение и анализ логов из аттачментов")
+    logs_time_buffer_sec: int = Field(
+        default=30, ge=0,
+        description="Буфер в секундах для time-window фильтрации лог-строк (± от начала/конца теста)",
+    )
+    logs_max_size_kb: int = Field(
+        default=512, ge=1,
+        description="Максимальный размер лог-сниппета на один тест (КБ)",
+    )
+    logs_concurrency: int = Field(
+        default=5, ge=1,
+        description="Макс. параллельных запросов при скачивании аттачментов",
+    )
+    logs_clustering_weight: float = Field(
+        default=0.0,
+        description="Вес лог-канала в кластеризации (0.0 = не используется в кластеризации)",
+    )
+
     llm_enabled: bool = Field(default=False, description="Включить/выключить LLM-анализ кластеров через Langflow")
     langflow_base_url: str = Field(default="", description="Базовый URL Langflow API (например http://langflow.company.com)")
     langflow_flow_id: str = Field(default="", description="ID flow в Langflow для анализа ошибок")

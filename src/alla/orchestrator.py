@@ -41,7 +41,7 @@ async def analyze_launch(
 ) -> AnalysisResult:
     """Запустить полный pipeline анализа для одного запуска.
 
-    Цепочка: триаж → кластеризация → KB-поиск → LLM-анализ → LLM-push → KB-push (fallback).
+    Цепочка: триаж → логи → кластеризация → KB-поиск → LLM-анализ → LLM-push → KB-push (fallback).
 
     Args:
         launch_id: ID запуска в Allure TestOps.
@@ -63,6 +63,31 @@ async def analyze_launch(
     service = TriageService(client, settings)
     report = await service.analyze_launch(launch_id)
 
+    # 1.5. Обогащение логами из аттачментов
+    if settings.logs_enabled and report.failed_tests:
+        from alla.clients.base import AttachmentProvider
+        from alla.services.log_extraction_service import (
+            LogExtractionConfig,
+            LogExtractionService,
+        )
+
+        if isinstance(client, AttachmentProvider):
+            log_config = LogExtractionConfig(
+                time_buffer_sec=settings.logs_time_buffer_sec,
+                max_size_kb=settings.logs_max_size_kb,
+                concurrency=settings.logs_concurrency,
+            )
+            log_service = LogExtractionService(client, log_config)
+            try:
+                await log_service.enrich_with_logs(report.failed_tests)
+            except Exception as exc:
+                logger.warning("Log enrichment: ошибка: %s", exc)
+        else:
+            logger.warning(
+                "Логи включены (ALLURE_LOGS_ENABLED=true), но провайдер "
+                "не реализует AttachmentProvider. Логи пропущены."
+            )
+
     clustering_report = None
     kb_results: dict[str, list[KBMatchResult]] = {}
     kb_push_result = None
@@ -71,8 +96,14 @@ async def analyze_launch(
     if settings.clustering_enabled and report.failed_tests:
         from alla.services.clustering_service import ClusteringConfig, ClusteringService
 
+        clustering_kwargs: dict = {
+            "similarity_threshold": settings.clustering_threshold,
+        }
+        if settings.logs_enabled and settings.logs_clustering_weight > 0:
+            clustering_kwargs["log_similarity_weight"] = settings.logs_clustering_weight
+
         clustering_service = ClusteringService(
-            ClusteringConfig(similarity_threshold=settings.clustering_threshold)
+            ClusteringConfig(**clustering_kwargs)
         )
         clustering_report = clustering_service.cluster_failures(
             launch_id, report.failed_tests,
@@ -95,11 +126,24 @@ async def analyze_launch(
         except KnowledgeBaseError:
             raise
 
+        # Индекс test_result_id → FailedTestSummary для быстрого lookup
+        _test_by_id = {t.test_result_id: t for t in report.failed_tests}
+
         for cluster in clustering_report.clusters:
             try:
+                # Обогатить trace лог-сниппетом представителя кластера
+                augmented_trace = cluster.example_trace_snippet
+                if settings.logs_enabled and cluster.member_test_ids:
+                    rep = _test_by_id.get(cluster.member_test_ids[0])
+                    if rep and rep.log_snippet:
+                        log_ctx = rep.log_snippet[:2000]
+                        augmented_trace = (
+                            (augmented_trace or "") + "\n[LOG]\n" + log_ctx
+                        )
+
                 matches = kb.search_by_failure(
                     status_message=cluster.example_message,
-                    status_trace=cluster.example_trace_snippet,
+                    status_trace=augmented_trace,
                     category=cluster.signature.category,
                 )
                 if matches:
@@ -150,6 +194,11 @@ async def analyze_launch(
                     llm_result = await llm_service.analyze_clusters(
                         clustering_report,
                         kb_results=kb_results or None,
+                        failed_tests=(
+                            report.failed_tests
+                            if settings.logs_enabled
+                            else None
+                        ),
                     )
                 except Exception as exc:
                     logger.warning("LLM анализ: ошибка: %s", exc)

@@ -10,7 +10,7 @@ from alla.clients.langflow_client import LangflowClient
 from alla.knowledge.models import KBMatchResult
 from alla.models.clustering import ClusteringReport, FailureCluster
 from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis, LLMPushResult
-from alla.models.testops import TriageReport
+from alla.models.testops import FailedTestSummary, TriageReport
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +21,12 @@ _SEPARATOR = "=" * 40
 def build_cluster_prompt(
     cluster: FailureCluster,
     kb_matches: list[KBMatchResult] | None = None,
+    log_snippet: str | None = None,
 ) -> str:
     """Собрать промпт для LLM-анализа одного кластера.
 
     Включает: label, member_count, example_message, example_trace_snippet,
-    и опционально KB-совпадения для контекста.
+    опционально log_snippet и KB-совпадения для контекста.
     """
     parts: list[str] = [
         "Анализируй кластер ошибок из автотестов.",
@@ -49,6 +50,14 @@ def build_cluster_prompt(
         parts.append("")
         parts.append("Стек-трейс (фрагмент):")
         parts.append(trace)
+
+    if log_snippet:
+        snippet = log_snippet
+        if len(snippet) > 2000:
+            snippet = snippet[:2000] + "...[обрезано]"
+        parts.append("")
+        parts.append("Фрагмент лога приложения:")
+        parts.append(snippet)
 
     if kb_matches:
         parts.append("")
@@ -100,12 +109,14 @@ class LLMService:
         self,
         clustering_report: ClusteringReport,
         kb_results: dict[str, list[KBMatchResult]] | None = None,
+        failed_tests: list[FailedTestSummary] | None = None,
     ) -> LLMAnalysisResult:
         """Проанализировать все кластеры через LLM.
 
         Args:
             clustering_report: Отчёт кластеризации.
             kb_results: Опционально — KB-совпадения для обогащения промпта.
+            failed_tests: Опционально — список тестов для извлечения log_snippet.
 
         Returns:
             LLMAnalysisResult со всеми анализами.
@@ -117,6 +128,11 @@ class LLMService:
                 failed_count=0,
                 skipped_count=0,
             )
+
+        # Индекс test_result_id → FailedTestSummary для быстрого lookup
+        test_by_id: dict[int, FailedTestSummary] = {}
+        if failed_tests:
+            test_by_id = {t.test_result_id: t for t in failed_tests}
 
         semaphore = asyncio.Semaphore(self._concurrency)
         analyses: dict[str, LLMClusterAnalysis] = {}
@@ -140,7 +156,15 @@ class LLMService:
                 return
 
             kb_matches = (kb_results or {}).get(cluster.cluster_id)
-            prompt = build_cluster_prompt(cluster, kb_matches)
+
+            # Получить log_snippet представителя кластера
+            log_snippet: str | None = None
+            if test_by_id and cluster.member_test_ids:
+                rep = test_by_id.get(cluster.member_test_ids[0])
+                if rep:
+                    log_snippet = rep.log_snippet
+
+            prompt = build_cluster_prompt(cluster, kb_matches, log_snippet)
 
             async with semaphore:
                 try:

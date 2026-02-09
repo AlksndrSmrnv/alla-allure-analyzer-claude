@@ -51,8 +51,11 @@ class ClusteringConfig:
     tfidf_ngram_range: tuple[int, int] = (1, 2)
     message_similarity_weight: float = 0.85
     trace_similarity_weight: float = 0.15
+    log_similarity_weight: float = 0.0
     trace_compact_head_lines: int = 30
     trace_compact_tail_lines: int = 30
+    log_compact_head_lines: int = 50
+    log_compact_tail_lines: int = 50
 
     max_label_length: int = 120
     trace_snippet_lines: int = 5
@@ -202,6 +205,23 @@ def _build_trace_document(
     return _normalize_text(compacted) if compacted else ""
 
 
+def _build_log_document(
+    failure: FailedTestSummary,
+    *,
+    head_lines: int,
+    tail_lines: int,
+) -> str:
+    """Собрать log-документ из log_snippet с предварительной компактацией."""
+    if not failure.log_snippet:
+        return ""
+    compacted = _compact_trace(
+        failure.log_snippet,
+        head_lines=head_lines,
+        tail_lines=tail_lines,
+    )
+    return _normalize_text(compacted) if compacted else ""
+
+
 # ---------------------------------------------------------------------------
 # ClusteringService
 # ---------------------------------------------------------------------------
@@ -229,7 +249,7 @@ class ClusteringService:
                 cluster_count=0,
             )
 
-        # 1. Собрать документы по двум каналам
+        # 1. Собрать документы по двум (+опционально трём) каналам
         message_documents: list[str] = [_build_message_document(f) for f in failures]
         trace_documents: list[str] = [
             _build_trace_document(
@@ -240,13 +260,27 @@ class ClusteringService:
             for f in failures
         ]
 
+        log_documents: list[str] | None = None
+        if self._config.log_similarity_weight > 0:
+            log_documents = [
+                _build_log_document(
+                    f,
+                    head_lines=self._config.log_compact_head_lines,
+                    tail_lines=self._config.log_compact_tail_lines,
+                )
+                for f in failures
+            ]
+
         # 2. Разделить на тесты с текстом и без (в любом канале)
         has_text_indices: list[int] = []
         empty_indices: list[int] = []
         for i, (message_doc, trace_doc) in enumerate(
             zip(message_documents, trace_documents)
         ):
-            if message_doc.strip() or trace_doc.strip():
+            has_log = (
+                log_documents[i].strip() if log_documents else False
+            )
+            if message_doc.strip() or trace_doc.strip() or has_log:
                 has_text_indices.append(i)
             else:
                 empty_indices.append(i)
@@ -261,7 +295,12 @@ class ClusteringService:
         else:
             message_docs = [message_documents[i] for i in has_text_indices]
             trace_docs = [trace_documents[i] for i in has_text_indices]
-            labels = self._cluster_texts(message_docs, trace_docs)
+            log_docs = (
+                [log_documents[i] for i in has_text_indices]
+                if log_documents
+                else None
+            )
+            labels = self._cluster_texts(message_docs, trace_docs, log_docs)
 
             for idx, label in zip(has_text_indices, labels):
                 cluster_groups.setdefault(label, []).append(idx)
@@ -304,6 +343,7 @@ class ClusteringService:
         self,
         message_documents: list[str],
         trace_documents: list[str],
+        log_documents: list[str] | None = None,
     ) -> list[int]:
         """Message-first TF-IDF + agglomerative clustering.
 
@@ -313,37 +353,67 @@ class ClusteringService:
         message_sim = self._pairwise_similarity(message_documents)
         trace_sim = self._pairwise_similarity(trace_documents)
 
+        log_sim: np.ndarray | None = None
+        if log_documents and self._config.log_similarity_weight > 0:
+            log_sim = self._pairwise_similarity(log_documents)
+
         message_weight = self._config.message_similarity_weight
         trace_weight = self._config.trace_similarity_weight
-        weight_sum = message_weight + trace_weight
+        log_weight = (
+            self._config.log_similarity_weight if log_sim is not None else 0.0
+        )
+        weight_sum = message_weight + trace_weight + log_weight
         if weight_sum > 0:
             message_weight /= weight_sum
             trace_weight /= weight_sum
+            log_weight /= weight_sum
         else:
             message_weight = 1.0
             trace_weight = 0.0
+            log_weight = 0.0
 
         final_sim = np.eye(n, dtype=np.float64)
         has_message = [bool(doc.strip()) for doc in message_documents]
         has_trace = [bool(doc.strip()) for doc in trace_documents]
+        has_log = (
+            [bool(doc.strip()) for doc in log_documents]
+            if log_documents
+            else [False] * n
+        )
 
         for i in range(n):
             for j in range(i + 1, n):
                 if has_message[i] and has_message[j]:
                     if message_sim[i, j] < self._config.similarity_threshold:
                         # Message gate: если сообщения различаются ниже порога,
-                        # trace не может "перетащить" пару в один кластер.
+                        # trace/log не могут "перетащить" пару в один кластер.
                         pair_sim = message_sim[i, j]
-                    elif not (has_trace[i] and has_trace[j]):
-                        # Если у пары нет trace-канала, не штрафуем similarity.
+                    elif not (has_trace[i] and has_trace[j]) and not (has_log[i] and has_log[j]):
+                        # Нет дополнительных каналов — только message.
                         pair_sim = message_sim[i, j]
                     else:
-                        pair_sim = (
-                            message_weight * message_sim[i, j]
-                            + trace_weight * trace_sim[i, j]
-                        )
+                        pair_sim = message_weight * message_sim[i, j]
+                        if has_trace[i] and has_trace[j]:
+                            pair_sim += trace_weight * trace_sim[i, j]
+                        else:
+                            # Перераспределить вес trace на message
+                            pair_sim += trace_weight * message_sim[i, j]
+                        if log_sim is not None and has_log[i] and has_log[j]:
+                            pair_sim += log_weight * log_sim[i, j]
+                        else:
+                            # Перераспределить вес log на message
+                            pair_sim += log_weight * message_sim[i, j]
                 else:
+                    # Нет message — fallback на trace (+ log если есть)
                     pair_sim = trace_sim[i, j]
+                    if log_sim is not None and has_log[i] and has_log[j]:
+                        # Смешать trace и log когда нет message
+                        if has_trace[i] and has_trace[j]:
+                            tw = trace_weight / (trace_weight + log_weight) if (trace_weight + log_weight) > 0 else 1.0
+                            lw = 1.0 - tw
+                            pair_sim = tw * trace_sim[i, j] + lw * log_sim[i, j]
+                        else:
+                            pair_sim = log_sim[i, j]
 
                 final_sim[i, j] = pair_sim
                 final_sim[j, i] = pair_sim
