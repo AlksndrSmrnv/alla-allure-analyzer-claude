@@ -26,11 +26,12 @@ class LangflowClient:
         api_key: str,
         *,
         timeout: int = 120,
+        ssl_verify: bool = True,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._flow_id = flow_id
         self._api_key = api_key
-        self._http = httpx.AsyncClient(timeout=timeout)
+        self._http = httpx.AsyncClient(timeout=timeout, verify=ssl_verify)
 
     async def run_flow(self, input_value: str) -> str:
         """Отправить текст в Langflow flow и вернуть текстовый ответ.

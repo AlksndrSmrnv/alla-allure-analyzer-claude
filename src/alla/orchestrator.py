@@ -159,6 +159,7 @@ async def analyze_launch(
                 flow_id=settings.langflow_flow_id,
                 api_key=settings.langflow_api_key,
                 timeout=settings.llm_timeout,
+                ssl_verify=settings.ssl_verify,
             ) as langflow:
                 llm_service = LLMService(
                     langflow,
