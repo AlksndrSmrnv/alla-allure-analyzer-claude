@@ -136,53 +136,64 @@ class LogExtractionService:
     ) -> None:
         """Скачать логи для каждого теста и заполнить ``log_snippet`` in-place.
 
-        Паттерн: semaphore + gather с per-test error resilience
-        (тот же, что в ``TriageService._fetch_failed_executions``
-        и ``KBPushService.push_kb_results``).
-        """
-        candidates: list[tuple[FailedTestSummary, list[AttachmentMeta]]] = []
-        for summary in summaries:
-            attachments = self._collect_text_attachments(summary.execution_steps)
-            if attachments:
-                candidates.append((summary, attachments))
+        Паттерн: semaphore + gather с per-test error resilience.
 
-        if not candidates:
-            logger.info(
-                "Логи: нет text/plain аттачментов среди %d тестов",
-                len(summaries),
-            )
+        Использует новый API:
+        1. GET /api/testresult/attachment?testResultId={id} — список аттачментов
+        2. GET /api/testresult/attachment/{id}/content — скачивание содержимого
+        """
+        if not summaries:
             return
 
-        total_attachments = sum(len(atts) for _, atts in candidates)
         logger.info(
-            "Логи: скачивание аттачментов для %d тестов "
-            "(%d аттачментов, параллелизм=%d)",
-            len(candidates),
-            total_attachments,
+            "Логи: начало обработки %d тестов (параллелизм=%d)",
+            len(summaries),
             self._config.concurrency,
         )
 
         semaphore = asyncio.Semaphore(self._config.concurrency)
 
-        async def fetch_and_filter(
-            summary: FailedTestSummary,
-            attachments: list[AttachmentMeta],
-        ) -> None:
+        async def fetch_and_filter(summary: FailedTestSummary) -> None:
+            # Шаг 1: получить список аттачментов для теста
+            try:
+                all_attachments = await self._provider.get_attachments_for_test_result(
+                    summary.test_result_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Логи: не удалось получить список аттачментов для теста %d: %s",
+                    summary.test_result_id,
+                    exc,
+                )
+                return
+
+            # Фильтрация по text/plain
+            text_attachments = [
+                att for att in all_attachments
+                if self._is_text_attachment(att)
+            ]
+
+            if not text_attachments:
+                return
+
+            # Шаг 2: скачать содержимое каждого аттачмента
             raw_texts: list[str] = []
-            for att in attachments:
+            for att in text_attachments:
+                if att.id is None:
+                    continue
                 async with semaphore:
                     try:
                         content_bytes = await self._provider.get_attachment_content(
-                            summary.test_result_id,
-                            att.source or "",
+                            att.id,
                         )
                         text = content_bytes.decode("utf-8", errors="replace")
                         raw_texts.append(text)
                     except Exception as exc:
                         logger.warning(
-                            "Логи: не удалось скачать аттачмент %s "
+                            "Логи: не удалось скачать аттачмент %d (%s) "
                             "для теста %d: %s",
-                            att.source,
+                            att.id,
+                            att.name,
                             summary.test_result_id,
                             exc,
                         )
@@ -205,11 +216,17 @@ class LogExtractionService:
             if filtered.strip():
                 summary.log_snippet = filtered
 
-        tasks = [fetch_and_filter(s, atts) for s, atts in candidates]
+        tasks = [fetch_and_filter(s) for s in summaries]
         await asyncio.gather(*tasks)
 
         enriched = sum(1 for s in summaries if s.log_snippet)
         logger.info("Логи: обогащено %d/%d тестов", enriched, len(summaries))
+
+    @staticmethod
+    def _is_text_attachment(att: AttachmentMeta) -> bool:
+        """Проверить, является ли аттачмент текстовым (text/plain)."""
+        mime = (att.type or att.content_type or "").lower()
+        return mime.startswith("text/plain")
 
     @staticmethod
     def _collect_text_attachments(

@@ -49,14 +49,18 @@ class LaunchResponse(BaseModel):
 
 
 class AttachmentMeta(BaseModel):
-    """Метаданные аттачмента из execution-шага.
+    """Метаданные аттачмента.
 
-    Содержит ссылку на файл (``source``), MIME-тип и имя. Используется
-    для фильтрации и скачивания аттачментов (логов, скриншотов и т.д.).
+    Используется для двух источников:
+    - Из ``GET /api/testresult/attachment?testResultId={id}`` (содержит ``id``)
+    - Из execution-шагов (содержит ``source``, deprecated)
+
+    Поле ``id`` используется для скачивания через новый API.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
+    id: int | None = None
     name: str | None = None
     source: str | None = None
     type: str | None = None
