@@ -28,6 +28,7 @@ class AllureTestOpsClient:
     LAUNCH_ENDPOINT = "/api/launch"
     TESTRESULT_ENDPOINT = "/api/testresult"
     COMMENT_ENDPOINT = "/api/comment"
+    ATTACHMENT_CONTENT_ENDPOINT = "/api/attachments"
 
     def __init__(self, settings: Settings, auth_manager: AllureAuthManager) -> None:
         self._endpoint = str(settings.endpoint).rstrip("/")
@@ -205,7 +206,88 @@ class AllureTestOpsClient:
             str(result)[:500] if result is not None else "None (пустое тело)",
         )
 
+    # --- Аттачменты (протокол AttachmentProvider) ---
+
+    async def get_attachment_content(
+        self,
+        test_result_id: int,
+        attachment_source: str,
+    ) -> bytes:
+        """Скачать бинарное содержимое аттачмента.
+
+        ``GET /api/attachments/{attachment_source}``
+
+        Args:
+            test_result_id: ID результата теста (для логирования).
+            attachment_source: Идентификатор аттачмента (поле ``source``).
+
+        Returns:
+            Сырые байты содержимого аттачмента.
+
+        Raises:
+            AllureApiError: При HTTP-ошибках.
+        """
+        logger.debug(
+            "Скачивание аттачмента %s для результата теста %d",
+            attachment_source, test_result_id,
+        )
+        return await self._request_raw(
+            "GET",
+            f"{self.ATTACHMENT_CONTENT_ENDPOINT}/{attachment_source}",
+        )
+
     # --- Внутренний HTTP ---
+
+    async def _request_raw(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> bytes:
+        """Выполнить аутентифицированный HTTP-запрос, возвращая сырые байты.
+
+        Используется для скачивания аттачментов (бинарные файлы, текстовые логи).
+        Содержит тот же retry-на-401 механизм, что и ``_request()``.
+
+        Raises:
+            AllureApiError: При HTTP-ошибках.
+        """
+        url = f"{self._endpoint}{path}"
+        auth_header = await self._auth.get_auth_header()
+
+        logger.debug("HTTP raw запрос: %s %s", method, url)
+
+        try:
+            resp = await self._http.request(
+                method, url, params=params, headers=auth_header,
+            )
+        except httpx.RequestError as exc:
+            raise AllureApiError(0, str(exc), path) from exc
+
+        if resp.status_code == 401:
+            logger.debug("Получен 401, повторная аутентификация для raw-запроса")
+            self._auth.invalidate()
+            auth_header = await self._auth.get_auth_header()
+            try:
+                resp = await self._http.request(
+                    method, url, params=params, headers=auth_header,
+                )
+            except httpx.RequestError as exc:
+                raise AllureApiError(0, str(exc), path) from exc
+
+        if resp.status_code == 404:
+            raise AllureApiError(
+                404,
+                f"Аттачмент не найден. Проверьте Swagger UI: "
+                f"{self._endpoint}/swagger-ui.html",
+                path,
+            )
+
+        if resp.status_code >= 400:
+            raise AllureApiError(resp.status_code, resp.text[:500], path)
+
+        return resp.content
 
     async def _request(
         self,

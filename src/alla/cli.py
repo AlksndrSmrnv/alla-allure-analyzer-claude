@@ -208,6 +208,9 @@ def _print_text_report(report: TriageReport) -> None:  # noqa: F821
                 if len(msg) > 200:
                     msg = msg[:200] + "..."
                 print(f"            {msg}")
+            if t.log_snippet:
+                log_lines = t.log_snippet.strip().splitlines()
+                print(f"            [LOG] {len(log_lines)} строк лога")
     else:
         print("Падения не найдены.")
 

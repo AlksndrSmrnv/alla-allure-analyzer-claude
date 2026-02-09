@@ -48,6 +48,22 @@ class LaunchResponse(BaseModel):
     created_date: int | None = Field(None, alias="createdDate")
 
 
+class AttachmentMeta(BaseModel):
+    """Метаданные аттачмента из execution-шага.
+
+    Содержит ссылку на файл (``source``), MIME-тип и имя. Используется
+    для фильтрации и скачивания аттачментов (логов, скриншотов и т.д.).
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    name: str | None = None
+    source: str | None = None
+    type: str | None = None
+    size: int | None = None
+    content_type: str | None = Field(None, alias="contentType")
+
+
 class ExecutionStep(BaseModel):
     """Шаг выполнения теста из ``/api/testresult/{id}/execution``.
 
@@ -65,7 +81,7 @@ class ExecutionStep(BaseModel):
     steps: list[ExecutionStep] | None = None
     duration: int | None = None
     parameters: list[dict] | None = None
-    attachments: list[dict] | None = None
+    attachments: list[AttachmentMeta] | None = None
 
 
 class FailedTestSummary(BaseModel):
@@ -88,6 +104,8 @@ class FailedTestSummary(BaseModel):
     test_case_id: int | None = None
     link: str | None = None
     duration_ms: int | None = None
+    test_start_ms: int | None = None
+    log_snippet: str | None = None
 
 
 class TriageReport(BaseModel):
