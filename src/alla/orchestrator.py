@@ -73,7 +73,6 @@ async def analyze_launch(
 
         if isinstance(client, AttachmentProvider):
             log_config = LogExtractionConfig(
-                max_size_kb=settings.logs_max_size_kb,
                 concurrency=settings.logs_concurrency,
             )
             log_service = LogExtractionService(client, log_config)
@@ -132,7 +131,7 @@ async def analyze_launch(
                 if settings.logs_enabled and cluster.member_test_ids:
                     rep = _test_by_id.get(cluster.member_test_ids[0])
                     if rep and rep.log_snippet:
-                        error_parts.append(rep.log_snippet[:2000])
+                        error_parts.append(rep.log_snippet)
 
                 error_text = "\n".join(error_parts)
                 if error_text.strip():

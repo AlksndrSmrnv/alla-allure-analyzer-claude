@@ -47,10 +47,7 @@ def build_cluster_prompt(
         parts.append(f"\nСтек-трейс:\n{trace}")
 
     if log_snippet:
-        snippet = log_snippet
-        if len(snippet) > 2000:
-            snippet = snippet[:2000] + "...[обрезано]"
-        parts.append(f"\nЛог:\n{snippet}")
+        parts.append(f"\nЛог:\n{log_snippet}")
 
     if kb_matches:
         parts.append("\nИзвестные проблемы:")

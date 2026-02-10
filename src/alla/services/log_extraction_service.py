@@ -1,30 +1,88 @@
-"""Сервис извлечения логов из аттачментов.
+"""Сервис извлечения ERROR-блоков из текстовых аттачментов.
 
-Скачивает text/plain аттачменты для каждого упавшего теста и сохраняет
-результат в ``FailedTestSummary.log_snippet``.
-
-Логи, прикреплённые к тесту, считаются уже отфильтрованными по времени,
-поэтому фильтрация по time-window не выполняется — весь лог передаётся целиком.
+Скачивает text/plain аттачменты для каждого упавшего теста, извлекает строки
+с уровнем [ERROR] и их stack trace, помечает каждый блок именем файла-источника
+и сохраняет результат в ``FailedTestSummary.log_snippet``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+import re
 
 from alla.clients.base import AttachmentProvider
-from alla.models.testops import AttachmentMeta, ExecutionStep, FailedTestSummary
+from alla.models.testops import AttachmentMeta, FailedTestSummary
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
 class LogExtractionConfig:
     """Параметры извлечения логов из аттачментов."""
 
-    max_size_kb: int = 512
-    concurrency: int = 5
+    def __init__(self, *, concurrency: int = 5) -> None:
+        self.concurrency = concurrency
+
+
+# ---------------------------------------------------------------------------
+# ERROR-block extraction
+# ---------------------------------------------------------------------------
+
+# Паттерн для определения начала новой лог-записи (строка с датой/временем).
+# Матчит форматы: 2026-02-09T10:23:45, 2026-02-09 10:23:45
+_LOG_LINE_START_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"
+)
+
+# Паттерн для обнаружения [ERROR] (case-insensitive) в квадратных скобках.
+_ERROR_LEVEL_RE = re.compile(r"\[error\]", re.IGNORECASE)
+
+
+def _extract_error_blocks(log_text: str) -> str:
+    """Извлечь блоки ERROR из текста лога.
+
+    Логика:
+    1. Найти строку, содержащую ``[ERROR]`` (case-insensitive).
+    2. Захватить эту строку и все последующие строки, которые являются
+       «продолжением» (stack trace) — т.е. **не** начинаются с timestamp
+       нового лог-сообщения.
+    3. Если следующая строка начинается с timestamp, но тоже содержит
+       ``[ERROR]``, она становится началом нового ERROR-блока.
+
+    Returns:
+        Объединённые ERROR-блоки. Пустая строка, если ни одного не найдено.
+    """
+    lines = log_text.splitlines()
+    blocks: list[str] = []
+    current_block: list[str] = []
+    in_error_block = False
+
+    for line in lines:
+        is_new_log_entry = bool(_LOG_LINE_START_RE.match(line))
+        is_error = bool(_ERROR_LEVEL_RE.search(line))
+
+        if is_error and is_new_log_entry:
+            # Новая строка [ERROR] — начало нового блока.
+            # Сохраняем предыдущий блок, если был.
+            if current_block:
+                blocks.append("\n".join(current_block))
+            current_block = [line]
+            in_error_block = True
+        elif in_error_block:
+            if is_new_log_entry and not is_error:
+                # Новая лог-запись без [ERROR] — конец текущего блока.
+                blocks.append("\n".join(current_block))
+                current_block = []
+                in_error_block = False
+            else:
+                # Continuation (stack trace) или ещё один [ERROR] без timestamp.
+                current_block.append(line)
+
+    # Финальный блок
+    if current_block:
+        blocks.append("\n".join(current_block))
+
+    return "\n\n".join(blocks)
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +90,7 @@ class LogExtractionConfig:
 # ---------------------------------------------------------------------------
 
 class LogExtractionService:
-    """Извлекает текстовые логи из аттачментов."""
+    """Извлекает ERROR-блоки из текстовых аттачментов."""
 
     def __init__(
         self,
@@ -48,11 +106,11 @@ class LogExtractionService:
     ) -> None:
         """Скачать логи для каждого теста и заполнить ``log_snippet`` in-place.
 
-        Паттерн: semaphore + gather с per-test error resilience.
-
-        Использует новый API:
+        Для каждого теста:
         1. GET /api/testresult/attachment?testResultId={id} — список аттачментов
         2. GET /api/testresult/attachment/{id}/content — скачивание содержимого
+        3. Извлечение ERROR-блоков из каждого аттачмента
+        4. Склейка блоков с пометкой источника
         """
         if not summaries:
             return
@@ -65,7 +123,7 @@ class LogExtractionService:
 
         semaphore = asyncio.Semaphore(self._config.concurrency)
 
-        async def fetch_and_attach(summary: FailedTestSummary) -> None:
+        async def fetch_and_extract(summary: FailedTestSummary) -> None:
             # Шаг 1: получить список аттачментов для теста
             async with semaphore:
                 try:
@@ -89,8 +147,9 @@ class LogExtractionService:
             if not text_attachments:
                 return
 
-            # Шаг 2: скачать содержимое каждого аттачмента
-            raw_texts: list[str] = []
+            # Шаг 2: скачать содержимое и извлечь ERROR-блоки
+            all_error_sections: list[str] = []
+
             for att in text_attachments:
                 if att.id is None:
                     continue
@@ -100,7 +159,6 @@ class LogExtractionService:
                             att.id,
                         )
                         text = content_bytes.decode("utf-8", errors="replace")
-                        raw_texts.append(text)
                     except Exception as exc:
                         logger.warning(
                             "Логи: не удалось скачать аттачмент %d (%s) "
@@ -110,29 +168,30 @@ class LogExtractionService:
                             summary.test_result_id,
                             exc,
                         )
+                        continue
 
-            if not raw_texts:
+                error_blocks = _extract_error_blocks(text)
+                if error_blocks.strip():
+                    att_name = att.name or f"attachment-{att.id}"
+                    header = f"--- [файл: {att_name}] ---"
+                    all_error_sections.append(f"{header}\n{error_blocks}")
+
+            if not all_error_sections:
                 return
 
-            combined = "\n".join(raw_texts)
+            combined = "\n\n".join(all_error_sections)
+            summary.log_snippet = combined
 
-            # Ограничение по размеру
-            max_bytes = self._config.max_size_kb * 1024
-            if len(combined.encode("utf-8")) > max_bytes:
-                combined = _truncate_to_size(combined, max_bytes)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Логи: тест %d — извлечено ERROR-блоков из %d файлов, "
+                    "общий размер: %d символов",
+                    summary.test_result_id,
+                    len(all_error_sections),
+                    len(combined),
+                )
 
-            if combined.strip():
-                summary.log_snippet = combined
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(
-                        "Логи: тест %d — строк: %d, "
-                        "полный текст:\n%s",
-                        summary.test_result_id,
-                        combined.count("\n") + 1,
-                        combined,
-                    )
-
-        tasks = [fetch_and_attach(s) for s in summaries]
+        tasks = [fetch_and_extract(s) for s in summaries]
         await asyncio.gather(*tasks)
 
         enriched = sum(1 for s in summaries if s.log_snippet)
@@ -143,43 +202,3 @@ class LogExtractionService:
         """Проверить, является ли аттачмент текстовым (text/plain)."""
         mime = (att.type or att.content_type or "").lower()
         return mime.startswith("text/plain")
-
-    @staticmethod
-    def _collect_text_attachments(
-        steps: list[ExecutionStep] | None,
-    ) -> list[AttachmentMeta]:
-        """Рекурсивно собрать все text/plain аттачменты из дерева шагов."""
-        if not steps:
-            return []
-
-        result: list[AttachmentMeta] = []
-
-        def walk(step_list: list[ExecutionStep]) -> None:
-            for step in step_list:
-                if step.attachments:
-                    for att in step.attachments:
-                        mime = (att.type or att.content_type or "").lower()
-                        if mime.startswith("text/plain"):
-                            if att.source:
-                                result.append(att)
-                if step.steps:
-                    walk(step.steps)
-
-        walk(steps)
-        return result
-
-
-def _truncate_to_size(text: str, max_bytes: int) -> str:
-    """Обрезать текст, сохраняя хвост (ошибки обычно в конце лога)."""
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text
-
-    truncated_bytes = encoded[-max_bytes:]
-    # Найти первый перенос строки, чтобы не обрезать строку посередине
-    newline_idx = truncated_bytes.find(b"\n")
-    if newline_idx >= 0:
-        truncated_bytes = truncated_bytes[newline_idx + 1:]
-
-    header = b"...[" + "обрезано".encode("utf-8") + b"]\n"
-    return (header + truncated_bytes).decode("utf-8", errors="replace")

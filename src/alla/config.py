@@ -44,10 +44,6 @@ class Settings(BaseSettings):
     server_port: int = Field(default=8090, ge=1, le=65535, description="Порт для HTTP-сервера")
 
     logs_enabled: bool = Field(default=False, description="Включить/выключить извлечение и анализ логов из аттачментов")
-    logs_max_size_kb: int = Field(
-        default=512, ge=1,
-        description="Максимальный размер лог-сниппета на один тест (КБ)",
-    )
     logs_concurrency: int = Field(
         default=5, ge=1,
         description="Макс. параллельных запросов при скачивании аттачментов",
