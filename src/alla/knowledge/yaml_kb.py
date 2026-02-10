@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 
 from alla.exceptions import KnowledgeBaseError
-from alla.knowledge.matcher import MatcherConfig, TextMatcher
+from alla.knowledge.matcher import TextMatcher
 from alla.knowledge.models import KBEntry, KBMatchResult
 
 logger = logging.getLogger(__name__)
@@ -24,13 +24,9 @@ class YamlKnowledgeBase:
     Реализует Protocol KnowledgeBaseProvider.
     """
 
-    def __init__(
-        self,
-        kb_path: str | Path,
-        matcher_config: MatcherConfig | None = None,
-    ) -> None:
+    def __init__(self, kb_path: str | Path) -> None:
         self._kb_path = Path(kb_path)
-        self._matcher = TextMatcher(matcher_config)
+        self._matcher = TextMatcher()
         self._entries: list[KBEntry] = []
         self._entries_by_id: dict[str, KBEntry] = {}
         self._load()
@@ -106,38 +102,17 @@ class YamlKnowledgeBase:
             self._kb_path,
         )
 
-    def search_by_failure(
+    def search_by_error(
         self,
-        status_message: str | None,
-        status_trace: str | None,
-        category: str | None,
+        error_text: str,
         *,
-        status_log: str | None = None,
+        query_label: str | None = None,
     ) -> list[KBMatchResult]:
-        """Найти записи KB, релевантные ошибке."""
+        """Найти записи KB, релевантные тексту ошибки."""
         return self._matcher.match(
-            query_message=status_message,
-            query_trace=status_trace,
-            query_category=category,
-            query_log=status_log,
-            entries=self._entries,
-        )
-
-    def search_by_text(
-        self,
-        query_text: str,
-        *,
-        max_results: int = 5,
-        min_score: float = 0.0,
-    ) -> list[KBMatchResult]:
-        """Поиск по произвольному тексту."""
-        return self._matcher.match(
-            query_message=query_text,
-            query_trace=None,
-            query_category=None,
-            entries=self._entries,
-            min_score=min_score,
-            max_results=max_results,
+            error_text,
+            self._entries,
+            query_label=query_label,
         )
 
     def get_all_entries(self) -> list[KBEntry]:

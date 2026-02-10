@@ -35,8 +35,6 @@ class Settings(BaseSettings):
 
     kb_enabled: bool = Field(default=False, description="Включить/выключить поиск по базе знаний")
     kb_path: str = Field(default="knowledge_base", description="Путь к директории с YAML-файлами базы знаний")
-    kb_min_score: float = Field(default=0.15, description="Минимальный score для включения KB-совпадения в отчёт (0.0-1.0)")
-    kb_max_results: int = Field(default=3, description="Максимум KB-совпадений на один кластер/ошибку")
     kb_push_enabled: bool = Field(
         default=False,
         description="Записывать рекомендации KB обратно в Allure TestOps через комментарии к тест-кейсам",
@@ -46,14 +44,6 @@ class Settings(BaseSettings):
     server_port: int = Field(default=8090, ge=1, le=65535, description="Порт для HTTP-сервера")
 
     logs_enabled: bool = Field(default=False, description="Включить/выключить извлечение и анализ логов из аттачментов")
-    logs_time_buffer_sec: int = Field(
-        default=30, ge=0,
-        description="Буфер в секундах для time-window фильтрации лог-строк (± от начала/конца теста)",
-    )
-    logs_max_size_kb: int = Field(
-        default=512, ge=1,
-        description="Максимальный размер лог-сниппета на один тест (КБ)",
-    )
     logs_concurrency: int = Field(
         default=5, ge=1,
         description="Макс. параллельных запросов при скачивании аттачментов",
