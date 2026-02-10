@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from alla.models.common import TestStatus
 
@@ -35,6 +35,15 @@ class TestResultResponse(BaseModel):
     category: str | None = None
     muted: bool = False
     hidden: bool = False
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _coerce_category(cls, v: object) -> str | None:
+        if v is None or isinstance(v, str):
+            return v
+        if isinstance(v, dict):
+            return v.get("name") or str(v)
+        return str(v)
 
 
 class LaunchResponse(BaseModel):
