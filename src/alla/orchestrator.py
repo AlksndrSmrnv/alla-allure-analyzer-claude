@@ -122,16 +122,22 @@ async def analyze_launch(
 
         for cluster in clustering_report.clusters:
             try:
-                # Собрать текст ошибки: message + trace + лог
+                # Собрать полный текст ошибки для KB-поиска:
+                # message + полный trace + лог (без обрезки trace до 5 строк)
+                rep = _test_by_id.get(cluster.member_test_ids[0]) if cluster.member_test_ids else None
                 error_parts: list[str] = []
-                if cluster.example_message:
-                    error_parts.append(cluster.example_message)
-                if cluster.example_trace_snippet:
-                    error_parts.append(cluster.example_trace_snippet)
-                if settings.logs_enabled and cluster.member_test_ids:
-                    rep = _test_by_id.get(cluster.member_test_ids[0])
-                    if rep and rep.log_snippet:
+                if rep:
+                    if rep.status_message:
+                        error_parts.append(rep.status_message)
+                    if rep.status_trace:
+                        error_parts.append(rep.status_trace)
+                    if rep.log_snippet:
                         error_parts.append(rep.log_snippet)
+                else:
+                    if cluster.example_message:
+                        error_parts.append(cluster.example_message)
+                    if cluster.example_trace_snippet:
+                        error_parts.append(cluster.example_trace_snippet)
 
                 error_text = "\n".join(error_parts)
                 if error_text.strip():
