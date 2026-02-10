@@ -99,6 +99,17 @@ class TextMatcher:
             kw_score, matched_on = keyword_scores[i]
             tf_score = tfidf_scores[i] if tfidf_scores else 0.0
             blended = kw_w * kw_score + tf_w * tf_score
+            if logger.isEnabledFor(logging.DEBUG) and (kw_score > 0 or tf_score > 0.05):
+                logger.debug(
+                    "KB scoring: id=%s, keyword=%.4f, tfidf=%.4f, "
+                    "blended=%.4f (порог=%.2f) %s",
+                    entry.id,
+                    kw_score,
+                    tf_score,
+                    blended,
+                    effective_min_score,
+                    "✓ ПРОШЛО" if blended >= effective_min_score else "✗ отсеяно",
+                )
             if blended >= effective_min_score:
                 results.append(KBMatchResult(
                     entry=entry,
@@ -107,7 +118,30 @@ class TextMatcher:
                 ))
 
         results.sort(key=lambda r: r.score, reverse=True)
-        return results[:effective_max_results]
+        final = results[:effective_max_results]
+
+        if logger.isEnabledFor(logging.DEBUG):
+            query_preview = (combined_query[:150].replace("\n", " ")
+                             if combined_query else "<пусто>")
+            if final:
+                for r in final:
+                    logger.debug(
+                        "KB совпадение: запись='%s' (id=%s), score=%.4f, "
+                        "совпало по: [%s], запрос='%s'",
+                        r.entry.title,
+                        r.entry.id,
+                        r.score,
+                        "; ".join(r.matched_on) if r.matched_on else "tfidf only",
+                        query_preview,
+                    )
+            else:
+                logger.debug(
+                    "KB: нет совпадений (min_score=%.2f) для запроса='%s'",
+                    effective_min_score,
+                    query_preview,
+                )
+
+        return final
 
     def _keyword_match(
         self,

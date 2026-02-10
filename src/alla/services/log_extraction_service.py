@@ -216,6 +216,14 @@ class LogExtractionService:
 
             if filtered.strip():
                 summary.log_snippet = filtered
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Логи: тест %d — отфильтровано строк: %d, "
+                        "полный текст:\n%s",
+                        summary.test_result_id,
+                        filtered.count("\n") + 1,
+                        filtered,
+                    )
 
         tasks = [fetch_and_filter(s) for s in summaries]
         await asyncio.gather(*tasks)
@@ -292,7 +300,24 @@ class LogExtractionService:
                     filtered.append(line)
 
         if not any_timestamp_found:
+            logger.debug(
+                "Логи тест %s: timestamp-ов не найдено, "
+                "возвращаем весь лог (%d строк)",
+                getattr(self, "_current_test_id", "?"),
+                len(lines),
+            )
             return log_text
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Логи: time-window фильтрация — "
+                "всего строк=%d, прошло фильтр=%d, "
+                "окно=[%s .. %s]",
+                len(lines),
+                len(filtered),
+                window_start,
+                window_end,
+            )
 
         return "\n".join(filtered)
 
