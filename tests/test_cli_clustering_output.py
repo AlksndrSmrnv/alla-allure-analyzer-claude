@@ -276,3 +276,25 @@ def test_no_infinite_loop_when_indent_exceeds_max_width() -> None:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old_handler)
 
+
+def test_no_infinite_loop_when_max_width_is_zero_or_negative() -> None:
+    """Проверка, что функция не зависает при max_width <= 0."""
+    from alla.cli import _wrap_text
+    import signal
+
+    def timeout_handler(signum, frame):
+        raise TimeoutError("_wrap_text timed out — likely infinite loop")
+
+    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(1)
+
+    try:
+        result_zero = _wrap_text("hello world", max_width=0)
+        assert result_zero == ["hello world"]
+
+        result_neg = _wrap_text("hello world", max_width=-5)
+        assert result_neg == ["hello world"]
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+

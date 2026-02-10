@@ -326,6 +326,9 @@ def _wrap_text(text: str, max_width: int, indent: str = "") -> list[str]:
     Returns:
         Список строк, каждая не длиннее max_width.
     """
+    if max_width <= 0:
+        return [text]
+
     if len(text) <= max_width:
         return [text]
 
