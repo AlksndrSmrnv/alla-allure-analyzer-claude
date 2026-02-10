@@ -10,14 +10,15 @@ from typing import TYPE_CHECKING
 from alla.clients.base import TestResultsProvider, TestResultsUpdater
 from alla.config import Settings
 from alla.knowledge.models import KBMatchResult
-from alla.models.clustering import ClusteringReport
-from alla.models.testops import TriageReport
+from alla.models.clustering import ClusteringReport, FailureCluster
+from alla.models.testops import FailedTestSummary, TriageReport
 from alla.services.kb_push_service import KBPushResult
 
 if TYPE_CHECKING:
     from alla.models.llm import LLMAnalysisResult, LLMPushResult
 
 logger = logging.getLogger(__name__)
+_KB_LOG_QUERY_MAX_CHARS = 12_000
 
 
 @dataclass
@@ -127,24 +128,19 @@ async def analyze_launch(
             raise
 
         # Индекс test_result_id → FailedTestSummary для быстрого lookup
-        _test_by_id = {t.test_result_id: t for t in report.failed_tests}
+        test_by_id = {t.test_result_id: t for t in report.failed_tests}
 
         for cluster in clustering_report.clusters:
             try:
-                # Обогатить trace лог-сниппетом представителя кластера
-                augmented_trace = cluster.example_trace_snippet
-                if settings.logs_enabled and cluster.member_test_ids:
-                    rep = _test_by_id.get(cluster.member_test_ids[0])
-                    if rep and rep.log_snippet:
-                        log_ctx = rep.log_snippet[:2000]
-                        augmented_trace = (
-                            (augmented_trace or "") + "\n[LOG]\n" + log_ctx
-                        )
-
+                representative = _select_cluster_representative(cluster, test_by_id)
+                log_query = None
+                if settings.logs_enabled and representative is not None:
+                    log_query = _prepare_kb_log_query(representative.log_snippet)
                 matches = kb.search_by_failure(
                     status_message=cluster.example_message,
-                    status_trace=augmented_trace,
+                    status_trace=cluster.example_trace_snippet,
                     category=cluster.signature.category,
+                    status_log=log_query,
                 )
                 if matches:
                     kb_results[cluster.cluster_id] = matches
@@ -262,3 +258,41 @@ async def analyze_launch(
         llm_result=llm_result,
         llm_push_result=llm_push_result,
     )
+
+
+def _select_cluster_representative(
+    cluster: FailureCluster,
+    test_by_id: dict[int, FailedTestSummary],
+) -> FailedTestSummary | None:
+    """Выбрать представителя кластера тем же правилом, что в ClusteringService."""
+    members = [
+        test_by_id[test_id]
+        for test_id in cluster.member_test_ids
+        if test_id in test_by_id
+    ]
+    if not members:
+        return None
+    return max(members, key=lambda t: (len(t.status_message or ""), -t.test_result_id))
+
+
+def _prepare_kb_log_query(
+    log_snippet: str | None,
+    *,
+    max_chars: int = _KB_LOG_QUERY_MAX_CHARS,
+) -> str | None:
+    """Подготовить лог для KB-поиска, сохраняя хвост (там чаще корневая ошибка)."""
+    if not log_snippet:
+        return None
+
+    text = log_snippet.strip()
+    if not text:
+        return None
+
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+
+    tail = text[-max_chars:]
+    newline_idx = tail.find("\n")
+    if newline_idx >= 0:
+        tail = tail[newline_idx + 1:]
+    return f"...[обрезано]\n{tail}"

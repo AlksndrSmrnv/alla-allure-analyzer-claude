@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from alla.models.common import PageResponse
-from alla.models.testops import TestResultResponse, TriageReport
+from alla.models.testops import TestResultResponse as ResultResponse
+from alla.models.testops import TriageReport
 
 
 def test_test_result_response_parses_camel_case_aliases() -> None:
@@ -15,7 +16,7 @@ def test_test_result_response_parses_camel_case_aliases() -> None:
         "testCaseId": 42,
         "launchId": 100,
     }
-    result = TestResultResponse.model_validate(data)
+    result = ResultResponse.model_validate(data)
 
     assert result.id == 1
     assert result.full_name == "com.example.LoginTest"
@@ -27,13 +28,13 @@ def test_test_result_response_parses_camel_case_aliases() -> None:
 def test_test_result_response_accepts_extra_fields() -> None:
     """Неизвестные поля принимаются без ошибок (extra='allow')."""
     data = {"id": 1, "unknownField": "value", "anotherExtra": 123}
-    result = TestResultResponse.model_validate(data)
+    result = ResultResponse.model_validate(data)
 
     assert result.id == 1
 
 
 def test_page_response_parses_generic() -> None:
-    """PageResponse[TestResultResponse] корректно парсит content и метаданные."""
+    """PageResponse[ResultResponse] корректно парсит content и метаданные."""
     data = {
         "content": [{"id": 1}, {"id": 2}],
         "totalElements": 2,
@@ -41,7 +42,7 @@ def test_page_response_parses_generic() -> None:
         "size": 100,
         "number": 0,
     }
-    page = PageResponse[TestResultResponse].model_validate(data)
+    page = PageResponse[ResultResponse].model_validate(data)
 
     assert len(page.content) == 2
     assert page.content[0].id == 1

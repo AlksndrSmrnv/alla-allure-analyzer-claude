@@ -51,6 +51,27 @@ def test_keyword_match_message_pattern() -> None:
     assert any("message_pattern" in m for m in matched_on)
 
 
+def test_keyword_match_message_pattern_in_log() -> None:
+    """message_patterns в логе тоже увеличивает score."""
+    entry = make_kb_entry(
+        match_criteria=KBEntryMatchCriteria(
+            message_patterns=["Connection timed out"],
+            keywords=[], exception_types=[], trace_patterns=[], categories=[],
+        ),
+    )
+    matcher = TextMatcher()
+    score, matched_on = matcher._keyword_match(
+        message="AssertionError: expected true but was false",
+        trace=None,
+        category=None,
+        entry=entry,
+        log="2026-02-10 12:00:01 ERROR Connection timed out after 30000ms",
+    )
+
+    assert score > 0
+    assert any("message_pattern" in m for m in matched_on)
+
+
 def test_keyword_match_no_criteria_returns_zero() -> None:
     """Пустые criteria → score == 0."""
     entry = make_kb_entry()  # все criteria пустые по умолчанию

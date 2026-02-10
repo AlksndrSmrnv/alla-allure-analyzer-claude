@@ -5,8 +5,12 @@ from __future__ import annotations
 import pytest
 
 from alla.config import Settings
-from alla.models.common import TestStatus
-from alla.models.testops import ExecutionStep, FailedTestSummary, TestResultResponse
+from alla.models.common import TestStatus as Status
+from alla.models.testops import (
+    ExecutionStep,
+    FailedTestSummary,
+    TestResultResponse as ResultResponse,
+)
 from alla.services.triage_service import TriageService
 from conftest import make_execution_step
 
@@ -18,31 +22,31 @@ from conftest import make_execution_step
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("passed", TestStatus.PASSED),
-        ("failed", TestStatus.FAILED),
-        ("broken", TestStatus.BROKEN),
-        ("skipped", TestStatus.SKIPPED),
+        ("passed", Status.PASSED),
+        ("failed", Status.FAILED),
+        ("broken", Status.BROKEN),
+        ("skipped", Status.SKIPPED),
     ],
 )
-def test_normalize_status_maps_standard_values(raw: str, expected: TestStatus) -> None:
-    """Стандартные строки статусов маппятся в соответствующий TestStatus."""
+def test_normalize_status_maps_standard_values(raw: str, expected: Status) -> None:
+    """Стандартные строки статусов маппятся в соответствующий enum статуса."""
     assert TriageService._normalize_status(raw) is expected
 
 
 def test_normalize_status_none_returns_unknown() -> None:
     """None-статус трактуется как UNKNOWN."""
-    assert TriageService._normalize_status(None) is TestStatus.UNKNOWN
+    assert TriageService._normalize_status(None) is Status.UNKNOWN
 
 
 def test_normalize_status_invalid_returns_unknown() -> None:
     """Неизвестная строка статуса трактуется как UNKNOWN."""
-    assert TriageService._normalize_status("garbage") is TestStatus.UNKNOWN
+    assert TriageService._normalize_status("garbage") is Status.UNKNOWN
 
 
 def test_normalize_status_is_case_insensitive() -> None:
     """Нормализация регистронезависима: 'FAILED', 'Failed' → FAILED."""
-    assert TriageService._normalize_status("FAILED") is TestStatus.FAILED
-    assert TriageService._normalize_status("Failed") is TestStatus.FAILED
+    assert TriageService._normalize_status("FAILED") is Status.FAILED
+    assert TriageService._normalize_status("Failed") is Status.FAILED
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +154,7 @@ def _make_triage_service(monkeypatch, tmp_path) -> TriageService:
 def test_build_summary_uses_execution_over_result(monkeypatch, tmp_path) -> None:
     """Ошибка из execution steps приоритетнее result.statusDetails."""
     service = _make_triage_service(monkeypatch, tmp_path)
-    result = TestResultResponse.model_validate({
+    result = ResultResponse.model_validate({
         "id": 1,
         "name": "test_login",
         "status": "failed",
@@ -169,7 +173,7 @@ def test_build_summary_uses_execution_over_result(monkeypatch, tmp_path) -> None
 def test_build_summary_fallback_to_result_status_details(monkeypatch, tmp_path) -> None:
     """При пустых execution steps — fallback на statusDetails результата."""
     service = _make_triage_service(monkeypatch, tmp_path)
-    result = TestResultResponse.model_validate({
+    result = ResultResponse.model_validate({
         "id": 2,
         "name": "test_payment",
         "status": "broken",
@@ -195,7 +199,7 @@ def _make_summary(
     return FailedTestSummary(
         test_result_id=test_result_id,
         name=f"test-{test_result_id}",
-        status=TestStatus.FAILED,
+        status=Status.FAILED,
         status_message=status_message,
         status_trace=status_trace,
     )
@@ -236,7 +240,7 @@ async def test_fetch_missing_traces_fills_trace_from_detail(monkeypatch, tmp_pat
     """Fallback заполняет trace и message из GET /api/testresult/{id}."""
     class _Client:
         async def get_test_result_detail(self, test_result_id):
-            return TestResultResponse.model_validate({
+            return ResultResponse.model_validate({
                 "id": test_result_id,
                 "trace": "java.lang.NullPointerException\n\tat com.example.Test.run(Test.java:42)",
             })
@@ -273,7 +277,7 @@ async def test_fetch_missing_traces_ignores_empty_trace(monkeypatch, tmp_path) -
     """Fallback не заполняет summary, если trace в ответе пустой."""
     class _Client:
         async def get_test_result_detail(self, test_result_id):
-            return TestResultResponse.model_validate({
+            return ResultResponse.model_validate({
                 "id": test_result_id,
                 "trace": None,
             })

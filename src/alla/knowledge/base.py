@@ -21,6 +21,8 @@ class KnowledgeBaseProvider(Protocol):
         status_message: str | None,
         status_trace: str | None,
         category: str | None,
+        *,
+        status_log: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные конкретной ошибке теста."""
         ...

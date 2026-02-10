@@ -53,6 +53,7 @@ class TextMatcher:
         query_category: str | None,
         entries: list[KBEntry],
         *,
+        query_log: str | None = None,
         min_score: float | None = None,
         max_results: int | None = None,
     ) -> list[KBMatchResult]:
@@ -63,6 +64,7 @@ class TextMatcher:
             query_trace: Стек-трейс.
             query_category: Категория ошибки.
             entries: Записи KB для сопоставления.
+            query_log: Ошибочный лог теста (если извлечён из аттачментов).
             min_score: Переопределить MatcherConfig.min_score для этого вызова.
             max_results: Переопределить MatcherConfig.max_results для этого вызова.
 
@@ -76,7 +78,12 @@ class TextMatcher:
         if not entries:
             return []
 
-        combined_query = _combine_text(query_message, query_trace, query_category)
+        combined_query = _combine_text(
+            query_message,
+            query_trace,
+            query_category,
+            query_log=query_log,
+        )
         if not combined_query.strip():
             return []
 
@@ -84,7 +91,11 @@ class TextMatcher:
         keyword_scores: list[tuple[float, list[str]]] = []
         for entry in entries:
             score, matched_on = self._keyword_match(
-                query_message, query_trace, query_category, entry,
+                query_message,
+                query_trace,
+                query_category,
+                entry,
+                log=query_log,
             )
             keyword_scores.append((score, matched_on))
 
@@ -115,21 +126,26 @@ class TextMatcher:
         trace: str | None,
         category: str | None,
         entry: KBEntry,
+        *,
+        log: str | None = None,
     ) -> tuple[float, list[str]]:
         """Детерминистический keyword/pattern matching."""
         score = 0.0
         matched_on: list[str] = []
         msg_lower = (message or "").lower()
         trace_lower = (trace or "").lower()
+        log_lower = (log or "").lower()
         cat_lower = (category or "").lower()
-        combined_lower = f"{msg_lower} {trace_lower} {cat_lower}"
+        combined_lower = f"{msg_lower} {trace_lower} {log_lower} {cat_lower}"
         criteria = entry.match_criteria
 
         # Exception types
         if criteria.exception_types:
             matched = [
                 et for et in criteria.exception_types
-                if et.lower() in msg_lower or et.lower() in trace_lower
+                if et.lower() in msg_lower
+                or et.lower() in trace_lower
+                or et.lower() in log_lower
             ]
             if matched:
                 ratio = len(matched) / len(criteria.exception_types)
@@ -140,7 +156,7 @@ class TextMatcher:
         if criteria.message_patterns:
             matched = [
                 mp for mp in criteria.message_patterns
-                if mp.lower() in msg_lower
+                if mp.lower() in msg_lower or mp.lower() in log_lower
             ]
             if matched:
                 ratio = len(matched) / len(criteria.message_patterns)
@@ -151,7 +167,7 @@ class TextMatcher:
         if criteria.trace_patterns:
             matched = [
                 tp for tp in criteria.trace_patterns
-                if tp.lower() in trace_lower
+                if tp.lower() in trace_lower or tp.lower() in log_lower
             ]
             if matched:
                 ratio = len(matched) / len(criteria.trace_patterns)
@@ -212,10 +228,14 @@ class TextMatcher:
 
 
 def _combine_text(
-    message: str | None, trace: str | None, category: str | None,
+    message: str | None,
+    trace: str | None,
+    category: str | None,
+    *,
+    query_log: str | None = None,
 ) -> str:
     """Собрать query-документ из доступных текстов."""
-    parts = [p for p in (message, trace, category) if p]
+    parts = [p for p in (message, trace, query_log, category) if p]
     return "\n".join(parts)
 
 

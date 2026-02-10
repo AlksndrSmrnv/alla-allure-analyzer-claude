@@ -111,12 +111,15 @@ class YamlKnowledgeBase:
         status_message: str | None,
         status_trace: str | None,
         category: str | None,
+        *,
+        status_log: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные ошибке."""
         return self._matcher.match(
             query_message=status_message,
             query_trace=status_trace,
             query_category=category,
+            query_log=status_log,
             entries=self._entries,
         )
 

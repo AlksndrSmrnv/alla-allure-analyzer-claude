@@ -86,3 +86,21 @@ def test_search_by_failure_finds_relevant_entry(tmp_path) -> None:
     assert len(results) >= 1
     entry_ids = [r.entry.id for r in results]
     assert "entry_two" in entry_ids
+
+
+def test_search_by_failure_uses_status_log(tmp_path) -> None:
+    """search_by_failure учитывает ошибочный лог как источник корневой ошибки."""
+    yaml_file = tmp_path / "entries.yaml"
+    yaml_file.write_text(_YAML_TWO_ENTRIES, encoding="utf-8")
+    kb = YamlKnowledgeBase(tmp_path)
+
+    results = kb.search_by_failure(
+        status_message="AssertionError: test failed",
+        status_trace="at com.example.Test.run(Test.java:10)",
+        category=None,
+        status_log="ERROR java.net.UnknownHostException: host not found",
+    )
+
+    assert len(results) >= 1
+    entry_ids = [r.entry.id for r in results]
+    assert "entry_two" in entry_ids
