@@ -73,7 +73,6 @@ async def analyze_launch(
 
         if isinstance(client, AttachmentProvider):
             log_config = LogExtractionConfig(
-                time_buffer_sec=settings.logs_time_buffer_sec,
                 max_size_kb=settings.logs_max_size_kb,
                 concurrency=settings.logs_concurrency,
             )
