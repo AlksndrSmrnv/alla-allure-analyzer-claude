@@ -15,7 +15,7 @@ def make_kb_entry(**overrides) -> KBEntry:
         "id": "test_entry",
         "title": "Test Entry",
         "description": "A test KB entry",
-        "error_pattern": "test error",
+        "error_example": "test error",
         "category": RootCauseCategory.SERVICE,
         "resolution_steps": ["Fix the issue"],
     }

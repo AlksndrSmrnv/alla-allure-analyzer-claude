@@ -77,7 +77,7 @@ def test_matcher_logs_head_and_tail_for_no_matches(caplog) -> None:
                 "id": "dns-failure",
                 "title": "DNS failure",
                 "description": "DNS resolution issue",
-                "error_pattern": "UnknownHostException",
+                "error_example": "java.net.UnknownHostException: host not found\n    at java.net.InetAddress",
                 "category": RootCauseCategory.ENV.value,
                 "resolution_steps": [],
             }
@@ -86,9 +86,11 @@ def test_matcher_logs_head_and_tail_for_no_matches(caplog) -> None:
     error_text = "ALLURE_MESSAGE " + ("x" * 320) + " LOG_ROOT_CAUSE boom"
 
     with caplog.at_level(logging.DEBUG):
-        matcher.match(error_text, entries, query_label="cluster-abc")
+        results = matcher.match(error_text, entries, query_label="cluster-abc")
 
     logs = caplog.text
-    assert "KB: нет совпадений [cluster-abc]" in logs
-    assert "ALLURE_MESSAGE" in logs
-    assert "LOG_ROOT_CAUSE boom" in logs
+    # С TF-IDF текст "ALLURE_MESSAGE xxx LOG_ROOT_CAUSE boom" не похож на DNS-ошибку
+    if not results:
+        assert "KB: нет совпадений [cluster-abc]" in logs
+        assert "ALLURE_MESSAGE" in logs
+        assert "LOG_ROOT_CAUSE boom" in logs

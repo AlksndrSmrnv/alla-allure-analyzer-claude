@@ -111,10 +111,18 @@ async def analyze_launch(
     # 3. Поиск по базе знаний
     if settings.kb_enabled and clustering_report is not None:
         from alla.exceptions import KnowledgeBaseError
+        from alla.knowledge.matcher import MatcherConfig
         from alla.knowledge.yaml_kb import YamlKnowledgeBase
 
+        matcher_config = MatcherConfig(
+            min_score=settings.kb_min_score,
+            max_results=settings.kb_max_results,
+        )
         try:
-            kb = YamlKnowledgeBase(kb_path=settings.kb_path)
+            kb = YamlKnowledgeBase(
+                kb_path=settings.kb_path,
+                matcher_config=matcher_config,
+            )
         except KnowledgeBaseError:
             raise
 

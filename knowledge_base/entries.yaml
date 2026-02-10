@@ -5,7 +5,7 @@
 #   id               — уникальный slug записи
 #   title            — краткое название проблемы
 #   description      — подробное описание
-#   error_pattern    — подстрока для поиска в тексте ошибки (message + trace)
+#   error_example    — пример ошибки из лога (используется для нечёткого TF-IDF сопоставления)
 #   category         — категория причины: test | service | env | data
 #   resolution_steps — шаги по устранению
 
@@ -15,8 +15,12 @@
 
 - id: dns_resolution_failure
   title: "Ошибка DNS-резолвинга в тестовом окружении"
-  description: "Тесты не могут резолвить DNS-имена сервисов"
-  error_pattern: "UnknownHostException"
+  description: "Тесты не могут резолвить DNS-имена сервисов. Проблема с DNS-серверами или конфигурацией контейнеров."
+  error_example: |
+    java.net.UnknownHostException: Failed to resolve 'api-gateway.staging.internal'
+        at java.net.InetAddress.getAllByName(InetAddress.java:1281)
+        at java.net.InetAddress.getByName(InetAddress.java:1187)
+    Caused by: Unable to resolve host api-gateway.staging.internal: No address associated with hostname
   category: env
   resolution_steps:
     - "Проверить доступность DNS-серверов: nslookup <service-name>"
@@ -24,8 +28,12 @@
 
 - id: connection_timeout
   title: "Таймаут подключения к сервису"
-  description: "Тесты не могут установить TCP-соединение с целевым сервисом"
-  error_pattern: "Connection timed out"
+  description: "Тесты не могут установить TCP-соединение с целевым сервисом. Сервис не запущен или недоступен по сети."
+  error_example: |
+    java.net.SocketTimeoutException: Connect timed out
+        at java.net.Socket.connect(Socket.java:601)
+        at org.apache.http.conn.socket.PlainConnectionSocketFactory.connectSocket(PlainConnectionSocketFactory.java:75)
+    Caused by: Connection timed out connecting to service-endpoint:8080
   category: env
   resolution_steps:
     - "Проверить доступность сервиса: curl -v <service-url>"
@@ -33,8 +41,12 @@
 
 - id: ssl_certificate_error
   title: "Ошибка SSL-сертификата"
-  description: "SSL/TLS handshake завершился с ошибкой"
-  error_pattern: "SSLHandshakeException"
+  description: "SSL/TLS handshake завершился с ошибкой. Сертификат просрочен, невалидный или нет доверия к CA."
+  error_example: |
+    javax.net.ssl.SSLHandshakeException: PKIX path building failed
+        at sun.security.ssl.Alert.createSSLException(Alert.java:131)
+    Caused by: sun.security.validator.ValidatorException: PKIX path building failed
+    Caused by: java.security.cert.CertPathBuilderException: unable to find valid certification path to requested target
   category: env
   resolution_steps:
     - "Проверить срок действия сертификата: openssl s_client -connect <host>:443"
@@ -46,8 +58,11 @@
 
 - id: null_pointer_exception
   title: "NullPointerException в коде приложения"
-  description: "Приложение выбрасывает NullPointerException — дефект в коде"
-  error_pattern: "NullPointerException"
+  description: "Приложение выбрасывает NullPointerException — дефект в коде сервиса, объект не инициализирован."
+  error_example: |
+    java.lang.NullPointerException: Cannot invoke method on null object reference
+        at com.company.service.UserService.getUser(UserService.java:45)
+        at com.company.controller.UserController.handleRequest(UserController.java:112)
   category: service
   resolution_steps:
     - "Определить, какой объект оказался null (см. стек-трейс)"
@@ -55,8 +70,11 @@
 
 - id: database_deadlock
   title: "Deadlock в базе данных"
-  description: "Запрос к БД завершился ошибкой из-за взаимной блокировки"
-  error_pattern: "Deadlock found"
+  description: "Запрос к БД завершился ошибкой из-за взаимной блокировки транзакций. Deadlock detected при конкурентных запросах."
+  error_example: |
+    org.hibernate.exception.LockAcquisitionException: could not execute statement
+    Caused by: com.mysql.cj.jdbc.exceptions.MySQLTransactionRollbackException: Deadlock found when trying to get lock; try restarting transaction
+        at com.mysql.cj.jdbc.exceptions.SQLExceptionsMapping.translateException(SQLExceptionsMapping.java:64)
   category: service
   resolution_steps:
     - "Проверить, какие таблицы участвуют в deadlock"
@@ -68,8 +86,12 @@
 
 - id: flaky_assertion_timeout
   title: "Нестабильный тест: таймаут ожидания элемента"
-  description: "Тест падает по таймауту при ожидании UI-элемента или условия"
-  error_pattern: "TimeoutException"
+  description: "Тест падает по таймауту при ожидании UI-элемента или условия. Flaky-тест, элемент не появился вовремя."
+  error_example: |
+    org.openqa.selenium.TimeoutException: Expected condition failed: waiting for visibility of element located by By.id: submit-button
+    (tried for 30 seconds with 500 milliseconds interval)
+        at org.openqa.selenium.support.ui.WebDriverWait.timeoutException(WebDriverWait.java:95)
+        at org.openqa.selenium.support.ui.FluentWait.until(FluentWait.java:272)
   category: test
   resolution_steps:
     - "Увеличить explicit wait для нестабильных элементов"
@@ -77,8 +99,13 @@
 
 - id: assertion_mismatch
   title: "Ошибка утверждения (assertion) в тесте"
-  description: "Ожидаемое значение не совпало с фактическим"
-  error_pattern: "AssertionError"
+  description: "Ожидаемое значение не совпало с фактическим. Тест assertion failed, expected vs actual расходятся."
+  error_example: |
+    java.lang.AssertionError: expected:<200> but was:<404>
+        at org.junit.Assert.fail(Assert.java:88)
+        at org.junit.Assert.failNotEquals(Assert.java:834)
+        at org.junit.Assert.assertEquals(Assert.java:645)
+        at com.company.tests.ApiTest.testGetUserEndpoint(ApiTest.java:78)
   category: test
   resolution_steps:
     - "Сравнить ожидаемое и фактическое — определить, изменилось ли поведение"
@@ -90,8 +117,11 @@
 
 - id: missing_test_data
   title: "Отсутствуют тестовые данные"
-  description: "Тест не находит необходимые данные (записи в БД, файлы фикстур)"
-  error_pattern: "EntityNotFoundException"
+  description: "Тест не находит необходимые данные — записи в БД, файлы фикстур. EntityNotFoundException при поиске тестовых объектов."
+  error_example: |
+    javax.persistence.EntityNotFoundException: Unable to find com.company.model.User with id 12345
+        at org.hibernate.jpa.boot.internal.EntityManagerFactoryBuilderImpl.getEntityManagerFactory(EntityManagerFactoryBuilderImpl.java:123)
+        at com.company.repository.UserRepository.findById(UserRepository.java:34)
   category: data
   resolution_steps:
     - "Проверить, существуют ли ожидаемые тестовые данные в окружении"

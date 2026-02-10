@@ -7,16 +7,20 @@ from alla.knowledge.yaml_kb import YamlKnowledgeBase
 _YAML_TWO_ENTRIES = """\
 - id: entry_one
   title: "First Entry"
-  description: "First test entry"
-  error_pattern: "NullPointerException"
+  description: "NullPointerException in application service layer"
+  error_example: |
+    java.lang.NullPointerException: Cannot invoke method on null
+        at com.company.service.UserService.getUser(UserService.java:45)
   category: "service"
   resolution_steps:
     - "Fix null check"
 
 - id: entry_two
   title: "Second Entry"
-  description: "Second test entry"
-  error_pattern: "UnknownHostException"
+  description: "DNS resolution failure in test environment"
+  error_example: |
+    java.net.UnknownHostException: Failed to resolve host
+        at java.net.InetAddress.getAllByName(InetAddress.java:1281)
   category: "env"
   resolution_steps:
     - "Check DNS servers"
@@ -56,13 +60,14 @@ def test_get_entry_by_id(tmp_path) -> None:
 
 
 def test_search_by_error_finds_relevant_entry(tmp_path) -> None:
-    """search_by_error находит запись по совпадению подстроки error_pattern."""
+    """search_by_error находит запись по TF-IDF совпадению error_example."""
     yaml_file = tmp_path / "entries.yaml"
     yaml_file.write_text(_YAML_TWO_ENTRIES, encoding="utf-8")
     kb = YamlKnowledgeBase(tmp_path)
 
     results = kb.search_by_error(
-        "ERROR java.net.UnknownHostException: host not found",
+        "java.net.UnknownHostException: Failed to resolve host api-gateway.internal\n"
+        "    at java.net.InetAddress.getAllByName(InetAddress.java:1281)",
     )
 
     assert len(results) >= 1
@@ -70,14 +75,15 @@ def test_search_by_error_finds_relevant_entry(tmp_path) -> None:
     assert "entry_two" in entry_ids
 
 
-def test_search_by_error_is_case_insensitive(tmp_path) -> None:
-    """Матчинг в search_by_error регистронезависимый."""
+def test_search_by_error_matches_similar_text(tmp_path) -> None:
+    """TF-IDF матчинг находит запись по похожему, но не идентичному тексту."""
     yaml_file = tmp_path / "entries.yaml"
     yaml_file.write_text(_YAML_TWO_ENTRIES, encoding="utf-8")
     kb = YamlKnowledgeBase(tmp_path)
 
     results = kb.search_by_error(
-        "java.lang.nullpointerexception: value is null",
+        "java.lang.NullPointerException: Cannot invoke toString() on null\n"
+        "    at com.company.service.OrderService.processOrder(OrderService.java:112)",
     )
 
     assert len(results) >= 1
