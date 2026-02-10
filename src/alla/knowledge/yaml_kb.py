@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 
 from alla.exceptions import KnowledgeBaseError
-from alla.knowledge.matcher import TextMatcher
+from alla.knowledge.matcher import MatcherConfig, TextMatcher
 from alla.knowledge.models import KBEntry, KBMatchResult
 
 logger = logging.getLogger(__name__)
@@ -24,9 +24,14 @@ class YamlKnowledgeBase:
     Реализует Protocol KnowledgeBaseProvider.
     """
 
-    def __init__(self, kb_path: str | Path) -> None:
+    def __init__(
+        self,
+        kb_path: str | Path,
+        *,
+        matcher_config: MatcherConfig | None = None,
+    ) -> None:
         self._kb_path = Path(kb_path)
-        self._matcher = TextMatcher()
+        self._matcher = TextMatcher(config=matcher_config)
         self._entries: list[KBEntry] = []
         self._entries_by_id: dict[str, KBEntry] = {}
         self._load()

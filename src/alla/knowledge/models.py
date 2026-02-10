@@ -22,8 +22,8 @@ class KBEntry(BaseModel):
     id: str = Field(description="Уникальный идентификатор записи (slug)")
     title: str = Field(description="Человекочитаемое название проблемы")
     description: str = Field(default="", description="Подробное описание проблемы")
-    error_pattern: str = Field(
-        description="Подстрока для поиска в тексте ошибки (message + trace)"
+    error_example: str = Field(
+        description="Пример ошибки из лога — используется для нечёткого сопоставления (TF-IDF)"
     )
     category: RootCauseCategory = Field(
         description="Категория причины: test / service / env / data"
@@ -40,4 +40,8 @@ class KBMatchResult(BaseModel):
     score: float = Field(
         ge=0.0, le=1.0,
         description="Степень совпадения (0.0 — нет, 1.0 — полное)",
+    )
+    matched_on: list[str] = Field(
+        default_factory=list,
+        description="Объяснение совпадения (что именно совпало)",
     )
