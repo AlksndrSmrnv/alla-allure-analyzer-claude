@@ -315,15 +315,93 @@ def _pluralize_matches(count: int) -> str:
     return f"{count} совпадений"
 
 
-def _render_box(lines: list[str]) -> list[str]:
-    """Отрендерить список строк в Unicode-рамку."""
+def _wrap_text(text: str, max_width: int, indent: str = "") -> list[str]:
+    """Разбить длинную строку на несколько строк с переносом по словам.
+    
+    Args:
+        text: Исходный текст для переноса.
+        max_width: Максимальная ширина строки.
+        indent: Отступ для продолжения (continuation lines).
+    
+    Returns:
+        Список строк, каждая не длиннее max_width.
+    """
+    if max_width <= 0:
+        return [text]
+
+    if len(text) <= max_width:
+        return [text]
+
+    # Сохраняем ведущие пробелы для первой строки
+    stripped = text.lstrip()
+    first_line_indent = text[: len(text) - len(stripped)]
+
+    words = stripped.split()
+    lines: list[str] = []
+    current_line = ""
+
+    for word in words:
+        # Определяем текущий отступ: для первой строки — исходный, для остальных — переданный
+        current_indent = first_line_indent if not lines and not current_line else ""
+        
+        # Проверяем, поместится ли слово
+        if not current_line:
+            candidate = current_indent + word
+        else:
+            candidate = current_line + " " + word
+
+        if len(candidate) <= max_width:
+            current_line = candidate
+        else:
+            # Сохраняем текущую строку, если она не пуста
+            if current_line:
+                lines.append(current_line)
+            # Выбираем отступ: first_line_indent для первого слова, indent для остальных
+            word_indent = first_line_indent if not lines else indent
+            current_line = word_indent + word
+            
+            # Если даже одно слово не помещается — принудительный разрыв
+            # Используем безопасный отступ, чтобы избежать бесконечного цикла
+            safe_indent = indent if len(indent) < max_width else ""
+            while len(current_line) > max_width:
+                lines.append(current_line[:max_width])
+                current_line = safe_indent + current_line[max_width:]
+
+    if current_line:
+        lines.append(current_line)
+
+    return lines if lines else [text]
+
+
+def _render_box(lines: list[str], max_width: int = 100) -> list[str]:
+    """Отрендерить список строк в Unicode-рамку с переносом длинных строк.
+    
+    Args:
+        lines: Строки для отображения внутри рамки.
+        max_width: Максимальная ширина содержимого (по умолчанию 100).
+    
+    Returns:
+        Список строк с Unicode-рамкой.
+    """
     if not lines:
         return []
 
-    width = max(len(line) for line in lines)
+    # Переносим длинные строки
+    wrapped_lines: list[str] = []
+    for line in lines:
+        if len(line) <= max_width:
+            wrapped_lines.append(line)
+        else:
+            # Определяем отступ на основе начала строки
+            stripped = line.lstrip()
+            leading_spaces = len(line) - len(stripped)
+            indent = " " * leading_spaces if leading_spaces > 0 else "  "
+            wrapped_lines.extend(_wrap_text(line, max_width, indent))
+
+    width = max(len(line) for line in wrapped_lines) if wrapped_lines else 0
     top = f"╔{'═' * (width + 2)}╗"
     bottom = f"╚{'═' * (width + 2)}╝"
-    body = [f"║ {line.ljust(width)} ║" for line in lines]
+    body = [f"║ {line.ljust(width)} ║" for line in wrapped_lines]
 
     return [top, *body, bottom]
 

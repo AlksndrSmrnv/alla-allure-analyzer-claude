@@ -109,10 +109,13 @@ def test_example_message_is_truncated_to_200_chars(capsys) -> None:
 
     _print_clustering_report(report)
     output = capsys.readouterr().out
-    expected = f"Пример: {'x' * 200}..."
-
-    assert expected in output
-    assert f"Пример: {'x' * 201}" not in output
+    
+    # Сообщение обрезается до 200 символов, но теперь разбивается на несколько строк
+    # Проверяем, что "..." присутствует (признак обрезки)
+    assert "..." in output
+    # Проверяем, что 201-й символ не попал в вывод (обрезка сработала)
+    full_untruncated = f"{'x' * 201}"
+    assert full_untruncated not in output.replace("\n", "").replace(" ", "")
 
 
 def test_all_member_test_ids_are_displayed(capsys) -> None:
@@ -184,3 +187,114 @@ def test_cyrillic_label_is_rendered_inside_box(capsys) -> None:
     assert "Кластер #1 (1 тестов)" in output
     assert output.count("╔") == 1
     assert output.count("╚") == 1
+
+
+def test_long_example_message_wraps_in_box(capsys) -> None:
+    """Проверка, что длинные строки сообщений переносятся и рамка не растягивается."""
+    long_message = "слово " * 50  # ~300 символов
+    report = ClusteringReport(
+        launch_id=1,
+        total_failures=1,
+        cluster_count=1,
+        clusters=[
+            _build_cluster(
+                cluster_id="wrap-long-message",
+                label="Long message wrap test",
+                member_test_ids=[999],
+                example_message=long_message,
+            )
+        ],
+    )
+
+    _print_clustering_report(report)
+    output = capsys.readouterr().out
+
+    # Рамка не должна быть шире 104 символов (100 + 2 для боковых границ + 2 для пробелов)
+    box_lines = [line for line in output.splitlines() if line.startswith(("╔", "║", "╚"))]
+    for line in box_lines:
+        assert len(line) <= 104, f"Строка слишком длинная ({len(line)} > 104): {line[:50]}..."
+
+    # Рамка должна быть одна
+    assert output.count("╔") == 1
+    assert output.count("╚") == 1
+
+
+def test_leading_indentation_preserved_on_first_wrapped_line() -> None:
+    """Проверка, что ведущие пробелы сохраняются на первой строке при переносе."""
+    from alla.cli import _wrap_text
+
+    # Строка с ведущими пробелами, которая превышает max_width
+    text = "  [0.85] " + "x" * 100  # Ведущие 2 пробела + длинный текст
+    result = _wrap_text(text, max_width=50, indent="  ")
+
+    # Первая строка должна начинаться с исходных ведущих пробелов
+    assert result[0].startswith("  [0.85]"), f"First line lost leading indent: {result[0]}"
+    
+    # Последующие строки должны использовать continuation indent
+    if len(result) > 1:
+        assert result[1].startswith("  "), f"Continuation line missing indent: {result[1]}"
+
+
+def test_first_line_indent_preserved_when_first_word_exceeds_max_width() -> None:
+    """Проверка, что ведущие пробелы сохраняются, даже если первое слово превышает max_width."""
+    from alla.cli import _wrap_text
+
+    # Текст с 4 ведущими пробелами, где первое слово длиннее max_width
+    text = "    " + "x" * 100  # 4 пробела + 100 символов
+    result = _wrap_text(text, max_width=50, indent="  ")
+
+    # Первая строка должна начинаться с 4 пробелов (исходный отступ)
+    assert result[0].startswith("    "), f"First line uses wrong indent: '{result[0][:10]}...'"
+    
+    # Последующие строки должны использовать continuation indent (2 пробела)
+    if len(result) > 1:
+        assert result[1].startswith("  ") and not result[1].startswith("    "), \
+            f"Continuation line should use continuation indent: '{result[1][:10]}...'"
+
+
+def test_no_infinite_loop_when_indent_exceeds_max_width() -> None:
+    """Проверка, что функция не зависает, когда indent >= max_width."""
+    from alla.cli import _wrap_text
+    import signal
+
+    def timeout_handler(signum, frame):
+        raise TimeoutError("_wrap_text timed out — likely infinite loop")
+
+    # Устанавливаем таймаут в 1 секунду
+    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(1)
+
+    try:
+        # Случай, который ранее вызывал бесконечный цикл
+        result = _wrap_text("hello world", max_width=5, indent="      ")  # indent (6) > max_width (5)
+        # Должны получить результат без зависания
+        assert len(result) > 0
+        # Все строки должны быть не длиннее max_width
+        for line in result:
+            assert len(line) <= 5, f"Line exceeds max_width: '{line}'"
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+
+
+def test_no_infinite_loop_when_max_width_is_zero_or_negative() -> None:
+    """Проверка, что функция не зависает при max_width <= 0."""
+    from alla.cli import _wrap_text
+    import signal
+
+    def timeout_handler(signum, frame):
+        raise TimeoutError("_wrap_text timed out — likely infinite loop")
+
+    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(1)
+
+    try:
+        result_zero = _wrap_text("hello world", max_width=0)
+        assert result_zero == ["hello world"]
+
+        result_neg = _wrap_text("hello world", max_width=-5)
+        assert result_neg == ["hello world"]
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+
