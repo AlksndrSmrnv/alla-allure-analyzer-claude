@@ -254,8 +254,7 @@ def _print_clustering_report(
                     f"  [{m.score:.2f}] {m.entry.title}"
                 )
                 cluster_lines.append(
-                    f"         Причина: {m.entry.root_cause.value}"
-                    f" | Срочность: {m.entry.severity.value}"
+                    f"         Категория: {m.entry.category.value}"
                 )
                 for step in m.entry.resolution_steps[:2]:
                     step_text = step if len(step) <= 80 else step[:77] + "..."

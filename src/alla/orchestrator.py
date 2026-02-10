@@ -112,17 +112,10 @@ async def analyze_launch(
     # 3. Поиск по базе знаний
     if settings.kb_enabled and clustering_report is not None:
         from alla.exceptions import KnowledgeBaseError
-        from alla.knowledge.matcher import MatcherConfig
         from alla.knowledge.yaml_kb import YamlKnowledgeBase
 
         try:
-            kb = YamlKnowledgeBase(
-                kb_path=settings.kb_path,
-                matcher_config=MatcherConfig(
-                    min_score=settings.kb_min_score,
-                    max_results=settings.kb_max_results,
-                ),
-            )
+            kb = YamlKnowledgeBase(kb_path=settings.kb_path)
         except KnowledgeBaseError:
             raise
 
@@ -131,23 +124,22 @@ async def analyze_launch(
 
         for cluster in clustering_report.clusters:
             try:
-                # Обогатить trace лог-сниппетом представителя кластера
-                augmented_trace = cluster.example_trace_snippet
+                # Собрать текст ошибки: message + trace + лог
+                error_parts: list[str] = []
+                if cluster.example_message:
+                    error_parts.append(cluster.example_message)
+                if cluster.example_trace_snippet:
+                    error_parts.append(cluster.example_trace_snippet)
                 if settings.logs_enabled and cluster.member_test_ids:
                     rep = _test_by_id.get(cluster.member_test_ids[0])
                     if rep and rep.log_snippet:
-                        log_ctx = rep.log_snippet[:2000]
-                        augmented_trace = (
-                            (augmented_trace or "") + "\n[LOG]\n" + log_ctx
-                        )
+                        error_parts.append(rep.log_snippet[:2000])
 
-                matches = kb.search_by_failure(
-                    status_message=cluster.example_message,
-                    status_trace=augmented_trace,
-                    category=cluster.signature.category,
-                )
-                if matches:
-                    kb_results[cluster.cluster_id] = matches
+                error_text = "\n".join(error_parts)
+                if error_text.strip():
+                    matches = kb.search_by_error(error_text)
+                    if matches:
+                        kb_results[cluster.cluster_id] = matches
             except Exception as exc:
                 logger.warning(
                     "Ошибка KB-поиска для кластера %s: %s",

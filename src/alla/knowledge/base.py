@@ -16,23 +16,11 @@ class KnowledgeBaseProvider(Protocol):
     - Будущее: VectorKnowledgeBase (RAG): ищет по эмбеддингам в vector DB
     """
 
-    def search_by_failure(
+    def search_by_error(
         self,
-        status_message: str | None,
-        status_trace: str | None,
-        category: str | None,
+        error_text: str,
     ) -> list[KBMatchResult]:
-        """Найти записи KB, релевантные конкретной ошибке теста."""
-        ...
-
-    def search_by_text(
-        self,
-        query_text: str,
-        *,
-        max_results: int = 5,
-        min_score: float = 0.0,
-    ) -> list[KBMatchResult]:
-        """Поиск по произвольному тексту (для будущей интеграции с LLM)."""
+        """Найти записи KB, релевантные тексту ошибки."""
         ...
 
     def get_all_entries(self) -> list[KBEntry]:

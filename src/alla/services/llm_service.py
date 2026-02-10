@@ -28,58 +28,49 @@ def build_cluster_prompt(
     Включает: label, member_count, example_message, example_trace_snippet,
     опционально log_snippet и KB-совпадения для контекста.
     """
-    parts: list[str] = [
-        "Анализируй кластер ошибок из автотестов.",
-        "",
-        f"Кластер: {cluster.label}",
-        f"Количество тестов с этой ошибкой: {cluster.member_count}",
-    ]
+    parts: list[str] = []
+
+    # --- Данные для анализа ---
+    parts.append(f"Кластер: {cluster.label}")
+    parts.append(f"Тестов: {cluster.member_count}")
 
     if cluster.example_message:
         msg = cluster.example_message
         if len(msg) > 2000:
             msg = msg[:2000] + "...[обрезано]"
-        parts.append("")
-        parts.append("Сообщение об ошибке:")
-        parts.append(msg)
+        parts.append(f"\nОшибка:\n{msg}")
 
     if cluster.example_trace_snippet:
         trace = cluster.example_trace_snippet
         if len(trace) > 3000:
             trace = trace[:3000] + "...[обрезано]"
-        parts.append("")
-        parts.append("Стек-трейс (фрагмент):")
-        parts.append(trace)
+        parts.append(f"\nСтек-трейс:\n{trace}")
 
     if log_snippet:
         snippet = log_snippet
         if len(snippet) > 2000:
             snippet = snippet[:2000] + "...[обрезано]"
-        parts.append("")
-        parts.append("Фрагмент лога приложения:")
-        parts.append(snippet)
+        parts.append(f"\nЛог:\n{snippet}")
 
     if kb_matches:
-        parts.append("")
-        parts.append("Известные проблемы из базы знаний:")
+        parts.append("\nИзвестные проблемы:")
         for m in kb_matches[:3]:
-            parts.append(f"  [{m.score:.2f}] {m.entry.title}")
-            parts.append(f"    Описание: {m.entry.description}")
-            parts.append(f"    Причина: {m.entry.root_cause.value}")
-            parts.append(f"    Срочность: {m.entry.severity.value}")
-            if m.entry.resolution_steps:
-                parts.append("    Шаги по устранению:")
-                for step in m.entry.resolution_steps:
-                    parts.append(f"      - {step}")
-            if m.entry.related_links:
-                parts.append(f"    Ссылки: {', '.join(m.entry.related_links)}")
+            entry = m.entry
+            parts.append(f"- {entry.title} (категория: {entry.category.value})")
+            if entry.resolution_steps:
+                parts.append(f"  Решение: {'; '.join(entry.resolution_steps)}")
 
-    parts.append("")
+    # --- Инструкция ---
     parts.append(
-        "На основе ошибки и информации из базы знаний (если есть):\n"
-        "1. Определи вероятную корневую причину (тест/приложение/окружение/данные).\n"
-        "2. Сформулируй конкретную рекомендацию по устранению.\n"
-        "3. Оцени критичность (critical/high/medium/low)."
+        "\n---\n"
+        "Задача: кратко проанализируй ошибку. "
+        "Ответ строго в формате (каждый пункт — одно предложение):\n"
+        "\n"
+        "Причина: тест | приложение | окружение | данные\n"
+        "Что случилось: <одно предложение>\n"
+        "Что делать: <одно предложение>\n"
+        "\n"
+        "Не добавляй ничего лишнего. Только эти 3 строки."
     )
 
     return "\n".join(parts)
