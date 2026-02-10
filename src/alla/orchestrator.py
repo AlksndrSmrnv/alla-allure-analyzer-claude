@@ -10,14 +10,15 @@ from typing import TYPE_CHECKING
 from alla.clients.base import TestResultsProvider, TestResultsUpdater
 from alla.config import Settings
 from alla.knowledge.models import KBMatchResult
-from alla.models.clustering import ClusteringReport
-from alla.models.testops import TriageReport
+from alla.models.clustering import ClusteringReport, FailureCluster
+from alla.models.testops import FailedTestSummary, TriageReport
 from alla.services.kb_push_service import KBPushResult
 
 if TYPE_CHECKING:
     from alla.models.llm import LLMAnalysisResult, LLMPushResult
 
 logger = logging.getLogger(__name__)
+_KB_QUERY_LOG_PREVIEW_CHARS = 220
 
 
 @dataclass
@@ -118,30 +119,37 @@ async def analyze_launch(
             raise
 
         # Индекс test_result_id → FailedTestSummary для быстрого lookup
-        _test_by_id = {t.test_result_id: t for t in report.failed_tests}
+        test_by_id = {t.test_result_id: t for t in report.failed_tests}
 
         for cluster in clustering_report.clusters:
             try:
-                # Собрать полный текст ошибки для KB-поиска:
-                # message + полный trace + лог (без обрезки trace до 5 строк)
-                rep = _test_by_id.get(cluster.representative_test_id) if cluster.representative_test_id else None
-                error_parts: list[str] = []
-                if rep:
-                    if rep.status_message:
-                        error_parts.append(rep.status_message)
-                    if rep.status_trace:
-                        error_parts.append(rep.status_trace)
-                    if rep.log_snippet:
-                        error_parts.append(rep.log_snippet)
-                else:
-                    if cluster.example_message:
-                        error_parts.append(cluster.example_message)
-                    if cluster.example_trace_snippet:
-                        error_parts.append(cluster.example_trace_snippet)
-
-                error_text = "\n".join(error_parts)
+                error_text, message_len, trace_len, log_chars, log_test_ids = (
+                    _build_kb_query_text(cluster, test_by_id)
+                )
                 if error_text.strip():
-                    matches = kb.search_by_error(error_text)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "KB query [%s]: rep_test_id=%s, message_len=%d, "
+                            "trace_len=%d, log_chars=%d, log_tests=%s, total_len=%d",
+                            cluster.cluster_id,
+                            cluster.representative_test_id,
+                            message_len,
+                            trace_len,
+                            log_chars,
+                            log_test_ids,
+                            len(error_text),
+                        )
+                        logger.debug(
+                            "KB query [%s] preview: head='%s' tail='%s'",
+                            cluster.cluster_id,
+                            _preview_head(error_text, _KB_QUERY_LOG_PREVIEW_CHARS),
+                            _preview_tail(error_text, _KB_QUERY_LOG_PREVIEW_CHARS),
+                        )
+
+                    matches = kb.search_by_error(
+                        error_text,
+                        query_label=cluster.cluster_id,
+                    )
                     if matches:
                         kb_results[cluster.cluster_id] = matches
             except Exception as exc:
@@ -258,3 +266,89 @@ async def analyze_launch(
         llm_result=llm_result,
         llm_push_result=llm_push_result,
     )
+
+
+def _build_kb_query_text(
+    cluster: FailureCluster,
+    test_by_id: dict[int, FailedTestSummary],
+) -> tuple[str, int, int, int, list[int]]:
+    """Собрать текст запроса для KB из message/trace и ERROR-логов кластера."""
+    representative = (
+        test_by_id.get(cluster.representative_test_id)
+        if cluster.representative_test_id is not None
+        else None
+    )
+
+    message = (
+        representative.status_message
+        if representative and representative.status_message
+        else cluster.example_message
+    ) or ""
+    trace = (
+        representative.status_trace
+        if representative and representative.status_trace
+        else cluster.example_trace_snippet
+    ) or ""
+
+    log_sources = _collect_cluster_log_snippets(cluster, test_by_id)
+    log_blocks = [
+        f"[LOG test_result_id={test_id}]\n{snippet}"
+        for test_id, snippet in log_sources
+    ]
+    log_text = "\n\n".join(log_blocks)
+
+    parts = [part for part in (message, trace, log_text) if part]
+    query_text = "\n".join(parts)
+    return (
+        query_text,
+        len(message),
+        len(trace),
+        len(log_text),
+        [test_id for test_id, _ in log_sources],
+    )
+
+
+def _collect_cluster_log_snippets(
+    cluster: FailureCluster,
+    test_by_id: dict[int, FailedTestSummary],
+    *,
+    max_logs: int = 3,
+) -> list[tuple[int, str]]:
+    """Собрать до ``max_logs`` непустых log_snippet из тестов кластера."""
+    ordered_test_ids: list[int] = []
+    if cluster.representative_test_id is not None:
+        ordered_test_ids.append(cluster.representative_test_id)
+    ordered_test_ids.extend(cluster.member_test_ids)
+
+    seen: set[int] = set()
+    selected: list[tuple[int, str]] = []
+    for test_id in ordered_test_ids:
+        if test_id in seen:
+            continue
+        seen.add(test_id)
+
+        summary = test_by_id.get(test_id)
+        if summary is None or not summary.log_snippet:
+            continue
+
+        snippet = summary.log_snippet.strip()
+        if not snippet:
+            continue
+
+        selected.append((test_id, snippet))
+        if len(selected) >= max_logs:
+            break
+
+    return selected
+
+
+def _preview_head(text: str, max_chars: int) -> str:
+    """Сжать head-preview для DEBUG-логов одной строкой."""
+    return text[:max_chars].replace("\n", " ")
+
+
+def _preview_tail(text: str, max_chars: int) -> str:
+    """Сжать tail-preview для DEBUG-логов одной строкой."""
+    if len(text) <= max_chars:
+        return text.replace("\n", " ")
+    return text[-max_chars:].replace("\n", " ")
