@@ -147,8 +147,8 @@ class LLMService:
 
             # Получить log_snippet представителя кластера
             log_snippet: str | None = None
-            if test_by_id and cluster.member_test_ids:
-                rep = test_by_id.get(cluster.member_test_ids[0])
+            if test_by_id and cluster.representative_test_id:
+                rep = test_by_id.get(cluster.representative_test_id)
                 if rep:
                     log_snippet = rep.log_snippet
 

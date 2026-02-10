@@ -124,7 +124,7 @@ async def analyze_launch(
             try:
                 # Собрать полный текст ошибки для KB-поиска:
                 # message + полный trace + лог (без обрезки trace до 5 строк)
-                rep = _test_by_id.get(cluster.member_test_ids[0]) if cluster.member_test_ids else None
+                rep = _test_by_id.get(cluster.representative_test_id) if cluster.representative_test_id else None
                 error_parts: list[str] = []
                 if rep:
                     if rep.status_message:
