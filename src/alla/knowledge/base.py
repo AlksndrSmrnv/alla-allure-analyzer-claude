@@ -19,6 +19,8 @@ class KnowledgeBaseProvider(Protocol):
     def search_by_error(
         self,
         error_text: str,
+        *,
+        query_label: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки."""
         ...

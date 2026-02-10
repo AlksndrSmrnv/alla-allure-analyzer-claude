@@ -16,6 +16,8 @@ class TextMatcher:
         self,
         error_text: str,
         entries: list[KBEntry],
+        *,
+        query_label: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, чей error_pattern содержится в тексте ошибки.
 
@@ -40,14 +42,32 @@ class TextMatcher:
             if pattern.lower() in text_lower:
                 results.append(KBMatchResult(entry=entry, score=1.0))
                 logger.debug(
-                    "KB совпадение: '%s' (id=%s), паттерн='%s'",
+                    "KB совпадение%s: '%s' (id=%s), паттерн='%s'",
+                    f" [{query_label}]" if query_label else "",
                     entry.title,
                     entry.id,
                     pattern,
                 )
 
-        if not results:
-            preview = error_text[:150].replace("\n", " ")
-            logger.debug("KB: нет совпадений для запроса='%s'", preview)
+        if not results and logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "KB: нет совпадений%s (query_len=%d, head='%s', tail='%s')",
+                f" [{query_label}]" if query_label else "",
+                len(error_text),
+                _preview_head(error_text, 220),
+                _preview_tail(error_text, 220),
+            )
 
         return results
+
+
+def _preview_head(text: str, max_chars: int) -> str:
+    """Сжать head-preview для DEBUG-логов одной строкой."""
+    return text[:max_chars].replace("\n", " ")
+
+
+def _preview_tail(text: str, max_chars: int) -> str:
+    """Сжать tail-preview для DEBUG-логов одной строкой."""
+    if len(text) <= max_chars:
+        return text.replace("\n", " ")
+    return text[-max_chars:].replace("\n", " ")

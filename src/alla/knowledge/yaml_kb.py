@@ -102,9 +102,18 @@ class YamlKnowledgeBase:
             self._kb_path,
         )
 
-    def search_by_error(self, error_text: str) -> list[KBMatchResult]:
+    def search_by_error(
+        self,
+        error_text: str,
+        *,
+        query_label: str | None = None,
+    ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки."""
-        return self._matcher.match(error_text, self._entries)
+        return self._matcher.match(
+            error_text,
+            self._entries,
+            query_label=query_label,
+        )
 
     def get_all_entries(self) -> list[KBEntry]:
         """Вернуть все записи."""
