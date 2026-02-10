@@ -23,6 +23,7 @@ class FailureCluster(BaseModel):
     signature: ClusterSignature
     member_test_ids: list[int] = Field(default_factory=list)
     member_count: int = 0
+    representative_test_id: int | None = None
     example_message: str | None = None
     example_trace_snippet: str | None = None
 

@@ -548,6 +548,7 @@ class ClusteringService:
             signature=signature,
             member_test_ids=member_ids,
             member_count=len(member_ids),
+            representative_test_id=representative.test_result_id,
             example_message=representative.status_message,
             example_trace_snippet=_first_n_lines(
                 representative.status_trace,
