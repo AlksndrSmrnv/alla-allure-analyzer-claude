@@ -208,6 +208,7 @@ class LogExtractionService:
                 combined,
                 test_start_ms=summary.test_start_ms,
                 duration_ms=summary.duration_ms,
+                test_result_id=summary.test_result_id,
             )
 
             max_bytes = self._config.max_size_kb * 1024
@@ -266,6 +267,7 @@ class LogExtractionService:
         log_text: str,
         test_start_ms: int | None,
         duration_ms: int | None,
+        test_result_id: int | None = None,
     ) -> str:
         """Оставить только строки лога, попадающие в time-window теста.
 
@@ -303,7 +305,7 @@ class LogExtractionService:
             logger.debug(
                 "Логи тест %s: timestamp-ов не найдено, "
                 "возвращаем весь лог (%d строк)",
-                getattr(self, "_current_test_id", "?"),
+                test_result_id if test_result_id is not None else "?",
                 len(lines),
             )
             return log_text
