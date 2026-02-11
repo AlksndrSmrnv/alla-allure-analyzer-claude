@@ -142,36 +142,34 @@ class TextMatcher:
             t1_score = self._tier1_exact_substring(
                 query_collapsed, example_collapsed[i],
             )
-            if t1_score is not None:
-                if t1_score >= cfg.min_score:
-                    results.append(KBMatchResult(
-                        entry=entry,
-                        score=round(t1_score, 4),
-                        matched_on=[f"Tier 1: exact substring match (score={t1_score:.2f})"],
-                    ))
-                    logger.debug(
-                        "KB Tier 1%s: '%s' (id=%s), score=%.4f",
-                        f" [{query_label}]" if query_label else "",
-                        entry.title, entry.id, t1_score,
-                    )
+            if t1_score is not None and t1_score >= cfg.min_score:
+                results.append(KBMatchResult(
+                    entry=entry,
+                    score=round(t1_score, 4),
+                    matched_on=[f"Tier 1: exact substring match (score={t1_score:.2f})"],
+                ))
+                logger.debug(
+                    "KB Tier 1%s: '%s' (id=%s), score=%.4f",
+                    f" [{query_label}]" if query_label else "",
+                    entry.title, entry.id, t1_score,
+                )
                 continue
 
             # Tier 2: line match
             t2_score = self._tier2_line_match(
                 query_collapsed, example_normalized[i],
             )
-            if t2_score is not None:
-                if t2_score >= cfg.min_score:
-                    results.append(KBMatchResult(
-                        entry=entry,
-                        score=round(t2_score, 4),
-                        matched_on=[f"Tier 2: line match (score={t2_score:.2f})"],
-                    ))
-                    logger.debug(
-                        "KB Tier 2%s: '%s' (id=%s), score=%.4f",
-                        f" [{query_label}]" if query_label else "",
-                        entry.title, entry.id, t2_score,
-                    )
+            if t2_score is not None and t2_score >= cfg.min_score:
+                results.append(KBMatchResult(
+                    entry=entry,
+                    score=round(t2_score, 4),
+                    matched_on=[f"Tier 2: line match (score={t2_score:.2f})"],
+                ))
+                logger.debug(
+                    "KB Tier 2%s: '%s' (id=%s), score=%.4f",
+                    f" [{query_label}]" if query_label else "",
+                    entry.title, entry.id, t2_score,
+                )
                 continue
 
             # Не совпало по Tier 1/2 → кандидат для Tier 3
