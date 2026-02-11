@@ -45,6 +45,11 @@ class Settings(BaseSettings):
         ge=1,
         description="Максимум KB-совпадений на один кластер",
     )
+    kb_include_trace: bool = Field(
+        default=True,
+        description="Включать Allure-trace (stack trace) в текст запроса для KB-поиска. "
+        "Отключить, если trace слишком большой и мешает matching.",
+    )
     kb_push_enabled: bool = Field(
         default=False,
         description="Записывать рекомендации KB обратно в Allure TestOps через комментарии к тест-кейсам",
