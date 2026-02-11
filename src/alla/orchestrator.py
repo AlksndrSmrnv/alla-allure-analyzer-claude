@@ -132,7 +132,10 @@ async def analyze_launch(
         for cluster in clustering_report.clusters:
             try:
                 error_text, message_len, trace_len, log_chars, log_test_ids = (
-                    _build_kb_query_text(cluster, test_by_id)
+                    _build_kb_query_text(
+                        cluster, test_by_id,
+                        include_trace=settings.kb_include_trace,
+                    )
                 )
                 if error_text.strip():
                     if logger.isEnabledFor(logging.DEBUG):
@@ -279,8 +282,17 @@ async def analyze_launch(
 def _build_kb_query_text(
     cluster: FailureCluster,
     test_by_id: dict[int, FailedTestSummary],
+    *,
+    include_trace: bool = True,
 ) -> tuple[str, int, int, int, list[int]]:
-    """Собрать текст запроса для KB из message/trace и ERROR-логов кластера."""
+    """Собрать текст запроса для KB из message/trace и ERROR-логов кластера.
+
+    Args:
+        cluster: Кластер падений.
+        test_by_id: Словарь test_result_id → FailedTestSummary.
+        include_trace: Включать ли Allure-trace (stack trace) в query.
+            Управляется через ``ALLURE_KB_INCLUDE_TRACE``.
+    """
     representative = (
         test_by_id.get(cluster.representative_test_id)
         if cluster.representative_test_id is not None
@@ -292,11 +304,13 @@ def _build_kb_query_text(
         if representative and representative.status_message
         else cluster.example_message
     ) or ""
-    trace = (
-        representative.status_trace
-        if representative and representative.status_trace
-        else cluster.example_trace_snippet
-    ) or ""
+    trace = ""
+    if include_trace:
+        trace = (
+            representative.status_trace
+            if representative and representative.status_trace
+            else cluster.example_trace_snippet
+        ) or ""
 
     log_sources = _collect_cluster_log_snippets(cluster, test_by_id)
     log_blocks = [
