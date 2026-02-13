@@ -4,28 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
-
 from alla.clients.base import TestResultsUpdater
 from alla.clients.langflow_client import LangflowClient
 from alla.knowledge.models import KBMatchResult
 from alla.models.clustering import ClusteringReport, FailureCluster
 from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis, LLMPushResult
 from alla.models.testops import FailedTestSummary, TriageReport
+from alla.utils.log_utils import has_explicit_errors
 
 logger = logging.getLogger(__name__)
 
 _LLM_HEADER = "[alla] LLM-анализ ошибки"
 _SEPARATOR = "=" * 40
-
-# Паттерны явных ошибок в логах приложения
-_LOG_ERROR_RE = re.compile(
-    r"\b(?:ERROR|FATAL|SEVERE|CRITICAL)\b"
-    r"|(?:Exception|Error|Traceback|Caused by)\b"
-    r"|(?:FAILED|Failed to)\b",
-    re.IGNORECASE,
-)
-
 
 def _interpret_kb_score(score: float) -> str:
     """Перевести числовой KB-score в текстовое описание уровня уверенности."""
@@ -34,13 +24,6 @@ def _interpret_kb_score(score: float) -> str:
     if score >= 0.4:
         return "частичное совпадение"
     return "слабое совпадение"
-
-
-def _has_explicit_errors(log_snippet: str | None) -> bool:
-    """Проверить наличие явных маркеров ошибок в лог-фрагменте."""
-    if not log_snippet:
-        return False
-    return bool(_LOG_ERROR_RE.search(log_snippet))
 
 
 def build_cluster_prompt(
@@ -192,7 +175,7 @@ class LLMService:
                     log_snippet = rep.log_snippet
 
             has_log = bool(log_snippet and log_snippet.strip())
-            has_log_errors = _has_explicit_errors(log_snippet) if has_log else False
+            has_log_errors = has_explicit_errors(log_snippet) if has_log else False
             kb_count = len(kb_matches) if kb_matches else 0
 
             logger.info(
