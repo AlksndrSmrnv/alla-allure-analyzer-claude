@@ -1,19 +1,13 @@
 # База знаний alla — известные ошибки и рекомендации по устранению
 #
-# Формат: YAML-список записей. Каждая запись описывает один класс проблем
-# с критериями сопоставления и шагами по устранению.
-#
+# Формат: YAML-список записей.
 # Поля:
-#   id            — уникальный slug записи
-#   title         — краткое название проблемы
-#   description   — подробное описание
-#   root_cause    — категория причины: test | app | env | data
-#   severity      — срочность: critical | high | medium | low | info
-#   match_criteria — критерии поиска (keywords, message_patterns, trace_patterns,
-#                    exception_types, categories)
+#   id               — уникальный slug записи
+#   title            — краткое название проблемы
+#   description      — подробное описание
+#   error_example    — пример ошибки из лога (используется для нечёткого TF-IDF сопоставления)
+#   category         — категория причины: test | service | env | data
 #   resolution_steps — шаги по устранению
-#   related_links — ссылки на документацию
-#   tags          — теги для фильтрации
 
 # ============================================================================
 # env — проблемы окружения
@@ -21,314 +15,101 @@
 
 - id: dns_resolution_failure
   title: "Ошибка DNS-резолвинга в тестовом окружении"
-  description: |
-    Тесты не могут резолвить DNS-имена сервисов. Обычно связано с нестабильностью
-    DNS-серверов в тестовом контуре или неправильной конфигурацией /etc/resolv.conf
-    в контейнерах.
-  root_cause: env
-  severity: high
-  match_criteria:
-    keywords:
-      - dns
-      - resolve
-      - resolution
-      - nameserver
-      - nslookup
-    message_patterns:
-      - "UnknownHostException"
-      - "Name or service not known"
-      - "Temporary failure in name resolution"
-      - "Could not resolve host"
-      - "nodename nor servname provided"
-    trace_patterns:
-      - "java.net.UnknownHostException"
-      - "getaddrinfo"
-      - "socket.gaierror"
-    exception_types:
-      - "UnknownHostException"
-      - "DNSError"
-      - "gaierror"
-    categories:
-      - "Infrastructure defects"
+  description: "Тесты не могут резолвить DNS-имена сервисов. Проблема с DNS-серверами или конфигурацией контейнеров."
+  error_example: |
+    java.net.UnknownHostException: Failed to resolve 'api-gateway.staging.internal'
+        at java.net.InetAddress.getAllByName(InetAddress.java:1281)
+        at java.net.InetAddress.getByName(InetAddress.java:1187)
+    Caused by: Unable to resolve host api-gateway.staging.internal: No address associated with hostname
+  category: env
   resolution_steps:
-    - "Проверить доступность DNS-серверов из тестового окружения: nslookup <service-name>"
-    - "Проверить /etc/resolv.conf в контейнерах тестового окружения"
-    - "Проверить сетевые политики (NetworkPolicy) в Kubernetes, если применимо"
-    - "Попробовать перезапустить CoreDNS/kube-dns pods"
-    - "Если проблема повторяется, добавить fallback DNS-сервер (8.8.8.8)"
-  related_links: []
-  tags:
-    - infrastructure
-    - network
-    - dns
+    - "Проверить доступность DNS-серверов: nslookup <service-name>"
+    - "Проверить /etc/resolv.conf в контейнерах"
 
 - id: connection_timeout
   title: "Таймаут подключения к сервису"
-  description: |
-    Тесты не могут установить TCP-соединение с целевым сервисом в пределах
-    заданного таймаута. Может быть вызвано недоступностью сервиса, перегрузкой
-    или проблемами маршрутизации.
-  root_cause: env
-  severity: high
-  match_criteria:
-    keywords:
-      - timeout
-      - timed out
-      - connection refused
-      - connect
-    message_patterns:
-      - "Connection timed out"
-      - "Connection refused"
-      - "connect timed out"
-      - "Read timed out"
-      - "SocketTimeoutException"
-      - "ConnectTimeoutError"
-    trace_patterns:
-      - "java.net.ConnectException"
-      - "java.net.SocketTimeoutException"
-      - "urllib3.exceptions.ConnectTimeoutError"
-      - "requests.exceptions.ConnectionError"
-    exception_types:
-      - "ConnectException"
-      - "SocketTimeoutException"
-      - "ConnectTimeoutError"
-      - "ConnectionError"
-    categories:
-      - "Infrastructure defects"
+  description: "Тесты не могут установить TCP-соединение с целевым сервисом. Сервис не запущен или недоступен по сети."
+  error_example: |
+    java.net.SocketTimeoutException: Connect timed out
+        at java.net.Socket.connect(Socket.java:601)
+        at org.apache.http.conn.socket.PlainConnectionSocketFactory.connectSocket(PlainConnectionSocketFactory.java:75)
+    Caused by: Connection timed out connecting to service-endpoint:8080
+  category: env
   resolution_steps:
     - "Проверить доступность сервиса: curl -v <service-url>"
     - "Проверить, что сервис запущен и прошёл health-check"
-    - "Проверить firewall-правила и сетевые политики"
-    - "Проверить лимиты ресурсов (CPU/Memory) у pods сервиса"
-    - "Увеличить таймаут подключения, если сервис медленно стартует"
-  related_links: []
-  tags:
-    - infrastructure
-    - network
-    - timeout
 
 - id: ssl_certificate_error
   title: "Ошибка SSL-сертификата"
-  description: |
-    SSL/TLS handshake завершился с ошибкой. Обычно это просроченный или
-    самоподписанный сертификат в тестовом окружении.
-  root_cause: env
-  severity: medium
-  match_criteria:
-    keywords:
-      - ssl
-      - certificate
-      - tls
-      - handshake
-    message_patterns:
-      - "SSL"
-      - "certificate"
-      - "PKIX path"
-      - "unable to find valid certification path"
-      - "SSL: CERTIFICATE_VERIFY_FAILED"
-      - "SSLHandshakeException"
-    trace_patterns:
-      - "javax.net.ssl.SSLHandshakeException"
-      - "sun.security.provider.certpath.SunCertPathBuilderException"
-      - "ssl.SSLCertVerificationError"
-    exception_types:
-      - "SSLHandshakeException"
-      - "SSLCertVerificationError"
-      - "CertPathBuilderException"
-    categories: []
+  description: "SSL/TLS handshake завершился с ошибкой. Сертификат просрочен, невалидный или нет доверия к CA."
+  error_example: |
+    javax.net.ssl.SSLHandshakeException: PKIX path building failed
+        at sun.security.ssl.Alert.createSSLException(Alert.java:131)
+    Caused by: sun.security.validator.ValidatorException: PKIX path building failed
+    Caused by: java.security.cert.CertPathBuilderException: unable to find valid certification path to requested target
+  category: env
   resolution_steps:
     - "Проверить срок действия сертификата: openssl s_client -connect <host>:443"
     - "Обновить/перевыпустить сертификат, если просрочен"
-    - "Добавить CA-сертификат в truststore тестового окружения"
-    - "Для тестового окружения: рассмотреть отключение проверки SSL (только для тестов!)"
-  related_links: []
-  tags:
-    - infrastructure
-    - ssl
-    - security
 
 # ============================================================================
-# app — проблемы в приложении
+# service — проблемы в смежном сервисе
 # ============================================================================
 
 - id: null_pointer_exception
   title: "NullPointerException в коде приложения"
-  description: |
-    Приложение выбрасывает NullPointerException. Это дефект в коде приложения —
-    обращение к null-ссылке в Java или аналог в других языках.
-  root_cause: app
-  severity: high
-  match_criteria:
-    keywords:
-      - "null"
-      - "NullPointer"
-      - "NoneType"
-      - "undefined is not"
-    message_patterns:
-      - "NullPointerException"
-      - "Cannot invoke"
-      - "NoneType"
-      - "has no attribute"
-      - "null pointer dereference"
-      - "TypeError: Cannot read properties of null"
-      - "TypeError: Cannot read properties of undefined"
-    trace_patterns:
-      - "java.lang.NullPointerException"
-      - "AttributeError: 'NoneType' object"
-      - "TypeError: Cannot read"
-    exception_types:
-      - "NullPointerException"
-      - "AttributeError"
-      - "TypeError"
-    categories:
-      - "Product defects"
+  description: "Приложение выбрасывает NullPointerException — дефект в коде сервиса, объект не инициализирован."
+  error_example: |
+    java.lang.NullPointerException: Cannot invoke method on null object reference
+        at com.company.service.UserService.getUser(UserService.java:45)
+        at com.company.controller.UserController.handleRequest(UserController.java:112)
+  category: service
   resolution_steps:
     - "Определить, какой объект оказался null (см. стек-трейс)"
-    - "Проверить, присутствуют ли необходимые данные в БД / конфиге"
     - "Создать баг-репорт с точным стеком и шагами воспроизведения"
-    - "В качестве workaround: замьютить тесты до фикса, если блокирует регрессию"
-  related_links: []
-  tags:
-    - application
-    - bug
-    - null-reference
 
 - id: database_deadlock
   title: "Deadlock в базе данных"
-  description: |
-    Запрос к базе данных завершился ошибкой из-за взаимной блокировки (deadlock).
-    Может возникать при параллельном выполнении тестов, работающих с одними данными.
-  root_cause: app
-  severity: high
-  match_criteria:
-    keywords:
-      - deadlock
-      - lock
-      - "lock wait"
-    message_patterns:
-      - "Deadlock found"
-      - "Lock wait timeout exceeded"
-      - "deadlock detected"
-      - "could not obtain lock"
-      - "ORA-00060"
-    trace_patterns:
-      - "com.mysql.cj.jdbc.exceptions.MySQLTransactionRollbackException"
-      - "org.postgresql.util.PSQLException"
-      - "java.sql.SQLException"
-    exception_types:
-      - "MySQLTransactionRollbackException"
-      - "PSQLException"
-      - "DeadlockLoserDataAccessException"
-    categories:
-      - "Product defects"
+  description: "Запрос к БД завершился ошибкой из-за взаимной блокировки транзакций. Deadlock detected при конкурентных запросах."
+  error_example: |
+    org.hibernate.exception.LockAcquisitionException: could not execute statement
+    Caused by: com.mysql.cj.jdbc.exceptions.MySQLTransactionRollbackException: Deadlock found when trying to get lock; try restarting transaction
+        at com.mysql.cj.jdbc.exceptions.SQLExceptionsMapping.translateException(SQLExceptionsMapping.java:64)
+  category: service
   resolution_steps:
-    - "Проверить, какие таблицы/строки участвуют в deadlock (SHOW ENGINE INNODB STATUS)"
-    - "Проверить порядок доступа к таблицам в транзакциях"
+    - "Проверить, какие таблицы участвуют в deadlock"
     - "Снизить параллелизм тестов, работающих с одними данными"
-    - "Добавить retry-логику в приложение для deadlock-ситуаций"
-  related_links: []
-  tags:
-    - application
-    - database
-    - concurrency
 
 # ============================================================================
 # test — проблемы в тест-коде
 # ============================================================================
 
 - id: flaky_assertion_timeout
-  title: "Нестабильный тест: таймаут ожидания элемента/условия"
-  description: |
-    Тест падает по таймауту при ожидании UI-элемента, HTTP-ответа или другого
-    условия. Характерный признак flaky-теста с недостаточным ожиданием или
-    race condition в проверке.
-  root_cause: test
-  severity: medium
-  match_criteria:
-    keywords:
-      - wait
-      - timeout
-      - flaky
-      - element
-      - visible
-      - clickable
-    message_patterns:
-      - "Timed out after"
-      - "Expected condition failed"
-      - "waiting for"
-      - "element not found"
-      - "NoSuchElementException"
-      - "TimeoutException"
-      - "Element is not clickable"
-      - "StaleElementReferenceException"
-    trace_patterns:
-      - "org.openqa.selenium.TimeoutException"
-      - "org.openqa.selenium.NoSuchElementException"
-      - "org.openqa.selenium.StaleElementReferenceException"
-      - "selenium.common.exceptions.TimeoutException"
-    exception_types:
-      - "TimeoutException"
-      - "NoSuchElementException"
-      - "StaleElementReferenceException"
-    categories:
-      - "Test defects"
+  title: "Нестабильный тест: таймаут ожидания элемента"
+  description: "Тест падает по таймауту при ожидании UI-элемента или условия. Flaky-тест, элемент не появился вовремя."
+  error_example: |
+    org.openqa.selenium.TimeoutException: Expected condition failed: waiting for visibility of element located by By.id: submit-button
+    (tried for 30 seconds with 500 milliseconds interval)
+        at org.openqa.selenium.support.ui.WebDriverWait.timeoutException(WebDriverWait.java:95)
+        at org.openqa.selenium.support.ui.FluentWait.until(FluentWait.java:272)
+  category: test
   resolution_steps:
-    - "Увеличить implicit/explicit wait для нестабильных элементов"
-    - "Использовать explicit wait (WebDriverWait) вместо Thread.sleep()"
-    - "Проверить, нет ли анимаций или lazy-loading, блокирующих элемент"
-    - "Добавить retry-аннотацию (@Retry / @RepeatedTest) если тест flaky"
-    - "Рассмотреть мьют теста до стабилизации"
-  related_links: []
-  tags:
-    - test
-    - flaky
-    - selenium
-    - timeout
+    - "Увеличить explicit wait для нестабильных элементов"
+    - "Использовать WebDriverWait вместо Thread.sleep()"
 
 - id: assertion_mismatch
   title: "Ошибка утверждения (assertion) в тесте"
-  description: |
-    Тест завершился с ошибкой проверки: ожидаемое значение не совпало с
-    фактическим. Это может быть как дефект приложения (реальное расхождение),
-    так и устаревшие тестовые данные.
-  root_cause: test
-  severity: medium
-  match_criteria:
-    keywords:
-      - expected
-      - actual
-      - assert
-      - assertion
-      - mismatch
-    message_patterns:
-      - "expected"
-      - "but was"
-      - "AssertionError"
-      - "AssertionFailedError"
-      - "Expected:"
-      - "Actual:"
-      - "to equal"
-      - "to be"
-    trace_patterns:
-      - "org.opentest4j.AssertionFailedError"
-      - "java.lang.AssertionError"
-      - "AssertionError"
-    exception_types:
-      - "AssertionError"
-      - "AssertionFailedError"
-      - "ComparisonFailure"
-    categories:
-      - "Test defects"
-      - "Product defects"
+  description: "Ожидаемое значение не совпало с фактическим. Тест assertion failed, expected vs actual расходятся."
+  error_example: |
+    java.lang.AssertionError: expected:<200> but was:<404>
+        at org.junit.Assert.fail(Assert.java:88)
+        at org.junit.Assert.failNotEquals(Assert.java:834)
+        at org.junit.Assert.assertEquals(Assert.java:645)
+        at com.company.tests.ApiTest.testGetUserEndpoint(ApiTest.java:78)
+  category: test
   resolution_steps:
-    - "Сравнить ожидаемое и фактическое значения — определить, изменилось ли поведение приложения"
-    - "Если поведение изменилось намеренно — обновить assertion в тесте"
-    - "Если поведение изменилось случайно — создать баг-репорт"
-    - "Проверить актуальность тестовых данных"
-  related_links: []
-  tags:
-    - test
-    - assertion
+    - "Сравнить ожидаемое и фактическое — определить, изменилось ли поведение"
+    - "Обновить assertion в тесте, если поведение изменилось намеренно"
 
 # ============================================================================
 # data — проблемы тестовых данных
@@ -336,46 +117,12 @@
 
 - id: missing_test_data
   title: "Отсутствуют тестовые данные"
-  description: |
-    Тест не находит необходимые данные (записи в БД, файлы фикстур, конфиг).
-    Обычно вызвано тем, что данные были удалены/изменены другим тестом или
-    не были инициализированы.
-  root_cause: data
-  severity: medium
-  match_criteria:
-    keywords:
-      - "not found"
-      - fixture
-      - "test data"
-      - "no such"
-      - "does not exist"
-    message_patterns:
-      - "not found"
-      - "does not exist"
-      - "No such file"
-      - "FileNotFoundException"
-      - "EntityNotFoundException"
-      - "NoResultException"
-      - "404"
-      - "Record not found"
-    trace_patterns:
-      - "java.io.FileNotFoundException"
-      - "javax.persistence.EntityNotFoundException"
-      - "FileNotFoundError"
-    exception_types:
-      - "FileNotFoundException"
-      - "EntityNotFoundException"
-      - "NoResultException"
-      - "FileNotFoundError"
-    categories:
-      - "Test defects"
+  description: "Тест не находит необходимые данные — записи в БД, файлы фикстур. EntityNotFoundException при поиске тестовых объектов."
+  error_example: |
+    javax.persistence.EntityNotFoundException: Unable to find com.company.model.User with id 12345
+        at org.hibernate.jpa.boot.internal.EntityManagerFactoryBuilderImpl.getEntityManagerFactory(EntityManagerFactoryBuilderImpl.java:123)
+        at com.company.repository.UserRepository.findById(UserRepository.java:34)
+  category: data
   resolution_steps:
     - "Проверить, существуют ли ожидаемые тестовые данные в окружении"
-    - "Проверить порядок выполнения тестов — возможно, данные удалены предыдущим тестом"
-    - "Обеспечить изоляцию тестовых данных (отдельная схема/namespace для каждого теста)"
-    - "Добавить setup/teardown для создания и очистки тестовых данных"
-  related_links: []
-  tags:
-    - data
-    - fixture
-    - test-isolation
+    - "Обеспечить изоляцию тестовых данных (отдельный namespace для каждого теста)"

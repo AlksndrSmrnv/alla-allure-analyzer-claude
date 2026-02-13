@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from alla.knowledge.models import (
     KBEntry,
-    KBEntryMatchCriteria,
     RootCauseCategory,
-    SeverityHint,
 )
 from alla.models.testops import ExecutionStep
 
@@ -17,18 +15,9 @@ def make_kb_entry(**overrides) -> KBEntry:
         "id": "test_entry",
         "title": "Test Entry",
         "description": "A test KB entry",
-        "root_cause": RootCauseCategory.APP,
-        "severity": SeverityHint.MEDIUM,
-        "match_criteria": KBEntryMatchCriteria(
-            keywords=[],
-            message_patterns=[],
-            trace_patterns=[],
-            exception_types=[],
-            categories=[],
-        ),
+        "error_example": "test error",
+        "category": RootCauseCategory.SERVICE,
         "resolution_steps": ["Fix the issue"],
-        "related_links": [],
-        "tags": [],
     }
     defaults.update(overrides)
     return KBEntry.model_validate(defaults)
