@@ -5,13 +5,14 @@ from __future__ import annotations
 from alla.models.clustering import ClusterSignature, FailureCluster
 from alla.models.common import TestStatus as Status
 from alla.models.testops import FailedTestSummary
-from alla.orchestrator import _prepare_kb_log_query, _select_cluster_representative
+from alla.orchestrator import _build_kb_query_text, _collect_cluster_log_snippets
 
 
 def _failed_test(
     test_result_id: int,
     *,
     status_message: str | None = None,
+    status_trace: str | None = None,
     log_snippet: str | None = None,
 ) -> FailedTestSummary:
     return FailedTestSummary(
@@ -19,45 +20,66 @@ def _failed_test(
         name=f"test-{test_result_id}",
         status=Status.FAILED,
         status_message=status_message,
+        status_trace=status_trace,
         log_snippet=log_snippet,
     )
 
 
-def test_select_cluster_representative_matches_clustering_rule() -> None:
-    """Берём тест с самым длинным message (при равенстве — с меньшим ID)."""
-    tests = {
-        100: _failed_test(100, status_message="short"),
-        101: _failed_test(101, status_message="very long representative message"),
-        102: _failed_test(102, status_message="mid"),
-    }
+def test_collect_cluster_log_snippets_uses_representative_first() -> None:
+    """Сначала берём лог representative, затем остальные member_test_ids."""
     cluster = FailureCluster(
         cluster_id="c1",
         label="cluster",
         signature=ClusterSignature(),
-        member_test_ids=[100, 101, 102],
+        representative_test_id=101,
+        member_test_ids=[101, 102, 103],
         member_count=3,
     )
+    test_by_id = {
+        101: _failed_test(101, log_snippet="REP log"),
+        102: _failed_test(102, log_snippet="member-102"),
+        103: _failed_test(103, log_snippet="member-103"),
+    }
 
-    representative = _select_cluster_representative(cluster, tests)
+    logs = _collect_cluster_log_snippets(cluster, test_by_id, max_logs=2)
 
-    assert representative is not None
-    assert representative.test_result_id == 101
+    assert logs == [(101, "REP log"), (102, "member-102")]
 
 
-def test_prepare_kb_log_query_keeps_tail_on_truncation() -> None:
-    """При обрезке сохраняется хвост, где обычно находится корневая ошибка."""
-    log_snippet = "\n".join(
-        [
-            "INFO startup",
-            "INFO request begin",
-            "WARN retrying",
-            "ERROR RootCauseException: boom",
-        ]
+def test_build_kb_query_text_uses_member_log_when_representative_has_none() -> None:
+    """Если у representative нет лога, запрос включает лог другого теста кластера."""
+    cluster = FailureCluster(
+        cluster_id="c2",
+        label="cluster",
+        signature=ClusterSignature(),
+        representative_test_id=201,
+        member_test_ids=[201, 202],
+        member_count=2,
+        example_message="fallback message",
+        example_trace_snippet="fallback trace",
+    )
+    test_by_id = {
+        201: _failed_test(
+            201,
+            status_message="AssertionError: expected true",
+            status_trace="at test.py:42",
+            log_snippet=None,
+        ),
+        202: _failed_test(
+            202,
+            status_message="same issue",
+            status_trace="at test.py:43",
+            log_snippet="2026-02-10 [ERROR] RootCauseException: boom",
+        ),
+    }
+
+    query_text, message_len, trace_len, log_chars, log_test_ids = _build_kb_query_text(
+        cluster,
+        test_by_id,
     )
 
-    prepared = _prepare_kb_log_query(log_snippet, max_chars=30)
-
-    assert prepared is not None
-    assert prepared.startswith("...[обрезано]")
-    assert "RootCauseException" in prepared
-    assert "startup" not in prepared
+    assert message_len > 0
+    assert trace_len > 0
+    assert log_chars > 0
+    assert log_test_ids == [202]
+    assert "RootCauseException: boom" in query_text

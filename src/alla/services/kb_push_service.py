@@ -48,20 +48,14 @@ def format_kb_description(matches: list[KBMatchResult]) -> str:
             parts.append("")
 
         entry = match.entry
-        parts.append(f"KB: {entry.title} (score: {match.score:.2f})")
-        parts.append(
-            f"Причина: {entry.root_cause.value} | Срочность: {entry.severity.value}"
-        )
+        parts.append(f"KB: {entry.title}")
+        parts.append(f"Категория: {entry.category.value}")
 
         if entry.resolution_steps:
             parts.append("")
             parts.append("Шаги по устранению:")
             for step_num, step in enumerate(entry.resolution_steps, 1):
                 parts.append(f"  {step_num}. {step}")
-
-        if match.matched_on:
-            parts.append("")
-            parts.append(f"Совпадение по: {', '.join(match.matched_on)}")
 
     return "\n".join(parts)
 

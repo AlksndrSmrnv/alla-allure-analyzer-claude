@@ -1,8 +1,8 @@
-"""Сервис извлечения и фильтрации логов из аттачментов execution-шагов.
+"""Сервис извлечения ERROR-блоков из текстовых аттачментов.
 
-Скачивает text/plain аттачменты для каждого упавшего теста, парсит timestamps
-из строк лога, фильтрует по time-window теста (± буфер) и сохраняет
-результат в ``FailedTestSummary.log_snippet``.
+Скачивает text/plain аттачменты для каждого упавшего теста, извлекает строки
+с уровнем [ERROR] и их stack trace, помечает каждый блок именем файла-источника
+и сохраняет результат в ``FailedTestSummary.log_snippet``.
 """
 
 from __future__ import annotations
@@ -10,109 +10,79 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 
 from alla.clients.base import AttachmentProvider
-from alla.models.testops import AttachmentMeta, ExecutionStep, FailedTestSummary
+from alla.models.testops import AttachmentMeta, FailedTestSummary
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
 class LogExtractionConfig:
     """Параметры извлечения логов из аттачментов."""
 
-    time_buffer_sec: int = 30
-    max_size_kb: int = 512
-    concurrency: int = 5
+    def __init__(self, *, concurrency: int = 5) -> None:
+        self.concurrency = concurrency
 
 
 # ---------------------------------------------------------------------------
-# Timestamp parsing — мульти-формат парсер для строк лога
+# ERROR-block extraction
 # ---------------------------------------------------------------------------
 
-# ISO 8601 datetime: 2026-02-09T10:23:45.123Z, 2026-02-09 10:23:45,123+03:00
-_TS_ISO_RE = re.compile(
-    r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})"
-    r"(?:[.,](\d{1,6}))?"
-    r"(Z|[+-]\d{2}:?\d{2})?"
+# Паттерн для определения начала новой лог-записи (строка с датой/временем).
+# Матчит форматы: 2026-02-09T10:23:45, 2026-02-09 10:23:45
+_LOG_LINE_START_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"
 )
 
-# Log4j/Logback: 2026-02-09 10:23:45,123 (без timezone)
-_TS_LOG4J_RE = re.compile(
-    r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"
-    r"(?:,(\d{1,3}))?"
-)
-
-# Epoch milliseconds в начале строки: 1707473025123
-_TS_EPOCH_MS_RE = re.compile(r"^(\d{13})\b")
-
-_TS_FMT_ISO = "%Y-%m-%d %H:%M:%S"
+# Паттерн для обнаружения [ERROR] (case-insensitive) в квадратных скобках.
+_ERROR_LEVEL_RE = re.compile(r"\[error\]", re.IGNORECASE)
 
 
-def _parse_timestamp_ms(line: str) -> int | None:
-    """Попытаться извлечь timestamp (epoch ms) из строки лога.
+def _extract_error_blocks(log_text: str) -> str:
+    """Извлечь блоки ERROR из текста лога.
 
-    Пробует несколько распространённых форматов в порядке приоритета.
-    Возвращает None если не удалось распознать ни один.
+    Логика:
+    1. Найти строку, содержащую ``[ERROR]`` (case-insensitive).
+    2. Захватить эту строку и все последующие строки, которые являются
+       «продолжением» (stack trace) — т.е. **не** начинаются с timestamp
+       нового лог-сообщения.
+    3. Если следующая строка начинается с timestamp, но тоже содержит
+       ``[ERROR]``, она становится началом нового ERROR-блока.
+
+    Returns:
+        Объединённые ERROR-блоки. Пустая строка, если ни одного не найдено.
     """
-    # 1. Epoch ms в начале строки (самый быстрый)
-    m = _TS_EPOCH_MS_RE.match(line)
-    if m:
-        try:
-            return int(m.group(1))
-        except (ValueError, OverflowError):
-            pass
+    lines = log_text.splitlines()
+    blocks: list[str] = []
+    current_block: list[str] = []
+    in_error_block = False
 
-    # 2. ISO 8601
-    m = _TS_ISO_RE.search(line)
-    if m:
-        ts = _parse_datetime_group(m.group(1), m.group(2), m.group(3))
-        if ts is not None:
-            return ts
+    for line in lines:
+        is_new_log_entry = bool(_LOG_LINE_START_RE.match(line))
+        is_error = bool(_ERROR_LEVEL_RE.search(line))
 
-    # 3. Log4j format (без T-separator, с запятой вместо точки)
-    m = _TS_LOG4J_RE.search(line)
-    if m:
-        ts = _parse_datetime_group(m.group(1), m.group(2))
-        if ts is not None:
-            return ts
+        if is_error and is_new_log_entry:
+            # Новая строка [ERROR] — начало нового блока.
+            # Сохраняем предыдущий блок, если был.
+            if current_block:
+                blocks.append("\n".join(current_block))
+            current_block = [line]
+            in_error_block = True
+        elif in_error_block:
+            if is_new_log_entry and not is_error:
+                # Новая лог-запись без [ERROR] — конец текущего блока.
+                blocks.append("\n".join(current_block))
+                current_block = []
+                in_error_block = False
+            else:
+                # Continuation (stack trace) или ещё один [ERROR] без timestamp.
+                current_block.append(line)
 
-    return None
+    # Финальный блок
+    if current_block:
+        blocks.append("\n".join(current_block))
 
-
-def _parse_datetime_group(
-    base: str,
-    frac: str | None,
-    tz_str: str | None = None,
-) -> int | None:
-    """Распарсить datetime-строку с опциональной дробной частью секунд и timezone."""
-    try:
-        normalized = base.replace("T", " ")
-        dt = datetime.strptime(normalized, _TS_FMT_ISO)
-
-        # Определяем timezone
-        if tz_str is None or tz_str == "" or tz_str == "Z":
-            tz = timezone.utc
-        else:
-            # Парсим +HH:MM, +HHMM, -HH:MM, -HHMM
-            sign = 1 if tz_str[0] == "+" else -1
-            tz_digits = tz_str[1:].replace(":", "")
-            hours = int(tz_digits[:2])
-            minutes = int(tz_digits[2:4]) if len(tz_digits) >= 4 else 0
-            offset = timedelta(hours=sign * hours, minutes=sign * minutes)
-            tz = timezone(offset)
-
-        dt = dt.replace(tzinfo=tz)
-        ms = int(dt.timestamp() * 1000)
-        if frac:
-            # Дробная часть может быть 1-6 знаков; приводим к миллисекундам
-            frac_padded = frac.ljust(3, "0")[:3]
-            ms += int(frac_padded)
-        return ms
-    except (ValueError, OverflowError):
-        return None
+    return "\n\n".join(blocks)
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +90,7 @@ def _parse_datetime_group(
 # ---------------------------------------------------------------------------
 
 class LogExtractionService:
-    """Извлекает текстовые логи из аттачментов и фильтрует по time-window."""
+    """Извлекает ERROR-блоки из текстовых аттачментов."""
 
     def __init__(
         self,
@@ -136,11 +106,11 @@ class LogExtractionService:
     ) -> None:
         """Скачать логи для каждого теста и заполнить ``log_snippet`` in-place.
 
-        Паттерн: semaphore + gather с per-test error resilience.
-
-        Использует новый API:
+        Для каждого теста:
         1. GET /api/testresult/attachment?testResultId={id} — список аттачментов
         2. GET /api/testresult/attachment/{id}/content — скачивание содержимого
+        3. Извлечение ERROR-блоков из каждого аттачмента
+        4. Склейка блоков с пометкой источника
         """
         if not summaries:
             return
@@ -153,7 +123,7 @@ class LogExtractionService:
 
         semaphore = asyncio.Semaphore(self._config.concurrency)
 
-        async def fetch_and_filter(summary: FailedTestSummary) -> None:
+        async def fetch_and_extract(summary: FailedTestSummary) -> None:
             # Шаг 1: получить список аттачментов для теста
             async with semaphore:
                 try:
@@ -177,8 +147,9 @@ class LogExtractionService:
             if not text_attachments:
                 return
 
-            # Шаг 2: скачать содержимое каждого аттачмента
-            raw_texts: list[str] = []
+            # Шаг 2: скачать содержимое и извлечь ERROR-блоки
+            all_error_sections: list[str] = []
+
             for att in text_attachments:
                 if att.id is None:
                     continue
@@ -188,7 +159,6 @@ class LogExtractionService:
                             att.id,
                         )
                         text = content_bytes.decode("utf-8", errors="replace")
-                        raw_texts.append(text)
                     except Exception as exc:
                         logger.warning(
                             "Логи: не удалось скачать аттачмент %d (%s) "
@@ -198,26 +168,30 @@ class LogExtractionService:
                             summary.test_result_id,
                             exc,
                         )
+                        continue
 
-            if not raw_texts:
+                error_blocks = _extract_error_blocks(text)
+                if error_blocks.strip():
+                    att_name = att.name or f"attachment-{att.id}"
+                    header = f"--- [файл: {att_name}] ---"
+                    all_error_sections.append(f"{header}\n{error_blocks}")
+
+            if not all_error_sections:
                 return
 
-            combined = "\n".join(raw_texts)
+            combined = "\n\n".join(all_error_sections)
+            summary.log_snippet = combined
 
-            filtered = self._filter_by_time_window(
-                combined,
-                test_start_ms=summary.test_start_ms,
-                duration_ms=summary.duration_ms,
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Логи: тест %d — извлечено ERROR-блоков из %d файлов, "
+                    "общий размер: %d символов",
+                    summary.test_result_id,
+                    len(all_error_sections),
+                    len(combined),
+                )
 
-            max_bytes = self._config.max_size_kb * 1024
-            if len(filtered.encode("utf-8")) > max_bytes:
-                filtered = _truncate_to_size(filtered, max_bytes)
-
-            if filtered.strip():
-                summary.log_snippet = filtered
-
-        tasks = [fetch_and_filter(s) for s in summaries]
+        tasks = [fetch_and_extract(s) for s in summaries]
         await asyncio.gather(*tasks)
 
         enriched = sum(1 for s in summaries if s.log_snippet)
@@ -228,86 +202,3 @@ class LogExtractionService:
         """Проверить, является ли аттачмент текстовым (text/plain)."""
         mime = (att.type or att.content_type or "").lower()
         return mime.startswith("text/plain")
-
-    @staticmethod
-    def _collect_text_attachments(
-        steps: list[ExecutionStep] | None,
-    ) -> list[AttachmentMeta]:
-        """Рекурсивно собрать все text/plain аттачменты из дерева шагов."""
-        if not steps:
-            return []
-
-        result: list[AttachmentMeta] = []
-
-        def walk(step_list: list[ExecutionStep]) -> None:
-            for step in step_list:
-                if step.attachments:
-                    for att in step.attachments:
-                        mime = (att.type or att.content_type or "").lower()
-                        if mime.startswith("text/plain"):
-                            if att.source:
-                                result.append(att)
-                if step.steps:
-                    walk(step.steps)
-
-        walk(steps)
-        return result
-
-    def _filter_by_time_window(
-        self,
-        log_text: str,
-        test_start_ms: int | None,
-        duration_ms: int | None,
-    ) -> str:
-        """Оставить только строки лога, попадающие в time-window теста.
-
-        Окно: ``[test_start - buffer, test_start + duration + buffer]``.
-
-        Если start/duration неизвестны, или ни одна строка не содержит
-        распознаваемой метки времени, возвращает весь текст как есть.
-        """
-        if test_start_ms is None or duration_ms is None:
-            return log_text
-
-        buffer_ms = self._config.time_buffer_sec * 1000
-        window_start = test_start_ms - buffer_ms
-        window_end = test_start_ms + duration_ms + buffer_ms
-
-        lines = log_text.splitlines()
-        filtered: list[str] = []
-        in_window = False
-        any_timestamp_found = False
-
-        for line in lines:
-            ts_ms = _parse_timestamp_ms(line)
-            if ts_ms is not None:
-                any_timestamp_found = True
-                in_window = window_start <= ts_ms <= window_end
-                if in_window:
-                    filtered.append(line)
-            else:
-                # Строки без timestamp сохраняются если предыдущая строка
-                # была в окне (continuation: stack traces, multi-line сообщения)
-                if in_window:
-                    filtered.append(line)
-
-        if not any_timestamp_found:
-            return log_text
-
-        return "\n".join(filtered)
-
-
-def _truncate_to_size(text: str, max_bytes: int) -> str:
-    """Обрезать текст, сохраняя хвост (ошибки обычно в конце лога)."""
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text
-
-    truncated_bytes = encoded[-max_bytes:]
-    # Найти первый перенос строки, чтобы не обрезать строку посередине
-    newline_idx = truncated_bytes.find(b"\n")
-    if newline_idx >= 0:
-        truncated_bytes = truncated_bytes[newline_idx + 1:]
-
-    header = b"...[" + "\u043e\u0431\u0440\u0435\u0437\u0430\u043d\u043e".encode("utf-8") + b"]\n"
-    return (header + truncated_bytes).decode("utf-8", errors="replace")

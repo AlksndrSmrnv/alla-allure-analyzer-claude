@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from alla.models.llm import LLMAnalysisResult, LLMPushResult
 
 logger = logging.getLogger(__name__)
-_KB_LOG_QUERY_MAX_CHARS = 12_000
+_KB_QUERY_LOG_PREVIEW_CHARS = 220
 
 
 @dataclass
@@ -74,8 +74,6 @@ async def analyze_launch(
 
         if isinstance(client, AttachmentProvider):
             log_config = LogExtractionConfig(
-                time_buffer_sec=settings.logs_time_buffer_sec,
-                max_size_kb=settings.logs_max_size_kb,
                 concurrency=settings.logs_concurrency,
             )
             log_service = LogExtractionService(client, log_config)
@@ -116,13 +114,14 @@ async def analyze_launch(
         from alla.knowledge.matcher import MatcherConfig
         from alla.knowledge.yaml_kb import YamlKnowledgeBase
 
+        matcher_config = MatcherConfig(
+            min_score=settings.kb_min_score,
+            max_results=settings.kb_max_results,
+        )
         try:
             kb = YamlKnowledgeBase(
                 kb_path=settings.kb_path,
-                matcher_config=MatcherConfig(
-                    min_score=settings.kb_min_score,
-                    max_results=settings.kb_max_results,
-                ),
+                matcher_config=matcher_config,
             )
         except KnowledgeBaseError:
             raise
@@ -132,18 +131,38 @@ async def analyze_launch(
 
         for cluster in clustering_report.clusters:
             try:
-                representative = _select_cluster_representative(cluster, test_by_id)
-                log_query = None
-                if settings.logs_enabled and representative is not None:
-                    log_query = _prepare_kb_log_query(representative.log_snippet)
-                matches = kb.search_by_failure(
-                    status_message=cluster.example_message,
-                    status_trace=cluster.example_trace_snippet,
-                    category=cluster.signature.category,
-                    status_log=log_query,
+                error_text, message_len, trace_len, log_chars, log_test_ids = (
+                    _build_kb_query_text(
+                        cluster, test_by_id,
+                        include_trace=settings.kb_include_trace,
+                    )
                 )
-                if matches:
-                    kb_results[cluster.cluster_id] = matches
+                if error_text.strip():
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "KB query [%s]: rep_test_id=%s, message_len=%d, "
+                            "trace_len=%d, log_chars=%d, log_tests=%s, total_len=%d",
+                            cluster.cluster_id,
+                            cluster.representative_test_id,
+                            message_len,
+                            trace_len,
+                            log_chars,
+                            log_test_ids,
+                            len(error_text),
+                        )
+                        logger.debug(
+                            "KB query [%s] preview: head='%s' tail='%s'",
+                            cluster.cluster_id,
+                            _preview_head(error_text, _KB_QUERY_LOG_PREVIEW_CHARS),
+                            _preview_tail(error_text, _KB_QUERY_LOG_PREVIEW_CHARS),
+                        )
+
+                    matches = kb.search_by_error(
+                        error_text,
+                        query_label=cluster.cluster_id,
+                    )
+                    if matches:
+                        kb_results[cluster.cluster_id] = matches
             except Exception as exc:
                 logger.warning(
                     "Ошибка KB-поиска для кластера %s: %s",
@@ -174,6 +193,29 @@ async def analyze_launch(
         else:
             from alla.clients.langflow_client import LangflowClient
             from alla.services.llm_service import LLMService
+
+            # Суммарная статистика перед LLM-анализом
+            _test_by_id_llm = (
+                {t.test_result_id: t for t in report.failed_tests}
+                if settings.logs_enabled and report.failed_tests
+                else {}
+            )
+            clusters_with_logs = 0
+            clusters_with_kb = 0
+            for _c in clustering_report.clusters:
+                if kb_results.get(_c.cluster_id):
+                    clusters_with_kb += 1
+                if _test_by_id_llm and _c.representative_test_id is not None:
+                    _rep = _test_by_id_llm.get(_c.representative_test_id)
+                    if _rep and _rep.log_snippet:
+                        clusters_with_logs += 1
+            logger.info(
+                "LLM: отправка %d кластеров на анализ "
+                "(с логами: %d, с KB: %d)",
+                len(clustering_report.clusters),
+                clusters_with_logs,
+                clusters_with_kb,
+            )
 
             async with LangflowClient(
                 base_url=settings.langflow_base_url,
@@ -260,39 +302,98 @@ async def analyze_launch(
     )
 
 
-def _select_cluster_representative(
+def _build_kb_query_text(
     cluster: FailureCluster,
     test_by_id: dict[int, FailedTestSummary],
-) -> FailedTestSummary | None:
-    """Выбрать представителя кластера тем же правилом, что в ClusteringService."""
-    members = [
-        test_by_id[test_id]
-        for test_id in cluster.member_test_ids
-        if test_id in test_by_id
-    ]
-    if not members:
-        return None
-    return max(members, key=lambda t: (len(t.status_message or ""), -t.test_result_id))
-
-
-def _prepare_kb_log_query(
-    log_snippet: str | None,
     *,
-    max_chars: int = _KB_LOG_QUERY_MAX_CHARS,
-) -> str | None:
-    """Подготовить лог для KB-поиска, сохраняя хвост (там чаще корневая ошибка)."""
-    if not log_snippet:
-        return None
+    include_trace: bool = True,
+) -> tuple[str, int, int, int, list[int]]:
+    """Собрать текст запроса для KB из message/trace и ERROR-логов кластера.
 
-    text = log_snippet.strip()
-    if not text:
-        return None
+    Args:
+        cluster: Кластер падений.
+        test_by_id: Словарь test_result_id → FailedTestSummary.
+        include_trace: Включать ли Allure-trace (stack trace) в query.
+            Управляется через ``ALLURE_KB_INCLUDE_TRACE``.
+    """
+    representative = (
+        test_by_id.get(cluster.representative_test_id)
+        if cluster.representative_test_id is not None
+        else None
+    )
 
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
+    message = (
+        representative.status_message
+        if representative and representative.status_message
+        else cluster.example_message
+    ) or ""
+    trace = ""
+    if include_trace:
+        trace = (
+            representative.status_trace
+            if representative and representative.status_trace
+            else cluster.example_trace_snippet
+        ) or ""
 
-    tail = text[-max_chars:]
-    newline_idx = tail.find("\n")
-    if newline_idx >= 0:
-        tail = tail[newline_idx + 1:]
-    return f"...[обрезано]\n{tail}"
+    log_sources = _collect_cluster_log_snippets(cluster, test_by_id)
+    log_blocks = [
+        f"[LOG test_result_id={test_id}]\n{snippet}"
+        for test_id, snippet in log_sources
+    ]
+    log_text = "\n\n".join(log_blocks)
+
+    parts = [part for part in (message, trace, log_text) if part]
+    query_text = "\n".join(parts)
+    return (
+        query_text,
+        len(message),
+        len(trace),
+        len(log_text),
+        [test_id for test_id, _ in log_sources],
+    )
+
+
+def _collect_cluster_log_snippets(
+    cluster: FailureCluster,
+    test_by_id: dict[int, FailedTestSummary],
+    *,
+    max_logs: int = 3,
+) -> list[tuple[int, str]]:
+    """Собрать до ``max_logs`` непустых log_snippet из тестов кластера."""
+    ordered_test_ids: list[int] = []
+    if cluster.representative_test_id is not None:
+        ordered_test_ids.append(cluster.representative_test_id)
+    ordered_test_ids.extend(cluster.member_test_ids)
+
+    seen: set[int] = set()
+    selected: list[tuple[int, str]] = []
+    for test_id in ordered_test_ids:
+        if test_id in seen:
+            continue
+        seen.add(test_id)
+
+        summary = test_by_id.get(test_id)
+        if summary is None or not summary.log_snippet:
+            continue
+
+        snippet = summary.log_snippet.strip()
+        if not snippet:
+            continue
+
+        selected.append((test_id, snippet))
+        if len(selected) >= max_logs:
+            break
+
+    return selected
+
+
+def _preview_head(text: str, max_chars: int) -> str:
+    """Сжать head-preview для DEBUG-логов одной строкой."""
+    return text[:max_chars].replace("\n", " ")
+
+
+def _preview_tail(text: str, max_chars: int) -> str:
+    """Сжать tail-preview для DEBUG-логов одной строкой."""
+    if len(text) <= max_chars:
+        return text.replace("\n", " ")
+    return text[-max_chars:].replace("\n", " ")

@@ -36,6 +36,17 @@ class HealthResponse(BaseModel):
     version: str
 
 
+class DeleteCommentsResponse(BaseModel):
+    """JSON-ответ DELETE /api/v1/comments/{launch_id}."""
+
+    total_test_cases: int
+    comments_found: int
+    comments_deleted: int
+    comments_failed: int
+    skipped_test_cases: int
+    dry_run: bool
+
+
 class ErrorResponse(BaseModel):
     """Стандартный ответ при ошибке."""
 
@@ -187,6 +198,81 @@ async def analyze_launch(launch_id: int) -> dict[str, Any]:
         response["llm_push_result"] = asdict(result.llm_push_result)
 
     return response
+
+
+@app.delete(
+    "/api/v1/comments/{launch_id}",
+    response_model=DeleteCommentsResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Ошибка аутентификации"},
+        404: {"model": ErrorResponse, "description": "Запуск не найден"},
+        502: {"model": ErrorResponse, "description": "Ошибка Allure TestOps API"},
+    },
+)
+async def delete_comments(launch_id: int, dry_run: bool = False) -> dict[str, Any]:
+    """Удалить комментарии alla для тестов указанного запуска.
+
+    Сканирует failed/broken тесты запуска, находит комментарии с префиксом
+    ``[alla]`` и удаляет их. Query parameter ``?dry_run=true`` для
+    предварительного просмотра без фактического удаления.
+    """
+    from alla.clients.base import CommentManager
+    from alla.exceptions import AllureApiError, AuthenticationError, PaginationLimitError
+    from alla.services.comment_delete_service import CommentDeleteService
+
+    client = _state.client
+    if not isinstance(client, CommentManager):
+        raise HTTPException(
+            status_code=500,
+            detail="Клиент не поддерживает управление комментариями",
+        )
+
+    try:
+        all_results = await client.get_all_test_results_for_launch(launch_id)
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except AllureApiError as exc:
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc))
+    except PaginationLimitError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    failure_statuses = {"failed", "broken"}
+    failed_results = [
+        r for r in all_results
+        if r.status and r.status.lower() in failure_statuses
+    ]
+
+    test_case_ids: set[int] = set()
+    skipped = 0
+    for r in failed_results:
+        if r.test_case_id is not None:
+            test_case_ids.add(r.test_case_id)
+        else:
+            skipped += 1
+
+    service = CommentDeleteService(
+        client,
+        concurrency=_state.settings.detail_concurrency,
+    )
+
+    try:
+        result = await service.delete_alla_comments(
+            test_case_ids,
+            dry_run=dry_run,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    return {
+        "total_test_cases": result.total_test_cases,
+        "comments_found": result.comments_found,
+        "comments_deleted": result.comments_deleted,
+        "comments_failed": result.comments_failed,
+        "skipped_test_cases": skipped,
+        "dry_run": dry_run,
+    }
 
 
 def main() -> None:

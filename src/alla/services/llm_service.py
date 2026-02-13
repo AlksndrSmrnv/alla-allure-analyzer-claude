@@ -4,18 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
 from alla.clients.base import TestResultsUpdater
 from alla.clients.langflow_client import LangflowClient
 from alla.knowledge.models import KBMatchResult
 from alla.models.clustering import ClusteringReport, FailureCluster
 from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis, LLMPushResult
 from alla.models.testops import FailedTestSummary, TriageReport
+from alla.utils.log_utils import has_explicit_errors
 
 logger = logging.getLogger(__name__)
 
 _LLM_HEADER = "[alla] LLM-анализ ошибки"
 _SEPARATOR = "=" * 40
+
+def _interpret_kb_score(score: float) -> str:
+    """Перевести числовой KB-score в текстовое описание уровня уверенности."""
+    if score >= 0.7:
+        return "высокое совпадение"
+    if score >= 0.4:
+        return "частичное совпадение"
+    return "слабое совпадение"
 
 
 def build_cluster_prompt(
@@ -48,47 +56,37 @@ def build_cluster_prompt(
         msg = cluster.example_message
         if len(msg) > 2000:
             msg = msg[:2000] + "...[обрезано]"
-        parts.append("")
-        parts.append("--- Сообщение об ошибке ---")
-        parts.append(msg)
+        parts.append(f"\n--- Сообщение об ошибке ---\n{msg}")
 
     if cluster.example_trace_snippet:
         trace = cluster.example_trace_snippet
         if len(trace) > 3000:
             trace = trace[:3000] + "...[обрезано]"
-        parts.append("")
-        parts.append("--- Стек-трейс ---")
-        parts.append(trace)
+        parts.append(f"\n--- Стек-трейс ---\n{trace}")
 
     if log_snippet:
-        snippet = log_snippet
-        if len(snippet) > 2000:
-            snippet = snippet[:2000] + "...[обрезано]"
-        parts.append("")
-        parts.append("--- Фрагмент лога приложения ---")
-        parts.append(snippet)
+        parts.append(f"\n--- Фрагмент лога приложения ---\n{log_snippet}")
 
     if kb_matches:
-        parts.append("")
-        parts.append("--- Совпадения из базы знаний (справочно) ---")
+        parts.append(
+            "\n--- Совпадения из базы знаний (справочно) ---\n"
+            "score: >=0.7 = высокое, 0.4–0.7 = частичное, <0.4 = слабое"
+        )
         for m in kb_matches[:3]:
-            parts.append(f"  [{m.score:.2f}] {m.entry.title}")
-            parts.append(f"    Описание: {m.entry.description}")
-            parts.append(f"    Причина: {m.entry.root_cause.value}")
-            parts.append(f"    Срочность: {m.entry.severity.value}")
-            if m.entry.resolution_steps:
-                parts.append("    Шаги по устранению:")
-                for step in m.entry.resolution_steps:
-                    parts.append(f"      - {step}")
-            if m.entry.related_links:
-                parts.append(f"    Ссылки: {', '.join(m.entry.related_links)}")
+            entry = m.entry
+            confidence = _interpret_kb_score(m.score)
+            parts.append(f"- [{m.score:.2f} — {confidence}] {entry.title} (категория: {entry.category.value})")
+            if m.matched_on:
+                parts.append(f"  Совпало по: {', '.join(m.matched_on)}")
+            if entry.resolution_steps:
+                parts.append(f"  Решение: {'; '.join(entry.resolution_steps)}")
 
     parts.append("")
     parts.append("═══════════════════════════════════════")
     parts.append("ИНСТРУКЦИИ ПО АНАЛИЗУ")
     parts.append("═══════════════════════════════════════")
     parts.append("")
-    parts.append(
+    instruction = (
         "Внимательно прочитай сообщение об ошибке, стек-трейс и лог. "
         "Проведи анализ по следующему плану. Каждый пункт обязателен.\n"
         "\n"
@@ -137,6 +135,15 @@ def build_cluster_prompt(
         "не хватает и где их взять (конкретное имя лога, endpoint, таблица), "
         "вместо того чтобы угадывать."
     )
+    if kb_matches:
+        instruction += (
+            "\n\n"
+            "Учитывай уверенность совпадений из базы знаний:\n"
+            "- Высокий score (>=0.7) — решение с высокой вероятностью применимо.\n"
+            "- Средний score (0.4–0.7) — частично релевантно.\n"
+            "- Низкий score (<0.4) — используй как дополнительный контекст, не как основу."
+        )
+    parts.append(instruction)
 
     return "\n".join(parts)
 
@@ -215,10 +222,24 @@ class LLMService:
 
             # Получить log_snippet представителя кластера
             log_snippet: str | None = None
-            if test_by_id and cluster.member_test_ids:
-                rep = test_by_id.get(cluster.member_test_ids[0])
+            if test_by_id and cluster.representative_test_id:
+                rep = test_by_id.get(cluster.representative_test_id)
                 if rep:
                     log_snippet = rep.log_snippet
+
+            has_log = bool(log_snippet and log_snippet.strip())
+            has_log_errors = has_explicit_errors(log_snippet) if has_log else False
+            kb_count = len(kb_matches) if kb_matches else 0
+
+            logger.info(
+                "LLM: кластер %s (%d тестов) — "
+                "лог отправлен: %s, ошибки в логе: %s, KB-совпадений: %d",
+                cluster.cluster_id[:8],
+                cluster.member_count,
+                "да" if has_log else "нет",
+                "да" if has_log_errors else "нет",
+                kb_count,
+            )
 
             prompt = build_cluster_prompt(cluster, kb_matches, log_snippet)
 

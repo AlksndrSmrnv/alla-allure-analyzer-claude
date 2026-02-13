@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from alla.models.common import TestStatus
 
@@ -36,6 +36,15 @@ class TestResultResponse(BaseModel):
     muted: bool = False
     hidden: bool = False
 
+    @field_validator("category", mode="before")
+    @classmethod
+    def _coerce_category(cls, v: object) -> str | None:
+        if v is None or isinstance(v, str):
+            return v
+        if isinstance(v, dict):
+            return v.get("name") or str(v)
+        return str(v)
+
 
 class LaunchResponse(BaseModel):
     """Метаданные запуска из Allure TestOps API."""
@@ -66,6 +75,20 @@ class AttachmentMeta(BaseModel):
     type: str | None = None
     size: int | None = None
     content_type: str | None = Field(None, alias="contentType")
+
+
+class CommentResponse(BaseModel):
+    """Комментарий к тест-кейсу из Allure TestOps API.
+
+    Используется для ``GET /api/comment?testCaseId={id}`` и
+    ``DELETE /api/comment/{id}``.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    id: int
+    body: str | None = None
+    test_case_id: int | None = Field(None, alias="testCaseId")
 
 
 class ExecutionStep(BaseModel):

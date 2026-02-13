@@ -84,6 +84,8 @@ alla <launch_id>
 
 `TestResultsUpdater` — отдельный `Protocol` для записи данных обратно в источник. Разделение read/write позволяет реализовать только чтение для источников, не поддерживающих запись. `AllureTestOpsClient` реализует оба протокола.
 
+`CommentManager` — Protocol для чтения и удаления комментариев к тест-кейсам (`GET /api/comment`, `DELETE /api/comment/{id}`). Разделён от `TestResultsUpdater` для backward-compatibility: источники данных, не поддерживающие управление комментариями, не обязаны его реализовывать. `AllureTestOpsClient` реализует все четыре протокола.
+
 `KnowledgeBaseProvider` — аналогичный Protocol для базы знаний. `YamlKnowledgeBase` его реализует.
 Будущая реализация через RAG (vector DB) реализует тот же Protocol без изменений в CLI или сервисах.
 
@@ -108,23 +110,27 @@ alla <launch_id>
         ├── logging_config.py       # setup_logging() — stdlib logging, формат с timestamp
         ├── models/
         │   ├── common.py           # TestStatus(Enum), PageResponse[T](Generic)
-        │   ├── testops.py          # TestResultResponse, LaunchResponse,
+        │   ├── testops.py          # TestResultResponse, LaunchResponse, CommentResponse,
         │   │                       #   FailedTestSummary, TriageReport
         │   └── clustering.py       # ClusterSignature, FailureCluster, ClusteringReport
         ├── clients/
         │   ├── base.py             # TestResultsProvider(Protocol) — чтение,
-        │   │                       #   TestResultsUpdater(Protocol) — запись
+        │   │                       #   TestResultsUpdater(Protocol) — запись,
+        │   │                       #   CommentManager(Protocol) — чтение/удаление комментариев
         │   ├── auth.py             # AllureAuthManager — JWT exchange через /api/uaa/oauth/token
         │   └── testops_client.py   # AllureTestOpsClient — HTTP клиент (httpx async)
         ├── knowledge/
         │   ├── base.py             # KnowledgeBaseProvider(Protocol) — интерфейс KB
-        │   ├── models.py           # KBEntry, KBMatchResult, RootCauseCategory, SeverityHint
-        │   ├── matcher.py          # TextMatcher — keyword + TF-IDF matching
+        │   ├── models.py           # KBEntry, KBMatchResult, RootCauseCategory
+        │   ├── matcher.py          # TextMatcher — TF-IDF cosine similarity matching
         │   └── yaml_kb.py          # YamlKnowledgeBase — файловая реализация KB
+        ├── utils/
+        │   └── text_normalization.py  # normalize_text() — UUID, timestamps, IP → placeholders
         └── services/
-            ├── triage_service.py      # TriageService.analyze_launch() — основная логика
-            ├── clustering_service.py  # ClusteringService — кластеризация ошибок
-            └── kb_push_service.py     # KBPushService — запись рекомендаций KB в TestOps
+            ├── triage_service.py          # TriageService.analyze_launch() — основная логика
+            ├── clustering_service.py      # ClusteringService — кластеризация ошибок
+            ├── kb_push_service.py         # KBPushService — запись рекомендаций KB в TestOps
+            └── comment_delete_service.py  # CommentDeleteService — удаление комментариев alla
 ```
 
 ## Конфигурация
@@ -146,7 +152,7 @@ alla <launch_id>
 | `ALLURE_KB_ENABLED` | нет | `false` | Включить/выключить поиск по базе знаний |
 | `ALLURE_KB_PATH` | нет | `knowledge_base` | Путь к директории с YAML-файлами базы знаний |
 | `ALLURE_KB_MIN_SCORE` | нет | `0.15` | Минимальный score для включения KB-совпадения в отчёт |
-| `ALLURE_KB_MAX_RESULTS` | нет | `3` | Максимум KB-совпадений на один кластер |
+| `ALLURE_KB_MAX_RESULTS` | нет | `5` | Максимум KB-совпадений на один кластер |
 | `ALLURE_KB_PUSH_ENABLED` | нет | `false` | Записывать рекомендации KB обратно в Allure TestOps через комментарии к тест-кейсам |
 | `ALLURE_SERVER_HOST` | нет | `0.0.0.0` | Хост для HTTP-сервера (alla-server) |
 | `ALLURE_SERVER_PORT` | нет | `8090` | Порт для HTTP-сервера (alla-server) |
@@ -189,6 +195,10 @@ alla 12345 --log-level DEBUG            # подробные HTTP-логи
 alla 12345 --page-size 50               # 50 результатов на страницу
 alla --version                          # версия
 alla --help                             # справка
+
+alla delete 12345                       # удалить комментарии alla для запуска #12345
+alla delete 12345 --dry-run             # предварительный просмотр без удаления
+alla delete 12345 --log-level DEBUG     # подробные логи
 ```
 
 ### Запуск HTTP-сервера
@@ -207,11 +217,18 @@ REST API:
 |-------|------|----------|
 | GET | `/health` | `{"status": "ok", "version": "..."}` |
 | POST | `/api/v1/analyze/{launch_id}` | Полный pipeline анализа, возвращает JSON |
+| DELETE | `/api/v1/comments/{launch_id}` | Удалить комментарии alla для тестов запуска. `?dry_run=true` — предпросмотр |
 | GET | `/docs` | Swagger UI (автогенерация FastAPI) |
 
 ```bash
 # Анализ запуска
 curl -X POST http://localhost:8090/api/v1/analyze/12345
+
+# Удаление комментариев alla (предпросмотр)
+curl -X DELETE "http://localhost:8090/api/v1/comments/12345?dry_run=true"
+
+# Удаление комментариев alla
+curl -X DELETE http://localhost:8090/api/v1/comments/12345
 
 # Health check
 curl http://localhost:8090/health
@@ -278,6 +295,8 @@ grant_type=apitoken&scope=openid&token={ALLURE_TOKEN}
 | GET | `/api/testresult/{id}` | — | Детальный результат теста (fallback для получения `trace`) |
 | GET | `/api/testresult/{id}/execution` | — | Дерево шагов выполнения теста (основной источник ошибок) |
 | POST | `/api/comment` | JSON body: `{"testCaseId": 1337, "body": "..."}` | Добавление комментария к тест-кейсу (KB push) |
+| GET | `/api/comment` | `testCaseId`, `size` | Получение комментариев для тест-кейса (пагинация) |
+| DELETE | `/api/comment/{id}` | — | Удаление комментария по ID |
 
 ### Пагинация
 
@@ -454,75 +473,54 @@ example_trace_snippet: str | None
 id: str                          # Уникальный slug
 title: str                       # Название проблемы
 description: str                 # Подробное описание
-root_cause: RootCauseCategory    # test / app / env / data
-severity: SeverityHint           # critical / high / medium / low / info
-match_criteria: KBEntryMatchCriteria  # Критерии сопоставления
+error_example: str               # Пример ошибки из лога (для TF-IDF сопоставления)
+category: RootCauseCategory      # test / service / env / data
 resolution_steps: list[str]      # Шаги по устранению
-related_links: list[str]         # Ссылки
-tags: list[str]                  # Теги
-```
-
-**KBEntryMatchCriteria** — критерии:
-```python
-keywords: list[str]              # Ключевые слова
-message_patterns: list[str]      # Паттерны в сообщении ошибки
-trace_patterns: list[str]        # Паттерны в стек-трейсе
-exception_types: list[str]       # Типы исключений
-categories: list[str]            # Категории ошибок из Allure
 ```
 
 **KBMatchResult** — результат сопоставления:
 ```python
 entry: KBEntry                   # Совпавшая запись KB
 score: float                     # 0.0–1.0
-matched_on: list[str]            # Объяснение: какие критерии совпали
+matched_on: list[str]            # Объяснение: что именно совпало
 ```
 
 ### Алгоритм сопоставления (TextMatcher)
 
-Двухэтапный алгоритм в `alla/knowledge/matcher.py`:
+Нечёткий TF-IDF cosine similarity в `alla/knowledge/matcher.py`:
 
-**Этап 1 — Keyword/Pattern matching (детерминистический):**
-- `exception_types` → поиск подстроки в message/trace (вес 0.35)
-- `message_patterns` → подстрока в message (вес 0.25)
-- `trace_patterns` → подстрока в trace (вес 0.15)
-- `categories` → сравнение с category (вес 0.10)
-- `keywords` → поиск в объединённом тексте (вес 0.15)
+1. **Нормализация** — и `error_example` из KB, и текст ошибки нормализуются: UUID → `<ID>`, timestamps → `<TS>`, длинные числа → `<NUM>`, IP → `<IP>`. Используется общий модуль `alla/utils/text_normalization.py`.
 
-**Этап 2 — TF-IDF cosine similarity (нечёткий):**
-- Query: `message + trace + category`
-- KB document: `keywords + patterns + title + description`
-- `TfidfVectorizer(token_pattern=r"(?u)\b\w\w+\b", ngram_range=(1,2))`
+2. **TF-IDF vectorization** — все документы (query + KB examples + KB title/desc) векторизуются `TfidfVectorizer(token_pattern=r"(?u)\b\w\w+\b", ngram_range=(1,2), max_features=500)`.
 
-**Итоговый score** = 0.6 × keyword_score + 0.4 × tfidf_score
+3. **Cosine similarity** — для каждой KB-записи: similarity с `error_example` (example_sim) и с `title + description` (title_desc_sim).
+
+4. **Blended score** = 0.8 × example_sim + 0.2 × title_desc_sim. Фильтрация по `min_score` (default 0.15), лимит `max_results` (default 5).
 
 ### Формат записей KB
 
-Все записи в файле `knowledge_base/entries.yaml` (YAML-список):
+Все записи в файле `knowledge_base/entries.yaml` (YAML-список). Поле `error_example` — большой фрагмент ошибки из лога, используется для нечёткого TF-IDF сопоставления:
 
 ```yaml
 - id: dns_resolution_failure
-  title: "Ошибка DNS-резолвинга"
+  title: "Ошибка DNS-резолвинга в тестовом окружении"
   description: "Тесты не могут резолвить DNS-имена сервисов"
-  root_cause: env
-  severity: high
-  match_criteria:
-    keywords: [dns, resolve, nameserver]
-    message_patterns: ["UnknownHostException"]
-    trace_patterns: ["java.net.UnknownHostException"]
-    exception_types: ["UnknownHostException"]
-    categories: ["Infrastructure defects"]
+  error_example: |
+    java.net.UnknownHostException: Failed to resolve 'api-gateway.staging.internal'
+        at java.net.InetAddress.getAllByName(InetAddress.java:1281)
+    Caused by: Unable to resolve host: No address associated with hostname
+  category: env
   resolution_steps:
-    - "Проверить доступность DNS-серверов"
-  tags: [infrastructure, network]
+    - "Проверить доступность DNS-серверов: nslookup <service-name>"
+    - "Проверить /etc/resolv.conf в контейнерах"
 ```
 
 ### Миграция на RAG
 
 При миграции на vector DB (RAG):
-- `match_criteria` поля → текст для генерации embedding
-- `root_cause`, `severity`, `tags`, `categories` → metadata filters в vector DB
-- `resolution_steps`, `related_links`, `title`, `description` → payload
+- `error_example` → текст для генерации embedding
+- `category` → metadata filter в vector DB
+- `resolution_steps`, `title`, `description` → payload
 - `KnowledgeBaseProvider` Protocol остаётся без изменений
 - YAML-файлы используются как seed для наполнения vector DB
 
@@ -538,11 +536,12 @@ matched_on: list[str]            # Объяснение: какие критер
 - [x] Конфигурация через env vars / .env файл
 - [x] Отключение SSL-верификации для корпоративных сетей (`ALLURE_SSL_VERIFY=false`)
 - [x] **Кластеризация падений** — text-first подход: весь текст ошибки берётся целиком (без разбора на exception type / frames). TF-IDF с Unicode-токенизацией + agglomerative clustering (complete linkage) через scipy/scikit-learn. Универсально: работает с любым языком, форматом ошибок, кириллицей.
-- [x] **База знаний (KB)** — YAML-хранилище известных ошибок с рекомендациями. `KnowledgeBaseProvider` Protocol для расширяемости. Двухэтапный matching: keyword/pattern + TF-IDF cosine similarity. Готово к миграции на RAG.
+- [x] **База знаний (KB)** — YAML-хранилище известных ошибок с рекомендациями. `KnowledgeBaseProvider` Protocol для расширяемости. Нечёткий TF-IDF cosine similarity matching по полю `error_example` (большой фрагмент ошибки из лога). Нормализация волатильных данных (UUID, timestamps, числа, IP) обеспечивает устойчивость к различиям между запусками. Готово к миграции на RAG.
 - [x] **Fallback получения trace** — трёхуровневая цепочка извлечения ошибки: execution steps → statusDetails → `GET /api/testresult/{id}` (top-level `trace`). Покрывает случай, когда все шаги execution passed, а ошибка только в индивидуальном результате.
 - [x] **Нормализация UUID без дефисов** — 32-символьные hex-строки (session ID и т.п.) нормализуются в `<ID>` наравне со стандартными UUID.
 - [x] **KB Push в TestOps** — запись рекомендаций KB обратно в Allure TestOps через `POST /api/comment` (комментарий к тест-кейсу). `TestResultsUpdater` Protocol для write-операций. `KBPushService` с дедупликацией по test_case_id, параллельными запросами и per-test error resilience. Управляется настройкой `ALLURE_KB_PUSH_ENABLED` (по умолчанию выключено).
 - [x] **HTTP-сервер** — REST API через FastAPI + uvicorn. `POST /api/v1/analyze/{launch_id}` запускает полный pipeline и возвращает JSON. Общая логика вынесена в `orchestrator.py`, используется и CLI, и сервером. Swagger UI на `/docs`. Настройки `ALLURE_SERVER_HOST` / `ALLURE_SERVER_PORT`.
+- [x] **Удаление комментариев alla** — команда `alla delete <launch_id>` сканирует комментарии к failed/broken тестам запуска, фильтрует по префиксу `[alla]` в теле комментария и удаляет через `DELETE /api/comment/{id}`. `CommentManager` Protocol для чтения/удаления комментариев. `CommentDeleteService` с двухфазным алгоритмом (scan → delete), semaphore-based concurrency и per-test error resilience. Флаг `--dry-run` для предварительного просмотра без удаления. REST API: `DELETE /api/v1/comments/{launch_id}?dry_run=true`.
 
 ## Что не сделано (план на следующие фазы)
 
