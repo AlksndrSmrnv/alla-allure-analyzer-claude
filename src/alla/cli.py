@@ -428,11 +428,157 @@ def _render_box(lines: list[str], max_width: int = 100) -> list[str]:
     return [top, *body, bottom]
 
 
+def build_delete_parser() -> argparse.ArgumentParser:
+    """Создать парсер для команды ``alla delete``."""
+    parser = argparse.ArgumentParser(
+        prog="alla delete",
+        description="Удалить комментарии alla из Allure TestOps для указанного запуска",
+    )
+    parser.add_argument(
+        "launch_id",
+        type=int,
+        help="ID запуска, для тестов которого удалить комментарии alla",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Показать, какие комментарии будут удалены, без фактического удаления",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=None,
+        help="Уровень логирования (переопределяет ALLURE_LOG_LEVEL)",
+    )
+    return parser
+
+
+async def async_delete(args: argparse.Namespace) -> int:
+    """Удалить комментарии alla для указанного запуска. Возвращает код выхода."""
+    from alla.clients.auth import AllureAuthManager
+    from alla.clients.base import CommentManager
+    from alla.clients.testops_client import AllureTestOpsClient
+    from alla.config import Settings
+    from alla.exceptions import AllaError, ConfigurationError
+    from alla.logging_config import setup_logging
+    from alla.services.comment_delete_service import CommentDeleteService
+
+    # 1. Загрузка настроек
+    try:
+        settings = Settings()
+    except Exception as exc:
+        print(
+            f"Ошибка конфигурации: {exc}\n\n"
+            f"Обязательные переменные окружения: "
+            f"ALLURE_ENDPOINT, ALLURE_TOKEN\n"
+            f"Подробности см. в .env.example.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # 2. Настройка логирования
+    log_level = args.log_level or settings.log_level
+    setup_logging(log_level)
+
+    launch_id = args.launch_id
+    dry_run = args.dry_run
+
+    # 3. Получить тесты и удалить комментарии
+    auth = AllureAuthManager(
+        endpoint=settings.endpoint,
+        api_token=settings.token,
+        timeout=settings.request_timeout,
+        ssl_verify=settings.ssl_verify,
+    )
+
+    try:
+        async with AllureTestOpsClient(settings, auth) as client:
+            if not isinstance(client, CommentManager):
+                logger.error("Клиент не поддерживает управление комментариями")
+                return 1
+
+            # Получить все результаты тестов для запуска
+            all_results = await client.get_all_test_results_for_launch(launch_id)
+
+            # Фильтр: только failed/broken
+            failure_statuses = {"failed", "broken"}
+            failed_results = [
+                r for r in all_results
+                if r.status and r.status.lower() in failure_statuses
+            ]
+
+            # Собрать уникальные test_case_id
+            test_case_ids: set[int] = set()
+            skipped = 0
+            for r in failed_results:
+                if r.test_case_id is not None:
+                    test_case_ids.add(r.test_case_id)
+                else:
+                    skipped += 1
+
+            # Вывести заголовок
+            mode_label = " (DRY RUN)" if dry_run else ""
+            print()
+            print(f"=== Удаление комментариев alla{mode_label} ===")
+            print(f"Запуск: #{launch_id}")
+            print(
+                f"Упавших тестов: {len(failed_results)}"
+                f" | Уникальных test_case_id: {len(test_case_ids)}"
+            )
+
+            if not test_case_ids:
+                print("Нет тест-кейсов для обработки.")
+                print()
+                return 0
+
+            # Удалить комментарии
+            service = CommentDeleteService(
+                client,
+                concurrency=settings.detail_concurrency,
+            )
+            result = await service.delete_alla_comments(
+                test_case_ids,
+                dry_run=dry_run,
+            )
+
+            # Вывод результата
+            print()
+            if dry_run:
+                print(f"Было бы удалено комментариев: {result.comments_found}")
+            else:
+                print(
+                    f"Найдено комментариев alla: {result.comments_found}"
+                )
+                print(
+                    f"Удалено: {result.comments_deleted}"
+                    f" | Ошибок: {result.comments_failed}"
+                    f" | Пропущено (нет test_case_id): {skipped}"
+                )
+            print()
+
+    except ConfigurationError as exc:
+        logger.error("Ошибка конфигурации: %s", exc)
+        return 2
+    except AllaError as exc:
+        logger.error("Ошибка: %s", exc)
+        return 1
+    except KeyboardInterrupt:
+        logger.info("Прервано пользователем")
+        return 130
+
+    return 0
+
+
 def main() -> None:
     """Синхронная точка входа для CLI."""
-    parser = build_parser()
-    args = parser.parse_args()
-    exit_code = asyncio.run(async_main(args))
+    if len(sys.argv) > 1 and sys.argv[1] == "delete":
+        parser = build_delete_parser()
+        args = parser.parse_args(sys.argv[2:])
+        exit_code = asyncio.run(async_delete(args))
+    else:
+        parser = build_parser()
+        args = parser.parse_args()
+        exit_code = asyncio.run(async_main(args))
     sys.exit(exit_code)
 
 

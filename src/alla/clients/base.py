@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from alla.models.common import PageResponse
-from alla.models.testops import ExecutionStep, LaunchResponse, TestResultResponse
+from alla.models.testops import CommentResponse, ExecutionStep, LaunchResponse, TestResultResponse
 
 
 @runtime_checkable
@@ -112,5 +112,38 @@ class TestResultsUpdater(Protocol):
         Args:
             test_case_id: ID тест-кейса (не test_result_id).
             body: Текст комментария.
+        """
+        ...
+
+
+@runtime_checkable
+class CommentManager(Protocol):
+    """Протокол для чтения и удаления комментариев к тест-кейсам.
+
+    Разделён от TestResultsUpdater для backward-compatibility:
+    источники данных, не поддерживающие управление комментариями,
+    не обязаны реализовывать этот протокол.
+    Проверка через ``isinstance(client, CommentManager)``.
+
+    Реализации:
+    - AllureTestOpsClient: GET/DELETE /api/comment
+    """
+
+    async def get_comments(self, test_case_id: int) -> list[CommentResponse]:
+        """Получить все комментарии для тест-кейса.
+
+        Args:
+            test_case_id: ID тест-кейса.
+
+        Returns:
+            Список комментариев.
+        """
+        ...
+
+    async def delete_comment(self, comment_id: int) -> None:
+        """Удалить комментарий по ID.
+
+        Args:
+            comment_id: ID комментария.
         """
         ...
