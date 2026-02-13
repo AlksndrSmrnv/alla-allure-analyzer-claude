@@ -205,8 +205,8 @@ async def analyze_launch(
             for _c in clustering_report.clusters:
                 if kb_results.get(_c.cluster_id):
                     clusters_with_kb += 1
-                if _test_by_id_llm and _c.member_test_ids:
-                    _rep = _test_by_id_llm.get(_c.member_test_ids[0])
+                if _test_by_id_llm and _c.representative_test_id is not None:
+                    _rep = _test_by_id_llm.get(_c.representative_test_id)
                     if _rep and _rep.log_snippet:
                         clusters_with_logs += 1
             logger.info(
