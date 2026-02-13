@@ -175,6 +175,29 @@ async def analyze_launch(
             from alla.clients.langflow_client import LangflowClient
             from alla.services.llm_service import LLMService
 
+            # Суммарная статистика перед LLM-анализом
+            _test_by_id_llm = (
+                {t.test_result_id: t for t in report.failed_tests}
+                if settings.logs_enabled and report.failed_tests
+                else {}
+            )
+            clusters_with_logs = 0
+            clusters_with_kb = 0
+            for _c in clustering_report.clusters:
+                if kb_results.get(_c.cluster_id):
+                    clusters_with_kb += 1
+                if _test_by_id_llm and _c.member_test_ids:
+                    _rep = _test_by_id_llm.get(_c.member_test_ids[0])
+                    if _rep and _rep.log_snippet:
+                        clusters_with_logs += 1
+            logger.info(
+                "LLM: отправка %d кластеров на анализ "
+                "(с логами: %d, с KB: %d)",
+                len(clustering_report.clusters),
+                clusters_with_logs,
+                clusters_with_kb,
+            )
+
             async with LangflowClient(
                 base_url=settings.langflow_base_url,
                 flow_id=settings.langflow_flow_id,
