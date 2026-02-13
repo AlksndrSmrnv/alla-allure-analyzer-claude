@@ -11,7 +11,7 @@ from alla.clients.auth import AllureAuthManager
 from alla.config import Settings
 from alla.exceptions import AllureApiError, PaginationLimitError
 from alla.models.common import PageResponse
-from alla.models.testops import AttachmentMeta, ExecutionStep, LaunchResponse, TestResultResponse
+from alla.models.testops import AttachmentMeta, CommentResponse, ExecutionStep, LaunchResponse, TestResultResponse
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +205,58 @@ class AllureTestOpsClient:
             test_case_id,
             str(result)[:500] if result is not None else "None (пустое тело)",
         )
+
+    # --- Комментарии (протокол CommentManager) ---
+
+    async def get_comments(self, test_case_id: int) -> list[CommentResponse]:
+        """Получить все комментарии для тест-кейса.
+
+        ``GET /api/comment?testCaseId={id}&size=1000``
+
+        Args:
+            test_case_id: ID тест-кейса.
+
+        Returns:
+            Список CommentResponse.
+
+        Raises:
+            AllureApiError: При HTTP-ошибках.
+        """
+        params = {
+            "testCaseId": test_case_id,
+            "size": 1000,
+        }
+        logger.debug("Получение комментариев для тест-кейса %d", test_case_id)
+        data = await self._request("GET", self.COMMENT_ENDPOINT, params=params)
+
+        content = data.get("content", []) if isinstance(data, dict) else []
+        comments = [CommentResponse.model_validate(item) for item in content]
+
+        logger.debug(
+            "Получено %d комментариев для тест-кейса %d",
+            len(comments),
+            test_case_id,
+        )
+        return comments
+
+    async def delete_comment(self, comment_id: int) -> None:
+        """Удалить комментарий по ID.
+
+        ``DELETE /api/comment/{id}``
+
+        Args:
+            comment_id: ID комментария.
+
+        Raises:
+            AllureApiError: При HTTP-ошибках.
+        """
+        logger.debug("Удаление комментария %d", comment_id)
+        await self._request(
+            "DELETE",
+            f"{self.COMMENT_ENDPOINT}/{comment_id}",
+            expect_json=False,
+        )
+        logger.debug("Комментарий %d удалён", comment_id)
 
     # --- Аттачменты (протокол AttachmentProvider) ---
 

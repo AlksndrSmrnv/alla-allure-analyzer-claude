@@ -84,6 +84,8 @@ alla <launch_id>
 
 `TestResultsUpdater` — отдельный `Protocol` для записи данных обратно в источник. Разделение read/write позволяет реализовать только чтение для источников, не поддерживающих запись. `AllureTestOpsClient` реализует оба протокола.
 
+`CommentManager` — Protocol для чтения и удаления комментариев к тест-кейсам (`GET /api/comment`, `DELETE /api/comment/{id}`). Разделён от `TestResultsUpdater` для backward-compatibility: источники данных, не поддерживающие управление комментариями, не обязаны его реализовывать. `AllureTestOpsClient` реализует все четыре протокола.
+
 `KnowledgeBaseProvider` — аналогичный Protocol для базы знаний. `YamlKnowledgeBase` его реализует.
 Будущая реализация через RAG (vector DB) реализует тот же Protocol без изменений в CLI или сервисах.
 
@@ -108,12 +110,13 @@ alla <launch_id>
         ├── logging_config.py       # setup_logging() — stdlib logging, формат с timestamp
         ├── models/
         │   ├── common.py           # TestStatus(Enum), PageResponse[T](Generic)
-        │   ├── testops.py          # TestResultResponse, LaunchResponse,
+        │   ├── testops.py          # TestResultResponse, LaunchResponse, CommentResponse,
         │   │                       #   FailedTestSummary, TriageReport
         │   └── clustering.py       # ClusterSignature, FailureCluster, ClusteringReport
         ├── clients/
         │   ├── base.py             # TestResultsProvider(Protocol) — чтение,
-        │   │                       #   TestResultsUpdater(Protocol) — запись
+        │   │                       #   TestResultsUpdater(Protocol) — запись,
+        │   │                       #   CommentManager(Protocol) — чтение/удаление комментариев
         │   ├── auth.py             # AllureAuthManager — JWT exchange через /api/uaa/oauth/token
         │   └── testops_client.py   # AllureTestOpsClient — HTTP клиент (httpx async)
         ├── knowledge/
@@ -122,9 +125,10 @@ alla <launch_id>
         │   ├── matcher.py          # TextMatcher — keyword + TF-IDF matching
         │   └── yaml_kb.py          # YamlKnowledgeBase — файловая реализация KB
         └── services/
-            ├── triage_service.py      # TriageService.analyze_launch() — основная логика
-            ├── clustering_service.py  # ClusteringService — кластеризация ошибок
-            └── kb_push_service.py     # KBPushService — запись рекомендаций KB в TestOps
+            ├── triage_service.py          # TriageService.analyze_launch() — основная логика
+            ├── clustering_service.py      # ClusteringService — кластеризация ошибок
+            ├── kb_push_service.py         # KBPushService — запись рекомендаций KB в TestOps
+            └── comment_delete_service.py  # CommentDeleteService — удаление комментариев alla
 ```
 
 ## Конфигурация
@@ -189,6 +193,10 @@ alla 12345 --log-level DEBUG            # подробные HTTP-логи
 alla 12345 --page-size 50               # 50 результатов на страницу
 alla --version                          # версия
 alla --help                             # справка
+
+alla delete 12345                       # удалить комментарии alla для запуска #12345
+alla delete 12345 --dry-run             # предварительный просмотр без удаления
+alla delete 12345 --log-level DEBUG     # подробные логи
 ```
 
 ### Запуск HTTP-сервера
@@ -207,11 +215,18 @@ REST API:
 |-------|------|----------|
 | GET | `/health` | `{"status": "ok", "version": "..."}` |
 | POST | `/api/v1/analyze/{launch_id}` | Полный pipeline анализа, возвращает JSON |
+| DELETE | `/api/v1/comments/{launch_id}` | Удалить комментарии alla для тестов запуска. `?dry_run=true` — предпросмотр |
 | GET | `/docs` | Swagger UI (автогенерация FastAPI) |
 
 ```bash
 # Анализ запуска
 curl -X POST http://localhost:8090/api/v1/analyze/12345
+
+# Удаление комментариев alla (предпросмотр)
+curl -X DELETE "http://localhost:8090/api/v1/comments/12345?dry_run=true"
+
+# Удаление комментариев alla
+curl -X DELETE http://localhost:8090/api/v1/comments/12345
 
 # Health check
 curl http://localhost:8090/health
@@ -278,6 +293,8 @@ grant_type=apitoken&scope=openid&token={ALLURE_TOKEN}
 | GET | `/api/testresult/{id}` | — | Детальный результат теста (fallback для получения `trace`) |
 | GET | `/api/testresult/{id}/execution` | — | Дерево шагов выполнения теста (основной источник ошибок) |
 | POST | `/api/comment` | JSON body: `{"testCaseId": 1337, "body": "..."}` | Добавление комментария к тест-кейсу (KB push) |
+| GET | `/api/comment` | `testCaseId`, `size` | Получение комментариев для тест-кейса (пагинация) |
+| DELETE | `/api/comment/{id}` | — | Удаление комментария по ID |
 
 ### Пагинация
 
@@ -543,6 +560,7 @@ matched_on: list[str]            # Объяснение: какие критер
 - [x] **Нормализация UUID без дефисов** — 32-символьные hex-строки (session ID и т.п.) нормализуются в `<ID>` наравне со стандартными UUID.
 - [x] **KB Push в TestOps** — запись рекомендаций KB обратно в Allure TestOps через `POST /api/comment` (комментарий к тест-кейсу). `TestResultsUpdater` Protocol для write-операций. `KBPushService` с дедупликацией по test_case_id, параллельными запросами и per-test error resilience. Управляется настройкой `ALLURE_KB_PUSH_ENABLED` (по умолчанию выключено).
 - [x] **HTTP-сервер** — REST API через FastAPI + uvicorn. `POST /api/v1/analyze/{launch_id}` запускает полный pipeline и возвращает JSON. Общая логика вынесена в `orchestrator.py`, используется и CLI, и сервером. Swagger UI на `/docs`. Настройки `ALLURE_SERVER_HOST` / `ALLURE_SERVER_PORT`.
+- [x] **Удаление комментариев alla** — команда `alla delete <launch_id>` сканирует комментарии к failed/broken тестам запуска, фильтрует по префиксу `[alla]` в теле комментария и удаляет через `DELETE /api/comment/{id}`. `CommentManager` Protocol для чтения/удаления комментариев. `CommentDeleteService` с двухфазным алгоритмом (scan → delete), semaphore-based concurrency и per-test error resilience. Флаг `--dry-run` для предварительного просмотра без удаления. REST API: `DELETE /api/v1/comments/{launch_id}?dry_run=true`.
 
 ## Что не сделано (план на следующие фазы)
 

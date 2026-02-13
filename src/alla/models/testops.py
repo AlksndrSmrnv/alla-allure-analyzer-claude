@@ -68,6 +68,20 @@ class AttachmentMeta(BaseModel):
     content_type: str | None = Field(None, alias="contentType")
 
 
+class CommentResponse(BaseModel):
+    """Комментарий к тест-кейсу из Allure TestOps API.
+
+    Используется для ``GET /api/comment?testCaseId={id}`` и
+    ``DELETE /api/comment/{id}``.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    id: int
+    body: str | None = None
+    test_case_id: int | None = Field(None, alias="testCaseId")
+
+
 class ExecutionStep(BaseModel):
     """Шаг выполнения теста из ``/api/testresult/{id}/execution``.
 
