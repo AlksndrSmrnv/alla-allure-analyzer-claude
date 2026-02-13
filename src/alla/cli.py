@@ -154,7 +154,10 @@ async def async_main(args: argparse.Namespace) -> int:
     else:
         _print_text_report(report)
         if clustering_report is not None:
-            _print_clustering_report(clustering_report, kb_results, llm_result)
+            _print_clustering_report(
+                clustering_report, kb_results, llm_result,
+                failed_tests=report.failed_tests,
+            )
         if kb_push_result is not None:
             print(
                 f"[KB Push] Комментариев: {kb_push_result.updated_count}"
@@ -221,8 +224,14 @@ def _print_clustering_report(
     report: ClusteringReport,  # noqa: F821
     kb_results: dict[str, list] | None = None,
     llm_result: LLMAnalysisResult | None = None,  # noqa: F821
+    failed_tests: list[FailedTestSummary] | None = None,  # noqa: F821
 ) -> None:
     """Вывод отчёта кластеризации ошибок в stdout."""
+    from alla.utils.log_utils import has_explicit_errors
+
+    test_by_id: dict[int, FailedTestSummary] = {}
+    if failed_tests:
+        test_by_id = {t.test_result_id: t for t in failed_tests}
 
     print(
         f"=== Кластеры падений "
@@ -242,6 +251,20 @@ def _print_clustering_report(
         cluster_lines.extend(
             _wrap_test_ids(cluster.member_test_ids)
         )
+
+        # Факт наличия лога
+        if test_by_id and cluster.representative_test_id is not None:
+            rep = test_by_id.get(cluster.representative_test_id)
+            log_snippet = rep.log_snippet if rep else None
+            has_log = bool(log_snippet and log_snippet.strip())
+            if has_log:
+                has_errors = has_explicit_errors(log_snippet)
+                if has_errors:
+                    cluster_lines.append("Лог: найден, содержит ошибки")
+                else:
+                    cluster_lines.append("Лог: найден, без явных ошибок")
+            else:
+                cluster_lines.append("Лог: отсутствует")
 
         # KB-совпадения
         matches = (kb_results or {}).get(cluster.cluster_id, [])
