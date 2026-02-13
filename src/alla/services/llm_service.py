@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from alla.clients.base import TestResultsUpdater
 from alla.clients.langflow_client import LangflowClient
@@ -16,6 +17,30 @@ logger = logging.getLogger(__name__)
 
 _LLM_HEADER = "[alla] LLM-анализ ошибки"
 _SEPARATOR = "=" * 40
+
+# Паттерны явных ошибок в логах приложения
+_LOG_ERROR_RE = re.compile(
+    r"\b(?:ERROR|FATAL|SEVERE|CRITICAL)\b"
+    r"|(?:Exception|Error|Traceback|Caused by)\b"
+    r"|(?:FAILED|Failed to)\b",
+    re.IGNORECASE,
+)
+
+
+def _interpret_kb_score(score: float) -> str:
+    """Перевести числовой KB-score в текстовое описание уровня уверенности."""
+    if score >= 0.7:
+        return "высокое совпадение"
+    if score >= 0.4:
+        return "частичное совпадение"
+    return "слабое совпадение"
+
+
+def _has_explicit_errors(log_snippet: str | None) -> bool:
+    """Проверить наличие явных маркеров ошибок в лог-фрагменте."""
+    if not log_snippet:
+        return False
+    return bool(_LOG_ERROR_RE.search(log_snippet))
 
 
 def build_cluster_prompt(
@@ -50,15 +75,21 @@ def build_cluster_prompt(
         parts.append(f"\nЛог:\n{log_snippet}")
 
     if kb_matches:
-        parts.append("\nИзвестные проблемы:")
+        parts.append(
+            "\nИзвестные проблемы "
+            "(score: >=0.7 = высокое, 0.4–0.7 = частичное, <0.4 = слабое):"
+        )
         for m in kb_matches[:3]:
             entry = m.entry
-            parts.append(f"- {entry.title} (категория: {entry.category.value})")
+            confidence = _interpret_kb_score(m.score)
+            parts.append(f"- [{m.score:.2f} — {confidence}] {entry.title} (категория: {entry.category.value})")
+            if m.matched_on:
+                parts.append(f"  Совпало по: {', '.join(m.matched_on)}")
             if entry.resolution_steps:
                 parts.append(f"  Решение: {'; '.join(entry.resolution_steps)}")
 
     # --- Инструкция ---
-    parts.append(
+    instruction = (
         "\n---\n"
         "Задача: проанализируй ошибку и дай рекомендацию. "
         "Ответ строго в формате:\n"
@@ -66,9 +97,17 @@ def build_cluster_prompt(
         "Причина: тест | приложение | окружение | данные\n"
         "Что случилось: <2-3 предложения: суть ошибки, что именно сломалось>\n"
         "Что делать: <2-3 предложения: конкретные шаги для устранения>\n"
-        "\n"
-        "Не добавляй ничего кроме этих 3 пунктов. Будь конкретен."
     )
+    if kb_matches:
+        instruction += (
+            "\n"
+            "Учитывай уверенность совпадений из базы знаний:\n"
+            "- Высокий score (>=0.7) — решение с высокой вероятностью применимо.\n"
+            "- Средний score (0.4–0.7) — частично релевантно.\n"
+            "- Низкий score (<0.4) — используй как дополнительный контекст, не как основу.\n"
+        )
+    instruction += "\nНе добавляй ничего кроме этих 3 пунктов. Будь конкретен."
+    parts.append(instruction)
 
     return "\n".join(parts)
 
@@ -151,6 +190,20 @@ class LLMService:
                 rep = test_by_id.get(cluster.representative_test_id)
                 if rep:
                     log_snippet = rep.log_snippet
+
+            has_log = bool(log_snippet and log_snippet.strip())
+            has_log_errors = _has_explicit_errors(log_snippet) if has_log else False
+            kb_count = len(kb_matches) if kb_matches else 0
+
+            logger.info(
+                "LLM: кластер %s (%d тестов) — "
+                "лог отправлен: %s, ошибки в логе: %s, KB-совпадений: %d",
+                cluster.cluster_id[:8],
+                cluster.member_count,
+                "да" if has_log else "нет",
+                "да" if has_log_errors else "нет",
+                kb_count,
+            )
 
             prompt = build_cluster_prompt(cluster, kb_matches, log_snippet)
 
