@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -11,12 +12,15 @@ from alla.exceptions import LangflowApiError
 
 logger = logging.getLogger(__name__)
 
+_RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
+
 
 class LangflowClient:
     """HTTP-клиент для взаимодействия с Langflow REST API.
 
     Отправляет текстовые запросы в указанный flow и получает
-    текстовые ответы от LLM.
+    текстовые ответы от LLM.  Поддерживает retry с exponential
+    backoff при 429 / 502-504 / сетевых ошибках.
     """
 
     def __init__(
@@ -27,10 +31,14 @@ class LangflowClient:
         *,
         timeout: int = 120,
         ssl_verify: bool = True,
+        max_retries: int = 3,
+        retry_base_delay: float = 1.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._flow_id = flow_id
         self._api_key = api_key
+        self._max_retries = max_retries
+        self._retry_base_delay = retry_base_delay
         self._http = httpx.AsyncClient(timeout=timeout, verify=ssl_verify)
 
     async def run_flow(self, input_value: str) -> str:
@@ -39,6 +47,9 @@ class LangflowClient:
         POST {base_url}/api/v1/run/{flow_id}
         Body: {"input_value": "...", "output_type": "chat", "input_type": "chat"}
         Auth: Bearer token
+
+        Retry: при 429 / 502-504 / сетевых ошибках — exponential backoff
+        (delay = base * 2^attempt), до ``max_retries`` повторов.
 
         Returns:
             Текстовый ответ LLM.
@@ -57,37 +68,64 @@ class LangflowClient:
             "input_type": "chat",
         }
 
-        logger.debug(
-            "Langflow запрос: POST %s input_length=%d",
-            url,
-            len(input_value),
-        )
+        last_error: LangflowApiError | None = None
 
-        try:
-            resp = await self._http.post(url, json=payload, headers=headers)
-        except httpx.TimeoutException as exc:
-            raise LangflowApiError(
-                0,
-                f"Таймаут запроса: {exc}",
+        for attempt in range(1 + self._max_retries):
+            logger.debug(
+                "Langflow запрос: POST %s input_length=%d attempt=%d/%d",
                 url,
-            ) from exc
-        except httpx.RequestError as exc:
-            raise LangflowApiError(0, str(exc), url) from exc
+                len(input_value),
+                attempt + 1,
+                1 + self._max_retries,
+            )
 
-        if resp.status_code >= 400:
-            body_text = resp.text[:500]
-            raise LangflowApiError(resp.status_code, body_text, url)
+            retryable = False
+            try:
+                resp = await self._http.post(url, json=payload, headers=headers)
+            except httpx.TimeoutException as exc:
+                last_error = LangflowApiError(0, f"Таймаут запроса: {exc}", url)
+                last_error.__cause__ = exc
+                retryable = True
+            except httpx.RequestError as exc:
+                last_error = LangflowApiError(0, str(exc), url)
+                last_error.__cause__ = exc
+                retryable = True
+            else:
+                if resp.status_code in _RETRYABLE_STATUS_CODES:
+                    body_text = resp.text[:500]
+                    last_error = LangflowApiError(resp.status_code, body_text, url)
+                    retryable = True
+                elif resp.status_code >= 400:
+                    body_text = resp.text[:500]
+                    raise LangflowApiError(resp.status_code, body_text, url)
+                else:
+                    # Успешный ответ — разбираем JSON
+                    try:
+                        data = resp.json()
+                    except Exception as exc:
+                        raise LangflowApiError(
+                            resp.status_code,
+                            f"Ответ не является валидным JSON: {resp.text[:200]}",
+                            url,
+                        ) from exc
+                    return self._extract_text(data, url)
 
-        try:
-            data = resp.json()
-        except Exception as exc:
-            raise LangflowApiError(
-                resp.status_code,
-                f"Ответ не является валидным JSON: {resp.text[:200]}",
-                url,
-            ) from exc
+            # Retry с backoff или пробрасываем ошибку
+            if retryable and attempt < self._max_retries:
+                delay = self._retry_base_delay * (2 ** attempt)
+                logger.warning(
+                    "Langflow ошибка (попытка %d/%d): %s — повтор через %.1fs",
+                    attempt + 1,
+                    1 + self._max_retries,
+                    last_error,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+            elif last_error is not None:
+                raise last_error
 
-        return self._extract_text(data, url)
+        # Unreachable, но для mypy
+        raise last_error  # type: ignore[misc]
 
     @staticmethod
     def _extract_text(data: dict[str, Any], url: str) -> str:

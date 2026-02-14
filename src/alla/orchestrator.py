@@ -223,6 +223,8 @@ async def analyze_launch(
                 api_key=settings.langflow_api_key,
                 timeout=settings.llm_timeout,
                 ssl_verify=settings.ssl_verify,
+                max_retries=settings.llm_max_retries,
+                retry_base_delay=settings.llm_retry_base_delay,
             ) as langflow:
                 llm_service = LLMService(
                     langflow,

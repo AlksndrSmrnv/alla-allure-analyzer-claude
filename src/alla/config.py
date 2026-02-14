@@ -78,3 +78,11 @@ class Settings(BaseSettings):
         default=False,
         description="Записывать результаты LLM-анализа в Allure TestOps через комментарии к тест-кейсам",
     )
+    llm_max_retries: int = Field(
+        default=3, ge=0,
+        description="Макс. число повторных попыток при 429/503/сетевых ошибках Langflow (0 = без retry)",
+    )
+    llm_retry_base_delay: float = Field(
+        default=1.0, ge=0.1,
+        description="Базовая задержка в секундах для exponential backoff (delay = base * 2^attempt)",
+    )

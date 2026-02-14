@@ -156,6 +156,15 @@ alla <launch_id>
 | `ALLURE_KB_PUSH_ENABLED` | нет | `false` | Записывать рекомендации KB обратно в Allure TestOps через комментарии к тест-кейсам |
 | `ALLURE_SERVER_HOST` | нет | `0.0.0.0` | Хост для HTTP-сервера (alla-server) |
 | `ALLURE_SERVER_PORT` | нет | `8090` | Порт для HTTP-сервера (alla-server) |
+| `ALLURE_LLM_ENABLED` | нет | `false` | Включить/выключить LLM-анализ кластеров через Langflow |
+| `ALLURE_LANGFLOW_BASE_URL` | нет | `""` | Базовый URL Langflow API |
+| `ALLURE_LANGFLOW_FLOW_ID` | нет | `""` | ID flow в Langflow |
+| `ALLURE_LANGFLOW_API_KEY` | нет | `""` | API-ключ для Langflow |
+| `ALLURE_LLM_TIMEOUT` | нет | `120` | Таймаут одного LLM-запроса в секундах |
+| `ALLURE_LLM_CONCURRENCY` | нет | `3` | Макс. параллельных запросов к Langflow |
+| `ALLURE_LLM_PUSH_ENABLED` | нет | `false` | Записывать результаты LLM-анализа в TestOps через комментарии |
+| `ALLURE_LLM_MAX_RETRIES` | нет | `3` | Число повторных попыток при 429/503/сетевых ошибках Langflow (0 = без retry) |
+| `ALLURE_LLM_RETRY_BASE_DELAY` | нет | `1.0` | Базовая задержка в секундах для exponential backoff (delay = base × 2^attempt) |
 
 ## Установка и запуск
 
