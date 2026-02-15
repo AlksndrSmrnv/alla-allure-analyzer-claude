@@ -76,7 +76,8 @@ class CommentDeleteService:
         alla_comment_ids: list[int] = []
         scan_errors = 0
 
-        async def scan_one(tc_id: int) -> list[int]:
+        async def scan_one(tc_id: int) -> list[int] | None:
+            """Вернуть ID alla-комментариев или None при ошибке."""
             async with semaphore:
                 try:
                     comments = await self._client.get_comments(tc_id)
@@ -91,13 +92,23 @@ class CommentDeleteService:
                         tc_id,
                         exc,
                     )
-                    return []
+                    return None
 
         scan_tasks = [scan_one(tc_id) for tc_id in test_case_ids]
         scan_results = await asyncio.gather(*scan_tasks)
 
         for ids in scan_results:
-            alla_comment_ids.extend(ids)
+            if ids is None:
+                scan_errors += 1
+            else:
+                alla_comment_ids.extend(ids)
+
+        if scan_errors:
+            logger.warning(
+                "Не удалось просканировать %d тест-кейсов из %d",
+                scan_errors,
+                len(test_case_ids),
+            )
 
         logger.info(
             "Найдено %d комментариев alla в %d тест-кейсах",
@@ -111,7 +122,7 @@ class CommentDeleteService:
                 comments_found=len(alla_comment_ids),
                 comments_deleted=0,
                 comments_failed=0,
-                skipped_test_cases=0,
+                skipped_test_cases=scan_errors,
             )
 
         # Фаза 2: удалить найденные комментарии
@@ -151,5 +162,5 @@ class CommentDeleteService:
             comments_found=len(alla_comment_ids),
             comments_deleted=deleted,
             comments_failed=failed,
-            skipped_test_cases=0,
+            skipped_test_cases=scan_errors,
         )

@@ -1,6 +1,6 @@
 """Конфигурация приложения, загружаемая из переменных окружения."""
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +19,21 @@ class Settings(BaseSettings):
 
     endpoint: str = Field(description="URL сервера Allure TestOps")
     token: str = Field(description="API-токен для аутентификации")
+
+    @field_validator("endpoint")
+    @classmethod
+    def _validate_endpoint(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError(
+                "ALLURE_ENDPOINT не может быть пустым. "
+                "Укажите URL сервера Allure TestOps (например https://allure.company.com)"
+            )
+        if not v.startswith(("http://", "https://")):
+            raise ValueError(
+                f"ALLURE_ENDPOINT должен начинаться с http:// или https://, получено: {v!r}"
+            )
+        return v
     project_id: int | None = Field(default=None, description="ID проекта в Allure TestOps")
 
     request_timeout: int = Field(default=30, description="Таймаут HTTP-запросов в секундах")

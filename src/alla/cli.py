@@ -121,6 +121,9 @@ async def async_main(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         logger.info("Прервано пользователем")
         return 130
+    except BaseException:
+        await auth.close()
+        raise
 
     # 6. Вывод отчёта
     if args.output_format == "json":
@@ -491,7 +494,7 @@ async def async_delete(args: argparse.Namespace) -> int:
         ssl_verify=settings.ssl_verify,
     )
 
-    try:
+    try:  # noqa: SIM117 — нужен отдельный try для auth.close() в except BaseException
         async with AllureTestOpsClient(settings, auth) as client:
             if not isinstance(client, CommentManager):
                 logger.error("Клиент не поддерживает управление комментариями")
@@ -565,6 +568,9 @@ async def async_delete(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         logger.info("Прервано пользователем")
         return 130
+    except BaseException:
+        await auth.close()
+        raise
 
     return 0
 
