@@ -48,9 +48,18 @@ class TriageService:
         logger.info("Анализ запуска #%d (%s)", launch_id, launch.name or "без названия")
 
         # 2. Все результаты тестов
-        results = await self._client.get_all_test_results_for_launch(launch_id)
+        all_results = await self._client.get_all_test_results_for_launch(launch_id)
 
-        # 3. Подсчёт по статусам
+        # 2.1. Исключить hidden-результаты (retry-попытки, не финальные)
+        results = [r for r in all_results if not r.hidden]
+        hidden_count = len(all_results) - len(results)
+        if hidden_count:
+            logger.info(
+                "Исключено %d hidden-результатов (retry, не финальная попытка)",
+                hidden_count,
+            )
+
+        # 3. Подсчёт по статусам (без hidden, но с muted)
         status_counts = Counter(
             self._normalize_status(r.status) for r in results
         )
@@ -110,7 +119,19 @@ class TriageService:
         failed_results = [
             r for r in results
             if self._normalize_status(r.status) in failure_statuses
+            and not r.muted
         ]
+
+        muted_failures = sum(
+            1 for r in results
+            if self._normalize_status(r.status) in failure_statuses
+            and r.muted
+        )
+        if muted_failures:
+            logger.info(
+                "Исключено %d muted-падений из анализа",
+                muted_failures,
+            )
 
         if not failed_results:
             return []

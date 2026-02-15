@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -48,6 +49,7 @@ class AllureAuthManager:
         self._endpoint = endpoint.rstrip("/")
         self._api_token = api_token
         self._token_info: _TokenInfo | None = None
+        self._token_lock = asyncio.Lock()
         self._http = httpx.AsyncClient(timeout=timeout, verify=ssl_verify)
 
     async def get_auth_header(self) -> dict[str, str]:
@@ -55,10 +57,24 @@ class AllureAuthManager:
 
         Обменивает API-токен на JWT, если кэшированного токена нет
         или кэшированный токен скоро истекает.
+
+        Lock гарантирует, что при конкурентных запросах только один
+        корутин выполняет token exchange, остальные ждут и переиспользуют
+        полученный токен.
         """
-        if self._token_info is None or self._token_info.is_expired:
+        # Быстрый путь без лока: токен валиден
+        token = self._token_info
+        if token is not None and not token.is_expired:
+            return {"Authorization": f"Bearer {token.access_token}"}
+
+        # Медленный путь: нужен exchange, берём лок
+        async with self._token_lock:
+            # Повторная проверка: пока ждали лок, другой корутин мог обновить
+            token = self._token_info
+            if token is not None and not token.is_expired:
+                return {"Authorization": f"Bearer {token.access_token}"}
             self._token_info = await self._exchange_token()
-        return {"Authorization": f"Bearer {self._token_info.access_token}"}
+            return {"Authorization": f"Bearer {self._token_info.access_token}"}
 
     async def _exchange_token(self) -> _TokenInfo:
         """Обменять API-токен на JWT через OAuth-эндпоинт."""
@@ -102,8 +118,22 @@ class AllureAuthManager:
         logger.debug("JWT получен, срок действия %d секунд", expires_in)
         return _TokenInfo(access_token=access_token, expires_in=expires_in)
 
-    def invalidate(self) -> None:
-        """Принудительная повторная аутентификация при следующем запросе."""
+    def invalidate(self, failed_token: str | None = None) -> None:
+        """Принудительная повторная аутентификация при следующем запросе.
+
+        Args:
+            failed_token: access_token, вызвавший 401. Если передан,
+                токен сбрасывается только если текущий кэшированный токен
+                совпадает — это предотвращает ситуацию, когда корутин A
+                уже обновил токен, а корутин B сбрасывает свежий токен
+                по устаревшей 401-ошибке.
+        """
+        if failed_token is not None and self._token_info is not None:
+            if self._token_info.access_token != failed_token:
+                logger.debug(
+                    "Пропуск invalidate: токен уже обновлён другим запросом"
+                )
+                return
         self._token_info = None
 
     async def close(self) -> None:
