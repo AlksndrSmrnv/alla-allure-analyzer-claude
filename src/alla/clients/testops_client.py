@@ -351,7 +351,8 @@ class AllureTestOpsClient:
 
         if resp.status_code == 401:
             logger.debug("Получен 401, повторная аутентификация для raw-запроса")
-            self._auth.invalidate()
+            failed_token = auth_header.get("Authorization", "").removeprefix("Bearer ")
+            self._auth.invalidate(failed_token=failed_token)
             auth_header = await self._auth.get_auth_header()
             try:
                 resp = await self._http.request(
@@ -407,7 +408,8 @@ class AllureTestOpsClient:
         # Одноразовый повтор при 401 (истёкший JWT)
         if resp.status_code == 401:
             logger.debug("Получен 401, выполняем повторную аутентификацию и повтор запроса")
-            self._auth.invalidate()
+            failed_token = auth_header.get("Authorization", "").removeprefix("Bearer ")
+            self._auth.invalidate(failed_token=failed_token)
             auth_header = await self._auth.get_auth_header()
             try:
                 resp = await self._http.request(
