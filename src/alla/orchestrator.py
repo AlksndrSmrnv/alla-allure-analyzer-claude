@@ -20,6 +20,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _KB_QUERY_LOG_PREVIEW_CHARS = 220
 
+# Кэш KB: (kb_path, min_score, max_results) → экземпляр.
+# Предотвращает повторное чтение YAML и re-fit TF-IDF на каждый запрос сервера.
+_kb_cache: dict[tuple[str, float, int], object] = {}
+_kb_cache_lock: object = None  # Ленивая инициализация asyncio.Lock
+
 
 @dataclass
 class AnalysisResult:
@@ -110,21 +115,13 @@ async def analyze_launch(
 
     # 3. Поиск по базе знаний
     if settings.kb_enabled and clustering_report is not None:
-        from alla.exceptions import KnowledgeBaseError
         from alla.knowledge.matcher import MatcherConfig
-        from alla.knowledge.yaml_kb import YamlKnowledgeBase
 
         matcher_config = MatcherConfig(
             min_score=settings.kb_min_score,
             max_results=settings.kb_max_results,
         )
-        try:
-            kb = YamlKnowledgeBase(
-                kb_path=settings.kb_path,
-                matcher_config=matcher_config,
-            )
-        except KnowledgeBaseError:
-            raise
+        kb = _get_or_create_kb(settings.kb_path, matcher_config)
 
         # Индекс test_result_id → FailedTestSummary для быстрого lookup
         test_by_id = {t.test_result_id: t for t in report.failed_tests}
@@ -399,3 +396,37 @@ def _preview_tail(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text.replace("\n", " ")
     return text[-max_chars:].replace("\n", " ")
+
+
+def _get_or_create_kb(
+    kb_path: str,
+    matcher_config: object,
+) -> object:
+    """Вернуть кэшированный экземпляр YamlKnowledgeBase или создать новый.
+
+    Кэш по ключу (kb_path, min_score, max_results). Предотвращает
+    повторное чтение YAML-файлов и re-fit TF-IDF на каждый запрос сервера.
+    """
+    from alla.knowledge.matcher import MatcherConfig
+    from alla.knowledge.yaml_kb import YamlKnowledgeBase
+
+    global _kb_cache
+
+    cfg = matcher_config if isinstance(matcher_config, MatcherConfig) else None
+    cache_key = (
+        kb_path,
+        cfg.min_score if cfg else 0.15,
+        cfg.max_results if cfg else 5,
+    )
+
+    if cache_key in _kb_cache:
+        logger.debug("KB: используется кэшированный экземпляр для %s", kb_path)
+        return _kb_cache[cache_key]
+
+    kb = YamlKnowledgeBase(
+        kb_path=kb_path,
+        matcher_config=matcher_config,
+    )
+    _kb_cache[cache_key] = kb
+    logger.debug("KB: создан и закэширован новый экземпляр для %s", kb_path)
+    return kb

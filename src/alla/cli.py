@@ -121,6 +121,9 @@ async def async_main(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         logger.info("Прервано пользователем")
         return 130
+    except BaseException:
+        await auth.close()
+        raise
 
     # 6. Вывод отчёта
     if args.output_format == "json":
@@ -189,7 +192,7 @@ def _print_text_report(report: TriageReport) -> None:  # noqa: F821
     if report.launch_name:
         launch_label += f" ({report.launch_name})"
     print(launch_label)
-    print(
+    stats = (
         f"Всего: {report.total_results}"
         f" | Успешно: {report.passed_count}"
         f" | Провалено: {report.failed_count}"
@@ -197,10 +200,13 @@ def _print_text_report(report: TriageReport) -> None:  # noqa: F821
         f" | Пропущено: {report.skipped_count}"
         f" | Неизвестно: {report.unknown_count}"
     )
+    if report.muted_failure_count:
+        stats += f" | Muted: {report.muted_failure_count}"
+    print(stats)
     print()
 
     if report.failed_tests:
-        print(f"Падения ({report.failure_count}):")
+        print(f"Падения ({len(report.failed_tests)}):")
         for t in report.failed_tests:
             print(f"  [{t.status.value.upper()}]  {t.name} (ID: {t.test_result_id})")
             if t.link:
@@ -491,7 +497,7 @@ async def async_delete(args: argparse.Namespace) -> int:
         ssl_verify=settings.ssl_verify,
     )
 
-    try:
+    try:  # noqa: SIM117 — нужен отдельный try для auth.close() в except BaseException
         async with AllureTestOpsClient(settings, auth) as client:
             if not isinstance(client, CommentManager):
                 logger.error("Клиент не поддерживает управление комментариями")
@@ -565,6 +571,9 @@ async def async_delete(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         logger.info("Прервано пользователем")
         return 130
+    except BaseException:
+        await auth.close()
+        raise
 
     return 0
 

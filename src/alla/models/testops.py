@@ -136,7 +136,14 @@ class FailedTestSummary(BaseModel):
 
 
 class TriageReport(BaseModel):
-    """Результат шага триажа: сводка падений запуска."""
+    """Результат шага триажа: сводка падений запуска.
+
+    ``failed_count`` и ``broken_count`` — общее число тестов с этими статусами
+    (включая muted). ``muted_failure_count`` — сколько из них muted и исключено
+    из анализа. ``failed_tests`` содержит только не-muted падения.
+
+    Инвариант: ``len(failed_tests) == failure_count - muted_failure_count``.
+    """
 
     launch_id: int
     launch_name: str | None = None
@@ -146,8 +153,15 @@ class TriageReport(BaseModel):
     broken_count: int = 0
     skipped_count: int = 0
     unknown_count: int = 0
+    muted_failure_count: int = 0
     failed_tests: list[FailedTestSummary] = []
 
     @property
     def failure_count(self) -> int:
+        """Общее число падений (failed + broken), включая muted."""
         return self.failed_count + self.broken_count
+
+    @property
+    def active_failure_count(self) -> int:
+        """Число падений, участвующих в анализе (без muted)."""
+        return self.failure_count - self.muted_failure_count
