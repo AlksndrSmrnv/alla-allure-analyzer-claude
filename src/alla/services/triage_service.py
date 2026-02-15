@@ -64,6 +64,14 @@ class TriageService:
             self._normalize_status(r.status) for r in results
         )
 
+        # 3.1. Подсчитать muted-падения (включены в status_counts, но не в анализ)
+        failure_statuses = TestStatus.failure_statuses()
+        muted_failure_count = sum(
+            1 for r in results
+            if self._normalize_status(r.status) in failure_statuses
+            and r.muted
+        )
+
         # 4. Получить execution-данные для упавших/сломанных тестов
         failures_with_execution = await self._fetch_failed_executions(results)
 
@@ -85,6 +93,7 @@ class TriageService:
             broken_count=status_counts.get(TestStatus.BROKEN, 0),
             skipped_count=status_counts.get(TestStatus.SKIPPED, 0),
             unknown_count=status_counts.get(TestStatus.UNKNOWN, 0),
+            muted_failure_count=muted_failure_count,
             failed_tests=failed_tests,
         )
 
@@ -335,9 +344,11 @@ class TriageService:
     @staticmethod
     def _log_report(report: TriageReport) -> None:
         """Залогировать сводку отчёта триажа."""
-        logger.info(
+        msg = (
             "Запуск #%d (%s): всего=%d | успешно=%d | провалено=%d "
-            "| сломано=%d | пропущено=%d | неизвестно=%d",
+            "| сломано=%d | пропущено=%d | неизвестно=%d"
+        )
+        args: list[object] = [
             report.launch_id,
             report.launch_name or "без названия",
             report.total_results,
@@ -346,10 +357,14 @@ class TriageService:
             report.broken_count,
             report.skipped_count,
             report.unknown_count,
-        )
+        ]
+        if report.muted_failure_count:
+            msg += " | muted=%d"
+            args.append(report.muted_failure_count)
+        logger.info(msg, *args)
 
         if report.failed_tests:
-            logger.info("Падения (%d):", report.failure_count)
+            logger.info("Падения (%d):", len(report.failed_tests))
             for t in report.failed_tests:
                 logger.info(
                     "  [%s] %s (ID: %d) %s",
