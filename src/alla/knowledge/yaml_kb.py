@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import yaml
@@ -14,10 +15,17 @@ from alla.knowledge.models import KBEntry, KBMatchResult
 logger = logging.getLogger(__name__)
 
 
+_PROJECT_FILE_RE = re.compile(r"^project_\d+\.ya?ml$")
+
+
 class YamlKnowledgeBase:
     """Реализация KnowledgeBaseProvider, читающая YAML-файлы с диска.
 
-    Загружает все .yaml/.yml файлы из указанной директории (рекурсивно).
+    Загружает .yaml/.yml файлы из указанной директории (рекурсивно) с фильтрацией:
+    - Глобальные файлы (не соответствующие ``project_<id>.yaml``) — загружаются всегда.
+    - Проектные файлы (``project_<id>.yaml``) — загружается только файл текущего проекта
+      (если ``project_id`` задан). Файлы других проектов пропускаются.
+
     Каждый файл может содержать один YAML-документ (dict) или список (list[dict]).
     Все записи загружаются в память при инициализации.
 
@@ -29,12 +37,47 @@ class YamlKnowledgeBase:
         kb_path: str | Path,
         *,
         matcher_config: MatcherConfig | None = None,
+        project_id: int | None = None,
     ) -> None:
         self._kb_path = Path(kb_path)
+        self._project_id = project_id
         self._matcher = TextMatcher(config=matcher_config)
         self._entries: list[KBEntry] = []
         self._entries_by_id: dict[str, KBEntry] = {}
+        self._ensure_project_file()
         self._load()
+
+    def _ensure_project_file(self) -> None:
+        """Создать пустой файл KB для проекта, если он ещё не существует."""
+        if self._project_id is None:
+            return
+
+        project_file = self._kb_path / f"project_{self._project_id}.yaml"
+        if project_file.exists():
+            return
+
+        if self._kb_path.exists() and not self._kb_path.is_dir():
+            # Путь существует, но не является директорией.
+            # _load() обнаружит это и выбросит KnowledgeBaseError с понятным сообщением.
+            return
+
+        if not self._kb_path.exists():
+            self._kb_path.mkdir(parents=True, exist_ok=True)
+            logger.info(
+                "Создана директория базы знаний: %s", self._kb_path,
+            )
+
+        project_file.write_text(
+            f"# alla — база знаний для проекта #{self._project_id}\n"
+            f"# Формат записей см. в entries.yaml\n"
+            f"[]\n",
+            encoding="utf-8",
+        )
+        logger.info(
+            "Создан файл базы знаний для проекта #%d: %s",
+            self._project_id,
+            project_file,
+        )
 
     def _load(self) -> None:
         """Загрузить все YAML-файлы из директории KB.
@@ -56,7 +99,7 @@ class YamlKnowledgeBase:
             )
 
         try:
-            yaml_files = sorted(
+            all_yaml = sorted(
                 p for p in self._kb_path.rglob("*")
                 if p.suffix in (".yaml", ".yml") and p.is_file()
             )
@@ -64,6 +107,21 @@ class YamlKnowledgeBase:
             raise KnowledgeBaseError(
                 f"Нет прав доступа к директории базы знаний: {self._kb_path}"
             ) from exc
+
+        # Фильтрация: глобальные файлы + только файл текущего проекта.
+        # Файлы других проектов (project_<N>.yaml/.yml, N ≠ self._project_id) пропускаются.
+        # Сравниваем по stem (имя без расширения), чтобы корректно обрабатывать
+        # оба расширения: project_42.yaml и project_42.yml.
+        own_project_stem = (
+            f"project_{self._project_id}"
+            if self._project_id is not None
+            else None
+        )
+        yaml_files = [
+            p for p in all_yaml
+            if not _PROJECT_FILE_RE.match(p.name)                    # глобальный файл
+            or (own_project_stem is not None and p.stem == own_project_stem)  # свой проект
+        ]
 
         for path in yaml_files:
             try:

@@ -1,4 +1,4 @@
-# База знаний alla — известные ошибки и рекомендации по устранению
+# alla — глобальная база знаний (общие записи для всех проектов)
 #
 # Формат: YAML-список записей.
 # Поля:
@@ -8,23 +8,8 @@
 #   error_example    — пример ошибки из лога (используется для нечёткого TF-IDF сопоставления)
 #   category         — категория причины: test | service | env | data
 #   resolution_steps — шаги по устранению
-
-# ============================================================================
-# env — проблемы окружения
-# ============================================================================
-
-- id: dns_resolution_failure
-  title: "Ошибка DNS-резолвинга в тестовом окружении"
-  description: "Тесты не могут резолвить DNS-имена сервисов. Проблема с DNS-серверами или конфигурацией контейнеров."
-  error_example: |
-    java.net.UnknownHostException: Failed to resolve 'api-gateway.staging.internal'
-        at java.net.InetAddress.getAllByName(InetAddress.java:1281)
-        at java.net.InetAddress.getByName(InetAddress.java:1187)
-    Caused by: Unable to resolve host api-gateway.staging.internal: No address associated with hostname
-  category: env
-  resolution_steps:
-    - "Проверить доступность DNS-серверов: nslookup <service-name>"
-    - "Проверить /etc/resolv.conf в контейнерах"
+#
+# Проектные записи хранятся в файлах project_{id}.yaml (создаются автоматически).
 
 - id: connection_timeout
   title: "Таймаут подключения к сервису"
@@ -39,23 +24,6 @@
     - "Проверить доступность сервиса: curl -v <service-url>"
     - "Проверить, что сервис запущен и прошёл health-check"
 
-- id: ssl_certificate_error
-  title: "Ошибка SSL-сертификата"
-  description: "SSL/TLS handshake завершился с ошибкой. Сертификат просрочен, невалидный или нет доверия к CA."
-  error_example: |
-    javax.net.ssl.SSLHandshakeException: PKIX path building failed
-        at sun.security.ssl.Alert.createSSLException(Alert.java:131)
-    Caused by: sun.security.validator.ValidatorException: PKIX path building failed
-    Caused by: java.security.cert.CertPathBuilderException: unable to find valid certification path to requested target
-  category: env
-  resolution_steps:
-    - "Проверить срок действия сертификата: openssl s_client -connect <host>:443"
-    - "Обновить/перевыпустить сертификат, если просрочен"
-
-# ============================================================================
-# service — проблемы в смежном сервисе
-# ============================================================================
-
 - id: null_pointer_exception
   title: "NullPointerException в коде приложения"
   description: "Приложение выбрасывает NullPointerException — дефект в коде сервиса, объект не инициализирован."
@@ -67,62 +35,3 @@
   resolution_steps:
     - "Определить, какой объект оказался null (см. стек-трейс)"
     - "Создать баг-репорт с точным стеком и шагами воспроизведения"
-
-- id: database_deadlock
-  title: "Deadlock в базе данных"
-  description: "Запрос к БД завершился ошибкой из-за взаимной блокировки транзакций. Deadlock detected при конкурентных запросах."
-  error_example: |
-    org.hibernate.exception.LockAcquisitionException: could not execute statement
-    Caused by: com.mysql.cj.jdbc.exceptions.MySQLTransactionRollbackException: Deadlock found when trying to get lock; try restarting transaction
-        at com.mysql.cj.jdbc.exceptions.SQLExceptionsMapping.translateException(SQLExceptionsMapping.java:64)
-  category: service
-  resolution_steps:
-    - "Проверить, какие таблицы участвуют в deadlock"
-    - "Снизить параллелизм тестов, работающих с одними данными"
-
-# ============================================================================
-# test — проблемы в тест-коде
-# ============================================================================
-
-- id: flaky_assertion_timeout
-  title: "Нестабильный тест: таймаут ожидания элемента"
-  description: "Тест падает по таймауту при ожидании UI-элемента или условия. Flaky-тест, элемент не появился вовремя."
-  error_example: |
-    org.openqa.selenium.TimeoutException: Expected condition failed: waiting for visibility of element located by By.id: submit-button
-    (tried for 30 seconds with 500 milliseconds interval)
-        at org.openqa.selenium.support.ui.WebDriverWait.timeoutException(WebDriverWait.java:95)
-        at org.openqa.selenium.support.ui.FluentWait.until(FluentWait.java:272)
-  category: test
-  resolution_steps:
-    - "Увеличить explicit wait для нестабильных элементов"
-    - "Использовать WebDriverWait вместо Thread.sleep()"
-
-- id: assertion_mismatch
-  title: "Ошибка утверждения (assertion) в тесте"
-  description: "Ожидаемое значение не совпало с фактическим. Тест assertion failed, expected vs actual расходятся."
-  error_example: |
-    java.lang.AssertionError: expected:<200> but was:<404>
-        at org.junit.Assert.fail(Assert.java:88)
-        at org.junit.Assert.failNotEquals(Assert.java:834)
-        at org.junit.Assert.assertEquals(Assert.java:645)
-        at com.company.tests.ApiTest.testGetUserEndpoint(ApiTest.java:78)
-  category: test
-  resolution_steps:
-    - "Сравнить ожидаемое и фактическое — определить, изменилось ли поведение"
-    - "Обновить assertion в тесте, если поведение изменилось намеренно"
-
-# ============================================================================
-# data — проблемы тестовых данных
-# ============================================================================
-
-- id: missing_test_data
-  title: "Отсутствуют тестовые данные"
-  description: "Тест не находит необходимые данные — записи в БД, файлы фикстур. EntityNotFoundException при поиске тестовых объектов."
-  error_example: |
-    javax.persistence.EntityNotFoundException: Unable to find com.company.model.User with id 12345
-        at org.hibernate.jpa.boot.internal.EntityManagerFactoryBuilderImpl.getEntityManagerFactory(EntityManagerFactoryBuilderImpl.java:123)
-        at com.company.repository.UserRepository.findById(UserRepository.java:34)
-  category: data
-  resolution_steps:
-    - "Проверить, существуют ли ожидаемые тестовые данные в окружении"
-    - "Обеспечить изоляцию тестовых данных (отдельный namespace для каждого теста)"

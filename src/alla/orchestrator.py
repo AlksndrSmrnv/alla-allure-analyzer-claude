@@ -121,7 +121,7 @@ async def analyze_launch(
             min_score=settings.kb_min_score,
             max_results=settings.kb_max_results,
         )
-        kb = _get_or_create_kb(settings.kb_path, matcher_config)
+        kb = _get_or_create_kb(settings.kb_path, matcher_config, report.project_id)
 
         # Индекс test_result_id → FailedTestSummary для быстрого lookup
         test_by_id = {t.test_result_id: t for t in report.failed_tests}
@@ -401,10 +401,11 @@ def _preview_tail(text: str, max_chars: int) -> str:
 def _get_or_create_kb(
     kb_path: str,
     matcher_config: object,
+    project_id: int | None = None,
 ) -> object:
     """Вернуть кэшированный экземпляр YamlKnowledgeBase или создать новый.
 
-    Кэш по ключу (kb_path, min_score, max_results). Предотвращает
+    Кэш по ключу (kb_path, min_score, max_results, project_id). Предотвращает
     повторное чтение YAML-файлов и re-fit TF-IDF на каждый запрос сервера.
     """
     from alla.knowledge.matcher import MatcherConfig
@@ -417,6 +418,7 @@ def _get_or_create_kb(
         kb_path,
         cfg.min_score if cfg else 0.15,
         cfg.max_results if cfg else 5,
+        project_id,
     )
 
     if cache_key in _kb_cache:
@@ -426,6 +428,7 @@ def _get_or_create_kb(
     kb = YamlKnowledgeBase(
         kb_path=kb_path,
         matcher_config=matcher_config,
+        project_id=project_id,
     )
     _kb_cache[cache_key] = kb
     logger.debug("KB: создан и закэширован новый экземпляр для %s", kb_path)
