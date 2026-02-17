@@ -56,6 +56,11 @@ class YamlKnowledgeBase:
         if project_file.exists():
             return
 
+        if self._kb_path.exists() and not self._kb_path.is_dir():
+            # Путь существует, но не является директорией.
+            # _load() обнаружит это и выбросит KnowledgeBaseError с понятным сообщением.
+            return
+
         if not self._kb_path.exists():
             self._kb_path.mkdir(parents=True, exist_ok=True)
             logger.info(
