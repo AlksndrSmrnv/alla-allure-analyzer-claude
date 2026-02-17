@@ -104,16 +104,18 @@ class YamlKnowledgeBase:
             ) from exc
 
         # Фильтрация: глобальные файлы + только файл текущего проекта.
-        # Файлы других проектов (project_<N>.yaml, N ≠ self._project_id) пропускаются.
-        own_project_name = (
-            f"project_{self._project_id}.yaml"
+        # Файлы других проектов (project_<N>.yaml/.yml, N ≠ self._project_id) пропускаются.
+        # Сравниваем по stem (имя без расширения), чтобы корректно обрабатывать
+        # оба расширения: project_42.yaml и project_42.yml.
+        own_project_stem = (
+            f"project_{self._project_id}"
             if self._project_id is not None
             else None
         )
         yaml_files = [
             p for p in all_yaml
-            if not _PROJECT_FILE_RE.match(p.name)          # глобальный файл
-            or (own_project_name is not None and p.name == own_project_name)  # свой проект
+            if not _PROJECT_FILE_RE.match(p.name)                    # глобальный файл
+            or (own_project_stem is not None and p.stem == own_project_stem)  # свой проект
         ]
 
         for path in yaml_files:
