@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import yaml
@@ -14,10 +15,17 @@ from alla.knowledge.models import KBEntry, KBMatchResult
 logger = logging.getLogger(__name__)
 
 
+_PROJECT_FILE_RE = re.compile(r"^project_\d+\.ya?ml$")
+
+
 class YamlKnowledgeBase:
     """Реализация KnowledgeBaseProvider, читающая YAML-файлы с диска.
 
-    Загружает все .yaml/.yml файлы из указанной директории (рекурсивно).
+    Загружает .yaml/.yml файлы из указанной директории (рекурсивно) с фильтрацией:
+    - Глобальные файлы (не соответствующие ``project_<id>.yaml``) — загружаются всегда.
+    - Проектные файлы (``project_<id>.yaml``) — загружается только файл текущего проекта
+      (если ``project_id`` задан). Файлы других проектов пропускаются.
+
     Каждый файл может содержать один YAML-документ (dict) или список (list[dict]).
     Все записи загружаются в память при инициализации.
 
@@ -86,7 +94,7 @@ class YamlKnowledgeBase:
             )
 
         try:
-            yaml_files = sorted(
+            all_yaml = sorted(
                 p for p in self._kb_path.rglob("*")
                 if p.suffix in (".yaml", ".yml") and p.is_file()
             )
@@ -94,6 +102,19 @@ class YamlKnowledgeBase:
             raise KnowledgeBaseError(
                 f"Нет прав доступа к директории базы знаний: {self._kb_path}"
             ) from exc
+
+        # Фильтрация: глобальные файлы + только файл текущего проекта.
+        # Файлы других проектов (project_<N>.yaml, N ≠ self._project_id) пропускаются.
+        own_project_name = (
+            f"project_{self._project_id}.yaml"
+            if self._project_id is not None
+            else None
+        )
+        yaml_files = [
+            p for p in all_yaml
+            if not _PROJECT_FILE_RE.match(p.name)          # глобальный файл
+            or (own_project_name is not None and p.name == own_project_name)  # свой проект
+        ]
 
         for path in yaml_files:
             try:
