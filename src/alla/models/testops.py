@@ -55,6 +55,7 @@ class LaunchResponse(BaseModel):
     name: str | None = None
     closed: bool = False
     created_date: int | None = Field(None, alias="createdDate")
+    project_id: int | None = Field(None, alias="projectId")
 
 
 class AttachmentMeta(BaseModel):
@@ -147,6 +148,7 @@ class TriageReport(BaseModel):
 
     launch_id: int
     launch_name: str | None = None
+    project_id: int | None = None
     total_results: int
     passed_count: int = 0
     failed_count: int = 0

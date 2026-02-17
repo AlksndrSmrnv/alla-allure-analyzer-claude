@@ -29,12 +29,42 @@ class YamlKnowledgeBase:
         kb_path: str | Path,
         *,
         matcher_config: MatcherConfig | None = None,
+        project_id: int | None = None,
     ) -> None:
         self._kb_path = Path(kb_path)
+        self._project_id = project_id
         self._matcher = TextMatcher(config=matcher_config)
         self._entries: list[KBEntry] = []
         self._entries_by_id: dict[str, KBEntry] = {}
+        self._ensure_project_file()
         self._load()
+
+    def _ensure_project_file(self) -> None:
+        """Создать пустой файл KB для проекта, если он ещё не существует."""
+        if self._project_id is None:
+            return
+
+        project_file = self._kb_path / f"project_{self._project_id}.yaml"
+        if project_file.exists():
+            return
+
+        if not self._kb_path.exists():
+            self._kb_path.mkdir(parents=True, exist_ok=True)
+            logger.info(
+                "Создана директория базы знаний: %s", self._kb_path,
+            )
+
+        project_file.write_text(
+            f"# alla — база знаний для проекта #{self._project_id}\n"
+            f"# Формат записей см. в entries.yaml\n"
+            f"[]\n",
+            encoding="utf-8",
+        )
+        logger.info(
+            "Создан файл базы знаний для проекта #%d: %s",
+            self._project_id,
+            project_file,
+        )
 
     def _load(self) -> None:
         """Загрузить все YAML-файлы из директории KB.

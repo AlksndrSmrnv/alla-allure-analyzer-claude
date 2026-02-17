@@ -87,6 +87,7 @@ class TriageService:
         report = TriageReport(
             launch_id=launch_id,
             launch_name=launch.name,
+            project_id=launch.project_id,
             total_results=len(results),
             passed_count=status_counts.get(TestStatus.PASSED, 0),
             failed_count=status_counts.get(TestStatus.FAILED, 0),
