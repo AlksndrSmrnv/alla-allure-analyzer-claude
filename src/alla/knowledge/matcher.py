@@ -415,9 +415,12 @@ class TextMatcher:
         cfg = self._config
 
         if self._fitted_vectorizer is not None:
-            return self._tier3_tfidf_pretrained(
+            pretrained_result = self._tier3_tfidf_pretrained(
                 query_normalized, entries, query_label=query_label,
             )
+            if pretrained_result is not None:
+                return pretrained_result
+            # None означает ошибку transform → fallback на fit_transform
 
         # Fallback: fit_transform на каждый запрос (старое поведение)
         n = len(entries)
@@ -465,12 +468,16 @@ class TextMatcher:
         entries: list[KBEntry],
         *,
         query_label: str | None = None,
-    ) -> list[tuple[int, float, float, float]]:
-        """Tier 3 через предобученный TF-IDF (stабильный IDF корпуса KB).
+    ) -> list[tuple[int, float, float, float]] | None:
+        """Tier 3 через предобученный TF-IDF (стабильный IDF корпуса KB).
 
         Использует только transform(query), без повторного fit.
         Обрабатывает только записи, чьи id есть в _entry_index
         (то есть те, что были в KB при вызове fit()).
+
+        Returns:
+            Список hits при успехе (может быть пустым — нет совпадений),
+            или None при ошибке transform (сигнал для fallback на fit_transform).
         """
         cfg = self._config
         assert self._fitted_vectorizer is not None
@@ -479,10 +486,10 @@ class TextMatcher:
             query_vec = self._fitted_vectorizer.transform([query_normalized])
         except Exception:
             logger.debug(
-                "KB [%s]: pre-trained transform failed, fallback to fit_transform",
+                "KB [%s]: pre-trained transform failed, falling back to fit_transform",
                 query_label or "?",
             )
-            return []
+            return None
 
         all_example_sims = cosine_similarity(
             query_vec, self._fitted_example_matrix,
