@@ -46,6 +46,8 @@ class YamlKnowledgeBase:
         self._entries_by_id: dict[str, KBEntry] = {}
         self._ensure_project_file()
         self._load()
+        if self._entries:
+            self._matcher.fit(self._entries)
 
     def _ensure_project_file(self) -> None:
         """Создать пустой файл KB для проекта, если он ещё не существует."""
