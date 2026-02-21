@@ -311,17 +311,20 @@ class TextMatcher:
     def _line_soft_matches(
         line: str,
         query_collapsed: str,
+        query_words: frozenset[str],
         word_threshold: float,
     ) -> bool:
         """Проверить совпадение строки с query: точно или по word-overlap.
 
-        Сначала пробует точное вхождение (как раньше). Если не нашло —
-        считает долю слов строки, присутствующих в query (case-insensitive).
+        Сначала пробует точное вхождение. Если не нашло — считает долю слов
+        строки, присутствующих среди слов query (whole-word, case-insensitive).
         Строки короче 2 слов не получают fuzzy-совпадение.
 
         Args:
             line: Строка из KB error_example (whitespace collapsed, нормализована).
             query_collapsed: Весь query (whitespace collapsed, нормализован).
+            query_words: Множество слов query (pre-computed, lower-case).
+                Передаётся снаружи, чтобы не пересоздавать на каждой строке.
             word_threshold: Минимальная доля слов для fuzzy-совпадения.
         """
         if line in query_collapsed:
@@ -329,8 +332,7 @@ class TextMatcher:
         words = _WORD_RE.findall(line)
         if len(words) < 2:
             return False
-        query_lower = query_collapsed.lower()
-        matched = sum(1 for w in words if w.lower() in query_lower)
+        matched = sum(1 for w in words if w.lower() in query_words)
         return matched / len(words) >= word_threshold
 
     def _tier2_line_match(
@@ -362,10 +364,13 @@ class TextMatcher:
         if len(example_lines) < cfg.tier2_min_lines:
             return None
 
+        # Слова query вычисляются один раз для всех строк KB-примера
+        query_words = frozenset(w.lower() for w in _WORD_RE.findall(query_collapsed))
+
         matched_count = sum(
             1 for line in example_lines
             if self._line_soft_matches(
-                line, query_collapsed, cfg.tier2_fuzzy_word_threshold,
+                line, query_collapsed, query_words, cfg.tier2_fuzzy_word_threshold,
             )
         )
 
