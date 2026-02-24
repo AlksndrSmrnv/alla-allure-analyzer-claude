@@ -22,18 +22,18 @@ pipeline {
             //   Job → Configure → Generic Webhook Trigger → Token
             // Endpoint для TestOps: POST /generic-webhook-trigger/invoke?token=<токен>
 
-            // Вытащить ID запуска из JSON-тела вебхука TestOps
-            // Путь зависит от формата вебхука TestOps — скорректировать при необходимости
+            // Вытащить поля из JSON-тела вебхука TestOps.
+            // Путь зависит от формата вебхука — скорректировать при необходимости.
+            // Полное тело вебхука выводится в лог сборки (printPostContent: true).
             genericVariables: [
-                [key: 'LAUNCH_ID', value: '$.id'],
-                [key: 'LAUNCH_STATUS', value: '$.status']
+                [key: 'LAUNCH_ID',        value: '$.id'],
+                [key: 'LAUNCH_NAME',      value: '$.name'],
+                [key: 'LAUNCH_STATUS',    value: '$.status'],
+                [key: 'LAUNCH_PROJECT_ID',value: '$.projectId'],
+                [key: 'WEBHOOK_PAYLOAD',  value: '$']    // весь JSON как строка
             ],
 
-            // Запускать сборку только когда прогон завершён
-            regexpFilterText:  '$LAUNCH_STATUS',
-            regexpFilterExpression: 'DONE|FAILED',
-
-            causeString: 'Triggered by Allure TestOps webhook, launch #$LAUNCH_ID',
+            causeString: 'Triggered by Allure TestOps webhook, launch #$LAUNCH_ID ($LAUNCH_NAME)',
             printContributedVariables: true,
             printPostContent: true
         )
@@ -64,6 +64,20 @@ pipeline {
         stage('Validate') {
             steps {
                 script {
+                    // Лог входящих данных: источник и полное тело вебхука
+                    def source = env.LAUNCH_ID ? 'вебхук TestOps' : 'ручной запуск'
+                    echo """
+=== Источник запуска: ${source} ===
+  params.LAUNCH_ID:     ${params.LAUNCH_ID      ?: '(пусто)'}
+  env.LAUNCH_ID:        ${env.LAUNCH_ID         ?: '(пусто)'}
+  env.LAUNCH_NAME:      ${env.LAUNCH_NAME       ?: '(пусто)'}
+  env.LAUNCH_STATUS:    ${env.LAUNCH_STATUS     ?: '(пусто)'}
+  env.LAUNCH_PROJECT_ID:${env.LAUNCH_PROJECT_ID ?: '(пусто)'}
+--- Полное тело вебхука (WEBHOOK_PAYLOAD) ---
+${env.WEBHOOK_PAYLOAD ?: '(пусто — ручной запуск или ошибка парсинга)'}
+=============================================
+                    """.stripIndent()
+
                     // При ручном запуске LAUNCH_ID приходит из params,
                     // при вебхуке — Generic Webhook Trigger кладёт его в env.
                     env.RESOLVED_LAUNCH_ID = params.LAUNCH_ID?.trim() ?: env.LAUNCH_ID?.trim()
