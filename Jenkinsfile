@@ -4,13 +4,35 @@ pipeline {
     parameters {
         string(
             name: 'LAUNCH_ID',
-            description: 'ID прогона в Allure TestOps',
+            description: 'ID прогона в Allure TestOps (заполняется автоматически вебхуком из TestOps)',
             trim: true
         )
         choice(
             name: 'LOG_LEVEL',
             choices: ['INFO', 'DEBUG', 'WARNING', 'ERROR'],
             description: 'Уровень логирования'
+        )
+    }
+
+    triggers {
+        GenericTrigger(
+            // Токен для защиты endpoint — задать в Jenkins → Configure → Generic Webhook Trigger
+            token: 'alla-webhook-token',
+
+            // Вытащить ID запуска из JSON-тела вебхука TestOps
+            // Путь зависит от формата вебхука TestOps — скорректировать при необходимости
+            genericVariables: [
+                [key: 'LAUNCH_ID', value: '$.id'],
+                [key: 'LAUNCH_STATUS', value: '$.status']
+            ],
+
+            // Запускать сборку только когда прогон завершён
+            regexpFilterText:  '$LAUNCH_STATUS',
+            regexpFilterExpression: 'DONE|FAILED',
+
+            causeString: 'Triggered by Allure TestOps webhook, launch #$LAUNCH_ID',
+            printContributedVariables: true,
+            printPostContent: true
         )
     }
 
