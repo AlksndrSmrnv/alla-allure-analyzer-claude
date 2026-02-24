@@ -16,8 +16,11 @@ pipeline {
 
     triggers {
         GenericTrigger(
-            // Токен для защиты endpoint — задать в Jenkins → Configure → Generic Webhook Trigger
-            token: 'alla-webhook-token',
+            // Токен НЕ задаётся здесь: GenericTrigger.token вычисляется при загрузке
+            // pipeline и не поддерживает credentials()-биндинг из environment {}.
+            // Задать токен в Jenkins UI:
+            //   Job → Configure → Generic Webhook Trigger → Token
+            // Endpoint для TestOps: POST /generic-webhook-trigger/invoke?token=<токен>
 
             // Вытащить ID запуска из JSON-тела вебхука TestOps
             // Путь зависит от формата вебхука TestOps — скорректировать при необходимости
