@@ -113,12 +113,15 @@ alla <launch_id>
         │   ├── common.py           # TestStatus(Enum), PageResponse[T](Generic)
         │   ├── testops.py          # TestResultResponse, LaunchResponse, CommentResponse,
         │   │                       #   FailedTestSummary, TriageReport
-        │   └── clustering.py       # ClusterSignature, FailureCluster, ClusteringReport
+        │   ├── clustering.py       # ClusterSignature, FailureCluster, ClusteringReport
+        │   └── llm.py              # LLMClusterAnalysis, LLMAnalysisResult,
+        │                           #   LLMPushResult, LLMLaunchSummary
         ├── clients/
         │   ├── base.py             # TestResultsProvider(Protocol) — чтение,
         │   │                       #   TestResultsUpdater(Protocol) — запись,
         │   │                       #   CommentManager(Protocol) — чтение/удаление комментариев
         │   ├── auth.py             # AllureAuthManager — JWT exchange через /api/uaa/oauth/token
+        │   ├── langflow_client.py  # LangflowClient — HTTP-клиент Langflow с retry/backoff
         │   └── testops_client.py   # AllureTestOpsClient — HTTP клиент (httpx async)
         ├── knowledge/
         │   ├── base.py             # KnowledgeBaseProvider(Protocol) — интерфейс KB
@@ -131,6 +134,9 @@ alla <launch_id>
             ├── triage_service.py          # TriageService.analyze_launch() — основная логика
             ├── clustering_service.py      # ClusteringService — кластеризация ошибок
             ├── kb_push_service.py         # KBPushService — запись рекомендаций KB в TestOps
+            ├── llm_service.py             # LLMService.analyze_clusters(),
+            │                              #   generate_launch_summary(), push_llm_results(),
+            │                              #   build_cluster_prompt(), build_launch_summary_prompt()
             └── comment_delete_service.py  # CommentDeleteService — удаление комментариев alla
 ```
 
@@ -568,6 +574,8 @@ matched_on: list[str]            # Объяснение: что именно с�
 - [x] **KB Push в TestOps** — запись рекомендаций KB обратно в Allure TestOps через `POST /api/comment` (комментарий к тест-кейсу). `TestResultsUpdater` Protocol для write-операций. `KBPushService` с дедупликацией по test_case_id, параллельными запросами и per-test error resilience. Управляется настройкой `ALLURE_KB_PUSH_ENABLED` (по умолчанию выключено).
 - [x] **HTTP-сервер** — REST API через FastAPI + uvicorn. `POST /api/v1/analyze/{launch_id}` запускает полный pipeline и возвращает JSON. Общая логика вынесена в `orchestrator.py`, используется и CLI, и сервером. Swagger UI на `/docs`. Настройки `ALLURE_SERVER_HOST` / `ALLURE_SERVER_PORT`.
 - [x] **Удаление комментариев alla** — команда `alla delete <launch_id>` сканирует комментарии к failed/broken тестам запуска, фильтрует по префиксу `[alla]` в теле комментария и удаляет через `DELETE /api/comment/{id}`. `CommentManager` Protocol для чтения/удаления комментариев. `CommentDeleteService` с двухфазным алгоритмом (scan → delete), semaphore-based concurrency и per-test error resilience. Флаг `--dry-run` для предварительного просмотра без удаления. REST API: `DELETE /api/v1/comments/{launch_id}?dry_run=true`.
+- [x] **LLM-анализ кластеров (Langflow)** — `LLMService.analyze_clusters()` отправляет каждый кластер в Langflow с контекстом (ошибка + трейс + KB-совпадения + лог). Ответ — 4 секции: что произошло / категория / что делать / критичность. Параллелизм через semaphore (`ALLURE_LLM_CONCURRENCY`). Клиент: `clients/langflow_client.py` с exponential backoff retry (`ALLURE_LLM_MAX_RETRIES`, `ALLURE_LLM_RETRY_BASE_DELAY`). LLM push (`ALLURE_LLM_PUSH_ENABLED`): комментарии `[alla] LLM-анализ ошибки` к тест-кейсам. При включённом LLM — KB push не выполняется (LLM включает KB в промпт).
+- [x] **Итоговый LLM-отчёт по прогону** — `LLMService.generate_launch_summary()` делает один дополнительный LLM-вызов после `analyze_clusters()`. Промпт содержит метаданные запуска + все кластеры (с их per-cluster анализами если доступны). LLM пишет 2-4 абзаца: общая картина → ключевые проблемы по убыванию критичности → приоритетные действия. CLI: секция `=== Итоговый отчёт ===` после кластерных рамок. Модель: `LLMLaunchSummary` в `models/llm.py`.
 
 ## Что не сделано (план на следующие фазы)
 

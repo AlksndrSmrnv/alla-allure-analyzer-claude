@@ -27,6 +27,7 @@ class AnalysisResponse(BaseModel):
     kb_push_result: dict[str, Any] | None = None
     llm_result: dict[str, Any] | None = None
     llm_push_result: dict[str, Any] | None = None
+    llm_launch_summary: dict[str, Any] | None = None
 
 
 class HealthResponse(BaseModel):
@@ -196,6 +197,12 @@ async def analyze_launch(launch_id: int) -> dict[str, Any]:
 
     if result.llm_push_result is not None:
         response["llm_push_result"] = asdict(result.llm_push_result)
+
+    if result.llm_launch_summary is not None:
+        response["llm_launch_summary"] = {
+            "summary_text": result.llm_launch_summary.summary_text,
+            "error": result.llm_launch_summary.error,
+        }
 
     return response
 

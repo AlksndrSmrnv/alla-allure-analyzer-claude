@@ -34,3 +34,11 @@ class LLMPushResult:
     updated_count: int
     failed_count: int
     skipped_count: int
+
+
+@dataclass(frozen=True)
+class LLMLaunchSummary:
+    """Итоговый LLM-отчёт по всему прогону тестов."""
+
+    summary_text: str
+    error: str | None = None

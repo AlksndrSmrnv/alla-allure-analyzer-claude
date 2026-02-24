@@ -8,7 +8,7 @@ from alla.clients.base import TestResultsUpdater
 from alla.clients.langflow_client import LangflowClient
 from alla.knowledge.models import KBMatchResult
 from alla.models.clustering import ClusteringReport, FailureCluster
-from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis, LLMPushResult
+from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis, LLMLaunchSummary, LLMPushResult
 from alla.models.testops import FailedTestSummary, TriageReport
 from alla.utils.log_utils import has_explicit_errors
 
@@ -118,6 +118,90 @@ def build_cluster_prompt(
     )
 
     parts.append(instruction)
+
+    return "\n".join(parts)
+
+
+def build_launch_summary_prompt(
+    clustering_report: ClusteringReport,
+    triage_report: TriageReport,
+    llm_result: LLMAnalysisResult | None = None,
+) -> str:
+    """Собрать промпт для итоговой LLM-сводки по всему прогону.
+
+    Включает метаданные запуска, данные по каждому кластеру и (если доступны)
+    per-cluster LLM-анализы. Просит LLM сформировать единый краткий отчёт.
+    """
+    parts: list[str] = [
+        "Ты — инженер по анализу сбоев автотестов.",
+        "Подготовь краткий итоговый отчёт по прогону тестов.",
+        "",
+        "ГЛАВНОЕ ПРАВИЛО: пиши только то, что видишь в данных ниже. "
+        "Не додумывай, не предполагай. "
+        "Если чего-то нет в данных — не упоминай это.",
+        "",
+        "═══════════════════════════════════════",
+        "ДАННЫЕ",
+        "═══════════════════════════════════════",
+        "",
+    ]
+
+    launch_label = f"Запуск: #{triage_report.launch_id}"
+    if triage_report.launch_name:
+        launch_label += f" ({triage_report.launch_name})"
+    parts.append(launch_label)
+    parts.append(
+        f"Всего тестов: {triage_report.total_results}"
+        f" | Упало: {triage_report.failure_count}"
+    )
+    parts.append(
+        f"Уникальных проблем (кластеров): {clustering_report.cluster_count}"
+    )
+
+    for i, cluster in enumerate(clustering_report.clusters, 1):
+        parts.append("")
+        parts.append(
+            f"--- Проблема {i}: {cluster.label} ({cluster.member_count} тестов) ---"
+        )
+
+        # Используем per-cluster LLM-анализ, если есть
+        if llm_result is not None:
+            analysis = llm_result.cluster_analyses.get(cluster.cluster_id)
+            if analysis and analysis.analysis_text:
+                parts.append(analysis.analysis_text)
+                continue
+
+        # Fallback: сырые данные кластера
+        if cluster.example_message:
+            msg = cluster.example_message
+            if len(msg) > 500:
+                msg = msg[:500] + "...[обрезано]"
+            parts.append(f"Сообщение: {msg}")
+        if cluster.example_trace_snippet:
+            trace = cluster.example_trace_snippet
+            if len(trace) > 800:
+                trace = trace[:800] + "...[обрезано]"
+            parts.append(f"Трейс: {trace}")
+
+    parts.append("")
+    parts.append("═══════════════════════════════════════")
+    parts.append("ЗАДАНИЕ")
+    parts.append("═══════════════════════════════════════")
+    parts.append("")
+    parts.append(
+        "Напиши итоговый отчёт в 2-4 абзаца:\n"
+        "\n"
+        "1. Общая картина: сколько тестов упало, сколько уникальных проблем выявлено.\n"
+        "\n"
+        "2. Ключевые проблемы: для каждой — одно предложение (что упало, "
+        "почему, категория: тест / приложение / окружение / данные). "
+        "Расставь по убыванию критичности и количества затронутых тестов.\n"
+        "\n"
+        "3. Приоритетные действия: 1-3 конкретных шага на ближайшее время, "
+        "опираясь только на данные выше.\n"
+        "\n"
+        "Будь лаконичен. Избегай повторов. Не упоминай то, чего нет в данных."
+    )
 
     return "\n".join(parts)
 
@@ -259,6 +343,38 @@ class LLMService:
             skipped_count=skipped,
             cluster_analyses=analyses,
         )
+
+    async def generate_launch_summary(
+        self,
+        clustering_report: ClusteringReport,
+        triage_report: TriageReport,
+        llm_result: LLMAnalysisResult | None = None,
+    ) -> LLMLaunchSummary:
+        """Сформировать итоговый отчёт по прогону через LLM.
+
+        Строит промпт из данных всех кластеров (и per-cluster анализов, если
+        они доступны) и делает один LLM-вызов для получения единой сводки.
+
+        Args:
+            clustering_report: Отчёт кластеризации.
+            triage_report: Отчёт триажа (метаданные запуска).
+            llm_result: Опционально — per-cluster анализы для обогащения промпта.
+
+        Returns:
+            LLMLaunchSummary с текстом итогового отчёта.
+        """
+        prompt = build_launch_summary_prompt(clustering_report, triage_report, llm_result)
+        logger.info(
+            "LLM summary: запрос итогового отчёта по %d кластерам",
+            clustering_report.cluster_count,
+        )
+        try:
+            text = await self._client.run_flow(prompt)
+            logger.info("LLM summary: отчёт получен (%d символов)", len(text))
+            return LLMLaunchSummary(summary_text=text)
+        except Exception as exc:
+            logger.warning("LLM summary: ошибка: %s", exc)
+            return LLMLaunchSummary(summary_text="", error=str(exc))
 
 
 async def push_llm_results(
