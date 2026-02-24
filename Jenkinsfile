@@ -42,6 +42,9 @@ pipeline {
                     if (!params.LAUNCH_ID?.trim()) {
                         error('LAUNCH_ID не задан. Укажи ID прогона и запусти снова.')
                     }
+                    if (!(params.LAUNCH_ID ==~ /^\d+$/)) {
+                        error('LAUNCH_ID должен содержать только цифры.')
+                    }
                     echo "Запуск анализа прогона #${params.LAUNCH_ID}"
                 }
             }
@@ -116,18 +119,22 @@ pipeline {
                     def report = readJSON file: REPORT_FILE
                     def triage = report.triage_report
 
+                    // failure_count — @property в Python, не сериализуется model_dump().
+                    // Считаем вручную из failed_count + broken_count.
+                    def failureCount = (triage.failed_count ?: 0) + (triage.broken_count ?: 0)
+
                     echo """
 ╔══════════════════════════════════════════════╗
   Прогон #${params.LAUNCH_ID}: ${triage.launch_name ?: '—'}
   Всего:    ${triage.total_results}
-  Упало:    ${triage.failure_count}  (failed: ${triage.failed_count}, broken: ${triage.broken_count})
+  Упало:    ${failureCount}  (failed: ${triage.failed_count}, broken: ${triage.broken_count})
   Кластеров: ${report.clustering_report?.cluster_count ?: '—'}
 ╚══════════════════════════════════════════════╝
                     """.stripIndent()
 
                     // Установить описание сборки для быстрого просмотра в UI
                     currentBuild.description =
-                        "#${params.LAUNCH_ID} | упало: ${triage.failure_count} | " +
+                        "#${params.LAUNCH_ID} | упало: ${failureCount} | " +
                         "кластеров: ${report.clustering_report?.cluster_count ?: '?'}"
                 }
             }
