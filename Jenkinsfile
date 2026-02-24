@@ -47,8 +47,8 @@ pipeline {
         ALLURE_LANGFLOW_API_KEY  = credentials('langflow-api-key')
 
         // Путь к venv внутри workspace
-        VENV_DIR                 = "${WORKSPACE}/.venv"
-        REPORT_FILE              = "alla-report-${params.LAUNCH_ID}.json"
+        // REPORT_FILE вычисляется в Validate после разрешения RESOLVED_LAUNCH_ID
+        VENV_DIR = "${WORKSPACE}/.venv"
     }
 
     options {
@@ -61,13 +61,19 @@ pipeline {
         stage('Validate') {
             steps {
                 script {
-                    if (!params.LAUNCH_ID?.trim()) {
-                        error('LAUNCH_ID не задан. Укажи ID прогона и запусти снова.')
+                    // При ручном запуске LAUNCH_ID приходит из params,
+                    // при вебхуке — Generic Webhook Trigger кладёт его в env.
+                    env.RESOLVED_LAUNCH_ID = params.LAUNCH_ID?.trim() ?: env.LAUNCH_ID?.trim()
+
+                    if (!env.RESOLVED_LAUNCH_ID) {
+                        error('LAUNCH_ID не задан. Укажи ID прогона вручную или запусти через вебхук.')
                     }
-                    if (!(params.LAUNCH_ID ==~ /^\d+$/)) {
+                    if (!(env.RESOLVED_LAUNCH_ID ==~ /^\d+$/)) {
                         error('LAUNCH_ID должен содержать только цифры.')
                     }
-                    echo "Запуск анализа прогона #${params.LAUNCH_ID}"
+
+                    env.REPORT_FILE = "alla-report-${env.RESOLVED_LAUNCH_ID}.json"
+                    echo "Запуск анализа прогона #${env.RESOLVED_LAUNCH_ID}"
                 }
             }
         }
@@ -109,10 +115,10 @@ pipeline {
             }
             steps {
                 sh """
-                    ${VENV_DIR}/bin/alla ${params.LAUNCH_ID} \
+                    ${VENV_DIR}/bin/alla ${env.RESOLVED_LAUNCH_ID} \
                         --output-format json \
                         --log-level ${params.LOG_LEVEL} \
-                    > ${REPORT_FILE}
+                    > ${env.REPORT_FILE}
                 """
             }
         }
@@ -120,7 +126,7 @@ pipeline {
         stage('Summary') {
             steps {
                 script {
-                    def report = readJSON file: REPORT_FILE
+                    def report = readJSON file: env.REPORT_FILE
                     def triage = report.triage_report
 
                     // failure_count — @property в Python, не сериализуется model_dump().
@@ -129,7 +135,7 @@ pipeline {
 
                     echo """
 ╔══════════════════════════════════════════════╗
-  Прогон #${params.LAUNCH_ID}: ${triage.launch_name ?: '—'}
+  Прогон #${env.RESOLVED_LAUNCH_ID}: ${triage.launch_name ?: '—'}
   Всего:    ${triage.total_results}
   Упало:    ${failureCount}  (failed: ${triage.failed_count}, broken: ${triage.broken_count})
   Кластеров: ${report.clustering_report?.cluster_count ?: '—'}
@@ -138,7 +144,7 @@ pipeline {
 
                     // Установить описание сборки для быстрого просмотра в UI
                     currentBuild.description =
-                        "#${params.LAUNCH_ID} | упало: ${failureCount} | " +
+                        "#${env.RESOLVED_LAUNCH_ID} | упало: ${failureCount} | " +
                         "кластеров: ${report.clustering_report?.cluster_count ?: '?'}"
                 }
             }
@@ -148,12 +154,12 @@ pipeline {
     post {
         always {
             archiveArtifacts(
-                artifacts: "alla-report-${params.LAUNCH_ID}.json",
+                artifacts: "alla-report-${env.RESOLVED_LAUNCH_ID}.json",
                 allowEmptyArchive: true
             )
         }
         success {
-            echo "Анализ прогона #${params.LAUNCH_ID} завершён. Результаты отправлены в TestOps."
+            echo "Анализ прогона #${env.RESOLVED_LAUNCH_ID} завершён. Результаты отправлены в TestOps."
         }
         failure {
             echo "Анализ завершился с ошибкой. Проверь логи выше."
