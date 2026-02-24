@@ -15,13 +15,18 @@ pipeline {
     }
 
     environment {
-        // Обязательные: добавить в Jenkins → Manage Credentials как Secret text
-        ALLURE_ENDPOINT = credentials('allure-endpoint')
-        ALLURE_TOKEN    = credentials('allure-token')
+        // Allure TestOps
+        ALLURE_ENDPOINT          = credentials('allure-endpoint')
+        ALLURE_TOKEN             = credentials('allure-token')
+
+        // Langflow — на верхнем уровне, доступны всем stages
+        ALLURE_LANGFLOW_BASE_URL = credentials('langflow-base-url')
+        ALLURE_LANGFLOW_FLOW_ID  = credentials('langflow-flow-id')
+        ALLURE_LANGFLOW_API_KEY  = credentials('langflow-api-key')
 
         // Путь к venv внутри workspace
-        VENV_DIR        = "${WORKSPACE}/.venv"
-        REPORT_FILE     = "alla-report-${params.LAUNCH_ID}.json"
+        VENV_DIR                 = "${WORKSPACE}/.venv"
+        REPORT_FILE              = "alla-report-${params.LAUNCH_ID}.json"
     }
 
     options {
@@ -81,18 +86,12 @@ pipeline {
                 ALLURE_LLM_PUSH_ENABLED     = 'true'
             }
             steps {
-                withCredentials([
-                    string(credentialsId: 'langflow-base-url', variable: 'ALLURE_LANGFLOW_BASE_URL'),
-                    string(credentialsId: 'langflow-flow-id',  variable: 'ALLURE_LANGFLOW_FLOW_ID'),
-                    string(credentialsId: 'langflow-api-key',  variable: 'ALLURE_LANGFLOW_API_KEY')
-                ]) {
-                    sh """
-                        ${VENV_DIR}/bin/alla ${params.LAUNCH_ID} \
-                            --output-format json \
-                            --log-level ${params.LOG_LEVEL} \
-                        > ${REPORT_FILE}
-                    """
-                }
+                sh """
+                    ${VENV_DIR}/bin/alla ${params.LAUNCH_ID} \
+                        --output-format json \
+                        --log-level ${params.LOG_LEVEL} \
+                    > ${REPORT_FILE}
+                """
             }
         }
 
