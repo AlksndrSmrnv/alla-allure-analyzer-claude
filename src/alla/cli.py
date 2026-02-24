@@ -111,6 +111,7 @@ async def async_main(args: argparse.Namespace) -> int:
             kb_push_result = result.kb_push_result
             llm_result = result.llm_result
             llm_push_result = result.llm_push_result
+            llm_launch_summary = result.llm_launch_summary
 
     except ConfigurationError as exc:
         logger.error("Ошибка конфигурации: %s", exc)
@@ -153,6 +154,11 @@ async def async_main(args: argparse.Namespace) -> int:
             }
         if llm_push_result is not None:
             output["llm_push_result"] = asdict(llm_push_result)
+        if llm_launch_summary is not None:
+            output["llm_launch_summary"] = {
+                "summary_text": llm_launch_summary.summary_text,
+                "error": llm_launch_summary.error,
+            }
         print(json.dumps(output, indent=2, ensure_ascii=False, default=str))
     else:
         _print_text_report(report)
@@ -161,6 +167,8 @@ async def async_main(args: argparse.Namespace) -> int:
                 clustering_report, kb_results, llm_result,
                 failed_tests=report.failed_tests,
             )
+        if llm_launch_summary is not None and llm_launch_summary.summary_text:
+            _print_launch_summary(llm_launch_summary.summary_text)
         if kb_push_result is not None:
             print(
                 f"[KB Push] Комментариев: {kb_push_result.updated_count}"
@@ -223,6 +231,17 @@ def _print_text_report(report: TriageReport) -> None:  # noqa: F821
     else:
         print("Падения не найдены.")
 
+    print()
+
+
+def _print_launch_summary(summary_text: str) -> None:
+    """Вывод итогового LLM-отчёта по прогону в stdout."""
+    print()
+    print("=== Итоговый отчёт ===")
+    print()
+    print(summary_text)
+    print()
+    print("=" * 22)
     print()
 
 

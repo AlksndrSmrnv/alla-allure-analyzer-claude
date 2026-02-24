@@ -15,7 +15,7 @@ from alla.models.testops import FailedTestSummary, TriageReport
 from alla.services.kb_push_service import KBPushResult
 
 if TYPE_CHECKING:
-    from alla.models.llm import LLMAnalysisResult, LLMPushResult
+    from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary, LLMPushResult
 
 logger = logging.getLogger(__name__)
 _KB_QUERY_LOG_PREVIEW_CHARS = 220
@@ -36,6 +36,7 @@ class AnalysisResult:
     kb_push_result: KBPushResult | None = None
     llm_result: LLMAnalysisResult | None = None
     llm_push_result: LLMPushResult | None = None
+    llm_launch_summary: LLMLaunchSummary | None = None
 
 
 async def analyze_launch(
@@ -191,6 +192,7 @@ async def analyze_launch(
     # 4. LLM-анализ кластеров через Langflow
     llm_result = None
     llm_push_result = None
+    llm_launch_summary = None
 
     if (
         settings.llm_enabled
@@ -262,6 +264,13 @@ async def analyze_launch(
                 except Exception as exc:
                     logger.warning("LLM анализ: ошибка: %s", exc)
 
+                # Итоговый отчёт по всему прогону
+                llm_launch_summary = await llm_service.generate_launch_summary(
+                    clustering_report,
+                    report,
+                    llm_result,
+                )
+
     # 5. Запись LLM-рекомендаций в TestOps
     if (
         settings.llm_push_enabled
@@ -320,6 +329,7 @@ async def analyze_launch(
         kb_push_result=kb_push_result,
         llm_result=llm_result,
         llm_push_result=llm_push_result,
+        llm_launch_summary=llm_launch_summary,
     )
 
 
