@@ -7,11 +7,6 @@ pipeline {
             description: 'ID прогона в Allure TestOps',
             trim: true
         )
-        booleanParam(
-            name: 'ENABLE_LLM',
-            defaultValue: false,
-            description: 'Включить LLM-анализ через Langflow (требует настроенных LANGFLOW_* credentials)'
-        )
         choice(
             name: 'LOG_LEVEL',
             choices: ['INFO', 'DEBUG', 'WARNING', 'ERROR'],
@@ -81,34 +76,22 @@ pipeline {
                 ALLURE_KB_ENABLED           = 'true'
                 ALLURE_KB_PUSH_ENABLED      = 'true'
 
-                // LLM — управляется параметром ENABLE_LLM
-                ALLURE_LLM_ENABLED          = "${params.ENABLE_LLM}"
-                ALLURE_LLM_PUSH_ENABLED     = "${params.ENABLE_LLM}"
+                // LLM — включён всегда
+                ALLURE_LLM_ENABLED          = 'true'
+                ALLURE_LLM_PUSH_ENABLED     = 'true'
             }
             steps {
-                script {
-                    // Подтянуть Langflow credentials только при ENABLE_LLM=true
-                    if (params.ENABLE_LLM) {
-                        withCredentials([
-                            string(credentialsId: 'langflow-base-url', variable: 'ALLURE_LANGFLOW_BASE_URL'),
-                            string(credentialsId: 'langflow-flow-id',  variable: 'ALLURE_LANGFLOW_FLOW_ID'),
-                            string(credentialsId: 'langflow-api-key',  variable: 'ALLURE_LANGFLOW_API_KEY')
-                        ]) {
-                            sh """
-                                ${VENV_DIR}/bin/alla ${params.LAUNCH_ID} \
-                                    --output-format json \
-                                    --log-level ${params.LOG_LEVEL} \
-                                > ${REPORT_FILE}
-                            """
-                        }
-                    } else {
-                        sh """
-                            ${VENV_DIR}/bin/alla ${params.LAUNCH_ID} \
-                                --output-format json \
-                                --log-level ${params.LOG_LEVEL} \
-                            > ${REPORT_FILE}
-                        """
-                    }
+                withCredentials([
+                    string(credentialsId: 'langflow-base-url', variable: 'ALLURE_LANGFLOW_BASE_URL'),
+                    string(credentialsId: 'langflow-flow-id',  variable: 'ALLURE_LANGFLOW_FLOW_ID'),
+                    string(credentialsId: 'langflow-api-key',  variable: 'ALLURE_LANGFLOW_API_KEY')
+                ]) {
+                    sh """
+                        ${VENV_DIR}/bin/alla ${params.LAUNCH_ID} \
+                            --output-format json \
+                            --log-level ${params.LOG_LEVEL} \
+                        > ${REPORT_FILE}
+                    """
                 }
             }
         }
