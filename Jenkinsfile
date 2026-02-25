@@ -64,12 +64,16 @@ pipeline {
             steps {
                 script {
                     if (env.LAUNCH_NAME?.trim()) {
-                        // Вебхук: alla сам разрешит имя → ID через API
+                        // Вебхук: alla сам разрешит имя → ID через API.
+                        // Имя запуска передаётся через отдельную env-переменную —
+                        // НЕ встраивается в строку ALLA_ARGS, чтобы избежать shell injection.
                         def projectId = env.LAUNCH_PROJECT_ID?.trim()
                         if (!projectId) {
                             error('Вебхук не содержит $.projectId.')
                         }
-                        env.ALLA_ARGS = "--launch-name '${env.LAUNCH_NAME}' --project-id ${projectId}"
+                        env.ALLA_LAUNCH_NAME = env.LAUNCH_NAME
+                        env.ALLA_PROJECT_ID  = projectId
+                        env.ALLA_LAUNCH_ID   = ''
                         echo "Вебхук: запуск '${env.LAUNCH_NAME}' в проекте #${projectId}"
                     } else {
                         // Ручной запуск: нужен числовой LAUNCH_ID
@@ -77,7 +81,9 @@ pipeline {
                         if (!launchId || !(launchId ==~ /^\d+$/)) {
                             error('Укажи LAUNCH_ID (ручной запуск) или настрой вебхук с launchName.')
                         }
-                        env.ALLA_ARGS = launchId
+                        env.ALLA_LAUNCH_NAME = ''
+                        env.ALLA_PROJECT_ID  = ''
+                        env.ALLA_LAUNCH_ID   = launchId
                         echo "Ручной запуск: ID #${launchId}"
                     }
                 }
@@ -120,11 +126,20 @@ pipeline {
                 ALLURE_LLM_PUSH_ENABLED     = 'true'
             }
             steps {
+                // Имя запуска передаётся через $ALLA_LAUNCH_NAME с двойными кавычками
+                // на уровне shell — безопасно, Groovy не интерполирует \$VAR.
                 sh """
-                    ${VENV_DIR}/bin/alla ${env.ALLA_ARGS} \
-                        --output-format json \
-                        --log-level ${params.LOG_LEVEL} \
-                    > ${env.REPORT_FILE}
+                    if [ -n "\$ALLA_LAUNCH_NAME" ]; then
+                        ${VENV_DIR}/bin/alla --launch-name "\$ALLA_LAUNCH_NAME" --project-id "\$ALLA_PROJECT_ID" \\
+                            --output-format json \\
+                            --log-level ${params.LOG_LEVEL} \\
+                        > ${env.REPORT_FILE}
+                    else
+                        ${VENV_DIR}/bin/alla "\$ALLA_LAUNCH_ID" \\
+                            --output-format json \\
+                            --log-level ${params.LOG_LEVEL} \\
+                        > ${env.REPORT_FILE}
+                    fi
                 """
             }
         }

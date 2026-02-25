@@ -9,7 +9,7 @@ import httpx
 
 from alla.clients.auth import AllureAuthManager
 from alla.config import Settings
-from alla.exceptions import AllureApiError, PaginationLimitError
+from alla.exceptions import AllaError, AllureApiError, PaginationLimitError
 from alla.models.common import PageResponse
 from alla.models.testops import AttachmentMeta, CommentResponse, ExecutionStep, LaunchResponse, TestResultResponse
 
@@ -68,7 +68,7 @@ class AllureTestOpsClient:
                 return launch_id
 
         found_names = [lch.get("name") for lch in content if isinstance(lch, dict)]
-        raise AllureApiError(
+        raise AllaError(
             f"Запуск '{name}' не найден в последних {len(content)} запусках проекта. "
             f"Доступные: {found_names}"
         )
