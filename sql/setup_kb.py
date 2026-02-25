@@ -344,7 +344,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    dsn = _resolve_dsn(args.dsn)
+    # DSN не нужен для --dry-run: подключения к БД не происходит
+    dsn = "" if args.dry_run else _resolve_dsn(args.dsn)
     run_schema = not args.seed_only
     run_seed = not args.schema_only
 
