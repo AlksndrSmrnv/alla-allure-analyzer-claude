@@ -42,6 +42,37 @@ class AllureTestOpsClient:
 
     # --- Публичный API (протокол TestResultsProvider) ---
 
+    async def find_launch_by_name(
+        self,
+        name: str,
+        project_id: int | None = None,
+    ) -> int:
+        """Найти ID запуска по точному совпадению имени.
+
+        ``GET /api/launch?projectId=X&page=0&size=10&sort=created_date,DESC``
+
+        Возвращает ID первого найденного запуска или бросает :class:`AllureApiError`.
+        """
+        params: dict[str, Any] = {"page": 0, "size": 10, "sort": "created_date,DESC"}
+        if project_id is not None:
+            params["projectId"] = project_id
+
+        logger.info("Поиск запуска по имени '%s' (projectId=%s)...", name, project_id)
+        data = await self._request("GET", self.LAUNCH_ENDPOINT, params=params)
+        content = data.get("content", []) if isinstance(data, dict) else []
+
+        for launch in content:
+            if isinstance(launch, dict) and launch.get("name") == name:
+                launch_id = int(launch["id"])
+                logger.info("Найден запуск '%s' → ID %d", name, launch_id)
+                return launch_id
+
+        found_names = [lch.get("name") for lch in content if isinstance(lch, dict)]
+        raise AllureApiError(
+            f"Запуск '{name}' не найден в последних {len(content)} запусках проекта. "
+            f"Доступные: {found_names}"
+        )
+
     async def get_launch(self, launch_id: int) -> LaunchResponse:
         """Получить метаданные запуска по ID.
 
