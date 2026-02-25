@@ -21,9 +21,16 @@ $$;
 -- Основная таблица записей базы знаний
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS alla.kb_entry (
-    -- Уникальный slug, например 'connection_timeout'.
+    -- Суррогатный первичный ключ.
+    -- id (slug) НЕ является PK, потому что одинаковый slug может существовать
+    -- как глобально (project_id IS NULL), так и для конкретного проекта
+    -- (project_id = N), что позволяет проектным записям переопределять глобальные.
+    entry_id         BIGSERIAL                 PRIMARY KEY,
+
+    -- Slug-идентификатор записи, например 'connection_timeout'.
+    -- Уникален внутри каждого пространства: глобального и каждого проекта.
     -- Соответствует полю KBEntry.id в Python-модели.
-    id               TEXT                      PRIMARY KEY,
+    id               TEXT                      NOT NULL,
 
     -- Заголовок проблемы для отображения в отчётах и KB-push комментариях.
     title            TEXT                      NOT NULL,
@@ -46,6 +53,7 @@ CREATE TABLE IF NOT EXISTS alla.kb_entry (
     -- NULL  → глобальная запись (видна всем проектам)
     -- N > 0 → запись только для проекта Allure TestOps с данным ID
     --          (аналог per-project файла project_{id}.yaml)
+    --          Проектная запись с тем же slug переопределяет глобальную в Python-коде.
     project_id       INTEGER                   NULL,
 
     -- Аудит-поля
@@ -55,8 +63,11 @@ CREATE TABLE IF NOT EXISTS alla.kb_entry (
 
 COMMENT ON TABLE  alla.kb_entry IS
     'Известные шаблоны ошибок автотестов с рекомендациями по устранению';
+COMMENT ON COLUMN alla.kb_entry.entry_id         IS
+    'Суррогатный PK. Slug id не является PK, т.к. один slug может существовать '
+    'как глобально, так и для конкретного проекта';
 COMMENT ON COLUMN alla.kb_entry.id               IS
-    'Уникальный slug записи, например connection_timeout';
+    'Slug записи, например connection_timeout. Уникален внутри project_id.';
 COMMENT ON COLUMN alla.kb_entry.error_example    IS
     'Большой фрагмент лога для TF-IDF-сопоставления с ошибками тестов';
 COMMENT ON COLUMN alla.kb_entry.resolution_steps IS
@@ -64,11 +75,18 @@ COMMENT ON COLUMN alla.kb_entry.resolution_steps IS
 COMMENT ON COLUMN alla.kb_entry.project_id       IS
     'NULL = глобальная запись; N = только для проекта Allure TestOps с ID N';
 
+-- Уникальность глобальных записей: один slug может встречаться в глобальном
+-- пространстве ровно один раз.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_entry_id_global
+    ON alla.kb_entry (id)
+    WHERE project_id IS NULL;
+
+-- Уникальность проектных записей: один slug может встречаться для каждого
+-- конкретного проекта ровно один раз.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_entry_id_project
+    ON alla.kb_entry (id, project_id)
+    WHERE project_id IS NOT NULL;
+
 -- Индекс для фильтрации по project_id (основной паттерн запроса в PostgresKnowledgeBase)
 CREATE INDEX IF NOT EXISTS idx_kb_entry_project_id
     ON alla.kb_entry (project_id);
-
--- Частичный индекс для глобальных записей (project_id IS NULL) — быстрый путь
-CREATE INDEX IF NOT EXISTS idx_kb_entry_global
-    ON alla.kb_entry (id)
-    WHERE project_id IS NULL;

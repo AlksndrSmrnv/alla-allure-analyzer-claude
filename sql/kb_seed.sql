@@ -145,7 +145,7 @@ fatal error: runtime: out of memory',
     NULL
 )
 
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) WHERE project_id IS NULL DO NOTHING;
 
 
 -- ============================================================
@@ -171,7 +171,7 @@ VALUES
     ],
     42
 )
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id, project_id) WHERE project_id IS NOT NULL DO NOTHING;
 
 
 -- ============================================================
@@ -191,7 +191,7 @@ ON CONFLICT (id) DO NOTHING;
 --     ARRAY['Шаг 1', 'Шаг 2'],    -- шаги по устранению
 --     NULL                         -- NULL = глобальная
 -- )
--- ON CONFLICT (id) DO NOTHING;
+-- ON CONFLICT (id) WHERE project_id IS NULL DO NOTHING;
 
 
 -- Добавить запись для конкретного проекта (project_id = N):
@@ -207,7 +207,7 @@ ON CONFLICT (id) DO NOTHING;
 --     ARRAY['Шаг 1'],
 --     42                           -- ID проекта в Allure TestOps
 -- )
--- ON CONFLICT (id) DO NOTHING;
+-- ON CONFLICT (id, project_id) WHERE project_id IS NOT NULL DO NOTHING;
 
 
 -- Обновить шаги по устранению существующей записи:

@@ -1,5 +1,7 @@
 """Конфигурация приложения, загружаемая из переменных окружения."""
 
+from typing import Literal
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -69,7 +71,7 @@ class Settings(BaseSettings):
         default=False,
         description="Записывать рекомендации KB обратно в Allure TestOps через комментарии к тест-кейсам",
     )
-    kb_backend: str = Field(
+    kb_backend: Literal["yaml", "postgres"] = Field(
         default="yaml",
         description=(
             "Бэкенд базы знаний: 'yaml' (файловый, по умолчанию) "
