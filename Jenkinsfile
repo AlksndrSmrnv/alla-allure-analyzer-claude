@@ -32,10 +32,10 @@ pipeline {
             // Путь зависит от формата вебхука — скорректировать при необходимости.
             // Полное тело вебхука выводится в лог сборки (printPostContent: true).
             genericVariables: [
-                [key: 'LAUNCH_NAME',      value: '$.launchName'],   // TestOps отдаёт имя, не ID
-                [key: 'LAUNCH_STATUS',    value: '$.status'],
-                [key: 'LAUNCH_PROJECT_ID',value: '$.projectId'],
-                [key: 'WEBHOOK_PAYLOAD',  value: '$']    // весь JSON как строка
+                [key: 'LAUNCH_NAME',        value: '$.launchName'],
+                [key: 'LAUNCH_PROJECT_ID',  value: '$.projectId'],
+                [key: 'LAUNCH_PROJECT_NAME',value: '$.projectName'],
+                [key: 'WEBHOOK_PAYLOAD',    value: '$']    // весь JSON как строка
             ],
 
             causeString: 'Triggered by Allure TestOps webhook: $LAUNCH_NAME',
@@ -73,11 +73,11 @@ pipeline {
                     def source = env.LAUNCH_NAME ? 'вебхук TestOps' : 'ручной запуск'
                     echo """
 === Источник запуска: ${source} ===
-  params.LAUNCH_ID:      ${params.LAUNCH_ID       ?: '(пусто)'}
-  params.PROJECT_ID:     ${params.PROJECT_ID      ?: '(пусто)'}
-  env.LAUNCH_NAME:       ${env.LAUNCH_NAME        ?: '(пусто)'}
-  env.LAUNCH_STATUS:     ${env.LAUNCH_STATUS      ?: '(пусто)'}
-  env.LAUNCH_PROJECT_ID: ${env.LAUNCH_PROJECT_ID  ?: '(пусто)'}
+  params.LAUNCH_ID:       ${params.LAUNCH_ID        ?: '(пусто)'}
+  params.PROJECT_ID:      ${params.PROJECT_ID       ?: '(пусто)'}
+  env.LAUNCH_NAME:        ${env.LAUNCH_NAME         ?: '(пусто)'}
+  env.LAUNCH_PROJECT_ID:  ${env.LAUNCH_PROJECT_ID   ?: '(пусто)'}
+  env.LAUNCH_PROJECT_NAME:${env.LAUNCH_PROJECT_NAME ?: '(пусто)'}
 --- Полное тело вебхука (WEBHOOK_PAYLOAD) ---
 ${env.WEBHOOK_PAYLOAD ?: '(пусто — ручной запуск или ошибка парсинга)'}
 =============================================
@@ -116,29 +116,29 @@ ${env.WEBHOOK_PAYLOAD ?: '(пусто — ручной запуск или ош�
 
                     echo "Ищу запуск '${env.LAUNCH_NAME}' в проекте #${projectId} через Allure TestOps API..."
 
-                    // curl --get + --data-urlencode корректно кодирует имя с пробелами/спецсимволами.
+                    // Запрашиваем последние запуски проекта, отсортированные по дате создания.
+                    // API не поддерживает фильтр по имени — ищем совпадение на стороне Jenkins.
                     // \${ALLURE_TOKEN} и \${ALLURE_ENDPOINT} — shell-переменные (credentials замаскированы Jenkins).
                     def response = sh(
                         script: """
                             curl -sf \
-                                --get \
-                                --data-urlencode "name=${env.LAUNCH_NAME}" \
-                                -d "projectId=${projectId}" \
-                                -d "page=0" \
-                                -d "size=10" \
                                 -H "Authorization: Bearer \${ALLURE_TOKEN}" \
-                                "\${ALLURE_ENDPOINT}/api/launch"
+                                "\${ALLURE_ENDPOINT}/api/launch?projectId=${projectId}&page=0&size=10&sort=created_date,DESC"
                         """,
                         returnStdout: true
                     ).trim()
 
                     def json = readJSON text: response
                     if (!json.content || json.content.size() == 0) {
-                        error("Запуск '${env.LAUNCH_NAME}' не найден в проекте #${projectId}. Проверь имя и PROJECT_ID.")
+                        error("В проекте #${projectId} не найдено ни одного запуска.")
                     }
 
-                    // Берём первый результат — самый свежий запуск с таким именем
-                    def launch = json.content[0]
+                    // Ищем запуск с именем, совпадающим с тем, что пришло в вебхуке
+                    def launch = json.content.find { it.name == env.LAUNCH_NAME }
+                    if (!launch) {
+                        def found = json.content.collect { it.name }.join(', ')
+                        error("Запуск '${env.LAUNCH_NAME}' не найден. Последние запуски в проекте: ${found}")
+                    }
                     env.RESOLVED_LAUNCH_ID = launch.id.toString()
                     env.REPORT_FILE = "alla-report-${env.RESOLVED_LAUNCH_ID}.json"
                     echo "Найден запуск: ID=${env.RESOLVED_LAUNCH_ID}, name='${launch.name}'"
