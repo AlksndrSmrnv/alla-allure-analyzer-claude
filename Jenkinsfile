@@ -49,8 +49,9 @@ pipeline {
         ALLURE_LANGFLOW_API_KEY  = credentials('langflow-api-key')
 
         // Путь к venv внутри workspace
-        VENV_DIR   = "${WORKSPACE}/.venv"
+        VENV_DIR    = "${WORKSPACE}/.venv"
         REPORT_FILE = 'alla-report.json'
+        REPORT_HTML = 'alla-report.html'
     }
 
     options {
@@ -132,11 +133,13 @@ pipeline {
                     if [ -n "\$ALLA_LAUNCH_NAME" ]; then
                         ${VENV_DIR}/bin/alla --launch-name "\$ALLA_LAUNCH_NAME" --project-id "\$ALLA_PROJECT_ID" \\
                             --output-format json \\
+                            --html-report-file ${env.REPORT_HTML} \\
                             --log-level ${params.LOG_LEVEL} \\
                         > ${env.REPORT_FILE}
                     else
                         ${VENV_DIR}/bin/alla "\$ALLA_LAUNCH_ID" \\
                             --output-format json \\
+                            --html-report-file ${env.REPORT_HTML} \\
                             --log-level ${params.LOG_LEVEL} \\
                         > ${env.REPORT_FILE}
                     fi
@@ -175,9 +178,18 @@ pipeline {
     post {
         always {
             archiveArtifacts(
-                artifacts: env.REPORT_FILE,
+                artifacts: "${env.REPORT_FILE}, ${env.REPORT_HTML}",
                 allowEmptyArchive: true
             )
+            publishHTML([
+                allowMissing: true,
+                alwaysLinkToLastBuild: false,
+                keepAll: true,
+                reportDir: '.',
+                reportFiles: env.REPORT_HTML,
+                reportName: 'alla — AI Анализ тестов',
+                reportTitles: ''
+            ])
         }
         success {
             echo "Анализ завершён. Результаты отправлены в TestOps."
