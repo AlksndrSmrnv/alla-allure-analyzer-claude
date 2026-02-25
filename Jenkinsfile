@@ -121,17 +121,32 @@ ${env.WEBHOOK_PAYLOAD ?: '(пусто — ручной запуск или ош�
 
                     // Запрашиваем последние запуски проекта, отсортированные по дате создания.
                     // API не поддерживает фильтр по имени — ищем совпадение на стороне Jenkins.
-                    // \${ALLURE_TOKEN} и \${ALLURE_ENDPOINT} — shell-переменные (credentials замаскированы Jenkins).
+                    // %2C вместо запятой в sort — требование API (encoded comma).
+                    // -w выводит HTTP-статус в конец ответа для диагностики; -f убран намеренно,
+                    // чтобы тело ответа с ошибкой было видно в логах.
                     def response = sh(
                         script: """
-                            curl -sf \
+                            curl -s \
+                                -w "\\nHTTP_CODE:%{http_code}" \
                                 -H "Authorization: Bearer \${ALLURE_TOKEN}" \
-                                "\${ALLURE_ENDPOINT}/api/launch?projectId=${projectId}&page=0&size=10&sort=created_date,DESC"
+                                "\${ALLURE_ENDPOINT}/api/launch?projectId=${projectId}&page=0&size=10&sort=created_date%2CDESC"
                         """,
                         returnStdout: true
                     ).trim()
 
-                    def json = readJSON text: response
+                    // Разобрать тело ответа и HTTP-статус
+                    def parts    = response.split('\nHTTP_CODE:')
+                    def body     = parts[0].trim()
+                    def httpCode = parts.length > 1 ? parts[1].trim() : 'unknown'
+
+                    echo "HTTP статус: ${httpCode}"
+                    echo "Ответ API:\n${body}"
+
+                    if (httpCode != '200') {
+                        error("API /api/launch вернул статус ${httpCode}. Тело ответа выше в логе.")
+                    }
+
+                    def json = readJSON text: body
                     if (!json.content || json.content.size() == 0) {
                         error("В проекте #${projectId} не найдено ни одного запуска.")
                     }
