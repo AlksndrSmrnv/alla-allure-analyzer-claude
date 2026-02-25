@@ -63,6 +63,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Результатов на страницу (переопределяет ALLURE_PAGE_SIZE)",
     )
     parser.add_argument(
+        "--html-report-file",
+        dest="html_report_file",
+        default=None,
+        metavar="PATH",
+        help="Сохранить HTML-отчёт в указанный файл (например: alla-report.html)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"alla {__version__}",
@@ -220,6 +227,17 @@ async def async_main(args: argparse.Namespace) -> int:
                 f" | Ошибок: {llm_push_result.failed_count}"
                 f" | Пропущено: {llm_push_result.skipped_count}"
             )
+
+    # HTML-отчёт (опционально)
+    html_report_file = getattr(args, "html_report_file", None)
+    if html_report_file:
+        from pathlib import Path
+
+        from alla.report.html_report import generate_html_report
+
+        html_content = generate_html_report(result, endpoint=settings.endpoint)
+        Path(html_report_file).write_text(html_content, encoding="utf-8")
+        logger.info("HTML-отчёт сохранён: %s", html_report_file)
 
     return 0
 
