@@ -237,6 +237,49 @@ class AllureTestOpsClient:
             str(result)[:500] if result is not None else "None (пустое тело)",
         )
 
+    async def patch_launch_links(self, launch_id: int, name: str, url: str) -> None:
+        """Добавить ссылку к запуску.
+
+        Алгоритм:
+        1. ``GET /api/launch/{id}`` — получить текущий JSON запуска.
+        2. Добавить новую ссылку к существующему массиву ``links``.
+        3. ``PATCH /api/launch/{id}`` — отправить обновлённый JSON.
+
+        Args:
+            launch_id: ID запуска в Allure TestOps.
+            name: Отображаемое имя ссылки.
+            url: URL ссылки.
+
+        Raises:
+            AllureApiError: При HTTP-ошибках или неожиданном формате ответа.
+        """
+        data = await self._request("GET", f"{self.LAUNCH_ENDPOINT}/{launch_id}")
+        if not isinstance(data, dict):
+            raise AllureApiError(
+                0,
+                "Неожиданный формат ответа GET /api/launch/{id}",
+                f"{self.LAUNCH_ENDPOINT}/{launch_id}",
+            )
+
+        existing_links = data.get("links") or []
+        if not isinstance(existing_links, list):
+            existing_links = []
+
+        patch_payload = dict(data)
+        patch_payload["links"] = existing_links + [{"name": name, "url": url}]
+
+        logger.info(
+            "PATCH /api/launch/%d: добавление ссылки '%s' → '%s'",
+            launch_id, name, url,
+        )
+        await self._request(
+            "PATCH",
+            f"{self.LAUNCH_ENDPOINT}/{launch_id}",
+            json=patch_payload,
+            expect_json=False,
+        )
+        logger.debug("Ссылка добавлена к запуску #%d", launch_id)
+
     # --- Комментарии (протокол CommentManager) ---
 
     async def get_comments(self, test_case_id: int) -> list[CommentResponse]:

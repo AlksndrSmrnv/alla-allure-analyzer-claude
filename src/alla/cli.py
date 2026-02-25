@@ -70,6 +70,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Сохранить HTML-отчёт в указанный файл (например: alla-report.html)",
     )
     parser.add_argument(
+        "--report-url",
+        dest="report_url",
+        default=None,
+        metavar="URL",
+        help=(
+            "URL HTML-отчёта для прикрепления к запуску в Allure TestOps "
+            "(переопределяет ALLURE_REPORT_URL). "
+            "Требует --html-report-file. "
+            "Пример: http://jenkins/job/alla/33/artifact/alla-report.html"
+        ),
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"alla {__version__}",
@@ -153,6 +165,40 @@ async def async_main(args: argparse.Namespace) -> int:
             llm_push_result = result.llm_push_result
             llm_launch_summary = result.llm_launch_summary
 
+            # HTML-отчёт + прикрепление ссылки к запуску
+            # (внутри async with — клиент ещё открыт, нужен для PATCH)
+            html_report_file = getattr(args, "html_report_file", None)
+            if html_report_file:
+                from pathlib import Path
+
+                from alla.report.html_report import generate_html_report
+
+                html_content = generate_html_report(result, endpoint=settings.endpoint)
+                Path(html_report_file).write_text(html_content, encoding="utf-8")
+                logger.info("HTML-отчёт сохранён: %s", html_report_file)
+
+                report_url = getattr(args, "report_url", None) or settings.report_url
+                if report_url:
+                    from alla.clients.base import LaunchLinksUpdater
+
+                    if isinstance(client, LaunchLinksUpdater):
+                        try:
+                            await client.patch_launch_links(
+                                launch_id=launch_id,
+                                name=settings.report_link_name,
+                                url=report_url,
+                            )
+                            logger.info(
+                                "Ссылка на HTML-отчёт прикреплена к запуску #%d",
+                                launch_id,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Не удалось прикрепить ссылку к запуску #%d: %s",
+                                launch_id,
+                                exc,
+                            )
+
     except ConfigurationError as exc:
         logger.error("Ошибка конфигурации: %s", exc)
         return 2
@@ -227,17 +273,6 @@ async def async_main(args: argparse.Namespace) -> int:
                 f" | Ошибок: {llm_push_result.failed_count}"
                 f" | Пропущено: {llm_push_result.skipped_count}"
             )
-
-    # HTML-отчёт (опционально)
-    html_report_file = getattr(args, "html_report_file", None)
-    if html_report_file:
-        from pathlib import Path
-
-        from alla.report.html_report import generate_html_report
-
-        html_content = generate_html_report(result, endpoint=settings.endpoint)
-        Path(html_report_file).write_text(html_content, encoding="utf-8")
-        logger.info("HTML-отчёт сохранён: %s", html_report_file)
 
     return 0
 

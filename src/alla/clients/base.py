@@ -147,3 +147,28 @@ class CommentManager(Protocol):
             comment_id: ID комментария.
         """
         ...
+
+
+@runtime_checkable
+class LaunchLinksUpdater(Protocol):
+    """Протокол для обновления ссылок запуска через PATCH /api/launch/{id}.
+
+    Разделён от TestResultsUpdater: не все источники данных поддерживают
+    обновление метаданных запуска. Проверка через
+    ``isinstance(client, LaunchLinksUpdater)``.
+
+    Реализации:
+    - AllureTestOpsClient: GET /api/launch/{id} → merge links → PATCH /api/launch/{id}
+    """
+
+    async def patch_launch_links(self, launch_id: int, name: str, url: str) -> None:
+        """Добавить ссылку к массиву links запуска.
+
+        Алгоритм: GET текущий JSON запуска → добавить ссылку → PATCH.
+
+        Args:
+            launch_id: ID запуска в Allure TestOps.
+            name: Отображаемое имя ссылки.
+            url: URL ссылки.
+        """
+        ...
