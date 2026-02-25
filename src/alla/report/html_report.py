@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html as _html
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -46,7 +47,7 @@ def generate_html_report(result: "AnalysisResult", endpoint: str = "") -> str:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>alla — {_e(launch_title)}</title>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.4/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
   <style>
 {_CSS}
@@ -289,9 +290,19 @@ def _e(s: object) -> str:
 
 
 def _render_llm_text(text: str) -> str:
-    """Подготовить LLM-текст для рендеринга через marked.js на клиенте."""
+    """Подготовить LLM-текст для рендеринга через marked.js на клиенте с фоллбэком."""
     safe_text = _html.escape(text)
-    return f'<textarea class="markdown-source" style="display:none;">{safe_text}</textarea><div class="markdown-rendered"></div>'
+    
+    # Базовый фоллбэк (серверный рендеринг) для оффлайн-режима и CSP
+    fallback = safe_text
+    fallback = re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", fallback)
+    paragraphs = [p.strip() for p in fallback.split("\n\n") if p.strip()]
+    fallback_html = "\n".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs)
+    
+    return (
+        f'<textarea class="markdown-source" style="display:none;">{safe_text}</textarea>'
+        f'<div class="markdown-rendered">{fallback_html}</div>'
+    )
 
 
 # ---------------------------------------------------------------------------
