@@ -4,7 +4,12 @@ pipeline {
     parameters {
         string(
             name: 'LAUNCH_ID',
-            description: 'ID прогона в Allure TestOps (заполняется автоматически вебхуком из TestOps)',
+            description: 'ID прогона (для ручного запуска). При вебхуке заполняется автоматически.',
+            trim: true
+        )
+        string(
+            name: 'PROJECT_ID',
+            description: 'ID проекта в Allure TestOps (нужен при резолве ID по имени через вебхук).',
             trim: true
         )
         choice(
@@ -16,24 +21,24 @@ pipeline {
 
     triggers {
         GenericTrigger(
-            // Токен НЕ задаётся здесь: GenericTrigger.token вычисляется при загрузке
-            // pipeline и не поддерживает credentials()-биндинг из environment {}.
-            // Задать токен в Jenkins UI:
-            //   Job → Configure → Generic Webhook Trigger → Token
-            // Endpoint для TestOps: POST /generic-webhook-trigger/invoke?token=<токен>
+            // Токен задаётся здесь намеренно: Jenkins перечитывает triggers {} при каждом
+            // запуске и перезаписывает конфигурацию триггера из UI — токен из UI затирается.
+            // Токен вебхука не является критическим секретом (это идентификатор в URL,
+            // не пароль от системы), поэтому хранить его в Jenkinsfile — приемлемо.
+            // Endpoint для TestOps: POST /generic-webhook-trigger/invoke?token=alla-webhook-token
+            token: 'alla-webhook-token',
 
             // Вытащить поля из JSON-тела вебхука TestOps.
             // Путь зависит от формата вебхука — скорректировать при необходимости.
             // Полное тело вебхука выводится в лог сборки (printPostContent: true).
             genericVariables: [
-                [key: 'LAUNCH_ID',        value: '$.id'],
-                [key: 'LAUNCH_NAME',      value: '$.name'],
-                [key: 'LAUNCH_STATUS',    value: '$.status'],
-                [key: 'LAUNCH_PROJECT_ID',value: '$.projectId'],
-                [key: 'WEBHOOK_PAYLOAD',  value: '$']    // весь JSON как строка
+                [key: 'LAUNCH_NAME',        value: '$.launchName'],
+                [key: 'LAUNCH_PROJECT_ID',  value: '$.projectId'],
+                [key: 'LAUNCH_PROJECT_NAME',value: '$.projectName'],
+                [key: 'WEBHOOK_PAYLOAD',    value: '$']    // весь JSON как строка
             ],
 
-            causeString: 'Triggered by Allure TestOps webhook, launch #$LAUNCH_ID ($LAUNCH_NAME)',
+            causeString: 'Triggered by Allure TestOps webhook: $LAUNCH_NAME',
             printContributedVariables: true,
             printPostContent: true
         )
@@ -65,32 +70,78 @@ pipeline {
             steps {
                 script {
                     // Лог входящих данных: источник и полное тело вебхука
-                    def source = env.LAUNCH_ID ? 'вебхук TestOps' : 'ручной запуск'
+                    def source = env.LAUNCH_NAME ? 'вебхук TestOps' : 'ручной запуск'
                     echo """
 === Источник запуска: ${source} ===
-  params.LAUNCH_ID:     ${params.LAUNCH_ID      ?: '(пусто)'}
-  env.LAUNCH_ID:        ${env.LAUNCH_ID         ?: '(пусто)'}
-  env.LAUNCH_NAME:      ${env.LAUNCH_NAME       ?: '(пусто)'}
-  env.LAUNCH_STATUS:    ${env.LAUNCH_STATUS     ?: '(пусто)'}
-  env.LAUNCH_PROJECT_ID:${env.LAUNCH_PROJECT_ID ?: '(пусто)'}
+  params.LAUNCH_ID:       ${params.LAUNCH_ID        ?: '(пусто)'}
+  params.PROJECT_ID:      ${params.PROJECT_ID       ?: '(пусто)'}
+  env.LAUNCH_NAME:        ${env.LAUNCH_NAME         ?: '(пусто)'}
+  env.LAUNCH_PROJECT_ID:  ${env.LAUNCH_PROJECT_ID   ?: '(пусто)'}
+  env.LAUNCH_PROJECT_NAME:${env.LAUNCH_PROJECT_NAME ?: '(пусто)'}
 --- Полное тело вебхука (WEBHOOK_PAYLOAD) ---
 ${env.WEBHOOK_PAYLOAD ?: '(пусто — ручной запуск или ошибка парсинга)'}
 =============================================
                     """.stripIndent()
 
-                    // При ручном запуске LAUNCH_ID приходит из params,
-                    // при вебхуке — Generic Webhook Trigger кладёт его в env.
-                    env.RESOLVED_LAUNCH_ID = params.LAUNCH_ID?.trim() ?: env.LAUNCH_ID?.trim()
+                    // При ручном запуске берём LAUNCH_ID из params напрямую.
+                    // При вебхуке ID не приходит — будет разрешён в следующем stage по имени.
+                    env.RESOLVED_LAUNCH_ID = params.LAUNCH_ID?.trim() ?: ''
 
-                    if (!env.RESOLVED_LAUNCH_ID) {
-                        error('LAUNCH_ID не задан. Укажи ID прогона вручную или запусти через вебхук.')
+                    if (env.RESOLVED_LAUNCH_ID) {
+                        if (!(env.RESOLVED_LAUNCH_ID ==~ /^\d+$/)) {
+                            error('LAUNCH_ID должен содержать только цифры.')
+                        }
+                        env.REPORT_FILE = "alla-report-${env.RESOLVED_LAUNCH_ID}.json"
+                        echo "LAUNCH_ID задан вручную: #${env.RESOLVED_LAUNCH_ID}"
+                    } else if (env.LAUNCH_NAME?.trim()) {
+                        echo "LAUNCH_ID не получен напрямую — будет разрешён по имени '${env.LAUNCH_NAME}'."
+                    } else {
+                        error('Не задан ни LAUNCH_ID (ручной запуск), ни launchName (вебхук).')
                     }
-                    if (!(env.RESOLVED_LAUNCH_ID ==~ /^\d+$/)) {
-                        error('LAUNCH_ID должен содержать только цифры.')
+                }
+            }
+        }
+
+        stage('Resolve Launch ID') {
+            // Запускается только когда ID не задан явно (вебхук без $.id)
+            when {
+                expression { !env.RESOLVED_LAUNCH_ID?.trim() }
+            }
+            steps {
+                script {
+                    def projectId = env.LAUNCH_PROJECT_ID?.trim() ?: params.PROJECT_ID?.trim()
+                    if (!projectId) {
+                        error('PROJECT_ID не задан. Укажи его в параметрах сборки или убедись, что вебхук содержит поле projectId.')
                     }
 
+                    echo "Ищу запуск '${env.LAUNCH_NAME}' в проекте #${projectId} через Allure TestOps API..."
+
+                    // Запрашиваем последние запуски проекта, отсортированные по дате создания.
+                    // API не поддерживает фильтр по имени — ищем совпадение на стороне Jenkins.
+                    // \${ALLURE_TOKEN} и \${ALLURE_ENDPOINT} — shell-переменные (credentials замаскированы Jenkins).
+                    def response = sh(
+                        script: """
+                            curl -sf \
+                                -H "Authorization: Bearer \${ALLURE_TOKEN}" \
+                                "\${ALLURE_ENDPOINT}/api/launch?projectId=${projectId}&page=0&size=10&sort=created_date,DESC"
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    def json = readJSON text: response
+                    if (!json.content || json.content.size() == 0) {
+                        error("В проекте #${projectId} не найдено ни одного запуска.")
+                    }
+
+                    // Ищем запуск с именем, совпадающим с тем, что пришло в вебхуке
+                    def launch = json.content.find { it.name == env.LAUNCH_NAME }
+                    if (!launch) {
+                        def found = json.content.collect { it.name }.join(', ')
+                        error("Запуск '${env.LAUNCH_NAME}' не найден. Последние запуски в проекте: ${found}")
+                    }
+                    env.RESOLVED_LAUNCH_ID = launch.id.toString()
                     env.REPORT_FILE = "alla-report-${env.RESOLVED_LAUNCH_ID}.json"
-                    echo "Запуск анализа прогона #${env.RESOLVED_LAUNCH_ID}"
+                    echo "Найден запуск: ID=${env.RESOLVED_LAUNCH_ID}, name='${launch.name}'"
                 }
             }
         }
