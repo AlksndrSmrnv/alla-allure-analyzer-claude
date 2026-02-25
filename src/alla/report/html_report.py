@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html as _html
-import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -47,6 +46,8 @@ def generate_html_report(result: "AnalysisResult", endpoint: str = "") -> str:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>alla — {_e(launch_title)}</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
   <style>
 {_CSS}
   </style>
@@ -69,6 +70,21 @@ def generate_html_report(result: "AnalysisResult", endpoint: str = "") -> str:
     </footer>
 
   </div>
+
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {{
+      marked.setOptions({{
+        breaks: true,
+        gfm: true
+      }});
+      
+      document.querySelectorAll('.markdown-source').forEach(function(el) {{
+        var rendered = el.nextElementSibling;
+        var html = marked.parse(el.value);
+        rendered.innerHTML = DOMPurify.sanitize(html);
+      }});
+    }});
+  </script>
 </body>
 </html>"""
 
@@ -81,7 +97,6 @@ def _render_stats(
     triage: "TriageReport",
     clustering: "ClusteringReport | None",
 ) -> str:
-    failure_count = triage.failed_count + triage.broken_count
     cluster_count = str(clustering.cluster_count) if clustering else "—"
 
     cards: list[tuple[str, str, str]] = [
@@ -111,7 +126,7 @@ def _render_launch_summary(llm_summary: "LLMLaunchSummary | None") -> str:
     return (
         '<div class="section">'
         '<div class="section-title">Итоговый анализ прогона</div>'
-        f'<div class="section-body"><div class="llm-summary">{content}</div></div>'
+        f'<div class="llm-summary">{content}</div>'
         "</div>"
     )
 
@@ -131,7 +146,7 @@ def _render_clusters(
         return (
             '<div class="section">'
             '<div class="section-title">Кластеры падений</div>'
-            '<div class="section-body"><p class="empty">Кластеры отсутствуют.</p></div>'
+            '<div class="empty">Кластеры отсутствуют.</div>'
             "</div>"
         )
 
@@ -150,7 +165,7 @@ def _render_clusters(
     return (
         '<div class="section">'
         f'<div class="section-title">{_e(title)}</div>'
-        f'<div class="section-body">{body}</div>'
+        f'<div class="clusters-list">{body}</div>'
         "</div>"
     )
 
@@ -170,25 +185,30 @@ def _render_cluster(
         if analysis and analysis.analysis_text:
             llm_text = analysis.analysis_text
 
-    # --- error example ---
-    error_html = ""
-    if cluster.example_message:
-        snippet = cluster.example_message[:1200]
-        if len(cluster.example_message) > 1200:
-            snippet += "\n…"
-        error_html = (
-            '<div class="error-block">'
-            f"<pre>{_e(snippet)}</pre>"
-            "</div>"
-        )
-
     # --- LLM analysis ---
     llm_html = ""
     if llm_text:
         content = _render_llm_text(llm_text)
         llm_html = (
-            '<div class="block-label">LLM-анализ</div>'
+            '<div class="block">'
+            '<div class="block-title">AI Анализ</div>'
             f'<div class="llm-analysis">{content}</div>'
+            "</div>"
+        )
+
+    # --- error example ---
+    error_html = ""
+    if cluster.example_message:
+        snippet = cluster.example_message[:2000]
+        if len(cluster.example_message) > 2000:
+            snippet += "\n…"
+        error_html = (
+            '<div class="block">'
+            '<div class="block-title">Пример ошибки</div>'
+            '<div class="error-block">'
+            f"<pre>{_e(snippet)}</pre>"
+            "</div>"
+            "</div>"
         )
 
     # --- KB matches ---
@@ -198,8 +218,10 @@ def _render_cluster(
             _render_kb_entry(m) for m in kb_matches
         )
         kb_html = (
-            '<div class="block-label">База знаний</div>'
+            '<div class="block">'
+            '<div class="block-title">База знаний</div>'
             f'<div class="kb-matches">{entries_html}</div>'
+            "</div>"
         )
 
     # --- test IDs ---
@@ -209,17 +231,20 @@ def _render_cluster(
     for tid in shown_ids:
         test = test_by_id.get(tid)
         if test and test.link:
-            links.append(f'<a href="{_e(test.link)}" target="_blank">{tid}</a>')
+            links.append(f'<a href="{_e(test.link)}" target="_blank" class="test-id">{tid}</a>')
         else:
-            links.append(_e(str(tid)))
+            links.append(f'<span class="test-id no-link">{tid}</span>')
 
     tests_html = ""
     if links:
         extra = ""
         if len(cluster.member_test_ids) > _MAX_IDS:
-            extra = f' и ещё {len(cluster.member_test_ids) - _MAX_IDS}…'
+            extra = f'<span class="test-more">и ещё {len(cluster.member_test_ids) - _MAX_IDS}…</span>'
         tests_html = (
-            f'<div class="test-ids">Тесты: {", ".join(links)}{extra}</div>'
+            '<div class="block">'
+            '<div class="block-title">Затронутые тесты</div>'
+            f'<div class="test-list">{ "".join(links) }{extra}</div>'
+            "</div>"
         )
 
     return (
@@ -230,7 +255,7 @@ def _render_cluster(
         f'<span class="cluster-count">{cluster.member_count} тест(ов)</span>'
         "</div>"
         '<div class="cluster-body">'
-        f"{error_html}{llm_html}{kb_html}{tests_html}"
+        f"{llm_html}{error_html}{kb_html}{tests_html}"
         "</div>"
         "</div>"
     )
@@ -245,8 +270,8 @@ def _render_kb_entry(m: "KBMatchResult") -> str:
     return (
         '<div class="kb-entry">'
         '<div class="kb-entry-header">'
-        f'<span class="kb-score">{m.score:.2f}</span>'
-        f'<span class="kb-entry-title">{_e(m.entry.title)}</span>'
+        f'<span class="kb-score">{(m.score * 100):.0f}%</span>'
+        f'<span class="kb-title">{_e(m.entry.title)}</span>'
         f'<span class="kb-category">{_e(m.entry.category.value)}</span>'
         "</div>"
         f"{steps_html}"
@@ -264,21 +289,9 @@ def _e(s: object) -> str:
 
 
 def _render_llm_text(text: str) -> str:
-    """Конвертировать LLM-текст в HTML с базовым форматированием.
-
-    Правила:
-    - HTML-escape всего текста (защита от XSS)
-    - **LABEL:** → <strong>LABEL:</strong>
-    - Параграфы разделены двойным переводом строки (\n\n)
-    - Одиночные переводы строки → <br>
-    """
-    escaped = _html.escape(text)
-    # **bold** → <strong>bold</strong>
-    escaped = re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", escaped)
-
-    paragraphs = [p.strip() for p in escaped.split("\n\n") if p.strip()]
-    html_parts = [f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs]
-    return "\n".join(html_parts)
+    """Подготовить LLM-текст для рендеринга через marked.js на клиенте."""
+    safe_text = _html.escape(text)
+    return f'<textarea class="markdown-source" style="display:none;">{safe_text}</textarea><div class="markdown-rendered"></div>'
 
 
 # ---------------------------------------------------------------------------
@@ -286,234 +299,398 @@ def _render_llm_text(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 _CSS = """
+    :root {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --primary: #2563eb;
+      --primary-light: #dbeafe;
+      --danger: #dc2626;
+      --danger-light: #fef2f2;
+      --success: #16a34a;
+      --success-light: #dcfce7;
+      --warning: #d97706;
+      --warning-light: #fffbeb;
+      --info: #0284c7;
+      --info-light: #f0f9ff;
+      --radius: 12px;
+      --radius-sm: 8px;
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                   "Helvetica Neue", Arial, sans-serif;
-      background: #f0f2f5;
-      color: #1a202c;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
       font-size: 14px;
-      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
     }
 
-    .container { max-width: 1080px; margin: 0 auto; padding: 28px 16px; }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
 
     /* ---- Header ---- */
     .header {
-      background: linear-gradient(135deg, #1a202c 0%, #2d3748 100%);
-      color: #fff;
-      border-radius: 12px;
-      padding: 28px 32px;
-      margin-bottom: 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.5rem 2rem;
+      margin-bottom: 2rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
     }
     .header-brand {
-      font-size: 11px;
+      font-size: 0.75rem;
       font-weight: 700;
-      letter-spacing: 2px;
+      color: var(--primary);
       text-transform: uppercase;
-      color: #63b3ed;
-      margin-bottom: 8px;
+      letter-spacing: 0.1em;
     }
-    .header-title { font-size: 22px; font-weight: 600; margin-bottom: 6px; }
-    .header-meta { font-size: 12px; color: rgba(255,255,255,0.5); }
+    .header-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.2;
+    }
+    .header-meta {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
 
     /* ---- Stats ---- */
     .stats {
-      display: flex;
-      gap: 12px;
-      margin-bottom: 20px;
-      flex-wrap: wrap;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
     }
     .stat-card {
-      flex: 1;
-      min-width: 110px;
-      background: #fff;
-      border-radius: 10px;
-      padding: 16px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1rem;
       text-align: center;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      transition: transform 0.2s, box-shadow 0.2s;
     }
-    .stat-value { font-size: 28px; font-weight: 700; color: #2d3748; }
+    .stat-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    }
+    .stat-value {
+      font-size: 2rem;
+      font-weight: 700;
+      line-height: 1;
+      margin-bottom: 0.5rem;
+      color: var(--text);
+    }
     .stat-label {
-      font-size: 11px;
-      color: #a0aec0;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
       text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-top: 4px;
+      letter-spacing: 0.05em;
     }
-    .stat-card.danger  .stat-value { color: #e53e3e; }
-    .stat-card.warning .stat-value { color: #dd6b20; }
-    .stat-card.success .stat-value { color: #38a169; }
-    .stat-card.muted   .stat-value { color: #a0aec0; }
-    .stat-card.info    .stat-value { color: #3182ce; }
+    .stat-card.danger .stat-value { color: var(--danger); }
+    .stat-card.warning .stat-value { color: var(--warning); }
+    .stat-card.success .stat-value { color: var(--success); }
+    .stat-card.info .stat-value { color: var(--info); }
+    .stat-card.muted .stat-value { color: var(--text-muted); }
 
-    /* ---- Section ---- */
+    /* ---- Sections ---- */
     .section {
-      background: #fff;
-      border-radius: 10px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-      margin-bottom: 20px;
-      overflow: hidden;
+      margin-bottom: 2.5rem;
     }
     .section-title {
-      font-size: 12px;
+      font-size: 1.25rem;
       font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.7px;
-      padding: 14px 20px;
-      border-bottom: 1px solid #edf2f7;
-      color: #718096;
+      margin-bottom: 1.25rem;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
     }
-    .section-body { padding: 20px; }
-    .empty { color: #a0aec0; font-style: italic; }
+    .empty {
+      color: var(--text-muted);
+      font-style: italic;
+      background: var(--surface);
+      padding: 2rem;
+      border-radius: var(--radius);
+      text-align: center;
+      border: 1px dashed var(--border);
+    }
 
     /* ---- LLM Summary ---- */
     .llm-summary {
-      background: #ebf8ff;
-      border-left: 4px solid #3182ce;
-      border-radius: 0 8px 8px 0;
-      padding: 16px 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--primary);
+      border-radius: var(--radius);
+      padding: 1.5rem 2rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
-    .llm-summary p { margin-bottom: 10px; }
-    .llm-summary p:last-child { margin-bottom: 0; }
 
-    /* ---- Cluster ---- */
+    /* ---- Clusters ---- */
     .cluster {
-      border: 1px solid #e2e8f0;
-      border-radius: 10px;
-      margin-bottom: 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 1.5rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
       overflow: hidden;
     }
-    .cluster:last-child { margin-bottom: 0; }
-
     .cluster-header {
-      background: #f7fafc;
-      padding: 12px 18px;
+      background: #f8fafc;
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem;
       display: flex;
-      align-items: baseline;
-      gap: 10px;
-      border-bottom: 1px solid #e2e8f0;
+      align-items: center;
+      gap: 1rem;
       flex-wrap: wrap;
     }
     .cluster-num {
-      font-size: 11px;
+      background: var(--primary-light);
+      color: var(--primary);
       font-weight: 700;
-      color: #3182ce;
-      text-transform: uppercase;
-      white-space: nowrap;
-      flex-shrink: 0;
+      font-size: 0.875rem;
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
     }
     .cluster-label {
-      font-size: 14px;
       font-weight: 600;
-      color: #1a202c;
+      font-size: 1.125rem;
       flex: 1;
-      min-width: 0;
+      min-width: 200px;
       word-break: break-word;
     }
     .cluster-count {
-      font-size: 11px;
-      color: #a0aec0;
-      white-space: nowrap;
-      flex-shrink: 0;
+      background: var(--border);
+      color: var(--text);
+      font-size: 0.875rem;
+      font-weight: 600;
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
     }
-    .cluster-body { padding: 16px 18px; }
-
-    /* ---- Error block ---- */
-    .error-block {
-      background: #fff5f5;
-      border: 1px solid #fed7d7;
-      border-radius: 6px;
-      padding: 12px;
-      margin-bottom: 14px;
-      overflow-x: auto;
-    }
-    .error-block pre {
-      font-family: "JetBrains Mono", "Consolas", "Courier New", monospace;
-      font-size: 12px;
-      color: #c53030;
-      white-space: pre-wrap;
-      word-break: break-word;
+    .cluster-body {
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
     }
 
-    /* ---- Block label ---- */
-    .block-label {
-      font-size: 11px;
+    /* ---- Blocks ---- */
+    .block {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .block-title {
+      font-size: 0.75rem;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: #718096;
-      margin-bottom: 8px;
-      margin-top: 4px;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
     }
 
-    /* ---- LLM analysis ---- */
+    /* ---- Error Block ---- */
+    .error-block {
+      background: var(--danger-light);
+      border: 1px solid #fca5a5;
+      border-radius: var(--radius-sm);
+      padding: 1rem;
+    }
+    .error-block pre {
+      margin: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.8125rem;
+      color: var(--danger);
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    /* ---- LLM Analysis ---- */
     .llm-analysis {
-      background: #ebf8ff;
-      border-left: 3px solid #3182ce;
-      border-radius: 0 6px 6px 0;
-      padding: 12px 16px;
-      margin-bottom: 14px;
+      background: var(--info-light);
+      border: 1px solid #bae6fd;
+      border-radius: var(--radius-sm);
+      padding: 1.25rem 1.5rem;
     }
-    .llm-analysis p { font-size: 13px; margin-bottom: 8px; }
-    .llm-analysis p:last-child { margin-bottom: 0; }
 
-    /* ---- KB matches ---- */
-    .kb-matches { margin-bottom: 14px; }
-    .kb-entry {
-      background: #f7fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 6px;
-      padding: 10px 14px;
-      margin-bottom: 6px;
+    /* ---- KB Matches ---- */
+    .kb-matches {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
     }
-    .kb-entry:last-child { margin-bottom: 0; }
+    .kb-entry {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 1rem 1.25rem;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+    }
     .kb-entry-header {
       display: flex;
       align-items: center;
-      gap: 8px;
-      margin-bottom: 6px;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
       flex-wrap: wrap;
     }
     .kb-score {
-      background: #ebf8ff;
-      color: #2b6cb0;
-      font-size: 11px;
+      background: var(--success-light);
+      color: var(--success);
+      font-size: 0.75rem;
       font-weight: 700;
-      padding: 2px 7px;
-      border-radius: 10px;
-      white-space: nowrap;
+      padding: 0.125rem 0.5rem;
+      border-radius: 9999px;
     }
-    .kb-entry-title { font-size: 13px; font-weight: 600; flex: 1; }
+    .kb-title {
+      font-weight: 600;
+      font-size: 1rem;
+      flex: 1;
+    }
     .kb-category {
-      font-size: 11px;
-      color: #a0aec0;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--text-muted);
       text-transform: uppercase;
-      white-space: nowrap;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      padding: 0.125rem 0.5rem;
+      border-radius: 9999px;
     }
-    .kb-steps { margin-top: 6px; padding-left: 18px; }
-    .kb-steps li { font-size: 12px; color: #4a5568; margin-bottom: 3px; }
+    .kb-steps {
+      margin: 0;
+      padding-left: 1.25rem;
+      font-size: 0.875rem;
+      color: var(--text);
+    }
+    .kb-steps li { margin-bottom: 0.25rem; }
 
     /* ---- Test IDs ---- */
-    .test-ids { font-size: 12px; color: #a0aec0; margin-top: 10px; line-height: 1.8; }
-    .test-ids a { color: #3182ce; text-decoration: none; }
-    .test-ids a:hover { text-decoration: underline; }
+    .test-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .test-id {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 0.8125rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      padding: 0.25rem 0.5rem;
+      border-radius: 6px;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+    .test-id:hover {
+      background: var(--primary-light);
+      border-color: #bfdbfe;
+      color: var(--primary);
+    }
+    .test-id.no-link {
+      cursor: default;
+    }
+    .test-id.no-link:hover {
+      background: var(--bg);
+      border-color: var(--border);
+      color: var(--text);
+    }
+    .test-more {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      padding: 0 0.5rem;
+    }
+
+    /* ---- Markdown Rendered Styles ---- */
+    .markdown-rendered {
+      font-size: 0.9375rem;
+      line-height: 1.6;
+      color: var(--text);
+    }
+    .markdown-rendered p { margin-top: 0; margin-bottom: 1rem; }
+    .markdown-rendered p:last-child { margin-bottom: 0; }
+    .markdown-rendered strong { font-weight: 600; color: #000; }
+    .markdown-rendered code {
+      background: rgba(0,0,0,0.05);
+      padding: 0.2em 0.4em;
+      border-radius: 4px;
+      font-size: 0.875em;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .markdown-rendered pre {
+      background: #1e293b;
+      color: #f8fafc;
+      padding: 1rem;
+      border-radius: var(--radius-sm);
+      overflow-x: auto;
+      font-size: 0.875em;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      margin-top: 0;
+      margin-bottom: 1rem;
+    }
+    .markdown-rendered pre code {
+      background: transparent;
+      padding: 0;
+      color: inherit;
+    }
+    .markdown-rendered ul, .markdown-rendered ol {
+      margin-top: 0;
+      margin-bottom: 1rem;
+      padding-left: 1.5rem;
+    }
+    .markdown-rendered li { margin-bottom: 0.25rem; }
+    .markdown-rendered h1, .markdown-rendered h2, .markdown-rendered h3, .markdown-rendered h4 {
+      margin-top: 1.5rem;
+      margin-bottom: 0.75rem;
+      font-weight: 600;
+      line-height: 1.25;
+    }
+    .markdown-rendered h1 { font-size: 1.5rem; }
+    .markdown-rendered h2 { font-size: 1.25rem; }
+    .markdown-rendered h3 { font-size: 1.125rem; }
+    .markdown-rendered h4 { font-size: 1rem; }
+    .markdown-rendered h1:first-child, .markdown-rendered h2:first-child, .markdown-rendered h3:first-child {
+      margin-top: 0;
+    }
+    .markdown-rendered blockquote {
+      border-left: 4px solid var(--border);
+      padding-left: 1rem;
+      margin-left: 0;
+      margin-right: 0;
+      color: var(--text-muted);
+      font-style: italic;
+    }
 
     /* ---- Footer ---- */
     .footer {
       text-align: center;
-      font-size: 11px;
-      color: #cbd5e0;
-      margin-top: 28px;
-      padding: 12px;
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      margin-top: 3rem;
+      padding: 1.5rem;
+      border-top: 1px solid var(--border);
     }
 
-    @media (max-width: 600px) {
-      .stats { gap: 8px; }
-      .stat-card { min-width: 80px; padding: 12px 8px; }
-      .stat-value { font-size: 22px; }
-      .header { padding: 20px 18px; }
-      .header-title { font-size: 18px; }
+    @media (max-width: 768px) {
+      .container { padding: 1rem; }
+      .header { padding: 1.25rem; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .cluster-header { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+      .cluster-label { min-width: 100%; }
     }
 """
