@@ -122,7 +122,13 @@ async def analyze_launch(
             min_score=settings.kb_min_score,
             max_results=settings.kb_max_results,
         )
-        kb = _get_or_create_kb(settings.kb_path, matcher_config, report.project_id)
+        kb = _get_or_create_kb(
+            settings.kb_path,
+            matcher_config,
+            report.project_id,
+            kb_backend=settings.kb_backend,
+            kb_postgres_dsn=settings.kb_postgres_dsn,
+        )
 
         # Индекс test_result_id → FailedTestSummary для быстрого lookup
         test_by_id = {t.test_result_id: t for t in report.failed_tests}
@@ -465,34 +471,59 @@ def _get_or_create_kb(
     kb_path: str,
     matcher_config: object,
     project_id: int | None = None,
+    *,
+    kb_backend: str = "yaml",
+    kb_postgres_dsn: str = "",
 ) -> object:
-    """Вернуть кэшированный экземпляр YamlKnowledgeBase или создать новый.
+    """Вернуть кэшированный экземпляр KB или создать новый.
 
-    Кэш по ключу (kb_path, min_score, max_results, project_id). Предотвращает
-    повторное чтение YAML-файлов и re-fit TF-IDF на каждый запрос сервера.
+    Поддерживает два бэкенда:
+    - 'yaml'     → YamlKnowledgeBase (файловый, по умолчанию)
+    - 'postgres' → PostgresKnowledgeBase (загружает из PostgreSQL при init)
+
+    Кэш по ключу (backend, location, min_score, max_results, project_id).
+    Предотвращает повторные подключения к БД / чтение YAML на каждый запрос сервера.
     """
     from alla.knowledge.matcher import MatcherConfig
-    from alla.knowledge.yaml_kb import YamlKnowledgeBase
 
     global _kb_cache
 
     cfg = matcher_config if isinstance(matcher_config, MatcherConfig) else None
+    location = kb_postgres_dsn if kb_backend == "postgres" else kb_path
     cache_key = (
-        kb_path,
+        kb_backend,
+        location,
         cfg.min_score if cfg else 0.15,
         cfg.max_results if cfg else 5,
         project_id,
     )
 
     if cache_key in _kb_cache:
-        logger.debug("KB: используется кэшированный экземпляр для %s", kb_path)
+        logger.debug("KB: используется кэшированный экземпляр (backend=%s)", kb_backend)
         return _kb_cache[cache_key]
 
-    kb = YamlKnowledgeBase(
-        kb_path=kb_path,
-        matcher_config=matcher_config,
-        project_id=project_id,
-    )
+    if kb_backend == "postgres":
+        from alla.knowledge.postgres_kb import PostgresKnowledgeBase
+
+        if not kb_postgres_dsn:
+            from alla.exceptions import ConfigurationError
+            raise ConfigurationError(
+                "kb_backend='postgres' требует ALLURE_KB_POSTGRES_DSN"
+            )
+        kb = PostgresKnowledgeBase(
+            dsn=kb_postgres_dsn,
+            matcher_config=matcher_config,
+            project_id=project_id,
+        )
+    else:
+        from alla.knowledge.yaml_kb import YamlKnowledgeBase
+
+        kb = YamlKnowledgeBase(
+            kb_path=kb_path,
+            matcher_config=matcher_config,
+            project_id=project_id,
+        )
+
     _kb_cache[cache_key] = kb
-    logger.debug("KB: создан и закэширован новый экземпляр для %s", kb_path)
+    logger.debug("KB: создан и закэширован новый экземпляр (backend=%s)", kb_backend)
     return kb
