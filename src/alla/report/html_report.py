@@ -74,16 +74,13 @@ def generate_html_report(result: "AnalysisResult", endpoint: str = "") -> str:
 
   <script>
     document.addEventListener("DOMContentLoaded", function() {{
-      marked.setOptions({{
-        breaks: true,
-        gfm: true
-      }});
-      
-      document.querySelectorAll('.markdown-source').forEach(function(el) {{
-        var rendered = el.nextElementSibling;
-        var html = marked.parse(el.value);
-        rendered.innerHTML = DOMPurify.sanitize(html);
-      }});
+      if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {{
+        document.querySelectorAll('.markdown-source').forEach(function(el) {{
+          var rendered = el.nextElementSibling;
+          var html = marked.parse(el.value, {{ breaks: true, gfm: true }});
+          rendered.innerHTML = DOMPurify.sanitize(html);
+        }});
+      }}
     }});
   </script>
 </body>
