@@ -327,12 +327,13 @@ def main() -> None:
         help="DSN подключения: postgresql://user:pass@host:5432/db "
              "(по умолчанию — из ALLURE_KB_POSTGRES_DSN)",
     )
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         "--schema-only",
         action="store_true",
         help="Только создать схему, не загружать данные",
     )
-    parser.add_argument(
+    group.add_argument(
         "--seed-only",
         action="store_true",
         help="Только загрузить данные (схема уже создана)",
