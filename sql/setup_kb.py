@@ -4,11 +4,17 @@
 Использует psycopg (уже входит в alla[postgres]) — psql не нужен.
 
 Использование:
-    python sql/setup_kb.py                              # DSN из ALLURE_KB_POSTGRES_DSN
-    python sql/setup_kb.py postgresql://user:pass@host:5432/db
+    python sql/setup_kb.py                              # DSN из .env или ALLURE_KB_POSTGRES_DSN
+    python sql/setup_kb.py --env-file /path/to/.env    # указать другой .env файл
     python sql/setup_kb.py --seed-only                 # только данные (схема уже есть)
     python sql/setup_kb.py --schema-only               # только схема
     python sql/setup_kb.py --dry-run                   # показать SQL без выполнения
+
+Если пароль содержит спецсимволы (!, $, @ и др.) — не передавайте DSN аргументом,
+это вызовет ошибки bash. Вместо этого укажите DSN в файле .env:
+
+    echo 'ALLURE_KB_POSTGRES_DSN=postgresql://user:p@$$w0rd!@host:5432/db' >> .env
+    python sql/setup_kb.py
 """
 
 from __future__ import annotations
@@ -235,14 +241,50 @@ def _print(msg: str, *, prefix: str = "   ") -> None:
     print(prefix + msg, flush=True)
 
 
+def _load_dotenv(env_file: str = ".env") -> None:
+    """Загрузить переменные из .env файла в os.environ (если ещё не заданы).
+
+    Поддерживает форматы:
+        KEY=value
+        KEY="value with spaces"
+        KEY='value with $pecial ch@rs!'
+        # комментарии
+
+    Уже установленные переменные окружения не перезаписываются.
+    """
+    path = Path(env_file)
+    if not path.exists():
+        return
+    with open(path, encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if not key:
+                continue
+            # Снять обрамляющие кавычки (одинарные или двойные)
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            # Не перезаписывать переменные, уже заданные в окружении
+            if key not in os.environ:
+                os.environ[key] = value
+
+
 def _resolve_dsn(dsn_arg: str | None) -> str:
     dsn = dsn_arg or os.environ.get("ALLURE_KB_POSTGRES_DSN", "")
     if not dsn:
         print(
             "Ошибка: DSN не указан.\n"
-            "  Передайте строку подключения аргументом:\n"
-            "    python sql/setup_kb.py postgresql://user:pass@host:5432/db\n"
-            "  или задайте переменную окружения ALLURE_KB_POSTGRES_DSN.",
+            "  Рекомендуемый способ (избегает проблем со спецсимволами в пароле):\n"
+            "    Добавьте в файл .env строку:\n"
+            "      ALLURE_KB_POSTGRES_DSN=postgresql://user:pass@host:5432/db\n"
+            "    Затем запустите: python sql/setup_kb.py\n"
+            "\n"
+            "  Или укажите другой .env файл:\n"
+            "    python sql/setup_kb.py --env-file /path/to/.env",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -324,8 +366,15 @@ def main() -> None:
     parser.add_argument(
         "dsn",
         nargs="?",
-        help="DSN подключения: postgresql://user:pass@host:5432/db "
-             "(по умолчанию — из ALLURE_KB_POSTGRES_DSN)",
+        help="DSN подключения: postgresql://user:pass@host:5432/db. "
+             "Если пароль содержит спецсимволы — используйте .env файл "
+             "вместо этого аргумента.",
+    )
+    parser.add_argument(
+        "--env-file",
+        default=".env",
+        metavar="PATH",
+        help="Путь к .env файлу с ALLURE_KB_POSTGRES_DSN (по умолчанию: .env)",
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
@@ -344,6 +393,9 @@ def main() -> None:
         help="Показать SQL без выполнения",
     )
     args = parser.parse_args()
+
+    # Загрузить .env до resolve_dsn, чтобы ALLURE_KB_POSTGRES_DSN была доступна
+    _load_dotenv(args.env_file)
 
     # DSN не нужен для --dry-run: подключения к БД не происходит
     dsn = "" if args.dry_run else _resolve_dsn(args.dsn)
