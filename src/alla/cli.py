@@ -24,6 +24,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="ID запуска для анализа",
     )
     parser.add_argument(
+        "--launch-name",
+        dest="launch_name",
+        default=None,
+        help=(
+            "Название запуска (альтернатива позиционному launch_id). "
+            "Инструмент найдёт ID через API: "
+            "GET /api/launch?projectId=X&sort=created_date,DESC. "
+            "ID проекта берётся из --project-id или ALLURE_PROJECT_ID."
+        ),
+    )
+    parser.add_argument(
+        "--project-id",
+        dest="project_id",
+        type=int,
+        default=None,
+        help=(
+            "ID проекта в Allure TestOps (переопределяет ALLURE_PROJECT_ID). "
+            "Используется при поиске запуска по имени (--launch-name)."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default=None,
@@ -81,9 +102,12 @@ async def async_main(args: argparse.Namespace) -> int:
 
     # 3. Определение ID запуска
     launch_id = args.launch_id
-    if launch_id is None:
+    launch_name = getattr(args, "launch_name", None)
+
+    if launch_id is None and not launch_name:
         logger.error(
-            "Не указан launch_id. Передайте его позиционным аргументом: alla <launch_id>"
+            "Не указан launch_id или --launch-name. "
+            "Примеры: alla 12345  или  alla --launch-name 'Прогон тестов'"
         )
         return 2
 
@@ -97,6 +121,15 @@ async def async_main(args: argparse.Namespace) -> int:
 
     try:
         async with AllureTestOpsClient(settings, auth) as client:
+            # Резолв имени запуска в ID через API (если передан --launch-name)
+            if launch_id is None and launch_name:
+                # --project-id имеет приоритет над ALLURE_PROJECT_ID
+                effective_project_id = getattr(args, "project_id", None) or settings.project_id
+                launch_id = await client.find_launch_by_name(
+                    launch_name,
+                    project_id=effective_project_id,
+                )
+
             from alla.orchestrator import analyze_launch
 
             result = await analyze_launch(
