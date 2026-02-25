@@ -101,3 +101,12 @@ class Settings(BaseSettings):
         default=1.0, ge=0.1,
         description="Базовая задержка в секундах для exponential backoff (delay = base * 2^attempt)",
     )
+
+    report_url: str = Field(
+        default="",
+        description="URL HTML-отчёта для прикрепления к запуску в Allure TestOps (ALLURE_REPORT_URL)",
+    )
+    report_link_name: str = Field(
+        default="[Alla] HTML-отчёт запуска автотестов",
+        description="Название ссылки HTML-отчёта в Allure TestOps (ALLURE_REPORT_LINK_NAME)",
+    )
