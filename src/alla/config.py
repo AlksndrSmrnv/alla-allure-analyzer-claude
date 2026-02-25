@@ -69,6 +69,21 @@ class Settings(BaseSettings):
         default=False,
         description="Записывать рекомендации KB обратно в Allure TestOps через комментарии к тест-кейсам",
     )
+    kb_backend: str = Field(
+        default="yaml",
+        description=(
+            "Бэкенд базы знаний: 'yaml' (файловый, по умолчанию) "
+            "или 'postgres' (PostgreSQL). "
+            "При 'postgres' необходимо задать ALLURE_KB_POSTGRES_DSN."
+        ),
+    )
+    kb_postgres_dsn: str = Field(
+        default="",
+        description=(
+            "Строка подключения PostgreSQL для KB-бэкенда 'postgres'. "
+            "Пример: postgresql://user:pass@localhost:5432/alla_kb"
+        ),
+    )
 
     server_host: str = Field(default="0.0.0.0", description="Хост для HTTP-сервера")
     server_port: int = Field(default=8090, ge=1, le=65535, description="Порт для HTTP-сервера")
