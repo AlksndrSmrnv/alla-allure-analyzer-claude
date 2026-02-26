@@ -2,8 +2,9 @@
 
 Уровни (tiers):
   1. Exact substring — нормализованный error_example целиком найден в логе.
-  2. Line match — ≥80% строк error_example найдены в логе (с небольшими отличиями).
+  2. Line match — ≥80% строк error_example найдены в логе (точно или по word-overlap).
   3. TF-IDF cosine similarity — нечёткий поиск (fallback), score ограничен сверху.
+     Если вызван fit(), TF-IDF предобучается на корпусе KB один раз (стабильный IDF).
 """
 
 from __future__ import annotations
@@ -11,12 +12,16 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from alla.knowledge.models import KBEntry, KBMatchResult
 from alla.utils.text_normalization import normalize_text
+
+if TYPE_CHECKING:
+    from scipy.sparse import spmatrix
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +30,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MULTI_WS_RE = re.compile(r"\s+")
+_WORD_RE = re.compile(r"(?u)\b\w\w+\b")
 
 
 def _collapse_whitespace(text: str) -> str:
@@ -65,6 +71,7 @@ class MatcherConfig:
     tier2_score_min: float = 0.7
     tier2_score_max: float = 0.95
     tier2_min_lines: int = 2
+    tier2_fuzzy_word_threshold: float = 0.75  # доля слов строки, найденных в query
 
     # --- Tier 3: TF-IDF (fallback) ---
     tier3_score_cap: float = 0.5
@@ -93,6 +100,59 @@ class TextMatcher:
 
     def __init__(self, config: MatcherConfig | None = None) -> None:
         self._config = config or MatcherConfig()
+        # Pre-trained TF-IDF (заполняется через fit())
+        self._fitted_vectorizer: TfidfVectorizer | None = None
+        self._fitted_example_matrix: spmatrix | None = None
+        self._fitted_title_desc_matrix: spmatrix | None = None
+        self._entry_index: dict[str, int] = {}  # entry.id → строка в матрице
+
+    # ------------------------------------------------------------------
+    # Pre-training
+    # ------------------------------------------------------------------
+
+    def fit(self, entries: list[KBEntry]) -> None:
+        """Предобучить TF-IDF на всём корпусе KB.
+
+        После вызова Tier 3 использует стабильный IDF (не зависящий от query)
+        и быстрый transform() вместо fit_transform() на каждый поиск.
+        Если entries пустые — сбрасывает предобученное состояние.
+
+        Args:
+            entries: Список записей KB для предобучения.
+        """
+        if not entries:
+            self._fitted_vectorizer = None
+            self._fitted_example_matrix = None
+            self._fitted_title_desc_matrix = None
+            self._entry_index = {}
+            return
+
+        cfg = self._config
+        example_docs = [normalize_text(e.error_example) for e in entries]
+        title_desc_docs = [
+            f"{e.title} {e.description}".strip() for e in entries
+        ]
+
+        vectorizer = TfidfVectorizer(
+            max_features=cfg.tfidf_max_features,
+            ngram_range=cfg.tfidf_ngram_range,
+            token_pattern=r"(?u)\b\w\w+\b",
+            lowercase=True,
+        )
+        try:
+            all_matrix = vectorizer.fit_transform(example_docs + title_desc_docs)
+        except ValueError:
+            logger.debug("KB TextMatcher.fit(): TF-IDF fit failed (пустые документы)")
+            return
+
+        n = len(entries)
+        self._fitted_vectorizer = vectorizer
+        self._fitted_example_matrix = all_matrix[:n]
+        self._fitted_title_desc_matrix = all_matrix[n:]
+        self._entry_index = {e.id: i for i, e in enumerate(entries)}
+        logger.debug(
+            "KB TextMatcher.fit(): предобучен на %d записях KB", n,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -277,12 +337,42 @@ class TextMatcher:
     # Tier 2: line match
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _line_soft_matches(
+        line: str,
+        query_collapsed: str,
+        query_words: frozenset[str],
+        word_threshold: float,
+    ) -> bool:
+        """Проверить совпадение строки с query: точно или по word-overlap.
+
+        Сначала пробует точное вхождение. Если не нашло — считает долю слов
+        строки, присутствующих среди слов query (whole-word, case-insensitive).
+        Строки короче 2 слов не получают fuzzy-совпадение.
+
+        Args:
+            line: Строка из KB error_example (whitespace collapsed, нормализована).
+            query_collapsed: Весь query (whitespace collapsed, нормализован).
+            query_words: Множество слов query (pre-computed, lower-case).
+                Передаётся снаружи, чтобы не пересоздавать на каждой строке.
+            word_threshold: Минимальная доля слов для fuzzy-совпадения.
+        """
+        if line in query_collapsed:
+            return True
+        words = _WORD_RE.findall(line)
+        if len(words) < 2:
+            return False
+        matched = sum(1 for w in words if w.lower() in query_words)
+        return matched / len(words) >= word_threshold
+
     def _tier2_line_match(
         self,
         query_collapsed: str,
         example_normalized: str,
     ) -> float | None:
         """Построчное сопоставление: доля строк error_example, найденных в query.
+
+        Каждая строка проверяется точно или по word-overlap (fuzzy).
 
         Args:
             query_collapsed: normalize_text() + _collapse_whitespace() от query.
@@ -304,9 +394,14 @@ class TextMatcher:
         if len(example_lines) < cfg.tier2_min_lines:
             return None
 
+        # Слова query вычисляются один раз для всех строк KB-примера
+        query_words = frozenset(w.lower() for w in _WORD_RE.findall(query_collapsed))
+
         matched_count = sum(
             1 for line in example_lines
-            if line in query_collapsed
+            if self._line_soft_matches(
+                line, query_collapsed, query_words, cfg.tier2_fuzzy_word_threshold,
+            )
         )
 
         fraction = matched_count / len(example_lines)
@@ -339,11 +434,25 @@ class TextMatcher:
     ) -> list[tuple[int, float, float, float]]:
         """Нечёткий TF-IDF поиск с ограничением score сверху.
 
+        Если доступен предобученный векторайзер (после fit()), использует
+        стабильный IDF корпуса KB и быстрый transform(). Иначе — fit_transform
+        на лету (backwards-compatible fallback).
+
         Returns:
             Список (local_index, capped_score, example_sim, title_desc_sim)
             для записей выше min_score.
         """
         cfg = self._config
+
+        if self._fitted_vectorizer is not None:
+            pretrained_result = self._tier3_tfidf_pretrained(
+                query_normalized, entries, query_label=query_label,
+            )
+            if pretrained_result is not None:
+                return pretrained_result
+            # None означает ошибку transform → fallback на fit_transform
+
+        # Fallback: fit_transform на каждый запрос (старое поведение)
         n = len(entries)
         all_docs = [query_normalized] + example_docs + title_desc_docs
 
@@ -380,5 +489,58 @@ class TextMatcher:
                 continue
 
             hits.append((i, capped_score, ex_sim, td_sim))
+
+        return hits
+
+    def _tier3_tfidf_pretrained(
+        self,
+        query_normalized: str,
+        entries: list[KBEntry],
+        *,
+        query_label: str | None = None,
+    ) -> list[tuple[int, float, float, float]] | None:
+        """Tier 3 через предобученный TF-IDF (стабильный IDF корпуса KB).
+
+        Использует только transform(query), без повторного fit.
+        Обрабатывает только записи, чьи id есть в _entry_index
+        (то есть те, что были в KB при вызове fit()).
+
+        Returns:
+            Список hits при успехе (может быть пустым — нет совпадений),
+            или None при ошибке transform (сигнал для fallback на fit_transform).
+        """
+        cfg = self._config
+        assert self._fitted_vectorizer is not None
+
+        try:
+            query_vec = self._fitted_vectorizer.transform([query_normalized])
+        except Exception:
+            logger.debug(
+                "KB [%s]: pre-trained transform failed, falling back to fit_transform",
+                query_label or "?",
+            )
+            return None
+
+        all_example_sims = cosine_similarity(
+            query_vec, self._fitted_example_matrix,
+        )[0]
+        all_td_sims = cosine_similarity(
+            query_vec, self._fitted_title_desc_matrix,
+        )[0]
+
+        hits: list[tuple[int, float, float, float]] = []
+        for local_i, entry in enumerate(entries):
+            matrix_i = self._entry_index.get(entry.id)
+            if matrix_i is None:
+                continue
+            ex_sim = float(max(0.0, all_example_sims[matrix_i]))
+            td_sim = float(max(0.0, all_td_sims[matrix_i]))
+            raw_score = cfg.example_weight * ex_sim + cfg.title_desc_weight * td_sim
+            capped_score = min(raw_score, cfg.tier3_score_cap)
+
+            if capped_score < cfg.min_score:
+                continue
+
+            hits.append((local_i, capped_score, ex_sim, td_sim))
 
         return hits

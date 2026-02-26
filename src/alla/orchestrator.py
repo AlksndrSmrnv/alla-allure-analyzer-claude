@@ -138,46 +138,67 @@ async def analyze_launch(
 
         for cluster in clustering_report.clusters:
             try:
-                error_text, message_len, trace_len, log_chars, log_test_ids = (
-                    _build_kb_query_text(
-                        cluster, test_by_id,
-                        include_trace=settings.kb_include_trace,
-                    )
+                report_text, message_len, trace_len = _build_kb_report_text(
+                    cluster, test_by_id,
+                    include_trace=settings.kb_include_trace,
                 )
-                if error_text.strip():
-                    # Fingerprint из полного error_text для feedback
+                log_text, log_chars, log_test_ids = _build_kb_log_text(
+                    cluster, test_by_id,
+                )
+
+                if report_text.strip():
+                    # Fingerprint из полного report_text для feedback
                     from alla.utils.fingerprint import compute_fingerprint
 
-                    fingerprint = compute_fingerprint(error_text)
+                    fingerprint = compute_fingerprint(report_text)
                     error_fingerprints[cluster.cluster_id] = fingerprint
 
-                    if logger.isEnabledFor(logging.DEBUG):
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "KB query [%s]: rep_test_id=%s, "
+                        "report_len=%d (msg=%d, trace=%d), log_len=%d, log_tests=%s",
+                        cluster.cluster_id,
+                        cluster.representative_test_id,
+                        len(report_text),
+                        message_len,
+                        trace_len,
+                        log_chars,
+                        log_test_ids,
+                    )
+                    if report_text.strip():
                         logger.debug(
-                            "KB query [%s]: rep_test_id=%s, message_len=%d, "
-                            "trace_len=%d, log_chars=%d, log_tests=%s, total_len=%d, "
-                            "fingerprint=%.16s…",
+                            "KB query [%s]:report head='%s'",
                             cluster.cluster_id,
-                            cluster.representative_test_id,
-                            message_len,
-                            trace_len,
-                            log_chars,
-                            log_test_ids,
-                            len(error_text),
-                            fingerprint,
+                            _preview_head(report_text, _KB_QUERY_LOG_PREVIEW_CHARS),
                         )
+                    if log_text.strip():
                         logger.debug(
-                            "KB query [%s] preview: head='%s' tail='%s'",
+                            "KB query [%s]:log head='%s'",
                             cluster.cluster_id,
-                            _preview_head(error_text, _KB_QUERY_LOG_PREVIEW_CHARS),
-                            _preview_tail(error_text, _KB_QUERY_LOG_PREVIEW_CHARS),
+                            _preview_head(log_text, _KB_QUERY_LOG_PREVIEW_CHARS),
                         )
 
-                    matches = kb.search_by_error(
-                        error_text,
-                        query_label=cluster.cluster_id,
+                matches_report = (
+                    kb.search_by_error(
+                        report_text,
+                        query_label=f"{cluster.cluster_id}:report",
                     )
-                    if matches:
-                        kb_results[cluster.cluster_id] = matches
+                    if report_text.strip()
+                    else []
+                )
+                matches_log = (
+                    kb.search_by_error(
+                        log_text,
+                        query_label=f"{cluster.cluster_id}:log",
+                    )
+                    if log_text.strip()
+                    else []
+                )
+                matches = _merge_kb_results(
+                    matches_report, matches_log, settings.kb_max_results,
+                )
+                if matches:
+                    kb_results[cluster.cluster_id] = matches
             except Exception as exc:
                 logger.warning(
                     "Ошибка KB-поиска для кластера %s: %s",
@@ -329,19 +350,24 @@ async def analyze_launch(
     )
 
 
-def _build_kb_query_text(
+def _build_kb_report_text(
     cluster: FailureCluster,
     test_by_id: dict[int, FailedTestSummary],
     *,
     include_trace: bool = True,
-) -> tuple[str, int, int, int, list[int]]:
-    """Собрать текст запроса для KB из message/trace и ERROR-логов кластера.
+) -> tuple[str, int, int]:
+    """Собрать текст запроса для KB из message и trace (только данные Allure-отчёта).
+
+    Логи не включаются — они ищутся отдельно через _collect_cluster_log_snippets.
 
     Args:
         cluster: Кластер падений.
         test_by_id: Словарь test_result_id → FailedTestSummary.
         include_trace: Включать ли Allure-trace (stack trace) в query.
             Управляется через ``ALLURE_KB_INCLUDE_TRACE``.
+
+    Returns:
+        (report_text, message_len, trace_len)
     """
     representative = (
         test_by_id.get(cluster.representative_test_id)
@@ -362,22 +388,48 @@ def _build_kb_query_text(
             else cluster.example_trace_snippet
         ) or ""
 
+    parts = [part for part in (message, trace) if part]
+    return "\n".join(parts), len(message), len(trace)
+
+
+def _build_kb_log_text(
+    cluster: FailureCluster,
+    test_by_id: dict[int, FailedTestSummary],
+) -> tuple[str, int, list[int]]:
+    """Собрать текст для KB-поиска из ERROR-логов кластера.
+
+    Returns:
+        (log_text, log_chars, log_test_ids)
+    """
     log_sources = _collect_cluster_log_snippets(cluster, test_by_id)
     log_blocks = [
         f"[LOG test_result_id={test_id}]\n{snippet}"
         for test_id, snippet in log_sources
     ]
     log_text = "\n\n".join(log_blocks)
-
-    parts = [part for part in (message, trace, log_text) if part]
-    query_text = "\n".join(parts)
     return (
-        query_text,
-        len(message),
-        len(trace),
+        log_text,
         len(log_text),
         [test_id for test_id, _ in log_sources],
     )
+
+
+def _merge_kb_results(
+    results_a: list[KBMatchResult],
+    results_b: list[KBMatchResult],
+    max_results: int,
+) -> list[KBMatchResult]:
+    """Объединить два списка KB-результатов, оставив max score для каждой записи.
+
+    Для каждого entry.id берётся наилучший score из двух поисков.
+    Результат отсортирован по score desc и ограничен max_results.
+    """
+    merged: dict[str, KBMatchResult] = {}
+    for result in results_a + results_b:
+        entry_id = result.entry.id
+        if entry_id not in merged or result.score > merged[entry_id].score:
+            merged[entry_id] = result
+    return sorted(merged.values(), key=lambda r: -r.score)[:max_results]
 
 
 def _collect_cluster_log_snippets(
