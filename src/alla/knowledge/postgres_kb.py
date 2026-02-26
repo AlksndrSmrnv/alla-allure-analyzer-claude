@@ -8,10 +8,16 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+
+import psycopg  # psycopg[binary] — обязательная зависимость (см. pyproject.toml)
 
 from alla.exceptions import KnowledgeBaseError
 from alla.knowledge.matcher import MatcherConfig, TextMatcher
 from alla.knowledge.models import KBEntry, KBMatchResult, RootCauseCategory
+
+if TYPE_CHECKING:
+    from alla.knowledge.postgres_feedback import PostgresFeedbackStore
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +37,7 @@ class PostgresKnowledgeBase:
         *,
         matcher_config: MatcherConfig | None = None,
         project_id: int | None = None,
+        feedback_store: PostgresFeedbackStore | None = None,
     ) -> None:
         """
         Args:
@@ -40,10 +47,13 @@ class PostgresKnowledgeBase:
             project_id: ID проекта Allure TestOps. Если задан, загружаются
                         глобальные записи (project_id IS NULL) + записи этого
                         проекта (project_id = N). Если None — только глобальные.
+            feedback_store: Хранилище обратной связи. Если задан,
+                        search_by_error() учитывает exclusions/boosts из feedback.
         """
         self._dsn = dsn
         self._project_id = project_id
         self._matcher = TextMatcher(config=matcher_config)
+        self._feedback_store = feedback_store
         self._entries: list[KBEntry] = []
         self._entries_by_id: dict[str, KBEntry] = {}
         self._load()
@@ -52,19 +62,11 @@ class PostgresKnowledgeBase:
         """Загрузить записи из PostgreSQL в память.
 
         Raises:
-            KnowledgeBaseError: При недоступности psycopg, ошибке подключения
-                или ошибке запроса.
+            KnowledgeBaseError: При ошибке подключения или ошибке запроса.
         """
-        try:
-            import psycopg  # deferred: psycopg[binary] — опциональная зависимость
-        except ImportError as exc:
-            raise KnowledgeBaseError(
-                "psycopg не установлен. Установите: pip install 'alla[postgres]'"
-            ) from exc
-
         if self._project_id is not None:
             query = """
-                SELECT id, title, description, error_example,
+                SELECT entry_id, id, title, description, error_example,
                        category, resolution_steps
                 FROM alla.kb_entry
                 WHERE project_id IS NULL OR project_id = %s
@@ -73,7 +75,7 @@ class PostgresKnowledgeBase:
             params: tuple = (self._project_id,)
         else:
             query = """
-                SELECT id, title, description, error_example,
+                SELECT entry_id, id, title, description, error_example,
                        category, resolution_steps
                 FROM alla.kb_entry
                 WHERE project_id IS NULL
@@ -92,20 +94,21 @@ class PostgresKnowledgeBase:
             ) from exc
 
         for row in rows:
-            entry_id, title, description, error_example, category_raw, resolution_steps = row
+            pg_entry_id, slug, title, description, error_example, category_raw, resolution_steps = row
             try:
                 entry = KBEntry(
-                    id=entry_id,
+                    id=slug,
                     title=title,
                     description=description or "",
                     error_example=error_example,
                     category=RootCauseCategory(category_raw),
                     resolution_steps=list(resolution_steps or []),
+                    entry_id=pg_entry_id,
                 )
             except Exception as exc:
                 logger.warning(
                     "PostgresKB: ошибка валидации записи id=%r: %s. Пропущена.",
-                    entry_id, exc,
+                    slug, exc,
                 )
                 continue
 
@@ -121,7 +124,7 @@ class PostgresKnowledgeBase:
 
             self._entries.append(entry)
             self._entries_by_id[entry.id] = entry
-            logger.debug("PostgresKB: загружена запись id=%r", entry.id)
+            logger.debug("PostgresKB: загружена запись id=%r (entry_id=%d)", entry.id, pg_entry_id)
 
         logger.info(
             "PostgresKB: загружено %d записей (project_id=%s)",
@@ -139,11 +142,33 @@ class PostgresKnowledgeBase:
         *,
         query_label: str | None = None,
     ) -> list[KBMatchResult]:
-        """Найти записи KB, релевантные тексту ошибки."""
+        """Найти записи KB, релевантные тексту ошибки.
+
+        Если feedback_store задан, вычисляет fingerprint error_text'а
+        и запрашивает exclusions (dislike) / boosts (like) из БД.
+        """
+        exclusions: set[int] | None = None
+        boosts: set[int] | None = None
+
+        if self._feedback_store is not None:
+            from alla.utils.fingerprint import compute_fingerprint
+
+            fp = compute_fingerprint(error_text)
+            exclusions = self._feedback_store.get_exclusions(fp)
+            boosts = self._feedback_store.get_boosts(fp)
+            if exclusions or boosts:
+                logger.debug(
+                    "PostgresKB: feedback for fingerprint %.16s…: "
+                    "exclusions=%s, boosts=%s",
+                    fp, exclusions, boosts,
+                )
+
         return self._matcher.match(
             error_text,
             self._entries,
             query_label=query_label,
+            exclusions=exclusions,
+            boosts=boosts,
         )
 
     def get_all_entries(self) -> list[KBEntry]:

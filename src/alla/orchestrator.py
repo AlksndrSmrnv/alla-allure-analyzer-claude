@@ -37,6 +37,7 @@ class AnalysisResult:
     llm_result: LLMAnalysisResult | None = None
     llm_push_result: LLMPushResult | None = None
     llm_launch_summary: LLMLaunchSummary | None = None
+    error_fingerprints: dict[str, str] = field(default_factory=dict)
 
 
 async def analyze_launch(
@@ -96,6 +97,7 @@ async def analyze_launch(
     clustering_report = None
     kb_results: dict[str, list[KBMatchResult]] = {}
     kb_push_result = None
+    error_fingerprints: dict[str, str] = {}
 
     # 2. Кластеризация
     if settings.clustering_enabled and report.failed_tests:
@@ -128,6 +130,7 @@ async def analyze_launch(
             report.project_id,
             kb_backend=settings.kb_backend,
             kb_postgres_dsn=settings.kb_postgres_dsn,
+            kb_feedback_enabled=settings.kb_feedback_enabled,
         )
 
         # Индекс test_result_id → FailedTestSummary для быстрого lookup
@@ -142,10 +145,17 @@ async def analyze_launch(
                     )
                 )
                 if error_text.strip():
+                    # Fingerprint из полного error_text для feedback
+                    from alla.utils.fingerprint import compute_fingerprint
+
+                    fingerprint = compute_fingerprint(error_text)
+                    error_fingerprints[cluster.cluster_id] = fingerprint
+
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
                             "KB query [%s]: rep_test_id=%s, message_len=%d, "
-                            "trace_len=%d, log_chars=%d, log_tests=%s, total_len=%d",
+                            "trace_len=%d, log_chars=%d, log_tests=%s, total_len=%d, "
+                            "fingerprint=%.16s…",
                             cluster.cluster_id,
                             cluster.representative_test_id,
                             message_len,
@@ -153,6 +163,7 @@ async def analyze_launch(
                             log_chars,
                             log_test_ids,
                             len(error_text),
+                            fingerprint,
                         )
                         logger.debug(
                             "KB query [%s] preview: head='%s' tail='%s'",
@@ -314,6 +325,7 @@ async def analyze_launch(
         llm_result=llm_result,
         llm_push_result=llm_push_result,
         llm_launch_summary=llm_launch_summary,
+        error_fingerprints=error_fingerprints,
     )
 
 
@@ -421,6 +433,7 @@ def _get_or_create_kb(
     *,
     kb_backend: str = "yaml",
     kb_postgres_dsn: str = "",
+    kb_feedback_enabled: bool = False,
 ) -> object:
     """Вернуть кэшированный экземпляр KB или создать новый.
 
@@ -428,8 +441,9 @@ def _get_or_create_kb(
     - 'yaml'     → YamlKnowledgeBase (файловый, по умолчанию)
     - 'postgres' → PostgresKnowledgeBase (загружает из PostgreSQL при init)
 
-    Кэш по ключу (backend, location, min_score, max_results, project_id).
-    Предотвращает повторные подключения к БД / чтение YAML на каждый запрос сервера.
+    Кэш по ключу (backend, location, min_score, max_results, project_id,
+    feedback_enabled). Предотвращает повторные подключения к БД / чтение
+    YAML на каждый запрос сервера.
     """
     from alla.knowledge.matcher import MatcherConfig
 
@@ -443,6 +457,7 @@ def _get_or_create_kb(
         cfg.min_score if cfg else 0.15,
         cfg.max_results if cfg else 5,
         project_id,
+        kb_feedback_enabled,
     )
 
     if cache_key in _kb_cache:
@@ -457,10 +472,17 @@ def _get_or_create_kb(
             raise ConfigurationError(
                 "kb_backend='postgres' требует ALLURE_KB_POSTGRES_DSN"
             )
+
+        feedback_store = None
+        if kb_feedback_enabled:
+            from alla.knowledge.postgres_feedback import PostgresFeedbackStore
+            feedback_store = PostgresFeedbackStore(dsn=kb_postgres_dsn)
+
         kb = PostgresKnowledgeBase(
             dsn=kb_postgres_dsn,
             matcher_config=matcher_config,
             project_id=project_id,
+            feedback_store=feedback_store,
         )
     else:
         from alla.knowledge.yaml_kb import YamlKnowledgeBase

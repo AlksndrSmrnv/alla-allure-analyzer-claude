@@ -73,6 +73,9 @@ class MatcherConfig:
     example_weight: float = 0.8
     title_desc_weight: float = 0.2
 
+    # --- Feedback boost ---
+    boost_factor: float = 1.25
+
 
 # ---------------------------------------------------------------------------
 # TextMatcher
@@ -101,6 +104,8 @@ class TextMatcher:
         entries: list[KBEntry],
         *,
         query_label: str | None = None,
+        exclusions: set[int] | None = None,
+        boosts: set[int] | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
 
@@ -108,6 +113,8 @@ class TextMatcher:
             error_text: Объединённый текст ошибки (message + trace + logs).
             entries: Записи KB для сопоставления.
             query_label: Метка для отладочных логов (cluster_id).
+            exclusions: entry_id записей с dislike — полностью исключаются.
+            boosts: entry_id записей с like — score умножается на boost_factor.
 
         Returns:
             Список KBMatchResult, отсортированный по score desc.
@@ -138,6 +145,19 @@ class TextMatcher:
 
         # --- Tier 1 + Tier 2: per-entry ---
         for i, entry in enumerate(entries):
+            # Feedback exclusion: disliked entry для этого fingerprint
+            if (
+                exclusions
+                and entry.entry_id is not None
+                and entry.entry_id in exclusions
+            ):
+                logger.debug(
+                    "KB excluded%s: '%s' (entry_id=%d) — disliked",
+                    f" [{query_label}]" if query_label else "",
+                    entry.title, entry.entry_id,
+                )
+                continue
+
             # Tier 1: exact substring
             t1_score = self._tier1_exact_substring(
                 query_collapsed, example_collapsed[i],
@@ -205,6 +225,16 @@ class TextMatcher:
                     f" [{query_label}]" if query_label else "",
                     entry.title, entry.id, capped_score, ex_sim, td_sim,
                 )
+
+        # --- Feedback boosts: увеличить score liked записей ---
+        if boosts:
+            for r in results:
+                if r.entry.entry_id is not None and r.entry.entry_id in boosts:
+                    original = r.score
+                    r.score = round(min(1.0, r.score * cfg.boost_factor), 4)
+                    r.matched_on.append(
+                        f"Boosted: {original:.2f} → {r.score:.2f} (liked)"
+                    )
 
         # --- Сортировка + лимит ---
         results.sort(key=lambda r: -r.score)

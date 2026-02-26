@@ -19,7 +19,11 @@ if TYPE_CHECKING:
 # Публичный API
 # ---------------------------------------------------------------------------
 
-def generate_html_report(result: "AnalysisResult", endpoint: str = "") -> str:
+def generate_html_report(
+    result: "AnalysisResult",
+    endpoint: str = "",
+    feedback_api_url: str = "",
+) -> str:
     """Сгенерировать self-contained HTML-отчёт из AnalysisResult."""
     from alla import __version__
 
@@ -28,6 +32,7 @@ def generate_html_report(result: "AnalysisResult", endpoint: str = "") -> str:
     kb_results = result.kb_results or {}
     llm_result = result.llm_result
     llm_summary = result.llm_launch_summary
+    error_fingerprints = result.error_fingerprints or {}
 
     generated_at = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -38,8 +43,18 @@ def generate_html_report(result: "AnalysisResult", endpoint: str = "") -> str:
     stats_html = _render_stats(triage, clustering)
     summary_html = _render_launch_summary(llm_summary)
     clusters_html = _render_clusters(
-        clustering, kb_results, llm_result, triage.failed_tests
+        clustering,
+        kb_results,
+        llm_result,
+        triage.failed_tests,
+        feedback_api_url=feedback_api_url,
+        error_fingerprints=error_fingerprints,
+        launch_id=triage.launch_id,
+        project_id=triage.project_id,
     )
+
+    feedback_css = _FEEDBACK_CSS if feedback_api_url else ""
+    feedback_js = _build_feedback_js(feedback_api_url) if feedback_api_url else ""
 
     return f"""<!DOCTYPE html>
 <html lang="ru">
@@ -51,6 +66,7 @@ def generate_html_report(result: "AnalysisResult", endpoint: str = "") -> str:
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
   <style>
 {_CSS}
+{feedback_css}
   </style>
 </head>
 <body>
@@ -83,6 +99,7 @@ def generate_html_report(result: "AnalysisResult", endpoint: str = "") -> str:
       }}
     }});
   </script>
+{feedback_js}
 </body>
 </html>"""
 
@@ -134,6 +151,11 @@ def _render_clusters(
     kb_results: dict[str, list["KBMatchResult"]],
     llm_result: "LLMAnalysisResult | None",
     failed_tests: "list[FailedTestSummary]",
+    *,
+    feedback_api_url: str = "",
+    error_fingerprints: dict[str, str] | None = None,
+    launch_id: int = 0,
+    project_id: int | None = None,
 ) -> str:
     if not clustering:
         return ""
@@ -155,8 +177,16 @@ def _render_clusters(
         f"из {clustering.total_failures} падений)"
     )
 
+    fp_map = error_fingerprints or {}
+
     body = "".join(
-        _render_cluster(i, cluster, kb_results, llm_result, test_by_id)
+        _render_cluster(
+            i, cluster, kb_results, llm_result, test_by_id,
+            feedback_api_url=feedback_api_url,
+            error_fingerprint=fp_map.get(cluster.cluster_id, ""),
+            launch_id=launch_id,
+            project_id=project_id,
+        )
         for i, cluster in enumerate(clustering.clusters, 1)
     )
 
@@ -174,6 +204,11 @@ def _render_cluster(
     kb_results: dict[str, list["KBMatchResult"]],
     llm_result: "LLMAnalysisResult | None",
     test_by_id: "dict[int, FailedTestSummary]",
+    *,
+    feedback_api_url: str = "",
+    error_fingerprint: str = "",
+    launch_id: int = 0,
+    project_id: int | None = None,
 ) -> str:
     kb_matches = kb_results.get(cluster.cluster_id, [])
 
@@ -213,12 +248,49 @@ def _render_cluster(
     kb_html = ""
     if kb_matches:
         entries_html = "".join(
-            _render_kb_entry(m) for m in kb_matches
+            _render_kb_entry(
+                m,
+                error_fingerprint=error_fingerprint,
+                feedback_api_url=feedback_api_url,
+                launch_id=launch_id,
+                cluster_id=cluster.cluster_id,
+            )
+            for m in kb_matches
         )
         kb_html = (
             '<div class="block">'
             '<div class="block-title">База знаний</div>'
             f'<div class="kb-matches">{entries_html}</div>'
+            "</div>"
+        )
+
+    # --- create KB entry form ---
+    create_kb_html = ""
+    if feedback_api_url:
+        prefill_error = _e(cluster.example_message or "")
+        pid = _e(str(project_id)) if project_id is not None else ""
+        create_kb_html = (
+            '<div class="block">'
+            '<button class="create-kb-toggle" '
+            'onclick="this.nextElementSibling.classList.toggle(\'hidden\')">'
+            '+ Создать запись в базу знаний</button>'
+            f'<form class="create-kb-form hidden" data-api-url="{_e(feedback_api_url)}">'
+            '<label>Slug ID:<input name="id" required pattern="[a-z0-9_]+" placeholder="my_error_slug"></label>'
+            '<label>Заголовок:<input name="title" required placeholder="Описание проблемы"></label>'
+            '<label>Категория:<select name="category">'
+            '<option value="test">test</option>'
+            '<option value="service">service</option>'
+            '<option value="env">env</option>'
+            '<option value="data">data</option>'
+            '</select></label>'
+            f'<label>Пример ошибки:<textarea name="error_example" rows="6">{prefill_error}</textarea></label>'
+            '<label>Описание:<textarea name="description" rows="3" placeholder="Подробное описание"></textarea></label>'
+            '<label>Шаги по устранению (по одному на строку):'
+            '<textarea name="resolution_steps" rows="3" placeholder="Шаг 1&#10;Шаг 2"></textarea></label>'
+            f'<input type="hidden" name="project_id" value="{pid}">'
+            '<button type="submit" class="create-kb-submit">Создать запись</button>'
+            '<span class="create-kb-status"></span>'
+            '</form>'
             "</div>"
         )
 
@@ -253,17 +325,39 @@ def _render_cluster(
         f'<span class="cluster-count">{cluster.member_count} тест(ов)</span>'
         "</div>"
         '<div class="cluster-body">'
-        f"{llm_html}{error_html}{kb_html}{tests_html}"
+        f"{llm_html}{error_html}{kb_html}{create_kb_html}{tests_html}"
         "</div>"
         "</div>"
     )
 
 
-def _render_kb_entry(m: "KBMatchResult") -> str:
+def _render_kb_entry(
+    m: "KBMatchResult",
+    *,
+    error_fingerprint: str = "",
+    feedback_api_url: str = "",
+    launch_id: int = 0,
+    cluster_id: str = "",
+) -> str:
     steps_html = ""
     if m.entry.resolution_steps:
         items = "".join(f"<li>{_e(s)}</li>" for s in m.entry.resolution_steps)
         steps_html = f'<ul class="kb-steps">{items}</ul>'
+
+    feedback_html = ""
+    if feedback_api_url and error_fingerprint:
+        entry_id = _e(str(m.entry.entry_id)) if m.entry.entry_id is not None else _e(m.entry.id)
+        feedback_html = (
+            f'<div class="kb-feedback" '
+            f'data-entry-id="{entry_id}" '
+            f'data-fingerprint="{_e(error_fingerprint)}" '
+            f'data-launch-id="{_e(str(launch_id))}" '
+            f'data-cluster-id="{_e(cluster_id)}">'
+            '<button class="fb-btn fb-like" title="Полезное совпадение">&#x2713; Полезно</button>'
+            '<button class="fb-btn fb-dislike" title="Неверное совпадение">&#x2717; Не то</button>'
+            '<span class="fb-status"></span>'
+            "</div>"
+        )
 
     return (
         '<div class="kb-entry">'
@@ -273,6 +367,7 @@ def _render_kb_entry(m: "KBMatchResult") -> str:
         f'<span class="kb-category">{_e(m.entry.category.value)}</span>'
         "</div>"
         f"{steps_html}"
+        f"{feedback_html}"
         "</div>"
     )
 
@@ -702,3 +797,158 @@ _CSS = """
       .cluster-label { min-width: 100%; }
     }
 """
+
+# ---------------------------------------------------------------------------
+# Feedback CSS (appended only when feedback_api_url is provided)
+# ---------------------------------------------------------------------------
+
+_FEEDBACK_CSS = """
+    /* ---- KB Feedback Buttons ---- */
+    .kb-feedback{display:flex;align-items:center;gap:.5rem;margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--border)}
+    .fb-btn{display:inline-flex;align-items:center;gap:.25rem;padding:.375rem .75rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);cursor:pointer;font-size:.8125rem;color:var(--text-muted);transition:all .2s}
+    .fb-btn:hover{border-color:var(--primary);color:var(--primary)}
+    .fb-btn.fb-active.fb-like{border-color:var(--success);color:var(--success);background:#f0fdf4}
+    .fb-btn.fb-active.fb-dislike{border-color:var(--danger);color:var(--danger);background:#fef2f2}
+    .fb-status{font-size:.75rem;color:var(--text-muted)}
+    .fb-status-ok{color:var(--success)}
+    .fb-status-error{color:var(--danger)}
+
+    /* ---- Create KB Entry Form ---- */
+    .create-kb-toggle{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.5rem 1rem;cursor:pointer;color:var(--text-muted);font-size:.875rem;width:100%;text-align:left;transition:all .2s}
+    .create-kb-toggle:hover{border-color:var(--primary);color:var(--primary)}
+    .create-kb-form{display:flex;flex-direction:column;gap:.75rem;padding:1rem;border:1px solid var(--border);border-radius:var(--radius-sm);margin-top:.5rem}
+    .create-kb-form.hidden{display:none}
+    .create-kb-form label{display:flex;flex-direction:column;gap:.25rem;font-size:.8125rem;font-weight:600;color:var(--text-muted)}
+    .create-kb-form input,.create-kb-form textarea,.create-kb-form select{font-family:inherit;font-size:.875rem;padding:.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg)}
+    .create-kb-submit{align-self:flex-start;padding:.5rem 1.5rem;background:var(--primary);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:.875rem}
+    .create-kb-submit:hover{opacity:.9}
+    .create-kb-submit:disabled{opacity:.5;cursor:not-allowed}
+    .create-kb-ok{color:var(--success);font-size:.875rem}
+    .create-kb-error{color:var(--danger);font-size:.875rem}
+"""
+
+
+# ---------------------------------------------------------------------------
+# Feedback JavaScript builder
+# ---------------------------------------------------------------------------
+
+def _build_feedback_js(feedback_api_url: str) -> str:
+    """Return a <script> block for feedback interactions.
+
+    Only called when *feedback_api_url* is non-empty.
+    """
+    safe_url = _html.escape(feedback_api_url, quote=True)
+    # Double-brace {{ / }} is needed because the returned string is NOT
+    # interpolated by an f-string in the caller — it's already final HTML.
+    return (
+        "<script>\n"
+        "(function() {\n"
+        '  var FEEDBACK_API_URL = "' + safe_url + '";\n'
+        "  if (!FEEDBACK_API_URL) return;\n"
+        "\n"
+        "  // --- Like / Dislike ---\n"
+        "  function sendFeedback(el, isLike) {\n"
+        "    var wrap = el.closest('.kb-feedback');\n"
+        "    var status = wrap.querySelector('.fb-status');\n"
+        "    var body = JSON.stringify({\n"
+        "      kb_entry_id: parseInt(wrap.dataset.entryId, 10),\n"
+        "      error_fingerprint: wrap.dataset.fingerprint,\n"
+        "      launch_id: parseInt(wrap.dataset.launchId, 10) || null,\n"
+        "      cluster_id: wrap.dataset.clusterId || null,\n"
+        "      vote: isLike ? 'like' : 'dislike'\n"
+        "    });\n"
+        "    status.textContent = '...';\n"
+        "    status.className = 'fb-status';\n"
+        "    fetch(FEEDBACK_API_URL + '/api/v1/kb/feedback', {\n"
+        "      method: 'POST',\n"
+        "      headers: {'Content-Type': 'application/json'},\n"
+        "      body: body\n"
+        "    }).then(function(r) {\n"
+        "      if (!r.ok) throw new Error(r.status);\n"
+        "      return r.json();\n"
+        "    }).then(function() {\n"
+        "      wrap.querySelectorAll('.fb-btn').forEach(function(b) { b.classList.remove('fb-active'); });\n"
+        "      el.classList.add('fb-active');\n"
+        "      status.textContent = 'Saved';\n"
+        "      status.className = 'fb-status fb-status-ok';\n"
+        "    }).catch(function(err) {\n"
+        "      status.textContent = 'Error: ' + err.message;\n"
+        "      status.className = 'fb-status fb-status-error';\n"
+        "    });\n"
+        "  }\n"
+        "\n"
+        "  document.addEventListener('click', function(e) {\n"
+        "    var btn = e.target.closest('.fb-like');\n"
+        "    if (btn) { sendFeedback(btn, true); return; }\n"
+        "    btn = e.target.closest('.fb-dislike');\n"
+        "    if (btn) { sendFeedback(btn, false); return; }\n"
+        "  });\n"
+        "\n"
+        "  // --- Create KB Entry ---\n"
+        "  document.addEventListener('submit', function(e) {\n"
+        "    var form = e.target.closest('.create-kb-form');\n"
+        "    if (!form) return;\n"
+        "    e.preventDefault();\n"
+        "    var submitBtn = form.querySelector('.create-kb-submit');\n"
+        "    var status = form.querySelector('.create-kb-status');\n"
+        "    submitBtn.disabled = true;\n"
+        "    status.textContent = '...';\n"
+        "    status.className = 'create-kb-status';\n"
+        "    var steps = (form.elements.resolution_steps.value || '').split('\\n').filter(function(s) { return s.trim(); });\n"
+        "    var body = JSON.stringify({\n"
+        "      id: form.elements.id.value,\n"
+        "      title: form.elements.title.value,\n"
+        "      category: form.elements.category.value,\n"
+        "      error_example: form.elements.error_example.value,\n"
+        "      description: form.elements.description.value,\n"
+        "      resolution_steps: steps,\n"
+        "      project_id: parseInt(form.elements.project_id.value, 10) || null\n"
+        "    });\n"
+        "    var apiUrl = form.dataset.apiUrl || FEEDBACK_API_URL;\n"
+        "    fetch(apiUrl + '/api/v1/kb/entries', {\n"
+        "      method: 'POST',\n"
+        "      headers: {'Content-Type': 'application/json'},\n"
+        "      body: body\n"
+        "    }).then(function(r) {\n"
+        "      if (!r.ok) throw new Error(r.status);\n"
+        "      return r.json();\n"
+        "    }).then(function() {\n"
+        "      status.textContent = 'Создано!';\n"
+        "      status.className = 'create-kb-status create-kb-ok';\n"
+        "      submitBtn.disabled = true;\n"
+        "    }).catch(function(err) {\n"
+        "      status.textContent = 'Error: ' + err.message;\n"
+        "      status.className = 'create-kb-status create-kb-error';\n"
+        "      submitBtn.disabled = false;\n"
+        "    });\n"
+        "  });\n"
+        "\n"
+        "  // --- Load existing votes on page load ---\n"
+        "  document.addEventListener('DOMContentLoaded', function() {\n"
+        "    var fps = {};\n"
+        "    document.querySelectorAll('.kb-feedback[data-fingerprint]').forEach(function(el) {\n"
+        "      fps[el.dataset.fingerprint] = true;\n"
+        "    });\n"
+        "    Object.keys(fps).forEach(function(fp) {\n"
+        "      fetch(FEEDBACK_API_URL + '/api/v1/kb/feedback/' + encodeURIComponent(fp))\n"
+        "        .then(function(r) { return r.ok ? r.json() : null; })\n"
+        "        .then(function(data) {\n"
+        "          if (!data) return;\n"
+        "          // data is {entry_id_str: 'like'|'dislike'}\n"
+        "          Object.keys(data).forEach(function(entryIdStr) {\n"
+        "            var vote = data[entryIdStr];\n"
+        "            document.querySelectorAll('.kb-feedback[data-fingerprint=\"' + fp + '\"]').forEach(function(wrap) {\n"
+        "              if (wrap.dataset.entryId === entryIdStr) {\n"
+        "                var cls = vote === 'like' ? '.fb-like' : '.fb-dislike';\n"
+        "                var btn = wrap.querySelector(cls);\n"
+        "                if (btn) btn.classList.add('fb-active');\n"
+        "              }\n"
+        "            });\n"
+        "          });\n"
+        "        })\n"
+        "        .catch(function() {});\n"
+        "    });\n"
+        "  });\n"
+        "})();\n"
+        "</script>"
+    )

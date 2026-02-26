@@ -31,6 +31,13 @@ class KBEntry(BaseModel):
     resolution_steps: list[str] = Field(
         default_factory=list, description="Шаги по устранению"
     )
+    entry_id: int | None = Field(
+        default=None,
+        description=(
+            "Суррогатный PK из PostgreSQL (alla.kb_entry.entry_id). "
+            "None для YAML-бэкенда. Используется для feedback (like/dislike)."
+        ),
+    )
 
 
 class KBMatchResult(BaseModel):
