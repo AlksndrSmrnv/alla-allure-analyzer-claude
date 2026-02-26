@@ -837,13 +837,15 @@ def _build_feedback_js(feedback_api_url: str) -> str:
 
     Only called when *feedback_api_url* is non-empty.
     """
-    safe_url = _html.escape(feedback_api_url, quote=True)
-    # Double-brace {{ / }} is needed because the returned string is NOT
-    # interpolated by an f-string in the caller — it's already final HTML.
+    import json as _json
+    # json.dumps produces a valid JS string literal (handles \, ", newlines, etc.)
+    # _html.escape must NOT be used here: inside <script>, the browser does not
+    # decode HTML entities, so & → &amp; would corrupt any URL with query params.
+    js_url = _json.dumps(feedback_api_url)  # includes surrounding double-quotes
     return (
         "<script>\n"
         "(function() {\n"
-        '  var FEEDBACK_API_URL = "' + safe_url + '";\n'
+        "  var FEEDBACK_API_URL = " + js_url + ";\n"
         "  if (!FEEDBACK_API_URL) return;\n"
         "\n"
         "  // --- Like / Dislike ---\n"

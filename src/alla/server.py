@@ -313,7 +313,7 @@ def _get_feedback_store():
 
 
 @app.post("/api/v1/kb/feedback")
-async def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
+def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
     """Записать like/dislike для KB-совпадения из HTML-отчёта."""
     store = _get_feedback_store()
     if store is None:
@@ -341,7 +341,7 @@ async def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.post("/api/v1/kb/entries", status_code=201)
-async def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
+def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
     """Создать новую запись KB из HTML-отчёта."""
     store = _get_feedback_store()
     if store is None:
@@ -397,7 +397,7 @@ async def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.get("/api/v1/kb/feedback/{error_fingerprint}")
-async def get_feedback_for_fingerprint(
+def get_feedback_for_fingerprint(
     error_fingerprint: str,
 ) -> dict[str, str]:
     """Получить текущие голоса для error_fingerprint.
