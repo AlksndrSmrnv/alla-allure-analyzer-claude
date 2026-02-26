@@ -1,6 +1,5 @@
 """Конфигурация приложения, загружаемая из переменных окружения."""
 
-from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -51,7 +50,6 @@ class Settings(BaseSettings):
     clustering_threshold: float = Field(default=0.60, description="Порог схожести для группировки ошибок в кластеры (0.0-1.0)")
 
     kb_enabled: bool = Field(default=False, description="Включить/выключить поиск по базе знаний")
-    kb_path: str = Field(default="knowledge_base", description="Путь к директории с YAML-файлами базы знаний")
     kb_min_score: float = Field(
         default=0.15,
         ge=0.0, le=1.0,
@@ -71,14 +69,6 @@ class Settings(BaseSettings):
         default=False,
         description="Записывать рекомендации KB обратно в Allure TestOps через комментарии к тест-кейсам",
     )
-    kb_backend: Literal["yaml", "postgres"] = Field(
-        default="yaml",
-        description=(
-            "Бэкенд базы знаний: 'yaml' (файловый, по умолчанию) "
-            "или 'postgres' (PostgreSQL). "
-            "При 'postgres' необходимо задать ALLURE_KB_POSTGRES_DSN."
-        ),
-    )
     kb_postgres_dsn: str = Field(
         default="",
         description=(
@@ -91,7 +81,7 @@ class Settings(BaseSettings):
         description=(
             "Включить систему обратной связи для KB-совпадений "
             "(like/dislike, создание записей из HTML-отчёта). "
-            "Требует ALLURE_KB_BACKEND=postgres."
+            "Требует ALLURE_KB_POSTGRES_DSN."
         ),
     )
     feedback_server_url: str = Field(

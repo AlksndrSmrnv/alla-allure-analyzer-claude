@@ -2,7 +2,7 @@
 
 Загружает все записи из PostgreSQL при инициализации (load-at-init-time),
 кэширует их в памяти и делегирует поиск существующему TextMatcher.
-Точный аналог YamlKnowledgeBase по контракту и поведению.
+Реализует контракт KnowledgeBaseProvider для PostgreSQL-бэкенда.
 """
 
 from __future__ import annotations

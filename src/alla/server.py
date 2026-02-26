@@ -298,11 +298,7 @@ async def delete_comments(launch_id: int, dry_run: bool = False) -> dict[str, An
 def _get_feedback_store():
     """Вернуть PostgresFeedbackStore или None (ленивая инициализация)."""
     settings = _state.settings
-    if (
-        settings is None
-        or settings.kb_backend != "postgres"
-        or not settings.kb_feedback_enabled
-    ):
+    if settings is None or not settings.kb_feedback_enabled:
         return None
 
     if not hasattr(_state, "_feedback_store"):
@@ -319,8 +315,8 @@ def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
     if store is None:
         raise HTTPException(
             status_code=501,
-            detail="Feedback requires postgres KB backend "
-            "(ALLURE_KB_BACKEND=postgres, ALLURE_KB_FEEDBACK_ENABLED=true)",
+            detail="Feedback requires ALLURE_KB_FEEDBACK_ENABLED=true "
+            "and ALLURE_KB_POSTGRES_DSN to be set",
         )
 
     from alla.knowledge.feedback_models import FeedbackRequest
