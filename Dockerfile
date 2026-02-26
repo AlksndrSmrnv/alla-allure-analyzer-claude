@@ -8,6 +8,9 @@
 # ==========================================================================
 FROM ubi8/python-311:latest AS builder
 
+# UBI8 S2I sets USER 1001 by default; switch to root for build operations.
+USER root
+
 # ==========================================================================
 # ──────────────────── ВНУТРЕННИЕ РЕПОЗИТОРИИ (2/3) ────────────────────────
 # Если yum/dnf-зеркало внутреннее, добавьте .repo-файл перед install:
@@ -47,8 +50,7 @@ RUN pip install --no-cache-dir .
 # ==========================================================================
 FROM ubi8/python-311:latest
 
-# UBI8: непривилегированный пользователь UID 1001, GID 0 (OpenShift-совместимо)
-RUN useradd -u 1001 -r -g 0 -s /sbin/nologin alla
+# UBI8 S2I already ships user 'default' (UID 1001, GID 0) — no useradd needed.
 
 # UBI8 S2I layout: site-packages and scripts live under /opt/app-root.
 # Verify with:
