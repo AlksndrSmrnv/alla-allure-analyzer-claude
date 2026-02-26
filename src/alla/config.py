@@ -86,6 +86,22 @@ class Settings(BaseSettings):
             "Пример: postgresql://user:pass@localhost:5432/alla_kb"
         ),
     )
+    kb_feedback_enabled: bool = Field(
+        default=False,
+        description=(
+            "Включить систему обратной связи для KB-совпадений "
+            "(like/dislike, создание записей из HTML-отчёта). "
+            "Требует ALLURE_KB_BACKEND=postgres."
+        ),
+    )
+    feedback_server_url: str = Field(
+        default="",
+        description=(
+            "URL alla-server для API feedback из HTML-отчёта "
+            "(например http://alla.company.com:8090). "
+            "Если пусто — интерактивные элементы в отчёте не отображаются."
+        ),
+    )
 
     server_host: str = Field(default="0.0.0.0", description="Хост для HTTP-сервера")
     server_port: int = Field(default=8090, ge=1, le=65535, description="Порт для HTTP-сервера")

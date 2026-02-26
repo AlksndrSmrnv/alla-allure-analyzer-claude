@@ -113,6 +113,16 @@ app = FastAPI(
     lifespan=_lifespan,
 )
 
+# CORS: HTML-отчёт может открываться с file:// или с Jenkins (другой origin).
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # --- Маршруты ---
 
@@ -280,6 +290,127 @@ async def delete_comments(launch_id: int, dry_run: bool = False) -> dict[str, An
         "skipped_test_cases": skipped,
         "dry_run": dry_run,
     }
+
+
+# --- KB Feedback endpoints ---
+
+
+def _get_feedback_store():
+    """Вернуть PostgresFeedbackStore или None (ленивая инициализация)."""
+    settings = _state.settings
+    if (
+        settings is None
+        or settings.kb_backend != "postgres"
+        or not settings.kb_feedback_enabled
+    ):
+        return None
+
+    if not hasattr(_state, "_feedback_store"):
+        from alla.knowledge.postgres_feedback import PostgresFeedbackStore
+
+        _state._feedback_store = PostgresFeedbackStore(dsn=settings.kb_postgres_dsn)
+    return _state._feedback_store
+
+
+@app.post("/api/v1/kb/feedback")
+def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
+    """Записать like/dislike для KB-совпадения из HTML-отчёта."""
+    store = _get_feedback_store()
+    if store is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Feedback requires postgres KB backend "
+            "(ALLURE_KB_BACKEND=postgres, ALLURE_KB_FEEDBACK_ENABLED=true)",
+        )
+
+    from alla.knowledge.feedback_models import FeedbackRequest
+
+    try:
+        fb_request = FeedbackRequest(**request)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    from alla.exceptions import KnowledgeBaseError
+
+    try:
+        response = store.record_vote(fb_request)
+    except KnowledgeBaseError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return response.model_dump()
+
+
+@app.post("/api/v1/kb/entries", status_code=201)
+def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
+    """Создать новую запись KB из HTML-отчёта."""
+    store = _get_feedback_store()
+    if store is None:
+        raise HTTPException(
+            status_code=501,
+            detail="KB entry creation requires postgres backend",
+        )
+
+    from alla.knowledge.feedback_models import CreateKBEntryRequest, CreateKBEntryResponse
+    from alla.knowledge.models import KBEntry
+
+    try:
+        req = CreateKBEntryRequest(**request)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    entry = KBEntry(
+        id=req.id,
+        title=req.title,
+        description=req.description,
+        error_example=req.error_example,
+        category=req.category,
+        resolution_steps=req.resolution_steps,
+    )
+
+    from alla.exceptions import KnowledgeBaseError
+
+    try:
+        entry_id = store.create_kb_entry(entry, req.project_id)
+    except KnowledgeBaseError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    if entry_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"KB entry with slug '{req.id}' already exists "
+            f"for project_id={req.project_id}",
+        )
+
+    # Инвалидация KB-кэша — новая запись должна быть видна сразу
+    from alla.orchestrator import _kb_cache
+
+    _kb_cache.clear()
+
+    resp = CreateKBEntryResponse(
+        entry_id=entry_id,
+        id=req.id,
+        title=req.title,
+        category=req.category,
+        created=True,
+    )
+    return resp.model_dump()
+
+
+@app.get("/api/v1/kb/feedback/{error_fingerprint}")
+def get_feedback_for_fingerprint(
+    error_fingerprint: str,
+) -> dict[str, str]:
+    """Получить текущие голоса для error_fingerprint.
+
+    Используется HTML-отчётом для инициализации состояния кнопок.
+    Возвращает ``{entry_id: "like"|"dislike"}``.
+    """
+    store = _get_feedback_store()
+    if store is None:
+        raise HTTPException(status_code=501, detail="Requires postgres backend")
+
+    votes = store.get_votes_for_fingerprint(error_fingerprint)
+    return {str(k): v.value for k, v in votes.items()}
 
 
 def main() -> None:

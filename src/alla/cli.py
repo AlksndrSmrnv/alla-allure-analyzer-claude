@@ -173,7 +173,16 @@ async def async_main(args: argparse.Namespace) -> int:
 
                 from alla.report.html_report import generate_html_report
 
-                html_content = generate_html_report(result, endpoint=settings.endpoint)
+                feedback_url = (
+                    settings.feedback_server_url
+                    if settings.kb_feedback_enabled and settings.kb_backend == "postgres"
+                    else ""
+                )
+                html_content = generate_html_report(
+                    result,
+                    endpoint=settings.endpoint,
+                    feedback_api_url=feedback_url,
+                )
                 Path(html_report_file).write_text(html_content, encoding="utf-8")
                 logger.info("HTML-отчёт сохранён: %s", html_report_file)
 
