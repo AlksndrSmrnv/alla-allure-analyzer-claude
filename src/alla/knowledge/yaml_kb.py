@@ -172,6 +172,7 @@ class YamlKnowledgeBase:
         error_text: str,
         *,
         query_label: str | None = None,
+        error_fingerprint: str | None = None,  # noqa: ARG002 — YAML backend has no feedback
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки."""
         return self._matcher.match(

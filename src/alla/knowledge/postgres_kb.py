@@ -141,19 +141,31 @@ class PostgresKnowledgeBase:
         error_text: str,
         *,
         query_label: str | None = None,
+        error_fingerprint: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
 
-        Если feedback_store задан, вычисляет fingerprint error_text'а
-        и запрашивает exclusions (dislike) / boosts (like) из БД.
+        Если feedback_store задан, использует error_fingerprint для lookup
+        exclusions/boosts из БД. Если error_fingerprint не передан — вычисляет
+        его из error_text (fallback).
+
+        Args:
+            error_text: Текст ошибки для поиска (report_text или log_text).
+            query_label: Метка для логирования.
+            error_fingerprint: Предвычисленный fingerprint (SHA-256 hex).
+                Должен соответствовать fingerprint'у, встроенному в HTML-отчёт
+                (вычисленному из report_text). Передача одного fingerprint'а
+                в оба вызова (report_text и log_text) гарантирует, что
+                feedback применяется одинаково для обоих поисков.
         """
         exclusions: set[int] | None = None
         boosts: set[int] | None = None
 
         if self._feedback_store is not None:
-            from alla.utils.fingerprint import compute_fingerprint
-
-            fp = compute_fingerprint(error_text)
+            if error_fingerprint is None:
+                from alla.utils.fingerprint import compute_fingerprint
+                error_fingerprint = compute_fingerprint(error_text)
+            fp = error_fingerprint
             exclusions = self._feedback_store.get_exclusions(fp)
             boosts = self._feedback_store.get_boosts(fp)
             if exclusions or boosts:

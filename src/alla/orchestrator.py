@@ -178,10 +178,16 @@ async def analyze_launch(
                             _preview_head(log_text, _KB_QUERY_LOG_PREVIEW_CHARS),
                         )
 
+                # Используем один fingerprint для обоих поисков — он основан на
+                # report_text и встроен в HTML-отчёт. Это гарантирует, что
+                # feedback (exclusions/boosts) применяется одинаково для поиска
+                # по report_text и log_text.
+                fp = error_fingerprints.get(cluster.cluster_id)
                 matches_report = (
                     kb.search_by_error(
                         report_text,
                         query_label=f"{cluster.cluster_id}:report",
+                        error_fingerprint=fp,
                     )
                     if report_text.strip()
                     else []
@@ -190,6 +196,7 @@ async def analyze_launch(
                     kb.search_by_error(
                         log_text,
                         query_label=f"{cluster.cluster_id}:log",
+                        error_fingerprint=fp,
                     )
                     if log_text.strip()
                     else []
