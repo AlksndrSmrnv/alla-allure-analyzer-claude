@@ -50,9 +50,14 @@ FROM ubi8/python-311:latest
 # UBI8: непривилегированный пользователь UID 1001, GID 0 (OpenShift-совместимо)
 RUN useradd -u 1001 -r -g 0 -s /sbin/nologin alla
 
-COPY --from=builder /usr/local/lib/python3.11/site-packages/ \
-                    /usr/local/lib/python3.11/site-packages/
-COPY --from=builder /usr/local/bin/alla* /usr/local/bin/
+# UBI8 S2I layout: site-packages and scripts live under /opt/app-root.
+# Verify with:
+#   docker run --rm ubi8/python-311:latest python3 -c "import site; print(site.getsitepackages())"
+#   docker run --rm ubi8/python-311:latest which pip3
+# If your image variant uses a different prefix, update both paths accordingly.
+COPY --from=builder /opt/app-root/lib/python3.11/site-packages/ \
+                    /opt/app-root/lib/python3.11/site-packages/
+COPY --from=builder /opt/app-root/bin/alla* /opt/app-root/bin/
 
 WORKDIR /app
 
