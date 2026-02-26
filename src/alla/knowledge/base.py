@@ -12,7 +12,7 @@ class KnowledgeBaseProvider(Protocol):
     """Протокол, определяющий контракт любого провайдера базы знаний.
 
     Реализации:
-    - YamlKnowledgeBase (MVP): читает YAML-файлы с диска
+    - PostgresKnowledgeBase: загружает записи из PostgreSQL при init
     - Будущее: VectorKnowledgeBase (RAG): ищет по эмбеддингам в vector DB
     """
 

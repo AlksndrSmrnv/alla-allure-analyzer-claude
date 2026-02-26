@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _KB_QUERY_LOG_PREVIEW_CHARS = 220
 
-# Кэш KB: (kb_path, min_score, max_results) → экземпляр.
-# Предотвращает повторное чтение YAML и re-fit TF-IDF на каждый запрос сервера.
+# Кэш KB: (kb_postgres_dsn, min_score, max_results, project_id, feedback_enabled) → экземпляр.
+# Предотвращает повторное подключение к БД и re-fit TF-IDF на каждый запрос сервера.
 _kb_cache: dict[tuple[str, float, int], object] = {}
 _kb_cache_lock: object = None  # Ленивая инициализация asyncio.Lock
 
@@ -125,10 +125,8 @@ async def analyze_launch(
             max_results=settings.kb_max_results,
         )
         kb = _get_or_create_kb(
-            settings.kb_path,
             matcher_config,
             report.project_id,
-            kb_backend=settings.kb_backend,
             kb_postgres_dsn=settings.kb_postgres_dsn,
             kb_feedback_enabled=settings.kb_feedback_enabled,
         )
@@ -486,33 +484,25 @@ def _preview_tail(text: str, max_chars: int) -> str:
 
 
 def _get_or_create_kb(
-    kb_path: str,
     matcher_config: object,
     project_id: int | None = None,
     *,
-    kb_backend: str = "yaml",
     kb_postgres_dsn: str = "",
     kb_feedback_enabled: bool = False,
 ) -> object:
-    """Вернуть кэшированный экземпляр KB или создать новый.
+    """Вернуть кэшированный экземпляр KB или создать новый (PostgreSQL бэкенд).
 
-    Поддерживает два бэкенда:
-    - 'yaml'     → YamlKnowledgeBase (файловый, по умолчанию)
-    - 'postgres' → PostgresKnowledgeBase (загружает из PostgreSQL при init)
-
-    Кэш по ключу (backend, location, min_score, max_results, project_id,
-    feedback_enabled). Предотвращает повторные подключения к БД / чтение
-    YAML на каждый запрос сервера.
+    Кэш по ключу (kb_postgres_dsn, min_score, max_results, project_id,
+    feedback_enabled). Предотвращает повторные подключения к БД и re-fit
+    TF-IDF на каждый запрос сервера.
     """
     from alla.knowledge.matcher import MatcherConfig
 
     global _kb_cache
 
     cfg = matcher_config if isinstance(matcher_config, MatcherConfig) else None
-    location = kb_postgres_dsn if kb_backend == "postgres" else kb_path
     cache_key = (
-        kb_backend,
-        location,
+        kb_postgres_dsn,
         cfg.min_score if cfg else 0.15,
         cfg.max_results if cfg else 5,
         project_id,
@@ -520,38 +510,29 @@ def _get_or_create_kb(
     )
 
     if cache_key in _kb_cache:
-        logger.debug("KB: используется кэшированный экземпляр (backend=%s)", kb_backend)
+        logger.debug("KB: используется кэшированный экземпляр")
         return _kb_cache[cache_key]
 
-    if kb_backend == "postgres":
-        from alla.knowledge.postgres_kb import PostgresKnowledgeBase
+    from alla.knowledge.postgres_kb import PostgresKnowledgeBase
 
-        if not kb_postgres_dsn:
-            from alla.exceptions import ConfigurationError
-            raise ConfigurationError(
-                "kb_backend='postgres' требует ALLURE_KB_POSTGRES_DSN"
-            )
-
-        feedback_store = None
-        if kb_feedback_enabled:
-            from alla.knowledge.postgres_feedback import PostgresFeedbackStore
-            feedback_store = PostgresFeedbackStore(dsn=kb_postgres_dsn)
-
-        kb = PostgresKnowledgeBase(
-            dsn=kb_postgres_dsn,
-            matcher_config=matcher_config,
-            project_id=project_id,
-            feedback_store=feedback_store,
+    if not kb_postgres_dsn:
+        from alla.exceptions import ConfigurationError
+        raise ConfigurationError(
+            "KB включён (ALLURE_KB_ENABLED=true), но не задан ALLURE_KB_POSTGRES_DSN"
         )
-    else:
-        from alla.knowledge.yaml_kb import YamlKnowledgeBase
 
-        kb = YamlKnowledgeBase(
-            kb_path=kb_path,
-            matcher_config=matcher_config,
-            project_id=project_id,
-        )
+    feedback_store = None
+    if kb_feedback_enabled:
+        from alla.knowledge.postgres_feedback import PostgresFeedbackStore
+        feedback_store = PostgresFeedbackStore(dsn=kb_postgres_dsn)
+
+    kb = PostgresKnowledgeBase(
+        dsn=kb_postgres_dsn,
+        matcher_config=matcher_config,
+        project_id=project_id,
+        feedback_store=feedback_store,
+    )
 
     _kb_cache[cache_key] = kb
-    logger.debug("KB: создан и закэширован новый экземпляр (backend=%s)", kb_backend)
+    logger.debug("KB: создан и закэширован новый экземпляр (postgres)")
     return kb
