@@ -173,7 +173,11 @@ async def async_main(args: argparse.Namespace) -> int:
 
                 from alla.report.html_report import generate_html_report
 
-                feedback_url = settings.feedback_server_url if settings.kb_feedback_enabled else ""
+                feedback_url = (
+                    settings.feedback_server_url
+                    if settings.kb_feedback_enabled and settings.kb_backend == "postgres"
+                    else ""
+                )
                 html_content = generate_html_report(
                     result,
                     endpoint=settings.endpoint,
