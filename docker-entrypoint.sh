@@ -21,10 +21,13 @@ if [ -d "$SECRETS_DIR" ]; then
 
     var_name="$(basename "$secret_file")"
 
-    # Skip files whose names are not valid shell variable identifiers
-    # (e.g. hidden files, files with dots or spaces).
+    # Skip files whose names are not valid shell variable identifiers.
+    # POSIX: name must start with a letter or underscore, followed by
+    # letters, digits, or underscores. Names starting with a digit
+    # (e.g. "2FA_SECRET") pass the character-set check but are rejected
+    # by export under set -e, crashing the entrypoint.
     case "$var_name" in
-      *[!A-Za-z0-9_]*) continue ;;
+      [0-9]*|*[!A-Za-z0-9_]*) continue ;;
     esac
 
     var_value="$(cat "$secret_file")"
