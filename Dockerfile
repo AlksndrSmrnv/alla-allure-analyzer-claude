@@ -64,9 +64,12 @@ COPY --from=builder /opt/app-root/bin/alla* /opt/app-root/bin/
 WORKDIR /app
 
 COPY --chown=1001:0 knowledge_base/ knowledge_base/
+COPY --chown=1001:0 docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 USER 1001
 
 EXPOSE 8090
 
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["alla-server"]
