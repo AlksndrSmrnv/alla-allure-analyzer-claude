@@ -65,7 +65,10 @@ WORKDIR /app
 
 COPY --chown=1001:0 knowledge_base/ knowledge_base/
 COPY --chown=1001:0 docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+# Strip CR (\r) in case git or CI checked out the file with CRLF endings —
+# a stray \r after the shebang causes "exec format error" at container start.
+RUN sed -i 's/\r//' /app/docker-entrypoint.sh \
+    && chmod +x /app/docker-entrypoint.sh
 
 USER 1001
 
