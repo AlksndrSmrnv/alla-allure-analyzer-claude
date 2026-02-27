@@ -1,0 +1,10 @@
+# Force LF line endings for all text files on any OS.
+* text=auto eol=lf
+
+# Shell scripts must always be LF — CRLF causes "exec format error" in containers.
+*.sh text eol=lf
+
+# Explicitly binary — never touch line endings.
+*.png binary
+*.jpg binary
+*.pdf binary
