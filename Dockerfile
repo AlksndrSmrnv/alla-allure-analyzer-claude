@@ -64,11 +64,14 @@ COPY --from=builder /opt/app-root/bin/alla* /opt/app-root/bin/
 WORKDIR /app
 
 COPY --chown=1001:0 knowledge_base/ knowledge_base/
-COPY --chown=1001:0 docker-entrypoint.sh /app/docker-entrypoint.sh
-# Strip CR (\r) in case git or CI checked out the file with CRLF endings —
-# a stray \r after the shebang causes "exec format error" at container start.
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+
+# sed -i needs write access to the parent directory (creates a temp file).
+# Run as root, then lock down ownership and permissions before dropping privileges.
+USER root
 RUN sed -i 's/\r//' /app/docker-entrypoint.sh \
-    && chmod +x /app/docker-entrypoint.sh
+    && chmod +x /app/docker-entrypoint.sh \
+    && chown 1001:0 /app/docker-entrypoint.sh
 
 USER 1001
 
