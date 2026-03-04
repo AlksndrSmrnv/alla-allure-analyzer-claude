@@ -221,6 +221,7 @@ async def analyze_launch(launch_id: int) -> dict[str, Any]:
 @app.get(
     "/api/v1/launch/resolve",
     responses={
+        401: {"model": ErrorResponse, "description": "Ошибка аутентификации"},
         404: {"model": ErrorResponse, "description": "Запуск не найден"},
         502: {"model": ErrorResponse, "description": "Ошибка Allure TestOps API"},
     },
