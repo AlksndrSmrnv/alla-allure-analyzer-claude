@@ -257,13 +257,19 @@ async def resolve_launch(name: str, project_id: int | None = None) -> dict[str, 
         502: {"model": ErrorResponse, "description": "Ошибка Allure TestOps API"},
     },
 )
-async def analyze_launch_html(launch_id: int) -> HTMLResponse:
+async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLResponse:
     """Анализ запуска — возвращает self-contained HTML-отчёт.
 
     Запускает полный pipeline (триаж → кластеризация → KB → LLM) и
     возвращает готовый HTML-файл. Используется Jenkins-пайплайном:
     результат сохраняется как ``alla-report.html`` и публикуется как артефакт.
+
+    Query parameter ``report_url`` — URL артефакта в Jenkins. Если задан,
+    прикрепляется к прогону в Allure TestOps через ``PATCH /api/launch/{id}``
+    (секция Links), чтобы ссылка на HTML-отчёт была видна прямо в TestOps UI.
+    Переопределяет ``ALLURE_REPORT_URL`` из конфига.
     """
+    from alla.clients.base import LaunchLinksUpdater
     from alla.exceptions import (
         AllureApiError,
         AuthenticationError,
@@ -293,6 +299,23 @@ async def analyze_launch_html(launch_id: int) -> HTMLResponse:
         raise HTTPException(status_code=500, detail=str(exc))
     except PaginationLimitError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+
+    # Прикрепить ссылку на HTML-отчёт к прогону в TestOps.
+    # Приоритет: query param report_url > ALLURE_REPORT_URL из конфига.
+    effective_report_url = report_url or _state.settings.report_url
+    if effective_report_url and isinstance(_state.client, LaunchLinksUpdater):
+        try:
+            await _state.client.patch_launch_links(
+                launch_id=launch_id,
+                name=_state.settings.report_link_name,
+                url=effective_report_url,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Не удалось прикрепить ссылку на HTML-отчёт к запуску #%d: %s",
+                launch_id,
+                exc,
+            )
 
     feedback_api_url = ""
     if _state.settings.kb_feedback_enabled:

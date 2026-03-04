@@ -97,13 +97,17 @@ pipeline {
             steps {
                 script {
                     def launchId = env.ALLA_LAUNCH_ID
-                    def analyzeUrl = "${env.ALLA_ENDPOINT}/api/v1/analyze/${launchId}/html"
+                    def reportUrl = "${env.BUILD_URL}artifact/${env.REPORT_HTML}"
+                    // URL-кодируем report_url, чтобы : и / не сломали query string
+                    def encodedReportUrl = java.net.URLEncoder.encode(reportUrl, 'UTF-8')
+                    def analyzeUrl = "${env.ALLA_ENDPOINT}/api/v1/analyze/${launchId}/html?report_url=${encodedReportUrl}"
 
                     sh """
                         curl -sf --max-time 1800 -X POST "${analyzeUrl}" -o "${env.REPORT_HTML}"
                     """
 
                     echo "HTML-отчёт сохранён: ${env.REPORT_HTML}"
+                    echo "Ссылка прикреплена к прогону в TestOps: ${reportUrl}"
                 }
             }
         }
