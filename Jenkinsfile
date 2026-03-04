@@ -58,27 +58,34 @@ pipeline {
                     if (env.LAUNCH_NAME?.trim()) {
                         // Вебхук: резолвим имя запуска в числовой ID через alla-сервер.
                         def projectId = env.LAUNCH_PROJECT_ID?.trim()
-                        if (!projectId) {
-                            error('Вебхук не содержит $.projectId.')
+                        if (!projectId || !(projectId ==~ /^\d+$/)) {
+                            error("Вебхук: $.projectId должен быть числовым, получено: '${projectId}'")
                         }
 
                         echo "Вебхук: запуск '${env.LAUNCH_NAME}' в проекте #${projectId}"
 
-                        // Имя передаётся через файл, чтобы избежать shell injection
-                        // при подстановке в URL (curl --data-urlencode читает из stdin).
+                        // Имя и projectId передаются через env-переменные оболочки
+                        // (не через Groovy-интерполяцию), чтобы избежать shell injection:
+                        // спецсимволы в имени запуска не попадают в тело скрипта.
+                        env.ALLA_LAUNCH_NAME_VAR = env.LAUNCH_NAME
+                        env.ALLA_PROJECT_ID_VAR  = projectId
                         def resolveUrl = "${env.ALLA_ENDPOINT}/api/v1/launch/resolve"
                         def responseJson = sh(
                             script: """
                                 curl -sf --max-time 30 \\
                                     -G "${resolveUrl}" \\
-                                    --data-urlencode "name=${env.LAUNCH_NAME}" \\
-                                    --data-urlencode "project_id=${projectId}"
+                                    --data-urlencode "name=\$ALLA_LAUNCH_NAME_VAR" \\
+                                    --data-urlencode "project_id=\$ALLA_PROJECT_ID_VAR"
                             """,
                             returnStdout: true
                         ).trim()
 
                         def parsed = readJSON text: responseJson
-                        env.ALLA_LAUNCH_ID = parsed.launch_id as String
+                        def resolvedId = parsed.launch_id as String
+                        if (!(resolvedId ==~ /^\d+$/)) {
+                            error("Неожиданный launch_id от сервера: '${resolvedId}'")
+                        }
+                        env.ALLA_LAUNCH_ID = resolvedId
                         echo "Резолв: имя '${env.LAUNCH_NAME}' → ID #${env.ALLA_LAUNCH_ID}"
                     } else {
                         // Ручной запуск: нужен числовой LAUNCH_ID
@@ -107,7 +114,7 @@ pipeline {
                     """
 
                     echo "HTML-отчёт сохранён: ${env.REPORT_HTML}"
-                    echo "Ссылка прикреплена к прогону в TestOps: ${reportUrl}"
+                    echo "Ссылка на отчёт передана в alla-server: ${reportUrl} (результат прикрепления см. в логах сервера)"
                 }
             }
         }
