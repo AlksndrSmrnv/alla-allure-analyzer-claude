@@ -319,7 +319,7 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
 
     feedback_api_url = ""
     if _state.settings.kb_feedback_enabled:
-        feedback_api_url = _state.settings.endpoint
+        feedback_api_url = _state.settings.feedback_server_url
 
     html = generate_html_report(
         result,
