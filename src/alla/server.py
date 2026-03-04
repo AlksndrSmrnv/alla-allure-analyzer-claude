@@ -231,7 +231,7 @@ async def resolve_launch(name: str, project_id: int | None = None) -> dict[str, 
     Используется Jenkins-пайплайном для резолва ``launchName`` из вебхука в числовой ID.
     Возвращает ``{"launch_id": 12345}``.
     """
-    from alla.exceptions import AllureApiError, AuthenticationError
+    from alla.exceptions import AllaError, AllureApiError, AuthenticationError
 
     try:
         launch_id = await _state.client.find_launch_by_name(name, project_id=project_id)
@@ -241,6 +241,9 @@ async def resolve_launch(name: str, project_id: int | None = None) -> dict[str, 
         if exc.status_code == 404:
             raise HTTPException(status_code=404, detail=str(exc))
         raise HTTPException(status_code=502, detail=str(exc))
+    except AllaError as exc:
+        # find_launch_by_name бросает AllaError (не AllureApiError), когда запуск не найден по имени
+        raise HTTPException(status_code=404, detail=str(exc))
 
     return {"launch_id": launch_id}
 
@@ -254,14 +257,12 @@ async def resolve_launch(name: str, project_id: int | None = None) -> dict[str, 
         502: {"model": ErrorResponse, "description": "Ошибка Allure TestOps API"},
     },
 )
-async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLResponse:
+async def analyze_launch_html(launch_id: int) -> HTMLResponse:
     """Анализ запуска — возвращает self-contained HTML-отчёт.
 
     Запускает полный pipeline (триаж → кластеризация → KB → LLM) и
     возвращает готовый HTML-файл. Используется Jenkins-пайплайном:
     результат сохраняется как ``alla-report.html`` и публикуется как артефакт.
-
-    Query parameter ``report_url`` — URL артефакта в Jenkins (встраивается в HTML).
     """
     from alla.exceptions import (
         AllureApiError,

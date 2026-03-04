@@ -97,14 +97,10 @@ pipeline {
             steps {
                 script {
                     def launchId = env.ALLA_LAUNCH_ID
-                    def reportUrl = "${env.BUILD_URL}artifact/${env.REPORT_HTML}"
                     def analyzeUrl = "${env.ALLA_ENDPOINT}/api/v1/analyze/${launchId}/html"
 
                     sh """
-                        curl -sf --max-time 1800 \\
-                            -X POST "${analyzeUrl}" \\
-                            -G --data-urlencode "report_url=${reportUrl}" \\
-                            -o "${env.REPORT_HTML}"
+                        curl -sf --max-time 1800 -X POST "${analyzeUrl}" -o "${env.REPORT_HTML}"
                     """
 
                     echo "HTML-отчёт сохранён: ${env.REPORT_HTML}"
