@@ -111,6 +111,8 @@ pipeline {
                     def launchId = env.ALLA_LAUNCH_ID
                     def analyzeUrl = "${env.ALLA_ENDPOINT}/api/v1/analyze/${launchId}/html"
 
+                    def headersFile = "/tmp/alla-headers-${env.BUILD_TAG}.txt"
+
                     withCredentials([
                         file(credentialsId: 'alla-client-cert', variable: 'CLIENT_CERT'),
                         file(credentialsId: 'alla-client-key',  variable: 'CLIENT_KEY'),
@@ -119,12 +121,12 @@ pipeline {
                             curl -sfk --max-time 1800 -X POST "${analyzeUrl}" \\
                                 --cert "\$CLIENT_CERT" \\
                                 --key  "\$CLIENT_KEY"  \\
-                                -o /dev/null -D /tmp/alla-headers.txt
+                                -o /dev/null -D "${headersFile}"
                         """
                     }
 
                     def reportUrl = sh(
-                        script: "grep -i '^X-Report-URL:' /tmp/alla-headers.txt | sed 's/^[^:]*: *//' | tr -d '\\r\\n' || true",
+                        script: "grep -i '^X-Report-URL:' '${headersFile}' | sed 's/^[^:]*: *//' | tr -d '\\r\\n'; rm -f '${headersFile}' || true",
                         returnStdout: true
                     ).trim()
 
