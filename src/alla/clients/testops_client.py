@@ -49,7 +49,7 @@ class AllureTestOpsClient:
     ) -> int:
         """Найти ID запуска по точному совпадению имени.
 
-        ``GET /api/launch?projectId=X&page=0&size=10&sort=created_date,DESC``
+        ``GET /api/launch?projectId=X&page=0&size=50&sort=created_date,DESC``
 
         Возвращает ID первого найденного запуска или бросает :class:`AllureApiError`.
         """
