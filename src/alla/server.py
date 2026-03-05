@@ -8,6 +8,7 @@ from dataclasses import asdict
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from alla import __version__
@@ -215,6 +216,118 @@ async def analyze_launch(launch_id: int) -> dict[str, Any]:
         }
 
     return response
+
+
+@app.get(
+    "/api/v1/launch/resolve",
+    responses={
+        401: {"model": ErrorResponse, "description": "Ошибка аутентификации"},
+        404: {"model": ErrorResponse, "description": "Запуск не найден"},
+        502: {"model": ErrorResponse, "description": "Ошибка Allure TestOps API"},
+    },
+)
+async def resolve_launch(name: str, project_id: int | None = None) -> dict[str, int]:
+    """Найти ID запуска по точному совпадению имени.
+
+    Используется Jenkins-пайплайном для резолва ``launchName`` из вебхука в числовой ID.
+    Возвращает ``{"launch_id": 12345}``.
+    """
+    from alla.exceptions import AllaError, AllureApiError, AuthenticationError
+
+    try:
+        launch_id = await _state.client.find_launch_by_name(name, project_id=project_id)
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except AllureApiError as exc:
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc))
+    except AllaError as exc:
+        # find_launch_by_name бросает AllaError (не AllureApiError), когда запуск не найден по имени
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return {"launch_id": launch_id}
+
+
+@app.post(
+    "/api/v1/analyze/{launch_id}/html",
+    response_class=HTMLResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Ошибка аутентификации"},
+        404: {"model": ErrorResponse, "description": "Запуск не найден"},
+        502: {"model": ErrorResponse, "description": "Ошибка Allure TestOps API"},
+    },
+)
+async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLResponse:
+    """Анализ запуска — возвращает self-contained HTML-отчёт.
+
+    Запускает полный pipeline (триаж → кластеризация → KB → LLM) и
+    возвращает готовый HTML-файл. Используется Jenkins-пайплайном:
+    результат сохраняется как ``alla-report.html`` и публикуется как артефакт.
+
+    Query parameter ``report_url`` — URL артефакта в Jenkins. Если задан,
+    прикрепляется к прогону в Allure TestOps через ``PATCH /api/launch/{id}``
+    (секция Links), чтобы ссылка на HTML-отчёт была видна прямо в TestOps UI.
+    Переопределяет ``ALLURE_REPORT_URL`` из конфига.
+    """
+    from alla.clients.base import LaunchLinksUpdater
+    from alla.exceptions import (
+        AllureApiError,
+        AuthenticationError,
+        ConfigurationError,
+        KnowledgeBaseError,
+        PaginationLimitError,
+    )
+    from alla.orchestrator import analyze_launch as run_analysis
+    from alla.report.html_report import generate_html_report
+
+    try:
+        result = await run_analysis(
+            launch_id=launch_id,
+            client=_state.client,
+            settings=_state.settings,
+            updater=_state.client,
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except AllureApiError as exc:
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc))
+    except ConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except KnowledgeBaseError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except PaginationLimitError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    # Прикрепить ссылку на HTML-отчёт к прогону в TestOps.
+    # Приоритет: query param report_url > ALLURE_REPORT_URL из конфига.
+    effective_report_url = report_url or _state.settings.report_url
+    if effective_report_url and isinstance(_state.client, LaunchLinksUpdater):
+        try:
+            await _state.client.patch_launch_links(
+                launch_id=launch_id,
+                name=_state.settings.report_link_name,
+                url=effective_report_url,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Не удалось прикрепить ссылку на HTML-отчёт к запуску #%d: %s",
+                launch_id,
+                exc,
+            )
+
+    feedback_api_url = ""
+    if _state.settings.kb_feedback_enabled:
+        feedback_api_url = _state.settings.feedback_server_url
+
+    html = generate_html_report(
+        result,
+        endpoint=_state.settings.endpoint,
+        feedback_api_url=feedback_api_url,
+    )
+    return HTMLResponse(content=html)
 
 
 @app.delete(

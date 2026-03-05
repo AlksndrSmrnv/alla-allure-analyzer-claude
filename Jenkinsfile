@@ -39,18 +39,9 @@ pipeline {
     }
 
     environment {
-        // Allure TestOps
-        ALLURE_ENDPOINT          = credentials('allure-endpoint')
-        ALLURE_TOKEN             = credentials('allure-token')
+        // URL alla-сервера в Kubernetes (без trailing slash)
+        ALLA_ENDPOINT = credentials('alla-k8s-endpoint')
 
-        // Langflow — на верхнем уровне, доступны всем stages
-        ALLURE_LANGFLOW_BASE_URL = credentials('langflow-base-url')
-        ALLURE_LANGFLOW_FLOW_ID  = credentials('langflow-flow-id')
-        ALLURE_LANGFLOW_API_KEY  = credentials('langflow-api-key')
-
-        // Путь к venv внутри workspace
-        VENV_DIR    = "${WORKSPACE}/.venv"
-        REPORT_FILE = 'alla-report.json'
         REPORT_HTML = 'alla-report.html'
     }
 
@@ -65,113 +56,80 @@ pipeline {
             steps {
                 script {
                     if (env.LAUNCH_NAME?.trim()) {
-                        // Вебхук: alla сам разрешит имя → ID через API.
-                        // Имя запуска передаётся через отдельную env-переменную —
-                        // НЕ встраивается в строку ALLA_ARGS, чтобы избежать shell injection.
+                        // Вебхук: резолвим имя запуска в числовой ID через alla-сервер.
                         def projectId = env.LAUNCH_PROJECT_ID?.trim()
-                        if (!projectId) {
-                            error('Вебхук не содержит $.projectId.')
+                        if (!projectId || !(projectId ==~ /^\d+$/)) {
+                            error("Вебхук: $.projectId должен быть числовым, получено: '${projectId}'")
                         }
-                        env.ALLA_LAUNCH_NAME = env.LAUNCH_NAME
-                        env.ALLA_PROJECT_ID  = projectId
-                        env.ALLA_LAUNCH_ID   = ''
+
                         echo "Вебхук: запуск '${env.LAUNCH_NAME}' в проекте #${projectId}"
+
+                        // Имя и projectId передаются через env-переменные оболочки
+                        // (не через Groovy-интерполяцию), чтобы избежать shell injection:
+                        // спецсимволы в имени запуска не попадают в тело скрипта.
+                        env.ALLA_LAUNCH_NAME_VAR = env.LAUNCH_NAME
+                        env.ALLA_PROJECT_ID_VAR  = projectId
+                        def resolveUrl = "${env.ALLA_ENDPOINT}/api/v1/launch/resolve"
+                        def responseJson = sh(
+                            script: """
+                                curl -sf --max-time 30 \\
+                                    -G "${resolveUrl}" \\
+                                    --data-urlencode "name=\$ALLA_LAUNCH_NAME_VAR" \\
+                                    --data-urlencode "project_id=\$ALLA_PROJECT_ID_VAR"
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        def parsed = readJSON text: responseJson
+                        def resolvedId = parsed.launch_id as String
+                        if (!(resolvedId ==~ /^\d+$/)) {
+                            error("Неожиданный launch_id от сервера: '${resolvedId}'")
+                        }
+                        env.ALLA_LAUNCH_ID = resolvedId
+                        echo "Резолв: имя '${env.LAUNCH_NAME}' → ID #${env.ALLA_LAUNCH_ID}"
                     } else {
                         // Ручной запуск: нужен числовой LAUNCH_ID
                         def launchId = params.LAUNCH_ID?.trim()
                         if (!launchId || !(launchId ==~ /^\d+$/)) {
                             error('Укажи LAUNCH_ID (ручной запуск) или настрой вебхук с launchName.')
                         }
-                        env.ALLA_LAUNCH_NAME = ''
-                        env.ALLA_PROJECT_ID  = ''
-                        env.ALLA_LAUNCH_ID   = launchId
+                        env.ALLA_LAUNCH_ID = launchId
                         echo "Ручной запуск: ID #${launchId}"
                     }
                 }
             }
         }
 
-        stage('Setup Python') {
-            steps {
-                sh """
-                    python3 -m venv ${VENV_DIR}
-                    ${VENV_DIR}/bin/pip install --quiet --upgrade pip
-                """
-            }
-        }
-
-        stage('Install alla') {
-            steps {
-                sh """
-                    ${VENV_DIR}/bin/pip install --quiet -e .
-                """
-            }
-        }
-
         stage('Analyze Launch') {
-            environment {
-                // Базовые настройки
-                ALLURE_LOG_LEVEL            = "${params.LOG_LEVEL}"
-                ALLURE_SSL_VERIFY           = 'true'
-
-                // Кластеризация
-                ALLURE_CLUSTERING_ENABLED   = 'true'
-                ALLURE_CLUSTERING_THRESHOLD = '0.60'
-
-                // База знаний — включена, результаты пишутся в TestOps
-                ALLURE_KB_ENABLED           = 'true'
-                ALLURE_KB_PUSH_ENABLED      = 'true'
-
-                // LLM — включён всегда
-                ALLURE_LLM_ENABLED          = 'true'
-                ALLURE_LLM_PUSH_ENABLED     = 'true'
-            }
             steps {
-                // Имя запуска передаётся через $ALLA_LAUNCH_NAME с двойными кавычками
-                // на уровне shell — безопасно, Groovy не интерполирует \$VAR.
-                sh """
-                    if [ -n "\$ALLA_LAUNCH_NAME" ]; then
-                        ${VENV_DIR}/bin/alla --launch-name "\$ALLA_LAUNCH_NAME" --project-id "\$ALLA_PROJECT_ID" \\
-                            --output-format json \\
-                            --html-report-file ${env.REPORT_HTML} \\
-                            --report-url "${env.BUILD_URL}artifact/${env.REPORT_HTML}" \\
-                            --log-level ${params.LOG_LEVEL} \\
-                        > ${env.REPORT_FILE}
-                    else
-                        ${VENV_DIR}/bin/alla "\$ALLA_LAUNCH_ID" \\
-                            --output-format json \\
-                            --html-report-file ${env.REPORT_HTML} \\
-                            --report-url "${env.BUILD_URL}artifact/${env.REPORT_HTML}" \\
-                            --log-level ${params.LOG_LEVEL} \\
-                        > ${env.REPORT_FILE}
-                    fi
-                """
+                script {
+                    def launchId = env.ALLA_LAUNCH_ID
+                    def reportUrl = "${env.BUILD_URL}artifact/${env.REPORT_HTML}"
+                    // URL-кодируем report_url, чтобы : и / не сломали query string
+                    def encodedReportUrl = java.net.URLEncoder.encode(reportUrl, 'UTF-8')
+                    def analyzeUrl = "${env.ALLA_ENDPOINT}/api/v1/analyze/${launchId}/html?report_url=${encodedReportUrl}"
+
+                    sh """
+                        curl -sf --max-time 1800 -X POST "${analyzeUrl}" -o "${env.REPORT_HTML}"
+                    """
+
+                    echo "HTML-отчёт сохранён: ${env.REPORT_HTML}"
+                    echo "Ссылка на отчёт передана в alla-server: ${reportUrl} (результат прикрепления см. в логах сервера)"
+                }
             }
         }
 
         stage('Summary') {
             steps {
                 script {
-                    def report = readJSON file: env.REPORT_FILE
-                    def triage = report.triage_report
-                    def launchId = triage.launch_id ?: '?'
+                    def launchId = env.ALLA_LAUNCH_ID
+                    def launchName = env.LAUNCH_NAME?.trim() ?: ''
 
-                    // failure_count — @property в Python, не сериализуется model_dump().
-                    // Считаем вручную из failed_count + broken_count.
-                    def failureCount = (triage.failed_count ?: 0) + (triage.broken_count ?: 0)
+                    currentBuild.description = launchName
+                        ? "#${launchId} | ${launchName}"
+                        : "#${launchId}"
 
-                    echo """
-╔══════════════════════════════════════════════╗
-  Прогон #${launchId}: ${triage.launch_name ?: '—'}
-  Всего:    ${triage.total_results}
-  Упало:    ${failureCount}  (failed: ${triage.failed_count}, broken: ${triage.broken_count})
-  Кластеров: ${report.clustering_report?.cluster_count ?: '—'}
-╚══════════════════════════════════════════════╝
-                    """.stripIndent()
-
-                    currentBuild.description =
-                        "#${launchId} | упало: ${failureCount} | " +
-                        "кластеров: ${report.clustering_report?.cluster_count ?: '?'}"
+                    echo "Анализ завершён. Прогон #${launchId}. HTML-отчёт: ${env.BUILD_URL}artifact/${env.REPORT_HTML}"
                 }
             }
         }
@@ -180,7 +138,7 @@ pipeline {
     post {
         always {
             archiveArtifacts(
-                artifacts: "${env.REPORT_FILE}, ${env.REPORT_HTML}",
+                artifacts: "${env.REPORT_HTML}",
                 allowEmptyArchive: true
             )
             publishHTML([
@@ -198,9 +156,6 @@ pipeline {
         }
         failure {
             echo "Анализ завершился с ошибкой. Проверь логи выше."
-        }
-        cleanup {
-            sh "rm -rf ${VENV_DIR}"
         }
     }
 }
