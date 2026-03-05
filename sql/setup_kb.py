@@ -31,6 +31,8 @@ from pathlib import Path
 SCHEMA_SQL = """
 CREATE SCHEMA IF NOT EXISTS alla;
 
+COMMENT ON SCHEMA alla IS 'alla test-failure triage — knowledge base';
+
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type
@@ -41,6 +43,9 @@ BEGIN
 END
 $$;
 
+-- ---------------------------------------------------------------------------
+-- Основная таблица записей базы знаний
+-- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS alla.kb_entry (
     entry_id         BIGSERIAL                 PRIMARY KEY,
     id               TEXT                      NOT NULL,
@@ -78,6 +83,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_entry_id_project
 
 CREATE INDEX IF NOT EXISTS idx_kb_entry_project_id
     ON alla.kb_entry (project_id);
+
+-- ---------------------------------------------------------------------------
+-- Таблица обратной связи: like / dislike на KB-совпадения из HTML-отчёта
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS alla.kb_feedback (
+    feedback_id       BIGSERIAL    PRIMARY KEY,
+    kb_entry_id       BIGINT       NOT NULL
+                                   REFERENCES alla.kb_entry(entry_id)
+                                   ON DELETE CASCADE,
+    error_fingerprint CHAR(64)     NOT NULL,
+    vote              TEXT         NOT NULL CHECK (vote IN ('like', 'dislike')),
+    launch_id         INTEGER,
+    cluster_id        TEXT,
+    created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    UNIQUE (kb_entry_id, error_fingerprint)
+);
+
+COMMENT ON TABLE  alla.kb_feedback IS
+    'Обратная связь тестировщиков: like/dislike на KB-совпадения из HTML-отчёта alla';
+COMMENT ON COLUMN alla.kb_feedback.kb_entry_id IS
+    'FK на alla.kb_entry.entry_id — суррогатный PK, не slug';
+COMMENT ON COLUMN alla.kb_feedback.error_fingerprint IS
+    'SHA-256 hex нормализованного error_text (message+trace+logs) с версией';
+COMMENT ON COLUMN alla.kb_feedback.vote IS
+    'like = boost score, dislike = exclude from results';
+
+CREATE INDEX IF NOT EXISTS idx_kb_feedback_fingerprint
+    ON alla.kb_feedback (error_fingerprint);
 """
 
 # ---------------------------------------------------------------------------
@@ -310,7 +343,7 @@ def run(
             print()
         if run_seed:
             print("--- SEED SQL ---")
-            print(f"INSERT {len(SEED_ENTRIES)} глобальных записей (ON CONFLICT DO NOTHING)")
+            print(f"INSERT {len(SEED_ENTRIES)} записей в alla.kb_entry (ON CONFLICT DO NOTHING)")
         return
 
     try:
@@ -333,7 +366,7 @@ def run(
 
     with conn:
         if run_schema:
-            print("Создание схемы alla и таблицы kb_entry...")
+            print("Создание схемы alla, таблиц kb_entry и kb_feedback...")
             with conn.cursor() as cur:
                 cur.execute(SCHEMA_SQL)
             print("✓ Схема создана (или уже существовала)\n")

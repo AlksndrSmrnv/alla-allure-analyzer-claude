@@ -70,15 +70,22 @@ pipeline {
                         env.ALLA_LAUNCH_NAME_VAR = env.LAUNCH_NAME
                         env.ALLA_PROJECT_ID_VAR  = projectId
                         def resolveUrl = "${env.ALLA_ENDPOINT}/api/v1/launch/resolve"
-                        def responseJson = sh(
-                            script: """
-                                curl -sf --max-time 30 \\
-                                    -G "${resolveUrl}" \\
-                                    --data-urlencode "name=\$ALLA_LAUNCH_NAME_VAR" \\
-                                    --data-urlencode "project_id=\$ALLA_PROJECT_ID_VAR"
-                            """,
-                            returnStdout: true
-                        ).trim()
+                        def responseJson = withCredentials([
+                            file(credentialsId: 'alla-client-cert', variable: 'CLIENT_CERT'),
+                            file(credentialsId: 'alla-client-key',  variable: 'CLIENT_KEY'),
+                        ]) {
+                            sh(
+                                script: """
+                                    curl -sfk --max-time 30 \\
+                                        --cert "\$CLIENT_CERT" \\
+                                        --key  "\$CLIENT_KEY"  \\
+                                        -G "${resolveUrl}" \\
+                                        --data-urlencode "name=\$ALLA_LAUNCH_NAME_VAR" \\
+                                        --data-urlencode "project_id=\$ALLA_PROJECT_ID_VAR"
+                                """,
+                                returnStdout: true
+                            )
+                        }.trim()
 
                         def parsed = readJSON text: responseJson
                         def resolvedId = parsed.launch_id as String
@@ -109,9 +116,17 @@ pipeline {
                     def encodedReportUrl = java.net.URLEncoder.encode(reportUrl, 'UTF-8')
                     def analyzeUrl = "${env.ALLA_ENDPOINT}/api/v1/analyze/${launchId}/html?report_url=${encodedReportUrl}"
 
-                    sh """
-                        curl -sf --max-time 1800 -X POST "${analyzeUrl}" -o "${env.REPORT_HTML}"
-                    """
+                    withCredentials([
+                        file(credentialsId: 'alla-client-cert', variable: 'CLIENT_CERT'),
+                        file(credentialsId: 'alla-client-key',  variable: 'CLIENT_KEY'),
+                    ]) {
+                        sh """
+                            curl -sfk --max-time 1800 -X POST "${analyzeUrl}" \\
+                                --cert "\$CLIENT_CERT" \\
+                                --key  "\$CLIENT_KEY"  \\
+                                -o "${env.REPORT_HTML}"
+                        """
+                    }
 
                     echo "HTML-отчёт сохранён: ${env.REPORT_HTML}"
                     echo "Ссылка на отчёт передана в alla-server: ${reportUrl} (результат прикрепления см. в логах сервера)"
