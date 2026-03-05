@@ -68,7 +68,7 @@ alla <launch_id>
 | Слой | Пакет | Назначение |
 |------|-------|------------|
 | **CLI** | `alla/cli.py` | Точка входа CLI. argparse + asyncio.run(). Вывод text/json. |
-| **HTTP-сервер** | `alla/server.py` | Точка входа REST API. FastAPI + uvicorn. JSON-ответы. |
+| **HTTP-сервер** | `alla/server.py` | Точка входа REST API. FastAPI + uvicorn. JSON/HTML-ответы. |
 | **Оркестратор** | `alla/orchestrator.py` | Общий pipeline анализа, вызывается из CLI и сервера. |
 | **Сервисы** | `alla/services/` | Бизнес-логика. Не знает про HTTP. Оперирует доменными моделями. |
 | **Отчёты** | `alla/report/` | Генерация выходных артефактов (HTML). Не знает про HTTP и бизнес-логику. |
@@ -237,13 +237,21 @@ REST API:
 | Метод | Путь | Описание |
 |-------|------|----------|
 | GET | `/health` | `{"status": "ok", "version": "..."}` |
+| GET | `/api/v1/launch/resolve` | Резолв имени запуска в числовой ID. `?name=...&project_id=...` → `{"launch_id": 12345}` |
 | POST | `/api/v1/analyze/{launch_id}` | Полный pipeline анализа, возвращает JSON |
+| POST | `/api/v1/analyze/{launch_id}/html` | Полный pipeline анализа, возвращает self-contained HTML-отчёт. `?report_url=...` прикрепляет ссылку к прогону в TestOps |
 | DELETE | `/api/v1/comments/{launch_id}` | Удалить комментарии alla для тестов запуска. `?dry_run=true` — предпросмотр |
 | GET | `/docs` | Swagger UI (автогенерация FastAPI) |
 
 ```bash
-# Анализ запуска
+# Резолв имени запуска в ID
+curl 'http://localhost:8090/api/v1/launch/resolve?name=Nightly+Run&project_id=1'
+
+# Анализ запуска — JSON
 curl -X POST http://localhost:8090/api/v1/analyze/12345
+
+# Анализ запуска — HTML-отчёт (с прикреплением ссылки к прогону в TestOps)
+curl -X POST 'http://localhost:8090/api/v1/analyze/12345/html?report_url=http://jenkins/artifacts/report.html' -o report.html
 
 # Удаление комментариев alla (предпросмотр)
 curl -X DELETE "http://localhost:8090/api/v1/comments/12345?dry_run=true"
