@@ -41,8 +41,6 @@ pipeline {
     environment {
         // URL alla-сервера в Kubernetes (без trailing slash)
         ALLA_ENDPOINT = credentials('alla-k8s-endpoint')
-
-        REPORT_HTML = 'alla-report.html'
     }
 
     options {
@@ -111,10 +109,7 @@ pipeline {
             steps {
                 script {
                     def launchId = env.ALLA_LAUNCH_ID
-                    def reportUrl = "${env.BUILD_URL}artifact/${env.REPORT_HTML}"
-                    // URL-кодируем report_url, чтобы : и / не сломали query string
-                    def encodedReportUrl = java.net.URLEncoder.encode(reportUrl, 'UTF-8')
-                    def analyzeUrl = "${env.ALLA_ENDPOINT}/api/v1/analyze/${launchId}/html?report_url=${encodedReportUrl}"
+                    def analyzeUrl = "${env.ALLA_ENDPOINT}/api/v1/analyze/${launchId}/html"
 
                     withCredentials([
                         file(credentialsId: 'alla-client-cert', variable: 'CLIENT_CERT'),
@@ -124,12 +119,11 @@ pipeline {
                             curl -sfk --max-time 1800 -X POST "${analyzeUrl}" \\
                                 --cert "\$CLIENT_CERT" \\
                                 --key  "\$CLIENT_KEY"  \\
-                                -o "${env.REPORT_HTML}"
+                                -o /dev/null -w 'HTTP %{http_code}'
                         """
                     }
 
-                    echo "HTML-отчёт сохранён: ${env.REPORT_HTML}"
-                    echo "Ссылка на отчёт передана в alla-server: ${reportUrl} (результат прикрепления см. в логах сервера)"
+                    echo "Анализ завершён. Отчёт сохранён на alla-server."
                 }
             }
         }
@@ -144,28 +138,13 @@ pipeline {
                         ? "#${launchId} | ${launchName}"
                         : "#${launchId}"
 
-                    echo "Анализ завершён. Прогон #${launchId}. HTML-отчёт: ${env.BUILD_URL}artifact/${env.REPORT_HTML}"
+                    echo "Анализ завершён. Прогон #${launchId}."
                 }
             }
         }
     }
 
     post {
-        always {
-            archiveArtifacts(
-                artifacts: "${env.REPORT_HTML}",
-                allowEmptyArchive: true
-            )
-            publishHTML([
-                allowMissing: true,
-                alwaysLinkToLastBuild: false,
-                keepAll: true,
-                reportDir: '.',
-                reportFiles: env.REPORT_HTML,
-                reportName: 'alla — AI Анализ тестов',
-                reportTitles: ''
-            ])
-        }
         success {
             echo "Анализ завершён. Результаты отправлены в TestOps."
         }

@@ -176,6 +176,8 @@ alla <launch_id>
 | `ALLURE_LLM_PUSH_ENABLED` | нет | `false` | Записывать результаты LLM-анализа в TestOps через комментарии |
 | `ALLURE_LLM_MAX_RETRIES` | нет | `3` | Число повторных попыток при 429/503/сетевых ошибках Langflow (0 = без retry) |
 | `ALLURE_LLM_RETRY_BASE_DELAY` | нет | `1.0` | Базовая задержка в секундах для exponential backoff (delay = base × 2^attempt) |
+| `ALLURE_REPORTS_DIR` | нет | `""` | Директория для сохранения HTML-отчётов. В Kubernetes — путь к PersistentVolume. Если пусто — отчёты не сохраняются на диск |
+| `ALLURE_SERVER_EXTERNAL_URL` | нет | `""` | Внешний URL alla-сервера для формирования ссылок на отчёты в TestOps (например `https://alla.company.com`) |
 
 ## Установка и запуск
 
@@ -239,7 +241,8 @@ REST API:
 | GET | `/health` | `{"status": "ok", "version": "..."}` |
 | GET | `/api/v1/launch/resolve` | Резолв имени запуска в числовой ID. `?name=...&project_id=...` → `{"launch_id": 12345}` |
 | POST | `/api/v1/analyze/{launch_id}` | Полный pipeline анализа, возвращает JSON |
-| POST | `/api/v1/analyze/{launch_id}/html` | Полный pipeline анализа, возвращает self-contained HTML-отчёт. `?report_url=...` прикрепляет ссылку к прогону в TestOps |
+| POST | `/api/v1/analyze/{launch_id}/html` | Полный pipeline анализа, возвращает self-contained HTML-отчёт. При `ALLURE_REPORTS_DIR` — сохраняет на диск. При `ALLURE_SERVER_EXTERNAL_URL` — прикрепляет ссылку на self-hosted отчёт к прогону в TestOps |
+| GET | `/reports/{launch_id}.html` | Отдать ранее сгенерированный HTML-отчёт. Требует `ALLURE_REPORTS_DIR` |
 | DELETE | `/api/v1/comments/{launch_id}` | Удалить комментарии alla для тестов запуска. `?dry_run=true` — предпросмотр |
 | GET | `/docs` | Swagger UI (автогенерация FastAPI) |
 
@@ -577,7 +580,8 @@ CREATE TABLE alla.kb_entry (
 - [x] **Удаление комментариев alla** — команда `alla delete <launch_id>` сканирует комментарии к failed/broken тестам запуска, фильтрует по префиксу `[alla]` в теле комментария и удаляет через `DELETE /api/comment/{id}`. `CommentManager` Protocol для чтения/удаления комментариев. `CommentDeleteService` с двухфазным алгоритмом (scan → delete), semaphore-based concurrency и per-test error resilience. Флаг `--dry-run` для предварительного просмотра без удаления. REST API: `DELETE /api/v1/comments/{launch_id}?dry_run=true`.
 - [x] **LLM-анализ кластеров (Langflow)** — `LLMService.analyze_clusters()` отправляет каждый кластер в Langflow с контекстом (ошибка + трейс + KB-совпадения + лог). Ответ — 4 секции: что произошло / категория / что делать / критичность. Параллелизм через semaphore (`ALLURE_LLM_CONCURRENCY`). Клиент: `clients/langflow_client.py` с exponential backoff retry (`ALLURE_LLM_MAX_RETRIES`, `ALLURE_LLM_RETRY_BASE_DELAY`). LLM push (`ALLURE_LLM_PUSH_ENABLED`): комментарии `[alla] LLM-анализ ошибки` к тест-кейсам. При включённом LLM — KB push не выполняется (LLM включает KB в промпт).
 - [x] **Итоговый LLM-отчёт по прогону** — `LLMService.generate_launch_summary()` делает один дополнительный LLM-вызов после `analyze_clusters()`. Промпт содержит метаданные запуска + все кластеры (с их per-cluster анализами если доступны). LLM пишет 2-4 абзаца: общая картина → ключевые проблемы по убыванию критичности → приоритетные действия. CLI: секция `=== Итоговый отчёт ===` после кластерных рамок. Модель: `LLMLaunchSummary` в `models/llm.py`.
-- [x] **HTML-отчёт** — `alla/report/html_report.py`, `generate_html_report(result, endpoint)`. Self-contained HTML (pure Python, без Jinja2/внешних зависимостей): заголовок прогона, стат-карточки, итоговый LLM-summary, карточки кластеров (LLM-анализ + KB-совпадения + ссылки на тесты в Allure TestOps). Флаг CLI `--html-report-file PATH` — генерирует JSON и HTML за один прогон (без повторных API-вызовов). Jenkinsfile: `publishHTML()` прикрепляет отчёт к сборке как browsable artifact. Требует Jenkins-плагин **HTML Publisher**.
+- [x] **HTML-отчёт** — `alla/report/html_report.py`, `generate_html_report(result, endpoint)`. Self-contained HTML (pure Python, без Jinja2/внешних зависимостей): заголовок прогона, стат-карточки, итоговый LLM-summary, карточки кластеров (LLM-анализ + KB-совпадения + ссылки на тесты в Allure TestOps). Флаг CLI `--html-report-file PATH` — генерирует JSON и HTML за один прогон (без повторных API-вызовов).
+- [x] **Self-hosted отчёты** — alla-server сохраняет HTML-отчёты на диск (`ALLURE_REPORTS_DIR`) и раздаёт через `GET /reports/{launch_id}.html`. При заданном `ALLURE_SERVER_EXTERNAL_URL` автоматически формирует ссылку на отчёт и прикрепляет к прогону в TestOps через `PATCH /api/launch/{id}`. Jenkins только триггерит анализ, не хостит артефакты. CSP-заголовки для feedback API управляются alla-server.
 
 ## Что не сделано (план на следующие фазы)
 
