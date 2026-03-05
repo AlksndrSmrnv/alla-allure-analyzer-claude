@@ -111,19 +111,27 @@ pipeline {
                     def launchId = env.ALLA_LAUNCH_ID
                     def analyzeUrl = "${env.ALLA_ENDPOINT}/api/v1/analyze/${launchId}/html"
 
-                    withCredentials([
+                    def reportUrl = withCredentials([
                         file(credentialsId: 'alla-client-cert', variable: 'CLIENT_CERT'),
                         file(credentialsId: 'alla-client-key',  variable: 'CLIENT_KEY'),
                     ]) {
-                        sh """
-                            curl -sfk --max-time 1800 -X POST "${analyzeUrl}" \\
-                                --cert "\$CLIENT_CERT" \\
-                                --key  "\$CLIENT_KEY"  \\
-                                -o /dev/null -w 'HTTP %{http_code}'
-                        """
-                    }
+                        sh(
+                            script: """
+                                curl -sfk --max-time 1800 -X POST "${analyzeUrl}" \\
+                                    --cert "\$CLIENT_CERT" \\
+                                    --key  "\$CLIENT_KEY"  \\
+                                    -o /dev/null -D - | grep -i '^X-Report-URL:' | sed 's/^[^:]*: *//' | tr -d '\\r\\n'
+                            """,
+                            returnStdout: true
+                        )
+                    }.trim()
 
-                    echo "Анализ завершён. Отчёт сохранён на alla-server."
+                    if (reportUrl) {
+                        env.ALLA_REPORT_URL = reportUrl
+                        echo "Анализ завершён. Отчёт: ${reportUrl}"
+                    } else {
+                        echo "Анализ завершён. URL отчёта не получен (проверьте ALLURE_SERVER_EXTERNAL_URL + ALLURE_REPORTS_DIR)."
+                    }
                 }
             }
         }
@@ -133,12 +141,17 @@ pipeline {
                 script {
                     def launchId = env.ALLA_LAUNCH_ID
                     def launchName = env.LAUNCH_NAME?.trim() ?: ''
+                    def reportUrl = env.ALLA_REPORT_URL ?: ''
 
                     currentBuild.description = launchName
                         ? "#${launchId} | ${launchName}"
                         : "#${launchId}"
 
-                    echo "Анализ завершён. Прогон #${launchId}."
+                    if (reportUrl) {
+                        echo "Анализ завершён. Прогон #${launchId}. Отчёт: ${reportUrl}"
+                    } else {
+                        echo "Анализ завершён. Прогон #${launchId}."
+                    }
                 }
             }
         }
