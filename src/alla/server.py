@@ -98,6 +98,12 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
     _state.client = client
     _state.auth = auth
 
+    if settings.reports_dir:
+        from pathlib import Path
+
+        Path(settings.reports_dir).mkdir(parents=True, exist_ok=True)
+        logger.info("Директория отчётов: %s", Path(settings.reports_dir).resolve())
+
     yield
 
     logger.info("alla server останавливается")
@@ -123,6 +129,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# --- Вспомогательные функции ---
+
+
+def _build_csp_headers() -> dict[str, str]:
+    """CSP-заголовки для HTML-отчётов с feedback API."""
+    if not _state.settings.kb_feedback_enabled or not _state.settings.feedback_server_url:
+        return {}
+    feedback_url = _state.settings.feedback_server_url
+    return {
+        "Content-Security-Policy": (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            f"connect-src 'self' {feedback_url}; "
+            "img-src 'self' data:;"
+        )
+    }
 
 
 # --- Маршруты ---
@@ -301,9 +326,34 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
     except PaginationLimitError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
+    feedback_api_url = ""
+    if _state.settings.kb_feedback_enabled:
+        feedback_api_url = _state.settings.feedback_server_url
+
+    html = generate_html_report(
+        result,
+        endpoint=_state.settings.endpoint,
+        feedback_api_url=feedback_api_url,
+    )
+
+    # Сохранить отчёт на диск для self-hosted раздачи.
+    if _state.settings.reports_dir:
+        from pathlib import Path
+
+        report_path = Path(_state.settings.reports_dir) / f"{launch_id}.html"
+        report_path.write_text(html, encoding="utf-8")
+        logger.info("HTML-отчёт сохранён: %s", report_path)
+
     # Прикрепить ссылку на HTML-отчёт к прогону в TestOps.
-    # Приоритет: query param report_url > ALLURE_REPORT_URL из конфига.
-    effective_report_url = report_url or _state.settings.report_url
+    # Приоритет: query param → auto из server_external_url → config fallback.
+    if report_url:
+        effective_report_url = report_url
+    elif _state.settings.server_external_url:
+        ext = _state.settings.server_external_url.rstrip("/")
+        effective_report_url = f"{ext}/reports/{launch_id}.html"
+    else:
+        effective_report_url = _state.settings.report_url
+
     if effective_report_url and isinstance(_state.client, LaunchLinksUpdater):
         try:
             await _state.client.patch_launch_links(
@@ -318,25 +368,32 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
                 exc,
             )
 
-    feedback_api_url = ""
-    if _state.settings.kb_feedback_enabled:
-        feedback_api_url = _state.settings.feedback_server_url
+    return HTMLResponse(content=html, headers=_build_csp_headers())
 
-    html = generate_html_report(
-        result,
-        endpoint=_state.settings.endpoint,
-        feedback_api_url=feedback_api_url,
-    )
-    headers: dict[str, str] = {}
-    if feedback_api_url:
-        headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-            "style-src 'self' 'unsafe-inline'; "
-            f"connect-src 'self' {feedback_api_url}; "
-            "img-src 'self' data:;"
+
+@app.get(
+    "/reports/{launch_id}.html",
+    response_class=HTMLResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Отчёт не найден"},
+    },
+)
+async def get_report(launch_id: int) -> HTMLResponse:
+    """Отдать ранее сгенерированный HTML-отчёт по ID запуска."""
+    from pathlib import Path
+
+    if not _state.settings.reports_dir:
+        raise HTTPException(status_code=404, detail="Self-hosted reports are not configured")
+
+    report_path = Path(_state.settings.reports_dir) / f"{launch_id}.html"
+    if not report_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Отчёт для запуска #{launch_id} не найден",
         )
-    return HTMLResponse(content=html, headers=headers)
+
+    content = report_path.read_text(encoding="utf-8")
+    return HTMLResponse(content=content, headers=_build_csp_headers())
 
 
 @app.delete(

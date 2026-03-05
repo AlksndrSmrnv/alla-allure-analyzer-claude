@@ -133,3 +133,14 @@ class Settings(BaseSettings):
         default="[Alla] HTML-отчёт запуска автотестов",
         description="Название ссылки HTML-отчёта в Allure TestOps (ALLURE_REPORT_LINK_NAME)",
     )
+
+    reports_dir: str = Field(
+        default="",
+        description="Директория для сохранения HTML-отчётов (ALLURE_REPORTS_DIR). "
+        "В Kubernetes — путь к PersistentVolume. Если пусто — отчёты не сохраняются.",
+    )
+    server_external_url: str = Field(
+        default="",
+        description="Внешний URL alla-сервера (ALLURE_SERVER_EXTERNAL_URL). "
+        "Используется для ссылок на отчёты в TestOps. Пример: https://alla.company.com",
+    )
