@@ -327,7 +327,16 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
         endpoint=_state.settings.endpoint,
         feedback_api_url=feedback_api_url,
     )
-    return HTMLResponse(content=html)
+    headers: dict[str, str] = {}
+    if feedback_api_url:
+        headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'; "
+            f"connect-src 'self' {feedback_api_url}; "
+            "img-src 'self' data:;"
+        )
+    return HTMLResponse(content=html, headers=headers)
 
 
 @app.delete(

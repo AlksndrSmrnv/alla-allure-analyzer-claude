@@ -56,12 +56,25 @@ def generate_html_report(
     feedback_css = _FEEDBACK_CSS if feedback_api_url else ""
     feedback_js = _build_feedback_js(feedback_api_url) if feedback_api_url else ""
 
+    csp_meta = ""
+    if feedback_api_url:
+        _safe_url = _e(feedback_api_url)
+        csp_meta = (
+            f'  <meta http-equiv="Content-Security-Policy" content="'
+            f"default-src 'self'; "
+            f"script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            f"style-src 'self' 'unsafe-inline'; "
+            f"connect-src 'self' {_safe_url}; "
+            f"img-src 'self' data:;"
+            f'">\n'
+        )
+
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>alla — {_e(launch_title)}</title>
+{csp_meta}  <title>alla — {_e(launch_title)}</title>
   <script src="https://cdn.jsdelivr.net/npm/marked@15.0.4/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
   <style>
