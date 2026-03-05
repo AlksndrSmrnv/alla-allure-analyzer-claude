@@ -62,7 +62,7 @@ def generate_html_report(
         csp_meta = (
             f'  <meta http-equiv="Content-Security-Policy" content="'
             f"default-src 'self'; "
-            f"script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            f"script-src 'self' 'unsafe-inline'; "
             f"style-src 'self' 'unsafe-inline'; "
             f"connect-src 'self' {_safe_url}; "
             f"img-src 'self' data:;"
@@ -75,8 +75,6 @@ def generate_html_report(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 {csp_meta}  <title>alla — {_e(launch_title)}</title>
-  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.4/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
   <style>
 {_CSS}
 {feedback_css}
@@ -101,17 +99,6 @@ def generate_html_report(
 
   </div>
 
-  <script>
-    document.addEventListener("DOMContentLoaded", function() {{
-      if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {{
-        document.querySelectorAll('.markdown-source').forEach(function(el) {{
-          var rendered = el.nextElementSibling;
-          var html = marked.parse(el.value, {{ breaks: true, gfm: true }});
-          rendered.innerHTML = DOMPurify.sanitize(html);
-        }});
-      }}
-    }});
-  </script>
 {feedback_js}
 </body>
 </html>"""
@@ -394,20 +381,124 @@ def _e(s: object) -> str:
     return _html.escape(str(s))
 
 
+def _inline_md(text: str) -> str:
+    """HTML-escape text then apply inline Markdown (bold, italic, code)."""
+    text = _html.escape(text)
+    # Bold **text**
+    text = re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", text)
+    # Italic *text* (not preceded/followed by another *)
+    text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", text)
+    # Inline code `code`
+    text = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", text)
+    return text
+
+
+def _markdown_to_html(text: str) -> str:
+    """Convert a Markdown subset to HTML (pure Python, no external dependencies).
+
+    Handles: ATX headings, fenced code blocks, unordered/ordered lists,
+    bold, italic, inline code, and paragraphs.
+    """
+    lines = text.splitlines()
+    parts: list[str] = []
+    para: list[str] = []
+    in_code = False
+    code_buf: list[str] = []
+    code_open_tag = ""
+    in_ul = False
+    in_ol = False
+
+    def flush_para() -> None:
+        if not para:
+            return
+        inner = _inline_md(" ".join(para))
+        parts.append(f"<p>{inner}</p>")
+        para.clear()
+
+    def close_list() -> None:
+        nonlocal in_ul, in_ol
+        if in_ul:
+            parts.append("</ul>")
+            in_ul = False
+        elif in_ol:
+            parts.append("</ol>")
+            in_ol = False
+
+    for line in lines:
+        # Fenced code block toggle
+        if line.startswith("```"):
+            if in_code:
+                parts.append(code_open_tag + _html.escape("\n".join(code_buf)) + "</code></pre>")
+                code_buf.clear()
+                code_open_tag = ""
+                in_code = False
+            else:
+                flush_para()
+                close_list()
+                lang = _html.escape(line[3:].strip())
+                attr = f' class="language-{lang}"' if lang else ""
+                code_open_tag = f"<pre><code{attr}>"
+                in_code = True
+            continue
+
+        if in_code:
+            code_buf.append(line)
+            continue
+
+        # ATX headings
+        m = re.match(r"^(#{1,4})\s+(.*)", line)
+        if m:
+            flush_para()
+            close_list()
+            level = len(m.group(1))
+            parts.append(f"<h{level}>{_inline_md(m.group(2))}</h{level}>")
+            continue
+
+        # Unordered list item
+        m = re.match(r"^[-*+]\s+(.*)", line)
+        if m:
+            flush_para()
+            if in_ol:
+                close_list()
+            if not in_ul:
+                parts.append("<ul>")
+                in_ul = True
+            parts.append(f"<li>{_inline_md(m.group(1))}</li>")
+            continue
+
+        # Ordered list item
+        m = re.match(r"^\d+[.)]\s+(.*)", line)
+        if m:
+            flush_para()
+            if in_ul:
+                close_list()
+            if not in_ol:
+                parts.append("<ol>")
+                in_ol = True
+            parts.append(f"<li>{_inline_md(m.group(1))}</li>")
+            continue
+
+        # Blank line — end paragraph and list
+        if not line.strip():
+            flush_para()
+            close_list()
+            continue
+
+        # Regular text — close any open list and accumulate into paragraph
+        close_list()
+        para.append(line)
+
+    flush_para()
+    close_list()
+    if in_code:
+        parts.append(code_open_tag + _html.escape("\n".join(code_buf)) + "</code></pre>")
+
+    return "\n".join(parts)
+
+
 def _render_llm_text(text: str) -> str:
-    """Подготовить LLM-текст для рендеринга через marked.js на клиенте с фоллбэком."""
-    safe_text = _html.escape(text)
-    
-    # Базовый фоллбэк (серверный рендеринг) для оффлайн-режима и CSP
-    fallback = safe_text
-    fallback = re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", fallback)
-    paragraphs = [p.strip() for p in fallback.split("\n\n") if p.strip()]
-    fallback_html = "\n".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs)
-    
-    return (
-        f'<textarea class="markdown-source" style="display:none;">{safe_text}</textarea>'
-        f'<div class="markdown-rendered">{fallback_html}</div>'
-    )
+    """Render LLM Markdown to HTML server-side (no external dependencies)."""
+    return f'<div class="markdown-rendered">{_markdown_to_html(text)}</div>'
 
 
 # ---------------------------------------------------------------------------
