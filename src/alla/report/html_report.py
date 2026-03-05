@@ -404,6 +404,7 @@ def _markdown_to_html(text: str) -> str:
     para: list[str] = []
     in_code = False
     code_buf: list[str] = []
+    code_open_tag = ""
     in_ul = False
     in_ol = False
 
@@ -427,15 +428,16 @@ def _markdown_to_html(text: str) -> str:
         # Fenced code block toggle
         if line.startswith("```"):
             if in_code:
-                parts.append(_html.escape("\n".join(code_buf)) + "</code></pre>")
+                parts.append(code_open_tag + _html.escape("\n".join(code_buf)) + "</code></pre>")
                 code_buf.clear()
+                code_open_tag = ""
                 in_code = False
             else:
                 flush_para()
                 close_list()
                 lang = _html.escape(line[3:].strip())
                 attr = f' class="language-{lang}"' if lang else ""
-                parts.append(f"<pre><code{attr}>")
+                code_open_tag = f"<pre><code{attr}>"
                 in_code = True
             continue
 
@@ -489,7 +491,7 @@ def _markdown_to_html(text: str) -> str:
     flush_para()
     close_list()
     if in_code:
-        parts.append(_html.escape("\n".join(code_buf)) + "</code></pre>")
+        parts.append(code_open_tag + _html.escape("\n".join(code_buf)) + "</code></pre>")
 
     return "\n".join(parts)
 
