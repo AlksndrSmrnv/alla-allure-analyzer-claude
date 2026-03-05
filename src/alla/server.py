@@ -348,11 +348,20 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
     # Приоритет: query param → auto из server_external_url (только если reports_dir задан) → config fallback.
     if report_url:
         effective_report_url = report_url
+        logger.info("URL отчёта (query param): %s", effective_report_url)
     elif _state.settings.server_external_url and _state.settings.reports_dir:
         ext = _state.settings.server_external_url.rstrip("/")
         effective_report_url = f"{ext}/reports/{launch_id}.html"
+        logger.info("URL отчёта (auto): %s", effective_report_url)
     else:
         effective_report_url = _state.settings.report_url
+        if not effective_report_url:
+            logger.warning(
+                "Ссылка на отчёт не будет прикреплена к запуску #%d: "
+                "задайте ALLURE_SERVER_EXTERNAL_URL + ALLURE_REPORTS_DIR "
+                "или ALLURE_REPORT_URL",
+                launch_id,
+            )
 
     if effective_report_url and isinstance(_state.client, LaunchLinksUpdater):
         try:
@@ -361,6 +370,11 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
                 name=_state.settings.report_link_name,
                 url=effective_report_url,
             )
+            logger.info(
+                "Ссылка на отчёт прикреплена к запуску #%d: %s",
+                launch_id,
+                effective_report_url,
+            )
         except Exception as exc:
             logger.warning(
                 "Не удалось прикрепить ссылку на HTML-отчёт к запуску #%d: %s",
@@ -368,7 +382,10 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
                 exc,
             )
 
-    return HTMLResponse(content=html, headers=_build_csp_headers())
+    headers = _build_csp_headers()
+    if effective_report_url:
+        headers["X-Report-URL"] = effective_report_url
+    return HTMLResponse(content=html, headers=headers)
 
 
 @app.get(
