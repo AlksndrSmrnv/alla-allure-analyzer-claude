@@ -345,10 +345,10 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
         logger.info("HTML-отчёт сохранён: %s", report_path)
 
     # Прикрепить ссылку на HTML-отчёт к прогону в TestOps.
-    # Приоритет: query param → auto из server_external_url → config fallback.
+    # Приоритет: query param → auto из server_external_url (только если reports_dir задан) → config fallback.
     if report_url:
         effective_report_url = report_url
-    elif _state.settings.server_external_url:
+    elif _state.settings.server_external_url and _state.settings.reports_dir:
         ext = _state.settings.server_external_url.rstrip("/")
         effective_report_url = f"{ext}/reports/{launch_id}.html"
     else:
