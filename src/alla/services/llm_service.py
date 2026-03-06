@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 _LLM_HEADER = "[alla] LLM-анализ ошибки"
 _SEPARATOR = "=" * 40
+_EXACT_KB_SCORE = 0.999
 
 def _interpret_kb_score(score: float) -> str:
     """Перевести числовой KB-score в текстовое описание уровня уверенности."""
@@ -35,6 +36,92 @@ def _format_kb_category(category: RootCauseCategory) -> str:
         RootCauseCategory.DATA: "данные",
     }
     return mapping.get(category, category.value)
+
+
+def _is_exact_kb_match(match: KBMatchResult) -> bool:
+    """Определить, что KB-совпадение является exact match."""
+    if match.score < _EXACT_KB_SCORE:
+        return False
+    if not match.matched_on:
+        return True
+    return any(
+        "Tier 1" in reason or "exact substring" in reason.lower()
+        for reason in match.matched_on
+    )
+
+
+def _compact_text(text: str, *, limit: int = 220) -> str:
+    """Сжать многострочный текст в короткую строку для LLM-ответа."""
+    compact = " ".join(text.strip().split())
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit] + "...[обрезано]"
+
+
+def _select_evidence_snippet(
+    cluster: FailureCluster,
+    log_snippet: str | None,
+    full_trace: str | None,
+) -> str | None:
+    """Выбрать короткое подтверждение из сообщения, трейса или лога."""
+    candidates = [
+        cluster.example_message,
+        full_trace,
+        cluster.example_trace_snippet,
+        log_snippet,
+    ]
+    for candidate in candidates:
+        if candidate and candidate.strip():
+            return _compact_text(candidate)
+    return None
+
+
+def _build_exact_kb_analysis(
+    cluster: FailureCluster,
+    match: KBMatchResult,
+    *,
+    log_snippet: str | None,
+    full_trace: str | None,
+) -> str:
+    """Собрать детерминированный анализ по exact KB match без вызова LLM."""
+    entry = match.entry
+    category = _format_kb_category(entry.category)
+    evidence = _select_evidence_snippet(cluster, log_snippet, full_trace)
+
+    what_broke = (
+        f'ЧТО СЛОМАЛОСЬ: Падение полностью совпадает с KB #1 "{entry.title}" '
+        f"(exact match, score 1.00)."
+    )
+    if entry.description:
+        what_broke += f" {entry.description}"
+    if evidence:
+        what_broke += f" Подтверждение в данных: {evidence}"
+
+    cause = (
+        f'ПРИЧИНА: {category} — взято напрямую из KB #1 "{entry.title}", '
+        "потому что совпадение exact и не требует выбора другой гипотезы."
+    )
+
+    steps = list(entry.resolution_steps[:3])
+    fallback_steps = []
+    if evidence:
+        fallback_steps.append(f"Сверить текущую ошибку с подтверждением: {evidence}")
+    fallback_steps.extend([
+        f'Повторно проверить симптомы из KB #1 "{entry.title}" в текущем запуске.',
+        f'Если симптомы отличаются от KB #1 "{entry.title}", обновить запись базы знаний.',
+    ])
+    for step in fallback_steps:
+        if len(steps) >= 3:
+            break
+        if step not in steps:
+            steps.append(step)
+    steps = steps[:3]
+
+    lines = [what_broke, cause, "ЧТО ПРОВЕРИТЬ:"]
+    for index, step in enumerate(steps, start=1):
+        lines.append(f"{index}. {step}")
+
+    return "\n".join(lines)
 
 
 def build_cluster_prompt(
@@ -71,6 +158,12 @@ def build_cluster_prompt(
 
     if kb_matches:
         parts.append("\n--- База знаний (читай первой) ---")
+        if _is_exact_kb_match(kb_matches[0]):
+            parts.append(
+                "EXACT MATCH: KB #1 имеет score 1.00. "
+                "Это обязательная основная причина; KB #2 и KB #3 игнорируй, "
+                "если нет прямого противоречия в данных."
+            )
         parts.append(
             "Правило: если KB #1 имеет score >= 0.70 и не противоречит ошибке, "
             "используй её как основную причину."
@@ -82,7 +175,12 @@ def build_cluster_prompt(
         for index, m in enumerate(kb_matches[:3], start=1):
             entry = m.entry
             confidence = _interpret_kb_score(m.score)
-            role = "основная гипотеза" if index == 1 else "дополнительное совпадение"
+            if index == 1 and _is_exact_kb_match(m):
+                role = "exact match; обязательная основная причина"
+            elif index == 1:
+                role = "основная гипотеза"
+            else:
+                role = "дополнительное совпадение"
             parts.append(
                 f"\nKB #{index} [{role}; {confidence}; score {m.score:.2f}]"
             )
@@ -316,6 +414,7 @@ class LLMService:
             nonlocal analyzed, failed, skipped
 
             kb_matches = (kb_results or {}).get(cluster.cluster_id)
+            exact_match = kb_matches[0] if kb_matches and _is_exact_kb_match(kb_matches[0]) else None
 
             # Получить log_snippet и full_trace представителя (fallback на members)
             log_snippet: str | None = None
@@ -363,6 +462,24 @@ class LLMService:
                 "да" if has_log_errors else "нет",
                 kb_count,
             )
+
+            if exact_match is not None:
+                logger.info(
+                    "LLM: кластер %s использует exact KB match %r без вызова LLM",
+                    cluster.cluster_id[:8],
+                    exact_match.entry.title,
+                )
+                analyses[cluster.cluster_id] = LLMClusterAnalysis(
+                    cluster_id=cluster.cluster_id,
+                    analysis_text=_build_exact_kb_analysis(
+                        cluster,
+                        exact_match,
+                        log_snippet=log_snippet,
+                        full_trace=full_trace,
+                    ),
+                )
+                analyzed += 1
+                return
 
             prompt = build_cluster_prompt(
                 cluster, kb_matches, log_snippet, full_trace,
