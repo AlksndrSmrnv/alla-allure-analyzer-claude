@@ -65,7 +65,10 @@ def build_cluster_prompt(
         parts.append(f"\n--- Стек-трейс ---\n{trace_text}")
 
     if log_snippet:
-        parts.append(f"\n--- Лог приложения ---\n{log_snippet}")
+        log_text = log_snippet
+        if len(log_text) > 2000:
+            log_text = log_text[:2000] + "...[обрезано]"
+        parts.append(f"\n--- Лог приложения ---\n{log_text}")
 
     if kb_matches:
         parts.append("\n--- База знаний ---")

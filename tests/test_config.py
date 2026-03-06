@@ -31,7 +31,8 @@ def test_settings_defaults_are_applied(monkeypatch, tmp_path) -> None:
     assert settings.page_size == 100
     assert settings.max_pages == 50
     assert settings.request_timeout == 30
-    assert settings.clustering_enabled is True
     assert settings.clustering_threshold == 0.60
-    assert settings.kb_enabled is False
     assert settings.log_level == "INFO"
+    # Computed properties: без DSN/URL — фичи неактивны
+    assert settings.kb_active is False
+    assert settings.llm_active is False

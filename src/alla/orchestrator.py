@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _KB_QUERY_LOG_PREVIEW_CHARS = 220
 
-# Кэш KB: (kb_postgres_dsn, min_score, max_results, project_id, feedback_enabled) → экземпляр.
+# Кэш KB: (kb_postgres_dsn, min_score, max_results, project_id) → экземпляр.
 # Предотвращает повторное подключение к БД и re-fit TF-IDF на каждый запрос сервера.
 _kb_cache: dict[tuple[str, float, int], object] = {}
 _kb_cache_lock: object = None  # Ленивая инициализация asyncio.Lock
@@ -72,7 +72,7 @@ async def analyze_launch(
     report = await service.analyze_launch(launch_id)
 
     # 1.5. Обогащение логами из аттачментов
-    if settings.logs_enabled and report.failed_tests:
+    if report.failed_tests:
         from alla.clients.base import AttachmentProvider
         from alla.services.log_extraction_service import (
             LogExtractionConfig,
@@ -89,9 +89,9 @@ async def analyze_launch(
             except Exception as exc:
                 logger.warning("Log enrichment: ошибка: %s", exc)
         else:
-            logger.warning(
-                "Логи включены (ALLURE_LOGS_ENABLED=true), но провайдер "
-                "не реализует AttachmentProvider. Логи пропущены."
+            logger.debug(
+                "Провайдер не реализует AttachmentProvider. "
+                "Логи из аттачментов пропущены."
             )
 
     clustering_report = None
@@ -100,13 +100,13 @@ async def analyze_launch(
     error_fingerprints: dict[str, str] = {}
 
     # 2. Кластеризация
-    if settings.clustering_enabled and report.failed_tests:
+    if report.failed_tests:
         from alla.services.clustering_service import ClusteringConfig, ClusteringService
 
         clustering_kwargs: dict = {
             "similarity_threshold": settings.clustering_threshold,
         }
-        if settings.logs_enabled and settings.logs_clustering_weight > 0:
+        if settings.logs_clustering_weight > 0:
             clustering_kwargs["log_similarity_weight"] = settings.logs_clustering_weight
 
         clustering_service = ClusteringService(
@@ -117,7 +117,7 @@ async def analyze_launch(
         )
 
     # 3. Поиск по базе знаний
-    if settings.kb_enabled and clustering_report is not None:
+    if settings.kb_active and clustering_report is not None:
         from alla.knowledge.matcher import MatcherConfig
 
         matcher_config = MatcherConfig(
@@ -128,7 +128,6 @@ async def analyze_launch(
             matcher_config,
             report.project_id,
             kb_postgres_dsn=settings.kb_postgres_dsn,
-            kb_feedback_enabled=settings.kb_feedback_enabled,
         )
 
         # Индекс test_result_id → FailedTestSummary для быстрого lookup
@@ -138,14 +137,14 @@ async def analyze_launch(
             try:
                 query_text, message_len, trace_len, log_len = _build_kb_query_text(
                     cluster, test_by_id,
-                    include_trace=settings.kb_include_trace,
+                    include_trace=True,
                 )
 
                 # Fingerprint из report_text (message + trace, без лога) —
                 # лог варьируется между прогонами, fingerprint должен быть стабильным.
                 fingerprint_text = _build_fingerprint_text(
                     cluster, test_by_id,
-                    include_trace=settings.kb_include_trace,
+                    include_trace=True,
                 )
                 if fingerprint_text.strip():
                     from alla.utils.fingerprint import compute_fingerprint
@@ -195,86 +194,68 @@ async def analyze_launch(
     llm_launch_summary = None
 
     if (
-        settings.llm_enabled
+        settings.llm_active
         and clustering_report is not None
         and clustering_report.clusters
     ):
-        from alla.exceptions import ConfigurationError as _CfgError
+        from alla.clients.langflow_client import LangflowClient
+        from alla.services.llm_service import LLMService
 
-        missing: list[str] = []
-        if not settings.langflow_base_url:
-            missing.append("ALLURE_LANGFLOW_BASE_URL")
-        if not settings.langflow_flow_id:
-            missing.append("ALLURE_LANGFLOW_FLOW_ID")
-        if missing:
-            raise _CfgError(
-                f"LLM включён (ALLURE_LLM_ENABLED=true), но не заданы: "
-                f"{', '.join(missing)}"
+        # Суммарная статистика перед LLM-анализом
+        _test_by_id_llm = (
+            {t.test_result_id: t for t in report.failed_tests}
+            if report.failed_tests
+            else {}
+        )
+        clusters_with_logs = 0
+        clusters_with_kb = 0
+        for _c in clustering_report.clusters:
+            if kb_results.get(_c.cluster_id):
+                clusters_with_kb += 1
+            if _test_by_id_llm and _c.representative_test_id is not None:
+                _rep = _test_by_id_llm.get(_c.representative_test_id)
+                if _rep and _rep.log_snippet:
+                    clusters_with_logs += 1
+        logger.info(
+            "LLM: отправка %d кластеров на анализ "
+            "(с логами: %d, с KB: %d)",
+            len(clustering_report.clusters),
+            clusters_with_logs,
+            clusters_with_kb,
+        )
+
+        async with LangflowClient(
+            base_url=settings.langflow_base_url,
+            flow_id=settings.langflow_flow_id,
+            api_key=settings.langflow_api_key,
+            timeout=settings.llm_timeout,
+            ssl_verify=settings.ssl_verify,
+            max_retries=settings.llm_max_retries,
+            retry_base_delay=settings.llm_retry_base_delay,
+        ) as langflow:
+            llm_service = LLMService(
+                langflow,
+                concurrency=settings.llm_concurrency,
             )
-        else:
-            from alla.clients.langflow_client import LangflowClient
-            from alla.services.llm_service import LLMService
-
-            # Суммарная статистика перед LLM-анализом
-            _test_by_id_llm = (
-                {t.test_result_id: t for t in report.failed_tests}
-                if settings.logs_enabled and report.failed_tests
-                else {}
-            )
-            clusters_with_logs = 0
-            clusters_with_kb = 0
-            for _c in clustering_report.clusters:
-                if kb_results.get(_c.cluster_id):
-                    clusters_with_kb += 1
-                if _test_by_id_llm and _c.representative_test_id is not None:
-                    _rep = _test_by_id_llm.get(_c.representative_test_id)
-                    if _rep and _rep.log_snippet:
-                        clusters_with_logs += 1
-            logger.info(
-                "LLM: отправка %d кластеров на анализ "
-                "(с логами: %d, с KB: %d)",
-                len(clustering_report.clusters),
-                clusters_with_logs,
-                clusters_with_kb,
-            )
-
-            async with LangflowClient(
-                base_url=settings.langflow_base_url,
-                flow_id=settings.langflow_flow_id,
-                api_key=settings.langflow_api_key,
-                timeout=settings.llm_timeout,
-                ssl_verify=settings.ssl_verify,
-                max_retries=settings.llm_max_retries,
-                retry_base_delay=settings.llm_retry_base_delay,
-            ) as langflow:
-                llm_service = LLMService(
-                    langflow,
-                    concurrency=settings.llm_concurrency,
-                )
-                try:
-                    llm_result = await llm_service.analyze_clusters(
-                        clustering_report,
-                        kb_results=kb_results or None,
-                        failed_tests=(
-                            report.failed_tests
-                            if settings.logs_enabled
-                            else None
-                        ),
-                    )
-                except Exception as exc:
-                    logger.warning("LLM анализ: ошибка: %s", exc)
-
-                # Итоговый отчёт по всему прогону
-                llm_launch_summary = await llm_service.generate_launch_summary(
+            try:
+                llm_result = await llm_service.analyze_clusters(
                     clustering_report,
-                    report,
-                    llm_result,
+                    kb_results=kb_results or None,
+                    failed_tests=report.failed_tests,
                 )
+            except Exception as exc:
+                logger.warning("LLM анализ: ошибка: %s", exc)
+
+            # Итоговый отчёт по всему прогону
+            llm_launch_summary = await llm_service.generate_launch_summary(
+                clustering_report,
+                report,
+                llm_result,
+            )
 
     # 5. Запись LLM-рекомендаций в TestOps
     if (
-        settings.llm_push_enabled
-        and settings.llm_enabled
+        settings.llm_active
         and llm_result is not None
         and llm_result.analyzed_count > 0
         and updater is not None
@@ -300,8 +281,7 @@ async def analyze_launch(
         llm_result is not None and llm_result.analyzed_count > 0
     )
     if (
-        settings.kb_push_enabled
-        and settings.kb_enabled
+        settings.kb_active
         and not llm_succeeded
         and kb_results
         and clustering_report is not None
@@ -438,13 +418,12 @@ def _get_or_create_kb(
     project_id: int | None = None,
     *,
     kb_postgres_dsn: str = "",
-    kb_feedback_enabled: bool = False,
 ) -> object:
     """Вернуть кэшированный экземпляр KB или создать новый (PostgreSQL бэкенд).
 
-    Кэш по ключу (kb_postgres_dsn, min_score, max_results, project_id,
-    feedback_enabled). Предотвращает повторные подключения к БД и re-fit
-    TF-IDF на каждый запрос сервера.
+    Кэш по ключу (kb_postgres_dsn, min_score, max_results, project_id).
+    Предотвращает повторные подключения к БД и re-fit TF-IDF на каждый
+    запрос сервера. Feedback store создаётся всегда.
     """
     from alla.knowledge.matcher import MatcherConfig
 
@@ -456,7 +435,6 @@ def _get_or_create_kb(
         cfg.min_score if cfg else 0.15,
         cfg.max_results if cfg else 5,
         project_id,
-        kb_feedback_enabled,
     )
 
     if cache_key in _kb_cache:
@@ -465,16 +443,8 @@ def _get_or_create_kb(
 
     from alla.knowledge.postgres_kb import PostgresKnowledgeBase
 
-    if not kb_postgres_dsn:
-        from alla.exceptions import ConfigurationError
-        raise ConfigurationError(
-            "KB включён (ALLURE_KB_ENABLED=true), но не задан ALLURE_KB_POSTGRES_DSN"
-        )
-
-    feedback_store = None
-    if kb_feedback_enabled:
-        from alla.knowledge.postgres_feedback import PostgresFeedbackStore
-        feedback_store = PostgresFeedbackStore(dsn=kb_postgres_dsn)
+    from alla.knowledge.postgres_feedback import PostgresFeedbackStore
+    feedback_store = PostgresFeedbackStore(dsn=kb_postgres_dsn)
 
     kb = PostgresKnowledgeBase(
         dsn=kb_postgres_dsn,
