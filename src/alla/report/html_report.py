@@ -254,14 +254,25 @@ def _render_cluster(
             )
 
         if rep_log_snippet:
-            log_text = rep_log_snippet.strip()[:3000]
-            if len(rep_log_snippet.strip()) > 3000:
-                log_text += "\n…"
+            from alla.utils.log_utils import parse_log_sections
+
+            sections = parse_log_sections(rep_log_snippet)
+            per_file_limit = 1500
+            inner_parts: list[str] = []
+            for _log_filename, _log_body in sections:
+                _snippet = _log_body[:per_file_limit]
+                if len(_log_body) > per_file_limit:
+                    _snippet += "\n…"
+                if _log_filename:
+                    inner_parts.append(
+                        f'<div class="log-file-name">{_e(_log_filename)}</div>'
+                    )
+                inner_parts.append(f"<pre>{_e(_snippet)}</pre>")
             error_parts.append(
                 '<div class="block-title" style="margin-top: 0.75rem;">Лог приложения</div>'
                 '<div class="log-block">'
-                f"<pre>{_e(log_text)}</pre>"
-                "</div>"
+                + "".join(inner_parts)
+                + "</div>"
             )
 
         error_parts.append("</div>")
@@ -774,6 +785,15 @@ _CSS = """
       max-height: 400px;
       overflow-y: auto;
     }
+    .log-file-name {
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: #7c3aed;
+      margin-top: 0.75rem;
+      margin-bottom: 0.15rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .log-file-name:first-child { margin-top: 0; }
 
     /* ---- LLM Analysis ---- */
     .llm-analysis {
