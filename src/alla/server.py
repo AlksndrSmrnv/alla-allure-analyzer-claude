@@ -519,8 +519,7 @@ def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
     if store is None:
         raise HTTPException(
             status_code=501,
-            detail="Feedback requires ALLURE_KB_FEEDBACK_ENABLED=true "
-            "and ALLURE_KB_POSTGRES_DSN to be set",
+            detail="Feedback requires ALLURE_KB_POSTGRES_DSN to be set",
         )
 
     from alla.knowledge.feedback_models import FeedbackRequest
