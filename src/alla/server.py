@@ -532,6 +532,20 @@ def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
     return response.model_dump()
 
 
+def _make_slug(title: str, error_example: str) -> str:
+    """Сгенерировать slug из заголовка + хэша error_example.
+
+    Формат: <slugified_title>_<8 hex chars of sha256(error_example)>
+    """
+    import hashlib
+    import re
+
+    base = re.sub(r"[^a-z0-9]+", "_", title.lower())
+    base = base.strip("_")[:50] or "kb_entry"
+    suffix = hashlib.sha256(error_example.encode()).hexdigest()[:8]
+    return f"{base}_{suffix}"
+
+
 @app.post("/api/v1/kb/entries", status_code=201)
 def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
     """Создать новую запись KB из HTML-отчёта."""
@@ -549,6 +563,13 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
         req = CreateKBEntryRequest(**request)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    # Авто-генерация title и id если не указаны
+    if not req.title:
+        first_line = (req.error_example or "").splitlines()[0][:100] if req.error_example else ""
+        req.title = first_line or "KB Entry"
+    if not req.id:
+        req.id = _make_slug(req.title, req.error_example or "")
 
     entry = KBEntry(
         id=req.id,
