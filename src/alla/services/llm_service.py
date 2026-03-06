@@ -283,7 +283,7 @@ class LLMService:
             if test_by_id and cluster.representative_test_id:
                 rep = test_by_id.get(cluster.representative_test_id)
                 if rep:
-                    if rep.log_snippet:
+                    if rep.log_snippet and rep.log_snippet.strip():
                         log_snippet = rep.log_snippet
                     full_trace = rep.status_trace
             if not log_snippet and test_by_id:
