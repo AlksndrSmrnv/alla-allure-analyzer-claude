@@ -56,15 +56,14 @@ def test_build_kb_query_uses_member_log_when_representative_has_no_log() -> None
         ),
     }
 
-    query_text, message_len, trace_len, log_chars, log_test_ids = _build_kb_query_text(
+    query_text, message_len, trace_len, log_len = _build_kb_query_text(
         cluster,
         test_by_id,
     )
 
     assert message_len > 0
     assert trace_len > 0
-    assert log_chars > 0
-    assert log_test_ids == [102]
+    assert log_len > 0
     assert "RootCauseException: boom" in query_text
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from alla.models.clustering import ClusterSignature, FailureCluster
 from alla.models.common import TestStatus as Status
 from alla.models.testops import FailedTestSummary
-from alla.orchestrator import _build_kb_query_text, _collect_cluster_log_snippets
+from alla.orchestrator import _build_kb_query_text
 
 
 def _failed_test(
@@ -23,27 +23,6 @@ def _failed_test(
         status_trace=status_trace,
         log_snippet=log_snippet,
     )
-
-
-def test_collect_cluster_log_snippets_uses_representative_first() -> None:
-    """Сначала берём лог representative, затем остальные member_test_ids."""
-    cluster = FailureCluster(
-        cluster_id="c1",
-        label="cluster",
-        signature=ClusterSignature(),
-        representative_test_id=101,
-        member_test_ids=[101, 102, 103],
-        member_count=3,
-    )
-    test_by_id = {
-        101: _failed_test(101, log_snippet="REP log"),
-        102: _failed_test(102, log_snippet="member-102"),
-        103: _failed_test(103, log_snippet="member-103"),
-    }
-
-    logs = _collect_cluster_log_snippets(cluster, test_by_id, max_logs=2)
-
-    assert logs == [(101, "REP log"), (102, "member-102")]
 
 
 def test_build_kb_query_text_uses_member_log_when_representative_has_none() -> None:
@@ -73,13 +52,12 @@ def test_build_kb_query_text_uses_member_log_when_representative_has_none() -> N
         ),
     }
 
-    query_text, message_len, trace_len, log_chars, log_test_ids = _build_kb_query_text(
+    query_text, message_len, trace_len, log_len = _build_kb_query_text(
         cluster,
         test_by_id,
     )
 
     assert message_len > 0
     assert trace_len > 0
-    assert log_chars > 0
-    assert log_test_ids == [202]
+    assert log_len > 0
     assert "RootCauseException: boom" in query_text
