@@ -184,6 +184,20 @@ def test_prompt_kb_matches_include_match_reason() -> None:
     assert "Почему похоже: Tier 1: exact substring match (score=0.75)" in prompt
 
 
+def test_prompt_without_kb_has_continuous_rule_numbering() -> None:
+    """Без KB правила в секции решения нумеруются подряд, без пропусков."""
+    cluster = make_failure_cluster()
+    prompt = build_cluster_prompt(cluster, kb_matches=None)
+
+    rules = prompt.split("ПРАВИЛА ПРИНЯТИЯ РЕШЕНИЯ:\n", 1)[1]
+
+    assert "1. Базы знаний нет" in rules
+    assert "2. Каждый шаг должен быть привязан" in rules
+    assert "3. Не давай абстрактных советов" in rules
+    assert "4. Не выдумывай новые причины" in rules
+    assert "\n5. " not in rules
+
+
 # ---------------------------------------------------------------------------
 # format_llm_comment
 # ---------------------------------------------------------------------------
