@@ -30,10 +30,11 @@ def build_cluster_prompt(
     cluster: FailureCluster,
     kb_matches: list[KBMatchResult] | None = None,
     log_snippet: str | None = None,
+    full_trace: str | None = None,
 ) -> str:
     """Собрать промпт для LLM-анализа одного кластера.
 
-    Включает: label, member_count, example_message, example_trace_snippet,
+    Включает: label, member_count, example_message, full_trace (или snippet),
     опционально log_snippet и KB-совпадения для контекста.
     """
     parts: list[str] = [
@@ -41,7 +42,7 @@ def build_cluster_prompt(
         "",
         "ГЛАВНОЕ ПРАВИЛО: пиши ТОЛЬКО то, что видишь в данных ниже. "
         "Не додумывай, не предполагай, не фантазируй. "
-        "Если чего-то нет в ошибке, стек-трейсе или логе — не упоминай это.",
+        "Если чего-то нет в ошибке, стек-трейсе, логе или базе знаний — не упоминай это.",
         "",
         "═══════════════════════════════════════",
         "ДАННЫЕ",
@@ -57,11 +58,11 @@ def build_cluster_prompt(
             msg = msg[:2000] + "...[обрезано]"
         parts.append(f"\n--- Сообщение об ошибке ---\n{msg}")
 
-    if cluster.example_trace_snippet:
-        trace = cluster.example_trace_snippet
-        if len(trace) > 3000:
-            trace = trace[:3000] + "...[обрезано]"
-        parts.append(f"\n--- Стек-трейс ---\n{trace}")
+    trace_text = full_trace or cluster.example_trace_snippet
+    if trace_text:
+        if len(trace_text) > 3000:
+            trace_text = trace_text[:3000] + "...[обрезано]"
+        parts.append(f"\n--- Стек-трейс ---\n{trace_text}")
 
     if log_snippet:
         parts.append(f"\n--- Лог приложения ---\n{log_snippet}")
@@ -102,12 +103,11 @@ def build_cluster_prompt(
     )
 
     if kb_matches:
-        high_confidence = [m for m in kb_matches[:3] if m.score >= 0.7]
-        if high_confidence:
-            instruction += (
-                " Если в базе знаний есть совпадение с высоким score — "
-                "используй шаги решения оттуда как основу."
-            )
+        instruction += (
+            " В базе знаний есть совпадения — "
+            "используй их описание и шаги решения как основу для анализа. "
+            "Чем выше score, тем больше доверяй совпадению."
+        )
 
     instruction += (
         " Каждый шаг должен быть привязан к конкретике из ошибки или лога. "
@@ -277,12 +277,21 @@ class LLMService:
 
             kb_matches = (kb_results or {}).get(cluster.cluster_id)
 
-            # Получить log_snippet представителя кластера
+            # Получить log_snippet и full_trace представителя (fallback на members)
             log_snippet: str | None = None
-            if test_by_id and cluster.representative_test_id:
+            full_trace: str | None = None
+            if test_by_id and cluster.representative_test_id is not None:
                 rep = test_by_id.get(cluster.representative_test_id)
                 if rep:
-                    log_snippet = rep.log_snippet
+                    if rep.log_snippet and rep.log_snippet.strip():
+                        log_snippet = rep.log_snippet
+                    full_trace = rep.status_trace
+            if not log_snippet and test_by_id:
+                for tid in cluster.member_test_ids:
+                    member = test_by_id.get(tid)
+                    if member and member.log_snippet and member.log_snippet.strip():
+                        log_snippet = member.log_snippet
+                        break
 
             has_log = bool(log_snippet and log_snippet.strip())
             has_log_errors = has_explicit_errors(log_snippet) if has_log else False
@@ -298,7 +307,9 @@ class LLMService:
                 kb_count,
             )
 
-            prompt = build_cluster_prompt(cluster, kb_matches, log_snippet)
+            prompt = build_cluster_prompt(
+                cluster, kb_matches, log_snippet, full_trace,
+            )
 
             async with semaphore:
                 try:
