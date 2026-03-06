@@ -229,20 +229,43 @@ def _render_cluster(
             "</div>"
         )
 
-    # --- error example ---
+    # --- error example + log snippet ---
+    rep_test = (
+        test_by_id.get(cluster.representative_test_id)
+        if cluster.representative_test_id is not None
+        else None
+    )
+    rep_log_snippet = rep_test.log_snippet if rep_test and rep_test.log_snippet else None
+
     error_html = ""
-    if cluster.example_message:
-        snippet = cluster.example_message[:2000]
-        if len(cluster.example_message) > 2000:
-            snippet += "\n…"
-        error_html = (
-            '<div class="block">'
-            '<div class="block-title">Пример ошибки</div>'
-            '<div class="error-block">'
-            f"<pre>{_e(snippet)}</pre>"
-            "</div>"
-            "</div>"
-        )
+    if cluster.example_message or rep_log_snippet:
+        error_parts: list[str] = []
+        error_parts.append('<div class="block">')
+        error_parts.append('<div class="block-title">Пример ошибки</div>')
+
+        if cluster.example_message:
+            snippet = cluster.example_message[:2000]
+            if len(cluster.example_message) > 2000:
+                snippet += "\n…"
+            error_parts.append(
+                '<div class="error-block">'
+                f"<pre>{_e(snippet)}</pre>"
+                "</div>"
+            )
+
+        if rep_log_snippet:
+            log_text = rep_log_snippet.strip()[:3000]
+            if len(rep_log_snippet.strip()) > 3000:
+                log_text += "\n…"
+            error_parts.append(
+                '<div class="block-title" style="margin-top: 0.75rem;">Лог приложения</div>'
+                '<div class="log-block">'
+                f"<pre>{_e(log_text)}</pre>"
+                "</div>"
+            )
+
+        error_parts.append("</div>")
+        error_html = "".join(error_parts)
 
     # --- KB matches ---
     kb_html = ""
@@ -267,7 +290,14 @@ def _render_cluster(
     # --- create KB entry form ---
     create_kb_html = ""
     if feedback_api_url:
-        prefill_error = _e(cluster.example_message or "")
+        prefill_parts: list[str] = []
+        if cluster.example_message:
+            prefill_parts.append(cluster.example_message)
+        if rep_log_snippet:
+            if prefill_parts:
+                prefill_parts.append("\n--- Лог приложения ---")
+            prefill_parts.append(rep_log_snippet.strip())
+        prefill_error = _e("\n".join(prefill_parts))
         prefill_title = _e(cluster.label or "")
         pid = _e(str(project_id)) if project_id is not None else ""
         create_kb_html = (
@@ -721,6 +751,24 @@ _CSS = """
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 0.8125rem;
       color: var(--danger);
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    /* ---- Log Block ---- */
+    .log-block {
+      background: #f5f3ff;
+      border: 1px solid #c4b5fd;
+      border-radius: var(--radius-sm);
+      padding: 1rem;
+    }
+    .log-block pre {
+      margin: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.8125rem;
+      color: #5b21b6;
       white-space: pre-wrap;
       word-break: break-word;
       max-height: 400px;

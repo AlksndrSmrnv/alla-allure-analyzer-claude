@@ -136,71 +136,50 @@ async def analyze_launch(
 
         for cluster in clustering_report.clusters:
             try:
-                report_text, message_len, trace_len = _build_kb_report_text(
+                query_text, message_len, trace_len, log_len = _build_kb_query_text(
                     cluster, test_by_id,
                     include_trace=settings.kb_include_trace,
                 )
-                log_text, log_chars, log_test_ids = _build_kb_log_text(
-                    cluster, test_by_id,
-                )
 
-                if report_text.strip():
-                    # Fingerprint из полного report_text для feedback
+                # Fingerprint из report_text (message + trace, без лога) —
+                # лог варьируется между прогонами, fingerprint должен быть стабильным.
+                fingerprint_text = _build_fingerprint_text(
+                    cluster, test_by_id,
+                    include_trace=settings.kb_include_trace,
+                )
+                if fingerprint_text.strip():
                     from alla.utils.fingerprint import compute_fingerprint
 
-                    fingerprint = compute_fingerprint(report_text)
+                    fingerprint = compute_fingerprint(fingerprint_text)
                     error_fingerprints[cluster.cluster_id] = fingerprint
 
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "KB query [%s]: rep_test_id=%s, "
-                        "report_len=%d (msg=%d, trace=%d), log_len=%d, log_tests=%s",
+                        "combined_len=%d (msg=%d, trace=%d, log=%d)",
                         cluster.cluster_id,
                         cluster.representative_test_id,
-                        len(report_text),
+                        len(query_text),
                         message_len,
                         trace_len,
-                        log_chars,
-                        log_test_ids,
+                        log_len,
                     )
-                    if report_text.strip():
+                    if query_text.strip():
                         logger.debug(
-                            "KB query [%s]:report head='%s'",
+                            "KB query [%s]: head='%s'",
                             cluster.cluster_id,
-                            _preview_head(report_text, _KB_QUERY_LOG_PREVIEW_CHARS),
-                        )
-                    if log_text.strip():
-                        logger.debug(
-                            "KB query [%s]:log head='%s'",
-                            cluster.cluster_id,
-                            _preview_head(log_text, _KB_QUERY_LOG_PREVIEW_CHARS),
+                            _preview_head(query_text, _KB_QUERY_LOG_PREVIEW_CHARS),
                         )
 
-                # Используем один fingerprint для обоих поисков — он основан на
-                # report_text и встроен в HTML-отчёт. Это гарантирует, что
-                # feedback (exclusions/boosts) применяется одинаково для поиска
-                # по report_text и log_text.
                 fp = error_fingerprints.get(cluster.cluster_id)
-                matches_report = (
+                matches = (
                     kb.search_by_error(
-                        report_text,
-                        query_label=f"{cluster.cluster_id}:report",
+                        query_text,
+                        query_label=f"{cluster.cluster_id}:combined",
                         error_fingerprint=fp,
                     )
-                    if report_text.strip()
+                    if query_text.strip()
                     else []
-                )
-                matches_log = (
-                    kb.search_by_error(
-                        log_text,
-                        query_label=f"{cluster.cluster_id}:log",
-                        error_fingerprint=fp,
-                    )
-                    if log_text.strip()
-                    else []
-                )
-                matches = _merge_kb_results(
-                    matches_report, matches_log, settings.kb_max_results,
                 )
                 if matches:
                     kb_results[cluster.cluster_id] = matches
@@ -355,24 +334,63 @@ async def analyze_launch(
     )
 
 
-def _build_kb_report_text(
+def _build_kb_query_text(
     cluster: FailureCluster,
     test_by_id: dict[int, FailedTestSummary],
     *,
     include_trace: bool = True,
-) -> tuple[str, int, int]:
-    """Собрать текст запроса для KB из message и trace (только данные Allure-отчёта).
+) -> tuple[str, int, int, int]:
+    """Собрать единый текст запроса для KB: message + trace + log_snippet.
 
-    Логи не включаются — они ищутся отдельно через _collect_cluster_log_snippets.
+    Объединяет данные из Allure-отчёта (message, trace) и логов приложения
+    (log_snippet representative теста) в один документ. Это позволяет KB-записям,
+    содержащим фрагменты и ошибки и лога, эффективно сопоставляться.
 
     Args:
         cluster: Кластер падений.
         test_by_id: Словарь test_result_id → FailedTestSummary.
         include_trace: Включать ли Allure-trace (stack trace) в query.
-            Управляется через ``ALLURE_KB_INCLUDE_TRACE``.
 
     Returns:
-        (report_text, message_len, trace_len)
+        (combined_text, message_len, trace_len, log_len)
+    """
+    representative = (
+        test_by_id.get(cluster.representative_test_id)
+        if cluster.representative_test_id is not None
+        else None
+    )
+
+    message = (
+        representative.status_message
+        if representative and representative.status_message
+        else cluster.example_message
+    ) or ""
+    trace = ""
+    if include_trace:
+        trace = (
+            representative.status_trace
+            if representative and representative.status_trace
+            else cluster.example_trace_snippet
+        ) or ""
+
+    log_snippet = ""
+    if representative and representative.log_snippet:
+        log_snippet = representative.log_snippet.strip()
+
+    parts = [part for part in (message, trace, log_snippet) if part]
+    return "\n".join(parts), len(message), len(trace), len(log_snippet)
+
+
+def _build_fingerprint_text(
+    cluster: FailureCluster,
+    test_by_id: dict[int, FailedTestSummary],
+    *,
+    include_trace: bool = True,
+) -> str:
+    """Собрать текст для вычисления fingerprint (message + trace, без лога).
+
+    Fingerprint должен быть стабильным между прогонами — логи варьируются,
+    поэтому исключены.
     """
     representative = (
         test_by_id.get(cluster.representative_test_id)
@@ -394,81 +412,7 @@ def _build_kb_report_text(
         ) or ""
 
     parts = [part for part in (message, trace) if part]
-    return "\n".join(parts), len(message), len(trace)
-
-
-def _build_kb_log_text(
-    cluster: FailureCluster,
-    test_by_id: dict[int, FailedTestSummary],
-) -> tuple[str, int, list[int]]:
-    """Собрать текст для KB-поиска из ERROR-логов кластера.
-
-    Returns:
-        (log_text, log_chars, log_test_ids)
-    """
-    log_sources = _collect_cluster_log_snippets(cluster, test_by_id)
-    log_blocks = [
-        f"[LOG test_result_id={test_id}]\n{snippet}"
-        for test_id, snippet in log_sources
-    ]
-    log_text = "\n\n".join(log_blocks)
-    return (
-        log_text,
-        len(log_text),
-        [test_id for test_id, _ in log_sources],
-    )
-
-
-def _merge_kb_results(
-    results_a: list[KBMatchResult],
-    results_b: list[KBMatchResult],
-    max_results: int,
-) -> list[KBMatchResult]:
-    """Объединить два списка KB-результатов, оставив max score для каждой записи.
-
-    Для каждого entry.id берётся наилучший score из двух поисков.
-    Результат отсортирован по score desc и ограничен max_results.
-    """
-    merged: dict[str, KBMatchResult] = {}
-    for result in results_a + results_b:
-        entry_id = result.entry.id
-        if entry_id not in merged or result.score > merged[entry_id].score:
-            merged[entry_id] = result
-    return sorted(merged.values(), key=lambda r: -r.score)[:max_results]
-
-
-def _collect_cluster_log_snippets(
-    cluster: FailureCluster,
-    test_by_id: dict[int, FailedTestSummary],
-    *,
-    max_logs: int = 3,
-) -> list[tuple[int, str]]:
-    """Собрать до ``max_logs`` непустых log_snippet из тестов кластера."""
-    ordered_test_ids: list[int] = []
-    if cluster.representative_test_id is not None:
-        ordered_test_ids.append(cluster.representative_test_id)
-    ordered_test_ids.extend(cluster.member_test_ids)
-
-    seen: set[int] = set()
-    selected: list[tuple[int, str]] = []
-    for test_id in ordered_test_ids:
-        if test_id in seen:
-            continue
-        seen.add(test_id)
-
-        summary = test_by_id.get(test_id)
-        if summary is None or not summary.log_snippet:
-            continue
-
-        snippet = summary.log_snippet.strip()
-        if not snippet:
-            continue
-
-        selected.append((test_id, snippet))
-        if len(selected) >= max_logs:
-            break
-
-    return selected
+    return "\n".join(parts)
 
 
 def _preview_head(text: str, max_chars: int) -> str:

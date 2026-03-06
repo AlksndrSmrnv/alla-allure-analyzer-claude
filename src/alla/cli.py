@@ -372,17 +372,24 @@ def _print_clustering_report(
             _wrap_test_ids(cluster.member_test_ids)
         )
 
-        # Факт наличия лога
+        # Превью лога приложения
         if test_by_id and cluster.representative_test_id is not None:
             rep = test_by_id.get(cluster.representative_test_id)
             log_snippet = rep.log_snippet if rep else None
             has_log = bool(log_snippet and log_snippet.strip())
             if has_log:
                 has_errors = has_explicit_errors(log_snippet)
-                if has_errors:
-                    cluster_lines.append("Лог: найден, содержит ошибки")
-                else:
-                    cluster_lines.append("Лог: найден, без явных ошибок")
+                log_lines = log_snippet.strip().splitlines()
+                error_label = ", содержит ошибки" if has_errors else ""
+                cluster_lines.append(
+                    f"Лог ({len(log_lines)} строк{error_label}):"
+                )
+                preview_lines = log_lines[:5]
+                for line in preview_lines:
+                    text = line if len(line) <= 120 else line[:117] + "..."
+                    cluster_lines.append(f"  | {text}")
+                if len(log_lines) > 5:
+                    cluster_lines.append(f"  | ... ещё {len(log_lines) - 5} строк")
             else:
                 cluster_lines.append("Лог: отсутствует")
 
