@@ -6,7 +6,7 @@ import asyncio
 import logging
 from alla.clients.base import TestResultsUpdater
 from alla.clients.langflow_client import LangflowClient
-from alla.knowledge.models import KBMatchResult
+from alla.knowledge.models import KBMatchResult, RootCauseCategory
 from alla.models.clustering import ClusteringReport, FailureCluster
 from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis, LLMLaunchSummary, LLMPushResult
 from alla.models.testops import FailedTestSummary, TriageReport
@@ -26,6 +26,17 @@ def _interpret_kb_score(score: float) -> str:
     return "слабое совпадение"
 
 
+def _format_kb_category(category: RootCauseCategory) -> str:
+    """Перевести категорию KB в формулировку, которую должна вернуть LLM."""
+    mapping = {
+        RootCauseCategory.TEST: "тест",
+        RootCauseCategory.SERVICE: "приложение",
+        RootCauseCategory.ENV: "окружение",
+        RootCauseCategory.DATA: "данные",
+    }
+    return mapping.get(category, category.value)
+
+
 def build_cluster_prompt(
     cluster: FailureCluster,
     kb_matches: list[KBMatchResult] | None = None,
@@ -39,10 +50,16 @@ def build_cluster_prompt(
     """
     parts: list[str] = [
         "Ты — инженер по анализу сбоев автотестов.",
+        "Твоя задача: быстро и точно определить причину падения и дать полезные шаги проверки.",
         "",
         "ГЛАВНОЕ ПРАВИЛО: пиши ТОЛЬКО то, что видишь в данных ниже. "
         "Не додумывай, не предполагай, не фантазируй. "
         "Если чего-то нет в ошибке, стек-трейсе, логе или базе знаний — не упоминай это.",
+        "",
+        "ПРИОРИТЕТ ИСТОЧНИКОВ:",
+        "1. БАЗА ЗНАНИЙ — основной источник интерпретации причины и шагов, если есть совпадение.",
+        "2. Сообщение ошибки / стек / лог — нужны, чтобы подтвердить или опровергнуть KB.",
+        "3. Не придумывай альтернативную причину, если KB #1 хорошо подходит и данные ей не противоречат.",
         "",
         "═══════════════════════════════════════",
         "ДАННЫЕ",
@@ -51,6 +68,33 @@ def build_cluster_prompt(
         f"Кластер: {cluster.label}",
         f"Затронуто тестов: {cluster.member_count}",
     ]
+
+    if kb_matches:
+        parts.append("\n--- База знаний (читай первой) ---")
+        parts.append(
+            "Правило: если KB #1 имеет score >= 0.70 и не противоречит ошибке, "
+            "используй её как основную причину."
+        )
+        parts.append(
+            "Если score 0.40-0.69 — используй KB #1 как основную гипотезу "
+            "и обязательно подтвердись строкой из ошибки, трейса или лога."
+        )
+        for index, m in enumerate(kb_matches[:3], start=1):
+            entry = m.entry
+            confidence = _interpret_kb_score(m.score)
+            role = "основная гипотеза" if index == 1 else "дополнительное совпадение"
+            parts.append(
+                f"\nKB #{index} [{role}; {confidence}; score {m.score:.2f}]"
+            )
+            parts.append(f"Название: {entry.title}")
+            parts.append(f"Категория: {_format_kb_category(entry.category)}")
+            if m.matched_on:
+                parts.append(f"Почему похоже: {'; '.join(m.matched_on[:2])}")
+            parts.append(f"Описание: {entry.description}")
+            if entry.resolution_steps:
+                parts.append("Шаги решения:")
+                for step in entry.resolution_steps:
+                    parts.append(f"  - {step}")
 
     if cluster.example_message:
         msg = cluster.example_message
@@ -68,22 +112,7 @@ def build_cluster_prompt(
         log_text = log_snippet
         if len(log_text) > 2000:
             log_text = log_text[:2000] + "...[обрезано]"
-        parts.append(f"\n--- Лог приложения ---\n{log_text}")
-
-    if kb_matches:
-        parts.append("\n--- База знаний ---")
-        for m in kb_matches[:3]:
-            entry = m.entry
-            confidence = _interpret_kb_score(m.score)
-            parts.append(
-                f"\n[{confidence}, score {m.score:.2f}] {entry.title}"
-            )
-            parts.append(f"Категория: {entry.category.value}")
-            parts.append(f"Описание: {entry.description}")
-            if entry.resolution_steps:
-                parts.append("Шаги решения:")
-                for step in entry.resolution_steps:
-                    parts.append(f"  - {step}")
+        parts.append(f"\n--- Фрагмент лога ---\n{log_text}")
 
     parts.append("")
     parts.append("═══════════════════════════════════════")
@@ -92,31 +121,44 @@ def build_cluster_prompt(
     parts.append("")
 
     instruction = (
-        "Напиши краткий анализ по 3 пунктам. Будь лаконичен — 2-3 предложения на пункт.\n"
+        "Верни ответ СТРОГО в формате ниже, без вступления и без markdown-заголовков:\n"
         "\n"
-        "1. ЧТО СЛОМАЛОСЬ — одним абзацем: что именно упало и почему. "
-        "Называй только те классы, методы, значения и коды ошибок, "
-        "которые РЕАЛЬНО есть в данных выше.\n"
+        "ЧТО СЛОМАЛОСЬ: 1-2 предложения. Если подходит KB #1, начни объяснение с неё "
+        "и затем добавь подтверждение из ошибки, трейса или лога.\n"
         "\n"
-        "2. ПРИЧИНА — одна из: тест / приложение / окружение / данные. "
-        "Одно предложение с конкретным обоснованием из ошибки.\n"
+        "ПРИЧИНА: ровно одна категория из списка: тест / приложение / окружение / данные. "
+        "Формат строки: '<категория> — <краткое обоснование>'. "
+        "Если использована база знаний, обязательно назови KB #1 или её название.\n"
         "\n"
-        "3. ЧТО ПРОВЕРИТЬ — 2-3 конкретных шага для тестировщика: "
-        "что открыть, что запустить, что посмотреть."
+        "ЧТО ПРОВЕРИТЬ:\n"
+        "1. Первый конкретный шаг.\n"
+        "2. Второй конкретный шаг.\n"
+        "3. Третий конкретный шаг.\n"
+        "\n"
+        "ПРАВИЛА ПРИНЯТИЯ РЕШЕНИЯ:\n"
     )
 
     if kb_matches:
         instruction += (
-            " В базе знаний есть совпадения — "
-            "используй их описание и шаги решения как основу для анализа. "
-            "Чем выше score, тем больше доверяй совпадению."
+            "1. Сначала смотри KB #1.\n"
+            "2. Если у KB #1 score >= 0.70 и нет прямого противоречия в данных — "
+            "считай её основной версией причины и опирайся на её описание и шаги.\n"
+            "3. Если у KB #1 score 0.40-0.69 — используй её как рабочую гипотезу, "
+            "но обязательно подтверди цитатой или фактом из ошибки, трейса или лога.\n"
+            "4. KB #2 и KB #3 используй только для дополнительных проверок, "
+            "если они не противоречат KB #1.\n"
+        )
+    else:
+        instruction += (
+            "1. Базы знаний нет — опирайся только на сообщение ошибки, трейс и лог.\n"
         )
 
     instruction += (
-        " Каждый шаг должен быть привязан к конкретике из ошибки или лога. "
-        "Не давай абстрактных советов вроде «проверьте сервер» или «спросите команду».\n"
+        "5. Каждый шаг должен быть привязан к конкретике из ошибки, лога или KB.\n"
+        "6. Не давай абстрактных советов вроде «проверьте сервер» или «спросите команду».\n"
+        "7. Не выдумывай новые причины, сервисы, конфиги, классы, методы или команды.\n"
         "\n"
-        "Если данных мало — так и скажи, не додумывай."
+        "Если данных мало — прямо напиши, что данных недостаточно, и не додумывай."
     )
 
     parts.append(instruction)

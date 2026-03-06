@@ -189,12 +189,15 @@ class TriageService:
 
         Мутирует объекты summaries in-place, заполняя status_trace и status_message.
         """
-        missing = [s for s in summaries if not s.status_trace]
+        missing = [
+            s for s in summaries
+            if not s.status_message and not s.status_trace
+        ]
         if not missing:
             return
 
         logger.info(
-            "Fallback: %d тестов без trace, "
+            "Fallback: %d тестов без message/trace, "
             "запрос GET /api/testresult/{id} для каждого",
             len(missing),
         )
