@@ -268,6 +268,7 @@ def _render_cluster(
     create_kb_html = ""
     if feedback_api_url:
         prefill_error = _e(cluster.example_message or "")
+        prefill_title = _e(cluster.label or "")
         pid = _e(str(project_id)) if project_id is not None else ""
         create_kb_html = (
             '<div class="block">'
@@ -275,18 +276,18 @@ def _render_cluster(
             'onclick="this.nextElementSibling.classList.toggle(\'hidden\')">'
             '+ Создать запись в базу знаний</button>'
             f'<form class="create-kb-form hidden" data-api-url="{_e(feedback_api_url)}">'
-            '<label>Slug ID:<input name="id" required pattern="[a-z0-9_]+" placeholder="my_error_slug"></label>'
-            '<label>Заголовок:<input name="title" required placeholder="Описание проблемы"></label>'
-            '<label>Категория:<select name="category">'
-            '<option value="test">test</option>'
+            '<label>Шаги по устранению <span class="field-required">(основное поле)</span>:'
+            '<textarea name="resolution_steps" rows="4" placeholder="Шаг 1&#10;Шаг 2&#10;Шаг 3" autofocus></textarea></label>'
+            f'<label>Заголовок <span class="field-optional">(необязательно)</span>:<input name="title" placeholder="Описание проблемы" value="{prefill_title}"></label>'
+            '<label>Категория:'
+            '<select name="category">'
             '<option value="service">service</option>'
+            '<option value="test">test</option>'
             '<option value="env">env</option>'
             '<option value="data">data</option>'
             '</select></label>'
-            f'<label>Пример ошибки:<textarea name="error_example" rows="6">{prefill_error}</textarea></label>'
-            '<label>Описание:<textarea name="description" rows="3" placeholder="Подробное описание"></textarea></label>'
-            '<label>Шаги по устранению (по одному на строку):'
-            '<textarea name="resolution_steps" rows="3" placeholder="Шаг 1&#10;Шаг 2"></textarea></label>'
+            f'<label>Пример ошибки <span class="field-optional">(необязательно)</span>:<textarea name="error_example" rows="4">{prefill_error}</textarea></label>'
+            '<label>Описание <span class="field-optional">(необязательно)</span>:<textarea name="description" rows="2" placeholder="Подробное описание"></textarea></label>'
             f'<input type="hidden" name="project_id" value="{pid}">'
             '<button type="submit" class="create-kb-submit">Создать запись</button>'
             '<span class="create-kb-status"></span>'
@@ -929,6 +930,8 @@ _FEEDBACK_CSS = """
     .create-kb-submit:disabled{opacity:.5;cursor:not-allowed}
     .create-kb-ok{color:var(--success);font-size:.875rem}
     .create-kb-error{color:var(--danger);font-size:.875rem}
+    .field-required{font-weight:700;color:var(--primary);font-size:.75rem}
+    .field-optional{font-weight:400;color:var(--text-muted);font-size:.75rem}
 """
 
 
@@ -1001,9 +1004,9 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    status.textContent = '...';\n"
         "    status.className = 'create-kb-status';\n"
         "    var steps = (form.elements.resolution_steps.value || '').split('\\n').filter(function(s) { return s.trim(); });\n"
+        "    var titleVal = form.elements.title.value.trim() || null;\n"
         "    var body = JSON.stringify({\n"
-        "      id: form.elements.id.value,\n"
-        "      title: form.elements.title.value,\n"
+        "      title: titleVal,\n"
         "      category: form.elements.category.value,\n"
         "      error_example: form.elements.error_example.value,\n"
         "      description: form.elements.description.value,\n"

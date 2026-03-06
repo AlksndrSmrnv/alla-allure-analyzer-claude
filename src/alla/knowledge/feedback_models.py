@@ -56,16 +56,22 @@ class FeedbackResponse(BaseModel):
 class CreateKBEntryRequest(BaseModel):
     """Тело POST /api/v1/kb/entries — создание записи KB из HTML-отчёта."""
 
-    id: str = Field(
+    id: str | None = Field(
+        default=None,
         min_length=1,
         max_length=100,
         pattern=r"^[a-z0-9_]+$",
-        description="Slug-идентификатор (строчные латинские, цифры, подчёркивания)",
+        description="Slug-идентификатор (строчные латинские, цифры, подчёркивания). Генерируется автоматически если не указан.",
     )
-    title: str = Field(min_length=1, max_length=500)
+    title: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+        description="Заголовок записи. Генерируется автоматически из error_example если не указан.",
+    )
     description: str = Field(default="")
-    error_example: str = Field(min_length=1)
-    category: RootCauseCategory
+    error_example: str = Field(default="")
+    category: RootCauseCategory = Field(default=RootCauseCategory.SERVICE)
     resolution_steps: list[str] = Field(default_factory=list)
     project_id: int | None = Field(
         default=None,
