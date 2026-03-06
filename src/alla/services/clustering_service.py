@@ -504,8 +504,8 @@ class ClusteringService:
     ) -> str:
         """Детерминированный ID кластера на основе SHA-256 хеша сигнатуры.
 
-        Для кластеров с пустой сигнатурой (нет message/trace/category)
-        member_ids включаются в хеш для гарантии уникальности.
+        member_ids всегда включаются в хеш для гарантии уникальности,
+        даже при совпадающих сигнатурах.
         """
         components = [
             signature.exception_type or "",
@@ -513,8 +513,7 @@ class ClusteringService:
             "|".join(signature.common_frames),
             signature.message_pattern or "",
         ]
-        has_content = any(components)
-        if not has_content and member_ids:
+        if member_ids:
             components.append("|".join(str(tid) for tid in sorted(member_ids)))
         raw = "\n".join(components)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]

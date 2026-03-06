@@ -266,18 +266,6 @@ class LLMService:
         async def analyze_one(cluster: FailureCluster) -> None:
             nonlocal analyzed, failed, skipped
 
-            if not cluster.example_message and not cluster.example_trace_snippet:
-                logger.debug(
-                    "LLM: кластер %s пропущен (нет текста ошибки)",
-                    cluster.cluster_id,
-                )
-                skipped += 1
-                analyses[cluster.cluster_id] = LLMClusterAnalysis(
-                    cluster_id=cluster.cluster_id,
-                    error="Нет текста ошибки для анализа",
-                )
-                return
-
             kb_matches = (kb_results or {}).get(cluster.cluster_id)
 
             # Получить log_snippet и full_trace представителя (fallback на members)
@@ -295,6 +283,23 @@ class LLMService:
                     if member and member.log_snippet and member.log_snippet.strip():
                         log_snippet = member.log_snippet
                         break
+
+            has_any_text = (
+                cluster.example_message
+                or cluster.example_trace_snippet
+                or (log_snippet and log_snippet.strip())
+            )
+            if not has_any_text:
+                logger.debug(
+                    "LLM: кластер %s пропущен (нет текста ошибки)",
+                    cluster.cluster_id,
+                )
+                skipped += 1
+                analyses[cluster.cluster_id] = LLMClusterAnalysis(
+                    cluster_id=cluster.cluster_id,
+                    error="Нет текста ошибки для анализа",
+                )
+                return
 
             has_log = bool(log_snippet and log_snippet.strip())
             has_log_errors = has_explicit_errors(log_snippet) if has_log else False
