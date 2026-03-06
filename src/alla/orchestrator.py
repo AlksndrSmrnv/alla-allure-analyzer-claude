@@ -376,6 +376,12 @@ def _build_kb_query_text(
     log_snippet = ""
     if representative and representative.log_snippet:
         log_snippet = representative.log_snippet.strip()
+    if not log_snippet:
+        for tid in cluster.member_test_ids:
+            member = test_by_id.get(tid)
+            if member and member.log_snippet and member.log_snippet.strip():
+                log_snippet = member.log_snippet.strip()
+                break
 
     parts = [part for part in (message, trace, log_snippet) if part]
     return "\n".join(parts), len(message), len(trace), len(log_snippet)
