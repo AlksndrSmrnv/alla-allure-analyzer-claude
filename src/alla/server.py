@@ -136,7 +136,7 @@ app.add_middleware(
 
 def _build_csp_headers() -> dict[str, str]:
     """CSP-заголовки для HTML-отчётов с feedback API."""
-    if not _state.settings.kb_feedback_enabled or not _state.settings.feedback_server_url:
+    if not _state.settings.kb_active or not _state.settings.feedback_server_url:
         return {}
     feedback_url = _state.settings.feedback_server_url
     return {
@@ -327,7 +327,7 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
         raise HTTPException(status_code=502, detail=str(exc))
 
     feedback_api_url = ""
-    if _state.settings.kb_feedback_enabled:
+    if _state.settings.kb_active:
         feedback_api_url = _state.settings.feedback_server_url
 
     html = generate_html_report(
@@ -502,7 +502,7 @@ async def delete_comments(launch_id: int, dry_run: bool = False) -> dict[str, An
 def _get_feedback_store():
     """Вернуть PostgresFeedbackStore или None (ленивая инициализация)."""
     settings = _state.settings
-    if settings is None or not settings.kb_feedback_enabled:
+    if settings is None or not settings.kb_active:
         return None
 
     if not hasattr(_state, "_feedback_store"):
@@ -519,8 +519,7 @@ def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
     if store is None:
         raise HTTPException(
             status_code=501,
-            detail="Feedback requires ALLURE_KB_FEEDBACK_ENABLED=true "
-            "and ALLURE_KB_POSTGRES_DSN to be set",
+            detail="Feedback requires ALLURE_KB_POSTGRES_DSN to be set",
         )
 
     from alla.knowledge.feedback_models import FeedbackRequest

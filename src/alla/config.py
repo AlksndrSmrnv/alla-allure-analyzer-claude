@@ -46,10 +46,8 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="Уровень логирования")
     ssl_verify: bool = Field(default=True, description="Проверка SSL-сертификатов (отключить для корпоративных прокси)")
 
-    clustering_enabled: bool = Field(default=True, description="Включить/выключить кластеризацию ошибок")
     clustering_threshold: float = Field(default=0.60, description="Порог схожести для группировки ошибок в кластеры (0.0-1.0)")
 
-    kb_enabled: bool = Field(default=False, description="Включить/выключить поиск по базе знаний")
     kb_min_score: float = Field(
         default=0.15,
         ge=0.0, le=1.0,
@@ -60,28 +58,12 @@ class Settings(BaseSettings):
         ge=1,
         description="Максимум KB-совпадений на один кластер",
     )
-    kb_include_trace: bool = Field(
-        default=True,
-        description="Включать Allure-trace (stack trace) в текст запроса для KB-поиска. "
-        "Отключить, если trace слишком большой и мешает matching.",
-    )
-    kb_push_enabled: bool = Field(
-        default=False,
-        description="Записывать рекомендации KB обратно в Allure TestOps через комментарии к тест-кейсам",
-    )
     kb_postgres_dsn: str = Field(
         default="",
         description=(
-            "Строка подключения PostgreSQL для KB-бэкенда 'postgres'. "
+            "Строка подключения PostgreSQL для KB-бэкенда. "
+            "Если задан — KB, feedback и KB push включаются автоматически. "
             "Пример: postgresql://user:pass@localhost:5432/alla_kb"
-        ),
-    )
-    kb_feedback_enabled: bool = Field(
-        default=False,
-        description=(
-            "Включить систему обратной связи для KB-совпадений "
-            "(like/dislike, создание записей из HTML-отчёта). "
-            "Требует ALLURE_KB_POSTGRES_DSN."
         ),
     )
     feedback_server_url: str = Field(
@@ -96,7 +78,6 @@ class Settings(BaseSettings):
     server_host: str = Field(default="0.0.0.0", description="Хост для HTTP-сервера")
     server_port: int = Field(default=8090, ge=1, le=65535, description="Порт для HTTP-сервера")
 
-    logs_enabled: bool = Field(default=False, description="Включить/выключить извлечение и анализ логов из аттачментов")
     logs_concurrency: int = Field(
         default=5, ge=1,
         description="Макс. параллельных запросов при скачивании аттачментов",
@@ -106,16 +87,14 @@ class Settings(BaseSettings):
         description="Вес лог-канала в кластеризации (0.0 = не используется в кластеризации)",
     )
 
-    llm_enabled: bool = Field(default=False, description="Включить/выключить LLM-анализ кластеров через Langflow")
-    langflow_base_url: str = Field(default="", description="Базовый URL Langflow API (например http://langflow.company.com)")
+    langflow_base_url: str = Field(
+        default="",
+        description="Базовый URL Langflow API. Если задан вместе с flow_id — LLM и LLM push включаются автоматически.",
+    )
     langflow_flow_id: str = Field(default="", description="ID flow в Langflow для анализа ошибок")
     langflow_api_key: str = Field(default="", description="API-ключ для аутентификации в Langflow (Bearer token)")
     llm_timeout: int = Field(default=120, ge=10, description="Таймаут одного LLM-запроса в секундах")
     llm_concurrency: int = Field(default=3, ge=1, description="Макс. параллельных запросов к Langflow API")
-    llm_push_enabled: bool = Field(
-        default=False,
-        description="Записывать результаты LLM-анализа в Allure TestOps через комментарии к тест-кейсам",
-    )
     llm_max_retries: int = Field(
         default=3, ge=0,
         description="Макс. число повторных попыток при 429/503/сетевых ошибках Langflow (0 = без retry)",
@@ -144,3 +123,13 @@ class Settings(BaseSettings):
         description="Внешний URL alla-сервера (ALLURE_SERVER_EXTERNAL_URL). "
         "Используется для ссылок на отчёты в TestOps. Пример: https://alla.company.com",
     )
+
+    @property
+    def kb_active(self) -> bool:
+        """KB включена автоматически если задан PostgreSQL DSN."""
+        return bool(self.kb_postgres_dsn)
+
+    @property
+    def llm_active(self) -> bool:
+        """LLM включён автоматически если заданы Langflow URL и flow ID."""
+        return bool(self.langflow_base_url and self.langflow_flow_id)

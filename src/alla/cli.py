@@ -175,7 +175,7 @@ async def async_main(args: argparse.Namespace) -> int:
 
                 feedback_url = (
                     settings.feedback_server_url
-                    if settings.kb_feedback_enabled
+                    if settings.kb_active
                     else ""
                 )
                 html_content = generate_html_report(
