@@ -337,10 +337,14 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
     )
 
     # Сохранить отчёт на диск для self-hosted раздачи.
+    report_filename: str | None = None
     if _state.settings.reports_dir:
+        from datetime import datetime
         from pathlib import Path
 
-        report_path = Path(_state.settings.reports_dir) / f"{launch_id}.html"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_filename = f"{launch_id}_{timestamp}.html"
+        report_path = Path(_state.settings.reports_dir) / report_filename
         report_path.write_text(html, encoding="utf-8")
         logger.info("HTML-отчёт сохранён: %s", report_path)
 
@@ -349,9 +353,9 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
     if report_url:
         effective_report_url = report_url
         logger.info("URL отчёта (query param): %s", effective_report_url)
-    elif _state.settings.server_external_url and _state.settings.reports_dir:
+    elif _state.settings.server_external_url and report_filename:
         ext = _state.settings.server_external_url.rstrip("/")
-        effective_report_url = f"{ext}/reports/{launch_id}.html"
+        effective_report_url = f"{ext}/reports/{report_filename}"
         logger.info("URL отчёта (auto): %s", effective_report_url)
     else:
         effective_report_url = _state.settings.report_url
@@ -389,24 +393,28 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
 
 
 @app.get(
-    "/reports/{launch_id}.html",
+    "/reports/{filename}",
     response_class=HTMLResponse,
     responses={
+        400: {"model": ErrorResponse, "description": "Некорректное имя файла"},
         404: {"model": ErrorResponse, "description": "Отчёт не найден"},
     },
 )
-async def get_report(launch_id: int) -> HTMLResponse:
-    """Отдать ранее сгенерированный HTML-отчёт по ID запуска."""
+async def get_report(filename: str) -> HTMLResponse:
+    """Отдать ранее сгенерированный HTML-отчёт по имени файла."""
     from pathlib import Path
+
+    if "/" in filename or "\\" in filename or not filename.endswith(".html"):
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
     if not _state.settings.reports_dir:
         raise HTTPException(status_code=404, detail="Self-hosted reports are not configured")
 
-    report_path = Path(_state.settings.reports_dir) / f"{launch_id}.html"
+    report_path = Path(_state.settings.reports_dir) / filename
     if not report_path.is_file():
         raise HTTPException(
             status_code=404,
-            detail=f"Отчёт для запуска #{launch_id} не найден",
+            detail=f"Отчёт '{filename}' не найден",
         )
 
     content = report_path.read_text(encoding="utf-8")

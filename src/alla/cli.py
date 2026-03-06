@@ -347,7 +347,7 @@ def _print_clustering_report(
     failed_tests: list[FailedTestSummary] | None = None,  # noqa: F821
 ) -> None:
     """Вывод отчёта кластеризации ошибок в stdout."""
-    from alla.utils.log_utils import has_explicit_errors
+    from alla.utils.log_utils import has_explicit_errors, parse_log_sections
 
     test_by_id: dict[int, FailedTestSummary] = {}
     if failed_tests:
@@ -379,17 +379,23 @@ def _print_clustering_report(
             has_log = bool(log_snippet and log_snippet.strip())
             if has_log:
                 has_errors = has_explicit_errors(log_snippet)
-                log_lines = log_snippet.strip().splitlines()
+                total_lines = len(log_snippet.strip().splitlines())
                 error_label = ", содержит ошибки" if has_errors else ""
+                sections = parse_log_sections(log_snippet)
                 cluster_lines.append(
-                    f"Лог ({len(log_lines)} строк{error_label}):"
+                    f"Лог ({total_lines} строк{error_label}):"
                 )
-                preview_lines = log_lines[:5]
-                for line in preview_lines:
-                    text = line if len(line) <= 120 else line[:117] + "..."
-                    cluster_lines.append(f"  | {text}")
-                if len(log_lines) > 5:
-                    cluster_lines.append(f"  | ... ещё {len(log_lines) - 5} строк")
+                for _log_filename, _log_body in sections:
+                    if _log_filename:
+                        cluster_lines.append(f"  --- {_log_filename} ---")
+                    file_lines = _log_body.splitlines()
+                    for line in file_lines[:3]:
+                        text = line if len(line) <= 120 else line[:117] + "..."
+                        cluster_lines.append(f"  | {text}")
+                    if len(file_lines) > 3:
+                        cluster_lines.append(
+                            f"  | ... ещё {len(file_lines) - 3} строк"
+                        )
             else:
                 cluster_lines.append("Лог: отсутствует")
 
