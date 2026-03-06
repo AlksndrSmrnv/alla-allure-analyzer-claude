@@ -184,6 +184,21 @@ def test_prompt_kb_matches_include_match_reason() -> None:
     assert "Почему похоже: Tier 1: exact substring match (score=0.75)" in prompt
 
 
+def test_prompt_marks_exact_kb_match_as_mandatory() -> None:
+    """Exact KB match помечается как обязательная основная причина."""
+    match = make_kb_match_result(
+        score=1.0,
+        matched_on=["Tier 1: exact substring match (score=1.00)"],
+    )
+    cluster = make_failure_cluster()
+
+    prompt = build_cluster_prompt(cluster, kb_matches=[match])
+
+    assert "EXACT MATCH: KB #1 имеет score 1.00" in prompt
+    assert "KB #2 и KB #3 игнорируй" in prompt
+    assert "KB #1 [exact match; обязательная основная причина;" in prompt
+
+
 def test_prompt_without_kb_has_continuous_rule_numbering() -> None:
     """Без KB правила в секции решения нумеруются подряд, без пропусков."""
     cluster = make_failure_cluster()
@@ -287,6 +302,41 @@ async def test_analyze_clusters_success() -> None:
     assert result.failed_count == 0
     analysis = result.cluster_analyses["c1"]
     assert analysis.analysis_text == "Root cause: NullPointerException in UserService"
+    assert analysis.error is None
+
+
+@pytest.mark.asyncio
+async def test_analyze_clusters_uses_exact_kb_match_without_llm_call() -> None:
+    """Tier 1 exact KB match должен обходить вызов Langflow."""
+
+    class _Client:
+        async def run_flow(self, input_value):
+            raise AssertionError("Langflow не должен вызываться для exact KB match")
+
+    service = LLMService(_Client())  # type: ignore[arg-type]
+    cluster = make_failure_cluster()
+    report = _make_report(cluster)
+    kb_match = make_kb_match_result(
+        entry=make_kb_entry(
+            title="DNS failure",
+            description="Сервис не резолвится по DNS",
+            category=RootCauseCategory.ENV,
+            resolution_steps=["Check DNS servers", "Restart CoreDNS"],
+        ),
+        score=1.0,
+        matched_on=["Tier 1: exact substring match (score=1.00)"],
+    )
+
+    result = await service.analyze_clusters(
+        report,
+        kb_results={"c1": [kb_match]},
+    )
+
+    assert result.analyzed_count == 1
+    analysis = result.cluster_analyses["c1"]
+    assert 'KB #1 "DNS failure"' in analysis.analysis_text
+    assert "exact match, score 1.00" in analysis.analysis_text
+    assert "Check DNS servers" in analysis.analysis_text
     assert analysis.error is None
 
 
