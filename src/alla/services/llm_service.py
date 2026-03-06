@@ -280,7 +280,7 @@ class LLMService:
             # Получить log_snippet и full_trace представителя (fallback на members)
             log_snippet: str | None = None
             full_trace: str | None = None
-            if test_by_id and cluster.representative_test_id:
+            if test_by_id and cluster.representative_test_id is not None:
                 rep = test_by_id.get(cluster.representative_test_id)
                 if rep:
                     if rep.log_snippet and rep.log_snippet.strip():
