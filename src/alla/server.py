@@ -342,7 +342,7 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
         from datetime import datetime
         from pathlib import Path
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         report_filename = f"{launch_id}_{timestamp}.html"
         report_path = Path(_state.settings.reports_dir) / report_filename
         report_path.write_text(html, encoding="utf-8")
