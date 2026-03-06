@@ -189,12 +189,15 @@ class TriageService:
 
         Мутирует объекты summaries in-place, заполняя status_trace и status_message.
         """
-        missing = [s for s in summaries if not s.status_message and not s.status_trace]
+        missing = [
+            s for s in summaries
+            if not s.status_message and not s.status_trace
+        ]
         if not missing:
             return
 
         logger.info(
-            "Fallback: %d тестов без информации об ошибке, "
+            "Fallback: %d тестов без message/trace, "
             "запрос GET /api/testresult/{id} для каждого",
             len(missing),
         )
@@ -220,9 +223,10 @@ class TriageService:
             if detail is None or not detail.trace:
                 continue
             summary.status_trace = detail.trace
-            first_line = detail.trace.strip().split("\n", 1)[0]
-            if first_line:
-                summary.status_message = first_line
+            if not summary.status_message:
+                first_line = detail.trace.strip().split("\n", 1)[0]
+                if first_line:
+                    summary.status_message = first_line
             logger.debug(
                 "Fallback: получен trace для теста %d из GET /api/testresult/{id}",
                 summary.test_result_id,
@@ -307,10 +311,11 @@ class TriageService:
         # Попытка 1: извлечь ошибку из execution-шагов
         status_message, status_trace = self._find_failure_in_steps(execution_steps)
 
-        # Попытка 2 (fallback): из statusDetails самого результата, если есть
-        if not status_message and not status_trace:
-            if result.status_details and isinstance(result.status_details, dict):
+        # Попытка 2 (fallback): из statusDetails — заполнить отсутствующие поля
+        if result.status_details and isinstance(result.status_details, dict):
+            if not status_message:
                 status_message = result.status_details.get("message")
+            if not status_trace:
                 status_trace = result.status_details.get("trace")
 
         logger.debug(

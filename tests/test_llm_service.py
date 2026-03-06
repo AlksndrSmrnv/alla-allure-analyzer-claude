@@ -145,6 +145,59 @@ def test_prompt_kb_matches_include_resolution_steps() -> None:
     assert "Restart pods" in prompt
 
 
+def test_prompt_prioritizes_top_kb_match() -> None:
+    """Промпт явно заставляет LLM начинать анализ с лучшего KB-совпадения."""
+    entry = make_kb_entry(title="DNS failure", category=RootCauseCategory.ENV)
+    match = make_kb_match_result(entry=entry, score=0.91)
+    cluster = make_failure_cluster()
+
+    prompt = build_cluster_prompt(cluster, kb_matches=[match])
+
+    assert "БАЗА ЗНАНИЙ — основной источник интерпретации" in prompt
+    assert "Сначала смотри KB #1" in prompt
+    assert "Если у KB #1 score >= 0.70" in prompt
+    assert "KB #1 [основная гипотеза; высокое совпадение; score 0.91]" in prompt
+
+
+def test_prompt_kb_category_is_translated_for_llm() -> None:
+    """KB category показывается в терминологии, которую должна вернуть LLM."""
+    entry = make_kb_entry(title="Service outage", category=RootCauseCategory.SERVICE)
+    match = make_kb_match_result(entry=entry, score=0.75)
+    cluster = make_failure_cluster()
+
+    prompt = build_cluster_prompt(cluster, kb_matches=[match])
+
+    assert "Категория: приложение" in prompt
+    assert "Категория: service" not in prompt
+
+
+def test_prompt_kb_matches_include_match_reason() -> None:
+    """Промпт показывает, почему KB-совпадение было выбрано."""
+    match = make_kb_match_result(
+        score=0.75,
+        matched_on=["Tier 1: exact substring match (score=0.75)"],
+    )
+    cluster = make_failure_cluster()
+
+    prompt = build_cluster_prompt(cluster, kb_matches=[match])
+
+    assert "Почему похоже: Tier 1: exact substring match (score=0.75)" in prompt
+
+
+def test_prompt_without_kb_has_continuous_rule_numbering() -> None:
+    """Без KB правила в секции решения нумеруются подряд, без пропусков."""
+    cluster = make_failure_cluster()
+    prompt = build_cluster_prompt(cluster, kb_matches=None)
+
+    rules = prompt.split("ПРАВИЛА ПРИНЯТИЯ РЕШЕНИЯ:\n", 1)[1]
+
+    assert "1. Базы знаний нет" in rules
+    assert "2. Каждый шаг должен быть привязан" in rules
+    assert "3. Не давай абстрактных советов" in rules
+    assert "4. Не выдумывай новые причины" in rules
+    assert "\n5. " not in rules
+
+
 # ---------------------------------------------------------------------------
 # format_llm_comment
 # ---------------------------------------------------------------------------

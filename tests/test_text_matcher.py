@@ -284,18 +284,18 @@ def test_tier3_score_capped() -> None:
     """Tier 3 (TF-IDF) score не превышает tier3_score_cap."""
     matcher = TextMatcher(config=MatcherConfig(tier3_score_cap=0.5, min_score=0.01))
 
-    # Частично совпадающий текст — не substring, не 80% строк
+    # Частично совпадающий текст — не substring и недостаточно похож построчно
+    # для Tier 2, но достаточно близок лексически для Tier 3.
     kb_example = (
         "org.hibernate.exception.LockAcquisitionException: could not execute statement\n"
         "Caused by: com.mysql.cj.jdbc.exceptions.MySQLTransactionRollbackException: Deadlock found\n"
         "    at com.mysql.cj.jdbc.exceptions.SQLExceptionsMapping.translateException"
     )
-    # Другой контекст, но похожие ключевые слова
     actual_log = (
-        "ERROR during database operation\n"
+        "ERROR during database flush\n"
         "org.hibernate.exception.LockAcquisitionException: could not execute batch\n"
-        "Caused by: com.mysql.cj.jdbc.exceptions.MySQLTransactionRollbackException: Lock wait timeout\n"
-        "    at com.mysql.cj.jdbc.StatementImpl.executeUpdateInternal"
+        "Caused by: org.springframework.dao.ConcurrencyFailureException: transaction rolled back\n"
+        "    at com.company.payment.OrderRepository.save(OrderRepository.java:91)"
     )
 
     entry = make_kb_entry(id="deadlock", error_example=kb_example)
