@@ -242,7 +242,7 @@ REST API:
 | GET | `/api/v1/launch/resolve` | Резолв имени запуска в числовой ID. `?name=...&project_id=...` → `{"launch_id": 12345}` |
 | POST | `/api/v1/analyze/{launch_id}` | Полный pipeline анализа, возвращает JSON |
 | POST | `/api/v1/analyze/{launch_id}/html` | Полный pipeline анализа, возвращает self-contained HTML-отчёт. При `ALLURE_REPORTS_DIR` — сохраняет на диск. При `ALLURE_SERVER_EXTERNAL_URL` — прикрепляет ссылку на self-hosted отчёт к прогону в TestOps |
-| GET | `/reports/{filename}` | Отдать ранее сгенерированный HTML-отчёт по имени файла (например `12345_20260306_114500.html`). Требует `ALLURE_REPORTS_DIR` |
+| GET | `/reports/{filename}` | Отдать ранее сгенерированный HTML-отчёт по имени файла (например `12345_20260306_114500_296536.html`). Требует `ALLURE_REPORTS_DIR` |
 | DELETE | `/api/v1/comments/{launch_id}` | Удалить комментарии alla для тестов запуска. `?dry_run=true` — предпросмотр |
 | GET | `/docs` | Swagger UI (автогенерация FastAPI) |
 
