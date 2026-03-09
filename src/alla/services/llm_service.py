@@ -409,9 +409,10 @@ class LLMService:
         analyzed = 0
         failed = 0
         skipped = 0
+        kb_bypassed = 0
 
         async def analyze_one(cluster: FailureCluster) -> None:
-            nonlocal analyzed, failed, skipped
+            nonlocal analyzed, failed, skipped, kb_bypassed
 
             kb_matches = (kb_results or {}).get(cluster.cluster_id)
             exact_match = kb_matches[0] if kb_matches and _is_exact_kb_match(kb_matches[0]) else None
@@ -479,6 +480,7 @@ class LLMService:
                     ),
                 )
                 analyzed += 1
+                kb_bypassed += 1
                 return
 
             prompt = build_cluster_prompt(
@@ -525,6 +527,7 @@ class LLMService:
             analyzed_count=analyzed,
             failed_count=failed,
             skipped_count=skipped,
+            kb_bypass_count=kb_bypassed,
             cluster_analyses=analyses,
         )
 

@@ -242,6 +242,7 @@ async def async_main(args: argparse.Namespace) -> int:
                 "analyzed_count": llm_result.analyzed_count,
                 "failed_count": llm_result.failed_count,
                 "skipped_count": llm_result.skipped_count,
+                "kb_bypass_count": llm_result.kb_bypass_count,
                 "cluster_analyses": {
                     cid: a.model_dump()
                     for cid, a in llm_result.cluster_analyses.items()

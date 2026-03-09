@@ -23,6 +23,7 @@ class LLMAnalysisResult:
     analyzed_count: int
     failed_count: int
     skipped_count: int
+    kb_bypass_count: int = 0
     cluster_analyses: dict[str, LLMClusterAnalysis] = field(default_factory=dict)
 
 

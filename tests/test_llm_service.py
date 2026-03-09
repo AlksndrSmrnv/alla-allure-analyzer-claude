@@ -333,6 +333,7 @@ async def test_analyze_clusters_uses_exact_kb_match_without_llm_call() -> None:
     )
 
     assert result.analyzed_count == 1
+    assert result.kb_bypass_count == 1
     analysis = result.cluster_analyses["c1"]
     assert 'KB #1 "DNS failure"' in analysis.analysis_text
     assert "exact match, score 1.00" in analysis.analysis_text
