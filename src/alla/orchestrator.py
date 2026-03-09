@@ -278,7 +278,8 @@ async def analyze_launch(
     #    Когда LLM работает — KB-данные интегрируются в LLM-анализ (Stage 4),
     #    и дублирующий KB push не нужен.
     llm_succeeded = (
-        llm_result is not None and llm_result.analyzed_count > 0
+        llm_result is not None
+        and (llm_result.analyzed_count - llm_result.kb_bypass_count) > 0
     )
     if (
         settings.kb_active
