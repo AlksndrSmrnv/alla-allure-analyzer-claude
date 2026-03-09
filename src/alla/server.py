@@ -225,6 +225,7 @@ async def analyze_launch(launch_id: int) -> dict[str, Any]:
             "analyzed_count": result.llm_result.analyzed_count,
             "failed_count": result.llm_result.failed_count,
             "skipped_count": result.llm_result.skipped_count,
+            "kb_bypass_count": result.llm_result.kb_bypass_count,
             "cluster_analyses": {
                 cid: a.model_dump()
                 for cid, a in result.llm_result.cluster_analyses.items()
