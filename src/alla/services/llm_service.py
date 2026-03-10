@@ -50,6 +50,23 @@ def _is_exact_kb_match(match: KBMatchResult) -> bool:
     )
 
 
+def _humanize_match_reason(matched_on: list[str]) -> str:
+    """Перевести технические tier-описания в понятный для LLM текст."""
+    if not matched_on:
+        return "текстовое совпадение"
+    reason = matched_on[0]
+    if "Tier 1" in reason or "exact substring" in reason.lower():
+        return "Пример ошибки из KB найден целиком в тексте ошибки кластера"
+    if "Tier 2" in reason or "line match" in reason.lower():
+        return (
+            "Большинство строк примера ошибки из KB найдены "
+            "в тексте ошибки кластера (построчное сопоставление)"
+        )
+    if "Tier 3" in reason or "TF-IDF" in reason:
+        return "Нечёткое текстовое совпадение (похожие слова и фразы)"
+    return reason
+
+
 def _compact_text(text: str, *, limit: int = 220) -> str:
     """Сжать многострочный текст в короткую строку для LLM-ответа."""
     compact = " ".join(text.strip().split())
@@ -186,13 +203,33 @@ def build_cluster_prompt(
             )
             parts.append(f"Название: {entry.title}")
             parts.append(f"Категория: {_format_kb_category(entry.category)}")
-            if m.matched_on:
-                parts.append(f"Почему похоже: {'; '.join(m.matched_on[:2])}")
+            parts.append(f"Почему похоже: {_humanize_match_reason(m.matched_on)}")
+            if index <= 2 and entry.error_example:
+                example_text = entry.error_example
+                if len(example_text) > 500:
+                    example_text = example_text[:500] + "...[обрезано]"
+                parts.append(
+                    f"Пример ошибки из KB (с чем сравнивалось):\n{example_text}"
+                )
             parts.append(f"Описание: {entry.description}")
             if entry.resolution_steps:
                 parts.append("Шаги решения:")
                 for step in entry.resolution_steps:
                     parts.append(f"  - {step}")
+
+        # Verification framing for high-confidence KB match
+        top_match = kb_matches[0]
+        if top_match.score >= 0.70 and not _is_exact_kb_match(top_match):
+            parts.append(
+                "\n--- Инструкция по проверке KB #1 ---\n"
+                "Сравни «Пример ошибки из KB» выше с «Сообщением об ошибке», "
+                "«Стек-трейсом» и «Фрагментом лога» ниже.\n"
+                "Сообщение об ошибке тест-фреймворка (assertion) часто отличается "
+                "от корневой причины в логе приложения. Различие в формулировке "
+                "сообщения об ошибке НЕ является противоречием с KB.\n"
+                "Противоречие — это когда данные ПРЯМО указывают на другую причину "
+                "(другой сервис, другой тип ошибки, другой компонент)."
+            )
 
     if cluster.example_message:
         msg = cluster.example_message
@@ -241,6 +278,11 @@ def build_cluster_prompt(
             "Сначала смотри KB #1.",
             "Если у KB #1 score >= 0.70 и нет прямого противоречия в данных — "
             "считай её основной версией причины и опирайся на её описание и шаги.",
+            "Чтобы отклонить KB #1 с score >= 0.70, ты ОБЯЗАН процитировать "
+            "конкретную строку из ошибки, трейса или лога, которая ПРЯМО "
+            "указывает на другую причину (другой сервис, другой тип сбоя, "
+            "другой компонент). Различие в формулировке сообщения об ошибке "
+            "НЕ является противоречием.",
             "Если у KB #1 score 0.40-0.69 — используй её как рабочую гипотезу, "
             "но обязательно подтверди цитатой или фактом из ошибки, трейса или лога.",
             "KB #2 и KB #3 используй только для дополнительных проверок, "
