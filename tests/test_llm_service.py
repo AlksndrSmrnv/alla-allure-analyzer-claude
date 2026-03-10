@@ -107,22 +107,121 @@ def test_prompt_truncates_long_message() -> None:
 
 
 def test_prompt_truncates_long_trace() -> None:
-    """trace > 3000 символов → обрезается с суффиксом '...[обрезано]'."""
-    long_trace = "t" * 4000
+    """trace > 400 символов → обрезается с суффиксом '...[обрезано]'."""
+    long_trace = "t" * 1200
     cluster = make_failure_cluster(example_trace_snippet=long_trace)
     prompt = build_cluster_prompt(cluster)
 
     assert "...[обрезано]" in prompt
-    assert "t" * 3001 not in prompt
+    assert "t" * 401 not in prompt
+
+
+def test_prompt_truncates_trace_from_head_only() -> None:
+    """В prompt попадает только начало trace, без дальнего хвоста."""
+    trace_text = "TRACE_HEAD\n" + ("t" * 500) + "\nTRACE_TAIL"
+    cluster = make_failure_cluster(example_trace_snippet=trace_text)
+
+    prompt = build_cluster_prompt(cluster)
+
+    assert "TRACE_HEAD" in prompt
+    assert "TRACE_TAIL" not in prompt
+    assert "...[обрезано]" in prompt
 
 
 def test_prompt_includes_log_snippet() -> None:
-    """log_snippet передан → включён в промпт."""
+    """log_snippet передан → включён в промпт после мягкой нормализации."""
     cluster = make_failure_cluster()
     prompt = build_cluster_prompt(cluster, log_snippet="2024-01-01 [ERROR] boom")
 
-    assert "2024-01-01 [ERROR] boom" in prompt
+    assert "<TS> [ERROR] boom" in prompt
+    assert "2024-01-01 [ERROR] boom" not in prompt
     assert "Фрагмент лога" in prompt
+
+
+def test_prompt_keeps_medium_log_snippet_without_truncation() -> None:
+    """log_snippet до 8000 символов включается в prompt целиком."""
+    cluster = make_failure_cluster()
+    medium_log = "LOG_HEAD\n" + ("l" * 6000) + "\nLOG_TAIL"
+
+    prompt = build_cluster_prompt(cluster, log_snippet=medium_log)
+
+    assert medium_log in prompt
+    assert "...[обрезано]" not in prompt
+
+
+def test_prompt_truncates_long_log_after_8000_chars() -> None:
+    """Очень длинный log_snippet режется только после нового лимита 8000."""
+    cluster = make_failure_cluster()
+    long_log = "LOG_HEAD\n" + ("l" * 9000) + "\nLOG_TAIL"
+
+    prompt = build_cluster_prompt(cluster, log_snippet=long_log)
+
+    assert "LOG_HEAD" in prompt
+    assert "LOG_TAIL" not in prompt
+    assert "l" * 8001 not in prompt
+    assert "...[обрезано]" in prompt
+
+
+def test_prompt_normalizes_trace_and_log_for_llm() -> None:
+    """Trace и log проходят soft-normalization с <ID>/<TS>/<IP>, но без <NUM>."""
+    cluster = make_failure_cluster(
+        example_trace_snippet=(
+            "trace uuid=123e4567-e89b-12d3-a456-426614174000 "
+            "at 2026-02-06T10:12:13 from 10.20.30.40 build 123456"
+        )
+    )
+    prompt = build_cluster_prompt(
+        cluster,
+        log_snippet=(
+            "log uuid=123e4567e89b12d3a456426614174000 "
+            "at 2026-02-06 10:12:13 from 10.20.30.40 build 987654"
+        ),
+    )
+
+    assert "123e4567-e89b-12d3-a456-426614174000" not in prompt
+    assert "123e4567e89b12d3a456426614174000" not in prompt
+    assert "2026-02-06T10:12:13" not in prompt
+    assert "2026-02-06 10:12:13" not in prompt
+    assert "10.20.30.40" not in prompt
+    assert "<ID>" in prompt
+    assert "<TS>" in prompt
+    assert "<IP>" in prompt
+    assert "123456" in prompt
+    assert "987654" in prompt
+    assert "<NUM>" not in prompt
+
+
+def test_prompt_keeps_example_message_raw_for_llm() -> None:
+    """example_message не нормализуется для LLM."""
+    raw_message = (
+        "Order 123456 failed at 2026-02-06T10:12:13 "
+        "for 123e4567-e89b-12d3-a456-426614174000 on 10.20.30.40"
+    )
+    cluster = make_failure_cluster(example_message=raw_message)
+
+    prompt = build_cluster_prompt(cluster)
+
+    assert raw_message in prompt
+    assert "<ID>" not in prompt
+    assert "<TS>" not in prompt
+    assert "<IP>" not in prompt
+
+
+def test_prompt_normalizes_full_trace_for_llm() -> None:
+    """Если передан full_trace, в prompt уходит его мягко нормализованная версия."""
+    cluster = make_failure_cluster(example_trace_snippet="fallback trace")
+    full_trace = (
+        "Full trace for 123e4567-e89b-12d3-a456-426614174000 "
+        "at 2026-02-06T10:12:13 from 10.20.30.40"
+    )
+
+    prompt = build_cluster_prompt(cluster, full_trace=full_trace)
+
+    assert "fallback trace" not in prompt
+    assert "123e4567-e89b-12d3-a456-426614174000" not in prompt
+    assert "2026-02-06T10:12:13" not in prompt
+    assert "10.20.30.40" not in prompt
+    assert "Full trace for <ID> at <TS> from <IP>" in prompt
 
 
 def test_prompt_omits_log_section_when_none() -> None:
