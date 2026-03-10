@@ -23,6 +23,7 @@ class AnalysisResponse(BaseModel):
     """JSON-ответ POST /api/v1/analyze/{launch_id}."""
 
     triage_report: dict[str, Any]
+    onboarding: dict[str, Any] | None = None
     clustering_report: dict[str, Any] | None = None
     kb_matches: dict[str, list[dict[str, Any]]] | None = None
     kb_push_result: dict[str, Any] | None = None
@@ -205,6 +206,7 @@ async def analyze_launch(launch_id: int) -> dict[str, Any]:
 
     response: dict[str, Any] = {
         "triage_report": result.triage_report.model_dump(),
+        "onboarding": result.onboarding.model_dump(),
     }
 
     if result.clustering_report is not None:

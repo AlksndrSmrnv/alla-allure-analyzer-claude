@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Создание схемы и начальное наполнение таблицы alla.kb_entry.
+"""Создание схемы и optional starter pack для alla.kb_entry.
 
 Использует psycopg (уже входит в alla[postgres]) — psql не нужен.
 
 Использование:
     python sql/setup_kb.py                              # DSN из .env или ALLURE_KB_POSTGRES_DSN
+    python sql/setup_kb.py --with-starter-pack         # схема + starter pack
     python sql/setup_kb.py --env-file /path/to/.env    # указать другой .env файл
     python sql/setup_kb.py --seed-only                 # только данные (схема уже есть)
     python sql/setup_kb.py --schema-only               # только схема
@@ -332,7 +333,7 @@ def run(
     dsn: str,
     *,
     run_schema: bool = True,
-    run_seed: bool = True,
+    run_seed: bool = False,
     dry_run: bool = False,
 ) -> None:
     if dry_run:
@@ -342,7 +343,7 @@ def run(
             print(SCHEMA_SQL.strip())
             print()
         if run_seed:
-            print("--- SEED SQL ---")
+            print("--- STARTER PACK SQL ---")
             print(f"INSERT {len(SEED_ENTRIES)} записей в alla.kb_entry (ON CONFLICT DO NOTHING)")
         return
 
@@ -372,7 +373,7 @@ def run(
             print("✓ Схема создана (или уже существовала)\n")
 
         if run_seed:
-            print(f"Загрузка {len(SEED_ENTRIES)} записей...")
+            print(f"Загрузка starter pack ({len(SEED_ENTRIES)} записей)...")
             inserted = 0
             skipped = 0
             with conn.cursor() as cur:
@@ -392,7 +393,7 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Создать схему и заполнить таблицу alla.kb_entry",
+        description="Создать схему alla.kb_entry и optional starter pack",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -418,7 +419,12 @@ def main() -> None:
     group.add_argument(
         "--seed-only",
         action="store_true",
-        help="Только загрузить данные (схема уже создана)",
+        help="Только загрузить starter pack (схема уже создана)",
+    )
+    parser.add_argument(
+        "--with-starter-pack",
+        action="store_true",
+        help="После создания схемы явно загрузить starter pack",
     )
     parser.add_argument(
         "--dry-run",
@@ -432,8 +438,17 @@ def main() -> None:
 
     # DSN не нужен для --dry-run: подключения к БД не происходит
     dsn = "" if args.dry_run else _resolve_dsn(args.dsn)
-    run_schema = not args.seed_only
-    run_seed = not args.schema_only
+    run_schema = True
+    run_seed = False
+    if args.schema_only:
+        run_schema = True
+        run_seed = False
+    elif args.seed_only:
+        run_schema = False
+        run_seed = True
+    elif args.with_starter_pack:
+        run_schema = True
+        run_seed = True
 
     run(dsn, run_schema=run_schema, run_seed=run_seed, dry_run=args.dry_run)
 
