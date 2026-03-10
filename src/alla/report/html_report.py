@@ -386,6 +386,15 @@ def _render_kb_entry(
         items = "".join(f"<li>{_e(s)}</li>" for s in m.entry.resolution_steps)
         steps_html = f'<ul class="kb-steps">{items}</ul>'
 
+    error_example_html = ""
+    if m.entry.error_example:
+        error_example_html = (
+            '<button class="kb-example-toggle" '
+            "onclick=\"this.nextElementSibling.classList.toggle('hidden')\">"
+            "Посмотреть пример ошибки</button>"
+            f'<pre class="kb-example hidden">{_e(m.entry.error_example)}</pre>'
+        )
+
     feedback_html = ""
     if feedback_api_url and error_fingerprint:
         entry_id = _e(str(m.entry.entry_id)) if m.entry.entry_id is not None else _e(m.entry.id)
@@ -409,6 +418,7 @@ def _render_kb_entry(
         f'<span class="kb-category">{_e(m.entry.category.value)}</span>'
         "</div>"
         f"{steps_html}"
+        f"{error_example_html}"
         f"{feedback_html}"
         "</div>"
     )
@@ -853,6 +863,10 @@ _CSS = """
       color: var(--text);
     }
     .kb-steps li { margin-bottom: 0.25rem; }
+    .kb-example-toggle{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.4rem .75rem;cursor:pointer;color:var(--text-muted);font-size:.8rem;margin-top:.75rem;transition:all .2s}
+    .kb-example-toggle:hover{border-color:var(--primary);color:var(--primary)}
+    .kb-example{margin:.5rem 0 0;padding:.75rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:.75rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:20rem;overflow-y:auto}
+    .kb-example.hidden{display:none}
 
     /* ---- Test IDs ---- */
     .test-list {
