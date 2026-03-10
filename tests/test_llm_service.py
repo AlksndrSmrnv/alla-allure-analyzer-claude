@@ -216,6 +216,20 @@ def test_prompt_kb_matches_include_match_reason() -> None:
     assert "Tier 1: exact substring match" not in prompt
 
 
+def test_prompt_describes_match_against_cluster_data() -> None:
+    """Tier-совпадение описывается через данные кластера, а не только текст ошибки."""
+    match = make_kb_match_result(
+        score=1.0,
+        matched_on=["Tier 1: exact substring match (score=1.00)"],
+    )
+    cluster = make_failure_cluster()
+
+    prompt = build_cluster_prompt(cluster, kb_matches=[match])
+
+    assert "Пример ошибки из KB найден целиком в данных кластера" in prompt
+    assert "тексте ошибки кластера" not in prompt
+
+
 def test_prompt_includes_error_example_for_top_kb_matches() -> None:
     """error_example из KB включается в промпт для первых 2 совпадений."""
     entry1 = make_kb_entry(
@@ -272,6 +286,39 @@ def test_prompt_includes_verification_framing_for_high_score_kb() -> None:
     assert "Инструкция по проверке KB #1" in prompt
     assert "НЕ является противоречием" in prompt
     assert "ПРЯМО указывают на другую причину" in prompt
+
+
+def test_prompt_includes_provenance_for_combined_kb_query() -> None:
+    """Промпт объясняет, что KB найдено по объединённым message/trace/log данным."""
+    match = make_kb_match_result(score=0.91)
+    cluster = make_failure_cluster()
+
+    prompt = build_cluster_prompt(
+        cluster,
+        kb_matches=[match],
+        kb_query_provenance=(120, 340, 560),
+    )
+
+    assert "KB-совпадение найдено по объединённому тексту" in prompt
+    assert "сообщение об ошибке (120 симв.)" in prompt
+    assert "стек-трейс (340 симв.)" in prompt
+    assert "лог приложения (560 симв.)" in prompt
+    assert "совпадение могло быть именно по ним" in prompt
+
+
+def test_prompt_includes_verification_framing_for_exact_high_score_kb() -> None:
+    """Даже exact/high-score KB отправляется на проверку по данным кластера."""
+    match = make_kb_match_result(
+        score=1.0,
+        matched_on=["Tier 1: exact substring match (score=1.00)"],
+    )
+    cluster = make_failure_cluster()
+
+    prompt = build_cluster_prompt(cluster, kb_matches=[match])
+
+    assert "EXACT MATCH: KB #1 имеет score 1.00" in prompt
+    assert "Инструкция по проверке KB #1" in prompt
+    assert "Сообщение об ошибке тест-фреймворка (assertion) часто отличается" in prompt
 
 
 def test_prompt_no_verification_framing_for_low_score_kb() -> None:
@@ -418,12 +465,14 @@ async def test_analyze_clusters_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_analyze_clusters_uses_exact_kb_match_without_llm_call() -> None:
-    """Tier 1 exact KB match должен обходить вызов Langflow."""
+async def test_analyze_clusters_sends_exact_kb_match_to_langflow() -> None:
+    """Даже Tier 1 exact KB match идёт в Langflow для дополнительной проверки."""
+    captured_prompts: list[str] = []
 
     class _Client:
         async def run_flow(self, input_value):
-            raise AssertionError("Langflow не должен вызываться для exact KB match")
+            captured_prompts.append(input_value)
+            return "validated by langflow"
 
     service = LLMService(_Client())  # type: ignore[arg-type]
     cluster = make_failure_cluster()
@@ -445,11 +494,13 @@ async def test_analyze_clusters_uses_exact_kb_match_without_llm_call() -> None:
     )
 
     assert result.analyzed_count == 1
-    assert result.kb_bypass_count == 1
+    assert result.failed_count == 0
+    assert result.kb_bypass_count == 0
+    assert len(captured_prompts) == 1
+    assert "EXACT MATCH: KB #1 имеет score 1.00" in captured_prompts[0]
+    assert "Инструкция по проверке KB #1" in captured_prompts[0]
     analysis = result.cluster_analyses["c1"]
-    assert 'KB #1 "DNS failure"' in analysis.analysis_text
-    assert "exact match, score 1.00" in analysis.analysis_text
-    assert "Check DNS servers" in analysis.analysis_text
+    assert analysis.analysis_text == "validated by langflow"
     assert analysis.error is None
 
 
@@ -500,6 +551,62 @@ async def test_analyze_clusters_uses_log_snippet_from_representative() -> None:
 
     assert len(captured_prompts) == 1
     assert "ERROR connection refused" in captured_prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_analyze_clusters_includes_kb_provenance_when_message_differs() -> None:
+    """При непохожем message промпт явно отправляет LLM перепроверять trace/log."""
+    captured_prompts: list[str] = []
+
+    class _Client:
+        async def run_flow(self, input_value):
+            captured_prompts.append(input_value)
+            return "analysis"
+
+    service = LLMService(_Client())  # type: ignore[arg-type]
+    cluster = make_failure_cluster(
+        example_message="AssertionError: expected 200 but got 500",
+        example_trace_snippet="at ApiTest.java:42",
+        representative_test_id=42,
+        member_test_ids=[42],
+    )
+    report = _make_report(cluster)
+    kb_match = make_kb_match_result(
+        entry=make_kb_entry(
+            title="DNS failure",
+            error_example="ERROR: DNS resolution failed for service-x.namespace.svc.cluster.local",
+            category=RootCauseCategory.ENV,
+        ),
+        score=0.91,
+        matched_on=["Tier 2: line match (score=0.91)"],
+    )
+    failed_tests = [
+        FailedTestSummary(
+            test_result_id=42,
+            name="test",
+            status=TestStatus.FAILED,
+            log_snippet="ERROR: DNS resolution failed for service-x.namespace.svc.cluster.local",
+            status_trace="java.net.UnknownHostException: service-x.namespace.svc.cluster.local",
+        ),
+    ]
+
+    await service.analyze_clusters(
+        report,
+        kb_results={"c1": [kb_match]},
+        failed_tests=failed_tests,
+        kb_provenance={"c1": (34, 78, 96)},
+    )
+
+    assert len(captured_prompts) == 1
+    prompt = captured_prompts[0]
+    assert "KB-совпадение найдено по объединённому тексту" in prompt
+    assert "сообщение об ошибке (34 симв.)" in prompt
+    assert "стек-трейс (78 симв.)" in prompt
+    assert "лог приложения (96 симв.)" in prompt
+    assert "Если сообщение об ошибке не похоже на пример из KB" in prompt
+    assert "проверь стек-трейс и лог" in prompt
+    assert "AssertionError: expected 200 but got 500" in prompt
+    assert "DNS resolution failed for service-x.namespace.svc.cluster.local" in prompt
 
 
 @pytest.mark.asyncio

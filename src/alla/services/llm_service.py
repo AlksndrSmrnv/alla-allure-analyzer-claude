@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _LLM_HEADER = "[alla] LLM-анализ ошибки"
 _SEPARATOR = "=" * 40
-_EXACT_KB_SCORE = 0.999
+_EXACT_KB_SCORE = 0.999  # Нужен для метки EXACT MATCH в промпте.
 
 def _interpret_kb_score(score: float) -> str:
     """Перевести числовой KB-score в текстовое описание уровня уверенности."""
@@ -56,89 +56,15 @@ def _humanize_match_reason(matched_on: list[str]) -> str:
         return "текстовое совпадение"
     reason = matched_on[0]
     if "Tier 1" in reason or "exact substring" in reason.lower():
-        return "Пример ошибки из KB найден целиком в тексте ошибки кластера"
+        return "Пример ошибки из KB найден целиком в данных кластера"
     if "Tier 2" in reason or "line match" in reason.lower():
         return (
             "Большинство строк примера ошибки из KB найдены "
-            "в тексте ошибки кластера (построчное сопоставление)"
+            "в данных кластера (построчное сопоставление)"
         )
     if "Tier 3" in reason or "TF-IDF" in reason:
         return "Нечёткое текстовое совпадение (похожие слова и фразы)"
     return reason
-
-
-def _compact_text(text: str, *, limit: int = 220) -> str:
-    """Сжать многострочный текст в короткую строку для LLM-ответа."""
-    compact = " ".join(text.strip().split())
-    if len(compact) <= limit:
-        return compact
-    return compact[:limit] + "...[обрезано]"
-
-
-def _select_evidence_snippet(
-    cluster: FailureCluster,
-    log_snippet: str | None,
-    full_trace: str | None,
-) -> str | None:
-    """Выбрать короткое подтверждение из сообщения, трейса или лога."""
-    candidates = [
-        cluster.example_message,
-        full_trace,
-        cluster.example_trace_snippet,
-        log_snippet,
-    ]
-    for candidate in candidates:
-        if candidate and candidate.strip():
-            return _compact_text(candidate)
-    return None
-
-
-def _build_exact_kb_analysis(
-    cluster: FailureCluster,
-    match: KBMatchResult,
-    *,
-    log_snippet: str | None,
-    full_trace: str | None,
-) -> str:
-    """Собрать детерминированный анализ по exact KB match без вызова LLM."""
-    entry = match.entry
-    category = _format_kb_category(entry.category)
-    evidence = _select_evidence_snippet(cluster, log_snippet, full_trace)
-
-    what_broke = (
-        f'ЧТО СЛОМАЛОСЬ: Падение полностью совпадает с KB #1 "{entry.title}" '
-        f"(exact match, score 1.00)."
-    )
-    if entry.description:
-        what_broke += f" {entry.description}"
-    if evidence:
-        what_broke += f" Подтверждение в данных: {evidence}"
-
-    cause = (
-        f'ПРИЧИНА: {category} — взято напрямую из KB #1 "{entry.title}", '
-        "потому что совпадение exact и не требует выбора другой гипотезы."
-    )
-
-    steps = list(entry.resolution_steps[:3])
-    fallback_steps = []
-    if evidence:
-        fallback_steps.append(f"Сверить текущую ошибку с подтверждением: {evidence}")
-    fallback_steps.extend([
-        f'Повторно проверить симптомы из KB #1 "{entry.title}" в текущем запуске.',
-        f'Если симптомы отличаются от KB #1 "{entry.title}", обновить запись базы знаний.',
-    ])
-    for step in fallback_steps:
-        if len(steps) >= 3:
-            break
-        if step not in steps:
-            steps.append(step)
-    steps = steps[:3]
-
-    lines = [what_broke, cause, "ЧТО ПРОВЕРИТЬ:"]
-    for index, step in enumerate(steps, start=1):
-        lines.append(f"{index}. {step}")
-
-    return "\n".join(lines)
 
 
 def build_cluster_prompt(
@@ -146,11 +72,17 @@ def build_cluster_prompt(
     kb_matches: list[KBMatchResult] | None = None,
     log_snippet: str | None = None,
     full_trace: str | None = None,
+    *,
+    kb_query_provenance: tuple[int, int, int] | None = None,
 ) -> str:
     """Собрать промпт для LLM-анализа одного кластера.
 
     Включает: label, member_count, example_message, full_trace (или snippet),
     опционально log_snippet и KB-совпадения для контекста.
+
+    Args:
+        kb_query_provenance: (message_len, trace_len, log_len) — длины сегментов
+            KB-запроса для указания LLM, по каким данным было найдено совпадение.
     """
     parts: list[str] = [
         "Ты — инженер по анализу сбоев автотестов.",
@@ -217,9 +149,27 @@ def build_cluster_prompt(
                 for step in entry.resolution_steps:
                     parts.append(f"  - {step}")
 
-        # Verification framing for high-confidence KB match
+        # Подсказка для LLM: по каким данным был собран KB-запрос.
+        if kb_query_provenance:
+            msg_len, trace_len, log_len = kb_query_provenance
+            source_parts = []
+            if msg_len > 0:
+                source_parts.append(f"сообщение об ошибке ({msg_len} симв.)")
+            if trace_len > 0:
+                source_parts.append(f"стек-трейс ({trace_len} симв.)")
+            if log_len > 0:
+                source_parts.append(f"лог приложения ({log_len} симв.)")
+            if source_parts:
+                sources = " + ".join(source_parts)
+                parts.append(
+                    f"\nKB-совпадение найдено по объединённому тексту: {sources}. "
+                    "Если сообщение об ошибке не похоже на пример из KB, "
+                    "проверь стек-трейс и лог — совпадение могло быть именно по ним."
+                )
+
+        # Для high-confidence KB всегда просим верификацию по данным кластера.
         top_match = kb_matches[0]
-        if top_match.score >= 0.70 and not _is_exact_kb_match(top_match):
+        if top_match.score >= 0.70:
             parts.append(
                 "\n--- Инструкция по проверке KB #1 ---\n"
                 "Сравни «Пример ошибки из KB» выше с «Сообщением об ошибке», "
@@ -422,6 +372,7 @@ class LLMService:
         clustering_report: ClusteringReport,
         kb_results: dict[str, list[KBMatchResult]] | None = None,
         failed_tests: list[FailedTestSummary] | None = None,
+        kb_provenance: dict[str, tuple[int, int, int]] | None = None,
     ) -> LLMAnalysisResult:
         """Проанализировать все кластеры через LLM.
 
@@ -429,6 +380,7 @@ class LLMService:
             clustering_report: Отчёт кластеризации.
             kb_results: Опционально — KB-совпадения для обогащения промпта.
             failed_tests: Опционально — список тестов для извлечения log_snippet.
+            kb_provenance: Опционально — (msg_len, trace_len, log_len) per cluster.
 
         Returns:
             LLMAnalysisResult со всеми анализами.
@@ -451,13 +403,11 @@ class LLMService:
         analyzed = 0
         failed = 0
         skipped = 0
-        kb_bypassed = 0
 
         async def analyze_one(cluster: FailureCluster) -> None:
-            nonlocal analyzed, failed, skipped, kb_bypassed
+            nonlocal analyzed, failed, skipped
 
             kb_matches = (kb_results or {}).get(cluster.cluster_id)
-            exact_match = kb_matches[0] if kb_matches and _is_exact_kb_match(kb_matches[0]) else None
 
             # Получить log_snippet и full_trace представителя (fallback на members)
             log_snippet: str | None = None
@@ -506,27 +456,10 @@ class LLMService:
                 kb_count,
             )
 
-            if exact_match is not None:
-                logger.info(
-                    "LLM: кластер %s использует exact KB match %r без вызова LLM",
-                    cluster.cluster_id[:8],
-                    exact_match.entry.title,
-                )
-                analyses[cluster.cluster_id] = LLMClusterAnalysis(
-                    cluster_id=cluster.cluster_id,
-                    analysis_text=_build_exact_kb_analysis(
-                        cluster,
-                        exact_match,
-                        log_snippet=log_snippet,
-                        full_trace=full_trace,
-                    ),
-                )
-                analyzed += 1
-                kb_bypassed += 1
-                return
-
+            provenance = (kb_provenance or {}).get(cluster.cluster_id)
             prompt = build_cluster_prompt(
                 cluster, kb_matches, log_snippet, full_trace,
+                kb_query_provenance=provenance,
             )
 
             async with semaphore:
@@ -569,7 +502,8 @@ class LLMService:
             analyzed_count=analyzed,
             failed_count=failed,
             skipped_count=skipped,
-            kb_bypass_count=kb_bypassed,
+            # Поле оставлено в API/CLI ответах для обратной совместимости.
+            kb_bypass_count=0,
             cluster_analyses=analyses,
         )
 

@@ -34,6 +34,7 @@ class AnalysisResult:
     clustering_report: ClusteringReport | None = None
     kb_results: dict[str, list[KBMatchResult]] = field(default_factory=dict)
     kb_push_result: KBPushResult | None = None
+    kb_provenance: dict[str, tuple[int, int, int]] = field(default_factory=dict)
     llm_result: LLMAnalysisResult | None = None
     llm_push_result: LLMPushResult | None = None
     llm_launch_summary: LLMLaunchSummary | None = None
@@ -97,6 +98,7 @@ async def analyze_launch(
     clustering_report = None
     kb_results: dict[str, list[KBMatchResult]] = {}
     kb_push_result = None
+    kb_provenance: dict[str, tuple[int, int, int]] = {}
     error_fingerprints: dict[str, str] = {}
 
     # 2. Кластеризация
@@ -139,6 +141,7 @@ async def analyze_launch(
                     cluster, test_by_id,
                     include_trace=True,
                 )
+                kb_provenance[cluster.cluster_id] = (message_len, trace_len, log_len)
 
                 # Fingerprint из report_text (message + trace, без лога) —
                 # лог варьируется между прогонами, fingerprint должен быть стабильным.
@@ -242,6 +245,7 @@ async def analyze_launch(
                     clustering_report,
                     kb_results=kb_results or None,
                     failed_tests=report.failed_tests,
+                    kb_provenance=kb_provenance or None,
                 )
             except Exception as exc:
                 logger.warning("LLM анализ: ошибка: %s", exc)
@@ -307,6 +311,7 @@ async def analyze_launch(
         clustering_report=clustering_report,
         kb_results=kb_results,
         kb_push_result=kb_push_result,
+        kb_provenance=kb_provenance,
         llm_result=llm_result,
         llm_push_result=llm_push_result,
         llm_launch_summary=llm_launch_summary,
