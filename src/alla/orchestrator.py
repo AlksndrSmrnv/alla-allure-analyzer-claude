@@ -11,10 +11,12 @@ from alla.clients.base import TestResultsProvider, TestResultsUpdater
 from alla.config import Settings
 from alla.knowledge.models import KBMatchResult
 from alla.models.clustering import ClusteringReport, FailureCluster
+from alla.models.onboarding import OnboardingMode, OnboardingState
 from alla.models.testops import FailedTestSummary, TriageReport
 from alla.services.kb_push_service import KBPushResult
 
 if TYPE_CHECKING:
+    from alla.knowledge.models import KBEntry
     from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary, LLMPushResult
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,7 @@ class AnalysisResult:
     llm_push_result: LLMPushResult | None = None
     llm_launch_summary: LLMLaunchSummary | None = None
     error_fingerprints: dict[str, str] = field(default_factory=dict)
+    onboarding: OnboardingState = field(default_factory=OnboardingState)
 
 
 async def analyze_launch(
@@ -100,6 +103,12 @@ async def analyze_launch(
     kb_push_result = None
     kb_provenance: dict[str, tuple[int, int, int]] = {}
     error_fingerprints: dict[str, str] = {}
+    onboarding = OnboardingState(
+        mode=OnboardingMode.KB_NOT_CONFIGURED
+        if not settings.kb_active
+        else OnboardingMode.NORMAL,
+        prioritized_cluster_ids=_prioritize_cluster_ids(None),
+    )
 
     # 2. Кластеризация
     if report.failed_tests:
@@ -118,8 +127,10 @@ async def analyze_launch(
             launch_id, report.failed_tests,
         )
 
+    kb_entries: list["KBEntry"] = []
+
     # 3. Поиск по базе знаний
-    if settings.kb_active and clustering_report is not None:
+    if settings.kb_active:
         from alla.knowledge.matcher import MatcherConfig
 
         matcher_config = MatcherConfig(
@@ -131,65 +142,75 @@ async def analyze_launch(
             report.project_id,
             kb_postgres_dsn=settings.kb_postgres_dsn,
         )
+        if hasattr(kb, "get_all_entries"):
+            kb_entries = kb.get_all_entries()
 
-        # Индекс test_result_id → FailedTestSummary для быстрого lookup
-        test_by_id = {t.test_result_id: t for t in report.failed_tests}
+        if clustering_report is not None:
+            # Индекс test_result_id → FailedTestSummary для быстрого lookup
+            test_by_id = {t.test_result_id: t for t in report.failed_tests}
 
-        for cluster in clustering_report.clusters:
-            try:
-                query_text, message_len, trace_len, log_len = _build_kb_query_text(
-                    cluster, test_by_id,
-                    include_trace=True,
-                )
-                kb_provenance[cluster.cluster_id] = (message_len, trace_len, log_len)
-
-                # Fingerprint из report_text (message + trace, без лога) —
-                # лог варьируется между прогонами, fingerprint должен быть стабильным.
-                fingerprint_text = _build_fingerprint_text(
-                    cluster, test_by_id,
-                    include_trace=True,
-                )
-                if fingerprint_text.strip():
-                    from alla.utils.fingerprint import compute_fingerprint
-
-                    fingerprint = compute_fingerprint(fingerprint_text)
-                    error_fingerprints[cluster.cluster_id] = fingerprint
-
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(
-                        "KB query [%s]: rep_test_id=%s, "
-                        "combined_len=%d (msg=%d, trace=%d, log=%d)",
-                        cluster.cluster_id,
-                        cluster.representative_test_id,
-                        len(query_text),
-                        message_len,
-                        trace_len,
-                        log_len,
+            for cluster in clustering_report.clusters:
+                try:
+                    query_text, message_len, trace_len, log_len = _build_kb_query_text(
+                        cluster, test_by_id,
+                        include_trace=True,
                     )
-                    if query_text.strip():
+                    kb_provenance[cluster.cluster_id] = (message_len, trace_len, log_len)
+
+                    # Fingerprint из report_text (message + trace, без лога) —
+                    # лог варьируется между прогонами, fingerprint должен быть стабильным.
+                    fingerprint_text = _build_fingerprint_text(
+                        cluster, test_by_id,
+                        include_trace=True,
+                    )
+                    if fingerprint_text.strip():
+                        from alla.utils.fingerprint import compute_fingerprint
+
+                        fingerprint = compute_fingerprint(fingerprint_text)
+                        error_fingerprints[cluster.cluster_id] = fingerprint
+
+                    if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
-                            "KB query [%s]: head='%s'",
+                            "KB query [%s]: rep_test_id=%s, "
+                            "combined_len=%d (msg=%d, trace=%d, log=%d)",
                             cluster.cluster_id,
-                            _preview_head(query_text, _KB_QUERY_LOG_PREVIEW_CHARS),
+                            cluster.representative_test_id,
+                            len(query_text),
+                            message_len,
+                            trace_len,
+                            log_len,
                         )
+                        if query_text.strip():
+                            logger.debug(
+                                "KB query [%s]: head='%s'",
+                                cluster.cluster_id,
+                                _preview_head(query_text, _KB_QUERY_LOG_PREVIEW_CHARS),
+                            )
 
-                fp = error_fingerprints.get(cluster.cluster_id)
-                matches = (
-                    kb.search_by_error(
-                        query_text,
-                        query_label=f"{cluster.cluster_id}:combined",
-                        error_fingerprint=fp,
+                    fp = error_fingerprints.get(cluster.cluster_id)
+                    matches = (
+                        kb.search_by_error(
+                            query_text,
+                            query_label=f"{cluster.cluster_id}:combined",
+                            error_fingerprint=fp,
+                        )
+                        if query_text.strip()
+                        else []
                     )
-                    if query_text.strip()
-                    else []
-                )
-                if matches:
-                    kb_results[cluster.cluster_id] = matches
-            except Exception as exc:
-                logger.warning(
-                    "Ошибка KB-поиска для кластера %s: %s",
-                    cluster.cluster_id, exc,
-                )
+                    if matches:
+                        kb_results[cluster.cluster_id] = matches
+                except Exception as exc:
+                    logger.warning(
+                        "Ошибка KB-поиска для кластера %s: %s",
+                        cluster.cluster_id, exc,
+                    )
+
+    onboarding = _build_onboarding_state(
+        settings,
+        report.project_id,
+        clustering_report,
+        kb_entries=kb_entries,
+    )
 
     # 4. LLM-анализ кластеров через Langflow
     llm_result = None
@@ -316,7 +337,58 @@ async def analyze_launch(
         llm_push_result=llm_push_result,
         llm_launch_summary=llm_launch_summary,
         error_fingerprints=error_fingerprints,
+        onboarding=onboarding,
     )
+
+
+def _build_onboarding_state(
+    settings: Settings,
+    project_id: int | None,
+    clustering_report: ClusteringReport | None,
+    *,
+    kb_entries: list["KBEntry"] | None = None,
+) -> OnboardingState:
+    """Определить onboarding state проекта для JSON и HTML-отчёта."""
+    prioritized_cluster_ids = _prioritize_cluster_ids(clustering_report)
+
+    if not settings.kb_active:
+        return OnboardingState(
+            mode=OnboardingMode.KB_NOT_CONFIGURED,
+            prioritized_cluster_ids=prioritized_cluster_ids,
+        )
+
+    entries = kb_entries or []
+    starter_pack_available = any(entry.project_id is None for entry in entries)
+    project_kb_entries = 0
+    if project_id is not None:
+        project_kb_entries = sum(
+            1 for entry in entries if entry.project_id == project_id
+        )
+
+    guided = project_id is not None and project_kb_entries == 0
+    return OnboardingState(
+        mode=OnboardingMode.GUIDED if guided else OnboardingMode.NORMAL,
+        needs_bootstrap=guided,
+        project_kb_entries=project_kb_entries,
+        prioritized_cluster_ids=prioritized_cluster_ids,
+        starter_pack_available=starter_pack_available,
+    )
+
+
+def _prioritize_cluster_ids(
+    clustering_report: ClusteringReport | None,
+    *,
+    limit: int = 3,
+) -> list[str]:
+    """Вернуть top-N cluster_id для guided onboarding."""
+    if clustering_report is None or not clustering_report.clusters or limit <= 0:
+        return []
+
+    ranked = sorted(
+        enumerate(clustering_report.clusters),
+        key=lambda item: (-item[1].member_count, item[0]),
+    )
+    return [cluster.cluster_id for _, cluster in ranked[:limit]]
 
 
 def _build_kb_query_text(

@@ -38,6 +38,13 @@ class KBEntry(BaseModel):
             "None для YAML-бэкенда. Используется для feedback (like/dislike)."
         ),
     )
+    project_id: int | None = Field(
+        default=None,
+        description=(
+            "NULL = глобальная/starter-pack запись; N = запись конкретного "
+            "проекта Allure TestOps."
+        ),
+    )
 
 
 class KBMatchResult(BaseModel):

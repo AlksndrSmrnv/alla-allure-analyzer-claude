@@ -227,6 +227,7 @@ async def async_main(args: argparse.Namespace) -> int:
         from dataclasses import asdict
 
         output = {"triage_report": report.model_dump()}
+        output["onboarding"] = result.onboarding.model_dump()
         if clustering_report is not None:
             output["clustering_report"] = clustering_report.model_dump()
         if kb_results:
@@ -257,7 +258,21 @@ async def async_main(args: argparse.Namespace) -> int:
             }
         print(json.dumps(output, indent=2, ensure_ascii=False, default=str))
     else:
+        from alla.models.onboarding import OnboardingMode
+
         _print_text_report(report)
+        if result.onboarding.mode == OnboardingMode.GUIDED:
+            print(
+                "[Onboarding] Проект ещё не обучен. "
+                "Откройте HTML-отчёт и добавьте знание хотя бы для одного из крупных кластеров."
+            )
+            print()
+        elif result.onboarding.mode == OnboardingMode.KB_NOT_CONFIGURED:
+            print(
+                "[Onboarding] Проектная память отключена. "
+                "Задайте ALLURE_KB_POSTGRES_DSN, чтобы сохранять знания по проекту."
+            )
+            print()
         if clustering_report is not None:
             _print_clustering_report(
                 clustering_report, kb_results, llm_result,

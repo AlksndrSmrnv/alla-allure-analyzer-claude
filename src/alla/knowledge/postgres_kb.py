@@ -67,7 +67,7 @@ class PostgresKnowledgeBase:
         if self._project_id is not None:
             query = """
                 SELECT entry_id, id, title, description, error_example,
-                       category, resolution_steps
+                       category, resolution_steps, project_id
                 FROM alla.kb_entry
                 WHERE project_id IS NULL OR project_id = %s
                 ORDER BY project_id NULLS FIRST, id
@@ -76,7 +76,7 @@ class PostgresKnowledgeBase:
         else:
             query = """
                 SELECT entry_id, id, title, description, error_example,
-                       category, resolution_steps
+                       category, resolution_steps, project_id
                 FROM alla.kb_entry
                 WHERE project_id IS NULL
                 ORDER BY id
@@ -94,7 +94,16 @@ class PostgresKnowledgeBase:
             ) from exc
 
         for row in rows:
-            pg_entry_id, slug, title, description, error_example, category_raw, resolution_steps = row
+            (
+                pg_entry_id,
+                slug,
+                title,
+                description,
+                error_example,
+                category_raw,
+                resolution_steps,
+                project_id,
+            ) = row
             try:
                 entry = KBEntry(
                     id=slug,
@@ -104,6 +113,7 @@ class PostgresKnowledgeBase:
                     category=RootCauseCategory(category_raw),
                     resolution_steps=list(resolution_steps or []),
                     entry_id=pg_entry_id,
+                    project_id=project_id,
                 )
             except Exception as exc:
                 logger.warning(

@@ -155,6 +155,7 @@ async def test_analyze_success(monkeypatch, _http_client) -> None:
     data = resp.json()
     assert data["triage_report"]["launch_id"] == 123
     assert data["triage_report"]["total_results"] == 10
+    assert data["onboarding"]["mode"] == "normal"
 
 
 @pytest.mark.asyncio

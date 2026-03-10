@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import html as _html
+import json as _json
 import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+from alla.models.onboarding import OnboardingMode, OnboardingState
 
 if TYPE_CHECKING:
     from alla.knowledge.models import KBMatchResult
@@ -33,6 +36,7 @@ def generate_html_report(
     llm_result = result.llm_result
     llm_summary = result.llm_launch_summary
     error_fingerprints = result.error_fingerprints or {}
+    onboarding = result.onboarding
 
     generated_at = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -41,12 +45,18 @@ def generate_html_report(
         launch_title += f" — {triage.launch_name}"
 
     stats_html = _render_stats(triage, clustering)
+    onboarding_html = _render_onboarding(
+        onboarding,
+        clustering,
+        feedback_api_url=feedback_api_url,
+    )
     summary_html = _render_launch_summary(llm_summary)
     clusters_html = _render_clusters(
         clustering,
         kb_results,
         llm_result,
         triage.failed_tests,
+        onboarding=onboarding,
         feedback_api_url=feedback_api_url,
         error_fingerprints=error_fingerprints,
         launch_id=triage.launch_id,
@@ -90,6 +100,7 @@ def generate_html_report(
     </header>
 
     {stats_html}
+    {onboarding_html}
     {summary_html}
     {clusters_html}
 
@@ -146,12 +157,110 @@ def _render_launch_summary(llm_summary: "LLMLaunchSummary | None") -> str:
     )
 
 
+def _render_onboarding(
+    onboarding: OnboardingState,
+    clustering: "ClusteringReport | None",
+    *,
+    feedback_api_url: str = "",
+) -> str:
+    """Показать onboarding-banner или setup-callout над кластерами."""
+    if onboarding.mode == OnboardingMode.NORMAL:
+        return ""
+
+    if onboarding.mode == OnboardingMode.KB_NOT_CONFIGURED:
+        return (
+            '<div class="section">'
+            '<div class="onboarding-banner setup" data-onboarding-banner>'
+            '<div class="onboarding-kicker">Проектная память отключена</div>'
+            '<div class="onboarding-title">Alla ещё не может учиться на ваших кластерах</div>'
+            '<div class="onboarding-copy">'
+            'Кластеризация и AI-анализ уже работают, но база знаний проекта и '
+            'обратная связь недоступны, пока не задан <code>ALLURE_KB_POSTGRES_DSN</code>.'
+            '</div>'
+            "</div>"
+            "</div>"
+        )
+
+    prioritized_html = _render_prioritized_clusters(
+        clustering,
+        onboarding.prioritized_cluster_ids,
+    )
+    interactive_note = (
+        '<div class="onboarding-note">'
+        'Интерактивное обучение из HTML-отчёта доступно через alla-server: '
+        'задайте <code>ALLURE_FEEDBACK_SERVER_URL</code>.'
+        "</div>"
+        if not feedback_api_url
+        else ""
+    )
+    starter_pack_note = (
+        '<div class="onboarding-note">'
+        'Глобальные seeded-совпадения спрятаны в optional starter pack и не влияют '
+        'на главный first-run UX.'
+        "</div>"
+        if onboarding.starter_pack_available
+        else ""
+    )
+    return (
+        '<div class="section">'
+        '<div class="onboarding-banner guided" data-onboarding-banner>'
+        '<div class="onboarding-kicker">Guided onboarding</div>'
+        '<div class="onboarding-title">Alla ещё не знает этот проект</div>'
+        '<div class="onboarding-copy">'
+        'Сначала инструмент показывает реальные кластеры и evidence. '
+        'Следующий шаг — сохранить хотя бы одно project-scoped знание, '
+        'чтобы на следующем анализе рекомендации стали точнее.'
+        '</div>'
+        f"{prioritized_html}"
+        f"{starter_pack_note}"
+        f"{interactive_note}"
+        "</div>"
+        "</div>"
+    )
+
+
+def _render_prioritized_clusters(
+    clustering: "ClusteringReport | None",
+    prioritized_cluster_ids: list[str],
+) -> str:
+    """Показать top-3 кластера для first-run."""
+    if not clustering or not prioritized_cluster_ids:
+        return ""
+
+    by_id = {cluster.cluster_id: cluster for cluster in clustering.clusters}
+    items: list[str] = []
+    for idx, cluster_id in enumerate(prioritized_cluster_ids, start=1):
+        cluster = by_id.get(cluster_id)
+        if cluster is None:
+            continue
+        items.append(
+            '<li class="onboarding-item">'
+            f'<span class="onboarding-rank">#{idx}</span>'
+            '<span class="onboarding-item-body">'
+            f'<span class="onboarding-item-title">{_e(cluster.label)}</span>'
+            f'<span class="onboarding-item-meta">{cluster.member_count} тест(ов)</span>'
+            "</span>"
+            "</li>"
+        )
+
+    if not items:
+        return ""
+
+    return (
+        '<div class="onboarding-block">'
+        '<div class="onboarding-block-title">С чего начать</div>'
+        f'<ol class="onboarding-list">{"".join(items)}</ol>'
+        "</div>"
+    )
+
+
 def _render_clusters(
     clustering: "ClusteringReport | None",
     kb_results: dict[str, list["KBMatchResult"]],
     llm_result: "LLMAnalysisResult | None",
     failed_tests: "list[FailedTestSummary]",
     *,
+    onboarding: OnboardingState | None = None,
     feedback_api_url: str = "",
     error_fingerprints: dict[str, str] | None = None,
     launch_id: int = 0,
@@ -182,6 +291,7 @@ def _render_clusters(
     body = "".join(
         _render_cluster(
             i, cluster, kb_results, llm_result, test_by_id,
+            onboarding=onboarding,
             feedback_api_url=feedback_api_url,
             error_fingerprint=fp_map.get(cluster.cluster_id, ""),
             launch_id=launch_id,
@@ -205,12 +315,18 @@ def _render_cluster(
     llm_result: "LLMAnalysisResult | None",
     test_by_id: "dict[int, FailedTestSummary]",
     *,
+    onboarding: OnboardingState | None = None,
     feedback_api_url: str = "",
     error_fingerprint: str = "",
     launch_id: int = 0,
     project_id: int | None = None,
 ) -> str:
     kb_matches = kb_results.get(cluster.cluster_id, [])
+    guided_mode = onboarding is not None and onboarding.mode == OnboardingMode.GUIDED
+    prioritized_ids = onboarding.prioritized_cluster_ids if onboarding else []
+    priority_rank = None
+    if cluster.cluster_id in prioritized_ids:
+        priority_rank = prioritized_ids.index(cluster.cluster_id) + 1
 
     llm_text: str | None = None
     if llm_result:
@@ -278,9 +394,11 @@ def _render_cluster(
         error_parts.append("</div>")
         error_html = "".join(error_parts)
 
+    project_matches, starter_pack_matches = _split_kb_matches(kb_matches)
+
     # --- KB matches ---
     kb_html = ""
-    if kb_matches:
+    if not guided_mode and kb_matches:
         entries_html = "".join(
             _render_kb_entry(
                 m,
@@ -298,39 +416,89 @@ def _render_cluster(
             "</div>"
         )
 
+    project_kb_html = ""
+    if guided_mode:
+        if project_matches:
+            entries_html = "".join(
+                _render_kb_entry(
+                    m,
+                    error_fingerprint=error_fingerprint,
+                    feedback_api_url=feedback_api_url,
+                    launch_id=launch_id,
+                    cluster_id=cluster.cluster_id,
+                )
+                for m in project_matches
+            )
+            project_kb_html = (
+                '<div class="block">'
+                '<div class="block-title">Знания проекта</div>'
+                f'<div class="kb-matches">{entries_html}</div>'
+                "</div>"
+            )
+        else:
+            project_kb_html = (
+                '<div class="block">'
+                '<div class="block-title">Знания проекта</div>'
+                '<div class="project-knowledge-empty">'
+                'Для этого кластера ещё нет project-scoped решения. '
+                'Сохраните своё описание ниже, чтобы следующий прогон уже '
+                'давал проектный совет вместо общей подсказки.'
+                "</div>"
+                "</div>"
+            )
+
+    starter_pack_html = ""
+    if starter_pack_matches and guided_mode:
+        entries_html = "".join(
+            _render_kb_entry(
+                m,
+                error_fingerprint=error_fingerprint,
+                feedback_api_url=feedback_api_url,
+                launch_id=launch_id,
+                cluster_id=cluster.cluster_id,
+                copy_payload=_build_starter_pack_payload(m, project_id),
+                copy_api_url=feedback_api_url,
+            )
+            for m in starter_pack_matches
+        )
+        starter_pack_html = (
+            '<div class="block starter-pack-block">'
+            '<button class="starter-pack-toggle" '
+            "onclick=\"this.nextElementSibling.classList.toggle('hidden')\">"
+            'Показать starter pack'
+            "</button>"
+            f'<div class="starter-pack-panel hidden"><div class="kb-matches">{entries_html}</div></div>'
+            "</div>"
+        )
+
     # --- create KB entry form ---
     create_kb_html = ""
     if feedback_api_url:
-        prefill_parts: list[str] = []
-        if cluster.example_message:
-            prefill_parts.append(cluster.example_message)
-        if rep_log_snippet:
-            if prefill_parts:
-                prefill_parts.append("\n--- Лог приложения ---")
-            prefill_parts.append(rep_log_snippet.strip())
-        prefill_error = _e("\n".join(prefill_parts))
-        prefill_title = _e(cluster.label or "")
+        prefill = _build_kb_prefill(cluster, llm_text, rep_log_snippet)
         pid = _e(str(project_id)) if project_id is not None else ""
+        steps_value = _e("\n".join(prefill["resolution_steps"]))
+        cta_label = (
+            "Создать решение для проекта"
+            if guided_mode
+            else "Добавить знание проекта"
+        )
         create_kb_html = (
             '<div class="block">'
             '<button class="create-kb-toggle" '
             'onclick="this.nextElementSibling.classList.toggle(\'hidden\')">'
-            '+ Создать запись в базу знаний</button>'
+            f'{_e(cta_label)}</button>'
             f'<form class="create-kb-form hidden" data-api-url="{_e(feedback_api_url)}">'
             '<label>Шаги по устранению <span class="field-required">(основное поле)</span>:'
-            '<textarea name="resolution_steps" rows="4" placeholder="Шаг 1&#10;Шаг 2&#10;Шаг 3" autofocus></textarea></label>'
-            f'<label>Заголовок <span class="field-optional">(необязательно)</span>:<input name="title" placeholder="Описание проблемы" value="{prefill_title}"></label>'
+            f'<textarea name="resolution_steps" rows="4" placeholder="Шаг 1&#10;Шаг 2&#10;Шаг 3" autofocus>{steps_value}</textarea></label>'
+            f'<label>Заголовок <span class="field-optional">(необязательно)</span>:<input name="title" placeholder="Описание проблемы" value="{_e(prefill["title"])}"></label>'
             '<label>Категория:'
             '<select name="category">'
-            '<option value="service">service</option>'
-            '<option value="test">test</option>'
-            '<option value="env">env</option>'
-            '<option value="data">data</option>'
+            f'{_render_category_options(prefill["category"])}'
             '</select></label>'
-            f'<label>Пример ошибки <span class="field-optional">(необязательно)</span>:<textarea name="error_example" rows="4">{prefill_error}</textarea></label>'
-            '<label>Описание <span class="field-optional">(необязательно)</span>:<textarea name="description" rows="2" placeholder="Подробное описание"></textarea></label>'
+            f'<label>Пример ошибки <span class="field-optional">(необязательно)</span>:<textarea name="error_example" rows="4">{_e(prefill["error_example"])}</textarea></label>'
+            f'<label>Описание <span class="field-optional">(необязательно)</span>:<textarea name="description" rows="3" placeholder="Подробное описание">{_e(prefill["description"])}</textarea></label>'
             f'<input type="hidden" name="project_id" value="{pid}">'
-            '<button type="submit" class="create-kb-submit">Создать запись</button>'
+            '<button type="submit" class="create-kb-submit">Сохранить в проект</button>'
             '<span class="create-kb-status"></span>'
             '</form>'
             "</div>"
@@ -359,15 +527,31 @@ def _render_cluster(
             "</div>"
         )
 
+    body_parts: list[str] = []
+    if guided_mode:
+        body_parts.extend(
+            [error_html, llm_html, create_kb_html, project_kb_html, starter_pack_html, tests_html]
+        )
+    else:
+        body_parts.extend([llm_html, error_html, kb_html, create_kb_html, tests_html])
+
+    priority_badge = ""
+    if priority_rank is not None:
+        priority_badge = (
+            f'<span class="cluster-priority">Top {priority_rank} для onboarding</span>'
+        )
+
+    cluster_cls = "cluster guided-cluster" if guided_mode else "cluster"
     return (
-        '<div class="cluster">'
+        f'<div class="{cluster_cls}">'
         '<div class="cluster-header">'
         f'<span class="cluster-num">#{idx}</span>'
         f'<span class="cluster-label">{_e(cluster.label)}</span>'
+        f"{priority_badge}"
         f'<span class="cluster-count">{cluster.member_count} тест(ов)</span>'
         "</div>"
         '<div class="cluster-body">'
-        f"{llm_html}{error_html}{kb_html}{create_kb_html}{tests_html}"
+        f'{"".join(part for part in body_parts if part)}'
         "</div>"
         "</div>"
     )
@@ -380,6 +564,8 @@ def _render_kb_entry(
     feedback_api_url: str = "",
     launch_id: int = 0,
     cluster_id: str = "",
+    copy_payload: dict[str, object] | None = None,
+    copy_api_url: str = "",
 ) -> str:
     steps_html = ""
     if m.entry.resolution_steps:
@@ -393,6 +579,17 @@ def _render_kb_entry(
             "onclick=\"this.nextElementSibling.classList.toggle('hidden')\">"
             "Посмотреть пример ошибки</button>"
             f'<pre class="kb-example hidden">{_e(m.entry.error_example)}</pre>'
+        )
+
+    copy_html = ""
+    if copy_payload is not None and copy_api_url:
+        payload = _e(_json.dumps(copy_payload, ensure_ascii=False))
+        copy_html = (
+            '<div class="starter-pack-actions">'
+            f'<button class="starter-pack-copy" data-api-url="{_e(copy_api_url)}" '
+            f'data-payload="{payload}">Скопировать в проект</button>'
+            '<span class="copy-kb-status"></span>'
+            "</div>"
         )
 
     feedback_html = ""
@@ -410,18 +607,151 @@ def _render_kb_entry(
             "</div>"
         )
 
+    origin_badge = (
+        '<span class="kb-origin starter-pack">starter pack</span>'
+        if m.entry.project_id is None
+        else '<span class="kb-origin project">project</span>'
+    )
+
     return (
         '<div class="kb-entry">'
         '<div class="kb-entry-header">'
         f'<span class="kb-score">{(m.score * 100):.0f}%</span>'
         f'<span class="kb-title">{_e(m.entry.title)}</span>'
+        f"{origin_badge}"
         f'<span class="kb-category">{_e(m.entry.category.value)}</span>'
         "</div>"
         f"{steps_html}"
         f"{error_example_html}"
+        f"{copy_html}"
         f"{feedback_html}"
         "</div>"
     )
+
+
+def _split_kb_matches(
+    kb_matches: list["KBMatchResult"],
+) -> tuple[list["KBMatchResult"], list["KBMatchResult"]]:
+    """Разделить KB-совпадения на project knowledge и global starter pack."""
+    project_matches: list["KBMatchResult"] = []
+    starter_pack_matches: list["KBMatchResult"] = []
+    for match in kb_matches:
+        if match.entry.project_id is None:
+            starter_pack_matches.append(match)
+        else:
+            project_matches.append(match)
+    return project_matches, starter_pack_matches
+
+
+def _render_category_options(selected: str) -> str:
+    """Собрать select options с выбранной категорией."""
+    categories = ["service", "test", "env", "data"]
+    parts: list[str] = []
+    for category in categories:
+        selected_attr = ' selected="selected"' if category == selected else ""
+        parts.append(
+            f'<option value="{category}"{selected_attr}>{category}</option>'
+        )
+    return "".join(parts)
+
+
+def _build_kb_prefill(
+    cluster: "FailureCluster",
+    llm_text: str | None,
+    rep_log_snippet: str | None,
+) -> dict[str, object]:
+    """Подготовить prefill для project KB формы."""
+    parsed_llm = _extract_llm_prefill(llm_text or "")
+    prefill_parts: list[str] = []
+    if cluster.example_message:
+        prefill_parts.append(cluster.example_message)
+    if rep_log_snippet:
+        if prefill_parts:
+            prefill_parts.append("\n--- Лог приложения ---")
+        prefill_parts.append(rep_log_snippet.strip())
+
+    return {
+        "title": cluster.label or parsed_llm["title"],
+        "category": parsed_llm["category"] or "service",
+        "error_example": "\n".join(prefill_parts),
+        "description": parsed_llm["description"],
+        "resolution_steps": parsed_llm["resolution_steps"],
+    }
+
+
+def _extract_llm_prefill(analysis_text: str) -> dict[str, object]:
+    """Вытащить title/description/category/steps из LLM-анализа."""
+    what_broke = ""
+    category = ""
+    steps: list[str] = []
+    in_steps = False
+
+    for raw_line in analysis_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if in_steps:
+                continue
+            continue
+
+        upper = line.upper()
+        if upper.startswith("ЧТО СЛОМАЛОСЬ:"):
+            what_broke = line.split(":", 1)[1].strip()
+            in_steps = False
+            continue
+        if upper.startswith("ПРИЧИНА:"):
+            category = _map_prefill_category(line.split(":", 1)[1].strip())
+            in_steps = False
+            continue
+        if upper.startswith("ЧТО ПРОВЕРИТЬ:"):
+            in_steps = True
+            remainder = line.split(":", 1)[1].strip()
+            if remainder:
+                steps.append(remainder)
+            continue
+        if in_steps:
+            match = re.match(r"^\d+[.)]\s*(.*)$", line)
+            if match:
+                steps.append(match.group(1).strip())
+            elif steps:
+                steps[-1] = f"{steps[-1]} {line}".strip()
+
+    title = what_broke.split(".")[0].strip() if what_broke else ""
+    return {
+        "title": title,
+        "description": what_broke,
+        "category": category,
+        "resolution_steps": steps[:3],
+    }
+
+
+def _map_prefill_category(raw_value: str) -> str:
+    """Преобразовать русскую категорию из LLM-ответа в enum value."""
+    normalized = raw_value.lower().split("—", 1)[0].split("-", 1)[0].strip()
+    mapping = {
+        "тест": "test",
+        "приложение": "service",
+        "окружение": "env",
+        "данные": "data",
+    }
+    return mapping.get(normalized, "")
+
+
+def _build_starter_pack_payload(
+    match: "KBMatchResult",
+    project_id: int | None,
+) -> dict[str, object] | None:
+    """Собрать payload для копирования starter pack записи в проект."""
+    if project_id is None or match.entry.project_id is not None:
+        return None
+    return {
+        "id": match.entry.id,
+        "title": match.entry.title,
+        "description": match.entry.description,
+        "error_example": match.entry.error_example,
+        "category": match.entry.category.value,
+        "resolution_steps": list(match.entry.resolution_steps),
+        "project_id": project_id,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -688,6 +1018,103 @@ _CSS = """
       border: 1px dashed var(--border);
     }
 
+    /* ---- Onboarding ---- */
+    .onboarding-banner {
+      background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
+      border: 1px solid #bfdbfe;
+      border-radius: var(--radius);
+      padding: 1.5rem 1.75rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .onboarding-banner.hidden { display: none; }
+    .onboarding-banner.setup {
+      background: linear-gradient(135deg, #fff7ed 0%, #ffffff 100%);
+      border-color: #fdba74;
+    }
+    .onboarding-kicker {
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--primary);
+    }
+    .onboarding-banner.setup .onboarding-kicker { color: var(--warning); }
+    .onboarding-title {
+      font-size: 1.35rem;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .onboarding-copy {
+      font-size: 0.95rem;
+      color: var(--text);
+      max-width: 70rem;
+    }
+    .onboarding-block {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .onboarding-block-title {
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+    .onboarding-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 0.75rem;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .onboarding-item {
+      background: rgba(255,255,255,0.8);
+      border: 1px solid #dbeafe;
+      border-radius: var(--radius-sm);
+      padding: 0.875rem 1rem;
+      display: flex;
+      gap: 0.75rem;
+      align-items: flex-start;
+    }
+    .onboarding-rank {
+      min-width: 2rem;
+      height: 2rem;
+      border-radius: 9999px;
+      background: var(--primary);
+      color: white;
+      font-size: 0.875rem;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .onboarding-item-body {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .onboarding-item-title {
+      font-weight: 600;
+      line-height: 1.3;
+    }
+    .onboarding-item-meta {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+    }
+    .onboarding-note {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      background: rgba(255,255,255,0.7);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-sm);
+      padding: 0.75rem 1rem;
+    }
+
     /* ---- LLM Summary ---- */
     .llm-summary {
       background: var(--surface);
@@ -744,6 +1171,19 @@ _CSS = """
       display: flex;
       flex-direction: column;
       gap: 1.5rem;
+    }
+    .guided-cluster {
+      border-color: #bfdbfe;
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
+    }
+    .cluster-priority {
+      background: #eff6ff;
+      color: var(--primary);
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 0.25rem 0.75rem;
+      border: 1px solid #bfdbfe;
+      border-radius: 9999px;
     }
 
     /* ---- Blocks ---- */
@@ -846,6 +1286,21 @@ _CSS = """
       font-size: 1rem;
       flex: 1;
     }
+    .kb-origin {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      border-radius: 9999px;
+      padding: 0.125rem 0.5rem;
+    }
+    .kb-origin.project {
+      background: var(--primary-light);
+      color: var(--primary);
+    }
+    .kb-origin.starter-pack {
+      background: #fff7ed;
+      color: var(--warning);
+    }
     .kb-category {
       font-size: 0.7rem;
       font-weight: 600;
@@ -867,6 +1322,39 @@ _CSS = """
     .kb-example-toggle:hover{border-color:var(--primary);color:var(--primary)}
     .kb-example{margin:.5rem 0 0;padding:.75rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:.75rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:20rem;overflow-y:auto}
     .kb-example.hidden{display:none}
+    .project-knowledge-empty {
+      background: #f8fafc;
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-sm);
+      padding: 1rem 1.25rem;
+      color: var(--text-muted);
+    }
+    .starter-pack-block {
+      border-top: 1px solid var(--border);
+      padding-top: 0.25rem;
+    }
+    .starter-pack-toggle {
+      width: 100%;
+      text-align: left;
+      background: none;
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-sm);
+      padding: 0.75rem 1rem;
+      cursor: pointer;
+      color: var(--text-muted);
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+    .starter-pack-toggle:hover {
+      border-color: var(--warning);
+      color: var(--warning);
+    }
+    .starter-pack-panel {
+      margin-top: 0.75rem;
+    }
+    .starter-pack-panel.hidden {
+      display: none;
+    }
 
     /* ---- Test IDs ---- */
     .test-list {
@@ -980,6 +1468,7 @@ _CSS = """
       .container { padding: 1rem; }
       .header { padding: 1.25rem; }
       .stats { grid-template-columns: repeat(2, 1fr); }
+      .onboarding-list { grid-template-columns: 1fr; }
       .cluster-header { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
       .cluster-label { min-width: 100%; }
     }
@@ -1014,6 +1503,13 @@ _FEEDBACK_CSS = """
     .create-kb-error{color:var(--danger);font-size:.875rem}
     .field-required{font-weight:700;color:var(--primary);font-size:.75rem}
     .field-optional{font-weight:400;color:var(--text-muted);font-size:.75rem}
+    .starter-pack-actions{display:flex;align-items:center;gap:.75rem;margin-top:.75rem}
+    .starter-pack-copy{padding:.45rem .95rem;background:var(--warning-light);color:var(--warning);border:1px solid #fed7aa;border-radius:6px;cursor:pointer;font-weight:600;font-size:.8125rem}
+    .starter-pack-copy:hover{border-color:#fb923c}
+    .starter-pack-copy:disabled{opacity:.55;cursor:not-allowed}
+    .copy-kb-status{font-size:.75rem;color:var(--text-muted)}
+    .copy-kb-ok{color:var(--success)}
+    .copy-kb-error{color:var(--danger)}
 """
 
 
@@ -1036,6 +1532,23 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "(function() {\n"
         "  var FEEDBACK_API_URL = " + js_url + ";\n"
         "  if (!FEEDBACK_API_URL) return;\n"
+        "\n"
+        "  function markOnboardingComplete() {\n"
+        "    document.querySelectorAll('[data-onboarding-banner]').forEach(function(el) {\n"
+        "      el.classList.add('hidden');\n"
+        "    });\n"
+        "  }\n"
+        "\n"
+        "  function postKbEntry(apiUrl, payload) {\n"
+        "    return fetch(apiUrl + '/api/v1/kb/entries', {\n"
+        "      method: 'POST',\n"
+        "      headers: {'Content-Type': 'application/json'},\n"
+        "      body: JSON.stringify(payload)\n"
+        "    }).then(function(r) {\n"
+        "      if (!r.ok) throw new Error(r.status);\n"
+        "      return r.json();\n"
+        "    });\n"
+        "  }\n"
         "\n"
         "  // --- Like / Dislike ---\n"
         "  function sendFeedback(el, isLike) {\n"
@@ -1073,6 +1586,25 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    if (btn) { sendFeedback(btn, true); return; }\n"
         "    btn = e.target.closest('.fb-dislike');\n"
         "    if (btn) { sendFeedback(btn, false); return; }\n"
+        "    btn = e.target.closest('.starter-pack-copy');\n"
+        "    if (btn) {\n"
+        "      var status = btn.parentElement.querySelector('.copy-kb-status');\n"
+        "      var apiUrl = btn.dataset.apiUrl || FEEDBACK_API_URL;\n"
+        "      var payload = JSON.parse(btn.dataset.payload || '{}');\n"
+        "      btn.disabled = true;\n"
+        "      status.textContent = '...';\n"
+        "      status.className = 'copy-kb-status';\n"
+        "      postKbEntry(apiUrl, payload).then(function() {\n"
+        "        status.textContent = 'Скопировано в проект';\n"
+        "        status.className = 'copy-kb-status copy-kb-ok';\n"
+        "        markOnboardingComplete();\n"
+        "      }).catch(function(err) {\n"
+        "        status.textContent = 'Error: ' + err.message;\n"
+        "        status.className = 'copy-kb-status copy-kb-error';\n"
+        "        btn.disabled = false;\n"
+        "      });\n"
+        "      return;\n"
+        "    }\n"
         "  });\n"
         "\n"
         "  // --- Create KB Entry ---\n"
@@ -1087,26 +1619,20 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    status.className = 'create-kb-status';\n"
         "    var steps = (form.elements.resolution_steps.value || '').split('\\n').filter(function(s) { return s.trim(); });\n"
         "    var titleVal = form.elements.title.value.trim() || null;\n"
-        "    var body = JSON.stringify({\n"
+        "    var payload = {\n"
         "      title: titleVal,\n"
         "      category: form.elements.category.value,\n"
         "      error_example: form.elements.error_example.value,\n"
         "      description: form.elements.description.value,\n"
         "      resolution_steps: steps,\n"
         "      project_id: parseInt(form.elements.project_id.value, 10) || null\n"
-        "    });\n"
+        "    };\n"
         "    var apiUrl = form.dataset.apiUrl || FEEDBACK_API_URL;\n"
-        "    fetch(apiUrl + '/api/v1/kb/entries', {\n"
-        "      method: 'POST',\n"
-        "      headers: {'Content-Type': 'application/json'},\n"
-        "      body: body\n"
-        "    }).then(function(r) {\n"
-        "      if (!r.ok) throw new Error(r.status);\n"
-        "      return r.json();\n"
-        "    }).then(function() {\n"
+        "    postKbEntry(apiUrl, payload).then(function() {\n"
         "      status.textContent = 'Создано!';\n"
         "      status.className = 'create-kb-status create-kb-ok';\n"
         "      submitBtn.disabled = true;\n"
+        "      markOnboardingComplete();\n"
         "    }).catch(function(err) {\n"
         "      status.textContent = 'Error: ' + err.message;\n"
         "      status.className = 'create-kb-status create-kb-error';\n"
