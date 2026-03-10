@@ -1,4 +1,4 @@
-"""Генератор self-contained HTML-отчёта для alla."""
+"""Генератор self-contained HTML-отчёта для Alla."""
 
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def generate_html_report(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-{csp_meta}  <title>alla — {_e(launch_title)}</title>
+{csp_meta}  <title>Alla — {_e(launch_title)}</title>
   <style>
 {_CSS}
 {feedback_css}
@@ -94,9 +94,9 @@ def generate_html_report(
   <div class="container">
 
     <header class="header">
-      <div class="header-brand">alla · AI Test Analysis</div>
+      <div class="header-brand">Alla · AI Test Analysis</div>
       <div class="header-title">{_e(launch_title)}</div>
-      <div class="header-meta">Сгенерировано: {generated_at} · alla v{_e(__version__)}</div>
+      <div class="header-meta">Сгенерировано: {generated_at} · Alla v{_e(__version__)}</div>
     </header>
 
     {stats_html}
@@ -105,7 +105,7 @@ def generate_html_report(
     {clusters_html}
 
     <footer class="footer">
-      alla v{_e(__version__)} · AI Test Failure Triage Agent · {generated_at}
+      Alla v{_e(__version__)} · AI Test Failure Triage Agent · {generated_at}
     </footer>
 
   </div>
@@ -200,12 +200,17 @@ def _render_onboarding(
     return (
         '<div class="section">'
         '<div class="onboarding-banner guided" data-onboarding-banner>'
-        '<div class="onboarding-title">Алла ещё не знает этот проект</div>'
+        '<div class="onboarding-title">Alla ещё не знает этот проект</div>'
         '<div class="onboarding-copy">'
         'Сначала инструмент показывает реальные кластеры ошибок, которые найдены '
-        'по результатам Allure отчета. Следующий шаг - ваш: написать для каждого '
-        'кластера описание ошибки и её решение, чтобы на следующем анализе '
-        'рекомендации стали точнее.'
+        'по результатам Allure отчета.'
+        '</div>'
+        '<div class="onboarding-next-step">'
+        '<div class="onboarding-next-step-label">Следующий шаг - ваш</div>'
+        '<div class="onboarding-next-step-text">'
+        'Опишите каждый кластер и добавьте для него решение, чтобы на следующем '
+        'анализе рекомендации стали точнее.'
+        '</div>'
         '</div>'
         f"{starter_pack_note}"
         f"{interactive_note}"
@@ -432,9 +437,8 @@ def _render_cluster(
     if feedback_api_url:
         prefill = _build_kb_prefill(cluster, llm_text, rep_log_snippet)
         pid = _e(str(project_id)) if project_id is not None else ""
-        steps_value = _e("\n".join(prefill["resolution_steps"]))
         cta_label = (
-            "Создать решение для проекта"
+            "Создать решение для кластера"
             if guided_mode
             else "Добавить знание проекта"
         )
@@ -450,7 +454,7 @@ def _render_cluster(
         )
         resolution_control = (
             f'<textarea name="resolution_steps" rows="4" '
-            f'placeholder="Шаг 1&#10;Шаг 2&#10;Шаг 3" autofocus>{steps_value}</textarea>'
+            'placeholder="Шаг 1&#10;Шаг 2&#10;Шаг 3" autofocus></textarea>'
         )
         title_control = (
             f'<input name="title" placeholder="Описание проблемы" '
@@ -1050,6 +1054,29 @@ _CSS = """
       color: #9a3412;
       max-width: 76rem;
       line-height: 1.65;
+    }
+    .onboarding-next-step {
+      background: rgba(255, 251, 235, 0.92);
+      border: 1px solid rgba(217, 119, 6, 0.35);
+      border-left: 6px solid #d97706;
+      border-radius: var(--radius-sm);
+      padding: 0.9rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      max-width: 64rem;
+    }
+    .onboarding-next-step-label {
+      font-size: 0.9rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #9a3412;
+    }
+    .onboarding-next-step-text {
+      font-size: 0.98rem;
+      line-height: 1.55;
+      color: #7c2d12;
     }
     .onboarding-note {
       font-size: 0.825rem;
