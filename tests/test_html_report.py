@@ -61,11 +61,15 @@ def test_guided_onboarding_hides_global_matches_from_primary_block() -> None:
         feedback_api_url="http://feedback.local",
     )
 
-    assert "Alla ещё не знает этот проект" in html
+    assert "Алла ещё не знает этот проект" in html
+    assert "Сначала инструмент показывает реальные кластеры ошибок" in html
     assert "Создать решение для проекта" in html
     assert "Показать starter pack" in html
     assert "Скопировать в проект" in html
     assert '<div class="block-title">База знаний</div>' not in html
+    assert "Guided onboarding" not in html
+    assert "С чего начать" not in html
+    assert "Top 1 для onboarding" not in html
     assert "Global timeout" in html
 
 
@@ -111,6 +115,12 @@ def test_guided_onboarding_prefills_create_form_from_llm() -> None:
     assert "Платёжный шлюз не ответил вовремя." in html
     assert "Проверить доступность gateway." in html
     assert "Сверить сетевые ошибки в логах." in html
+    assert 'class="create-kb-toggle create-kb-toggle-primary"' in html
+    assert 'class="create-kb-field"' in html
+    assert "Шаги по устранению:" in html
+    assert ">основное поле<" in html
+    assert "(основное поле):" not in html
+    assert "(необязательно):" not in html
 
 
 def test_html_report_shows_kb_setup_callout() -> None:
