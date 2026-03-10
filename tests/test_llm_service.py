@@ -11,6 +11,7 @@ from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis, LLMPushResult
 from alla.models.testops import FailedTestSummary, TriageReport
 from alla.services.llm_service import (
     LLMService,
+    _humanize_match_reason,
     _interpret_kb_score,
     build_cluster_prompt,
     format_llm_comment,
@@ -38,6 +39,35 @@ from conftest import make_failure_cluster, make_kb_entry, make_kb_match_result
 def test_interpret_kb_score(score: float, expected: str) -> None:
     """Числовой score → текстовое описание уверенности."""
     assert _interpret_kb_score(score) == expected
+
+
+# ---------------------------------------------------------------------------
+# _humanize_match_reason
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("matched_on", "expected_fragment"),
+    [
+        (
+            ["Tier 1: exact substring match (score=1.00)"],
+            "найден целиком",
+        ),
+        (
+            ["Tier 2: line match (score=0.91)"],
+            "Большинство строк",
+        ),
+        (
+            ["Tier 3: TF-IDF similarity: 0.35 (example), 0.10 (title+desc), capped=0.38"],
+            "Нечёткое текстовое совпадение",
+        ),
+        ([], "текстовое совпадение"),
+    ],
+)
+def test_humanize_match_reason(matched_on: list[str], expected_fragment: str) -> None:
+    """Tier-описания переводятся в понятные для LLM формулировки."""
+    result = _humanize_match_reason(matched_on)
+    assert expected_fragment in result
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +202,7 @@ def test_prompt_kb_category_is_translated_for_llm() -> None:
 
 
 def test_prompt_kb_matches_include_match_reason() -> None:
-    """Промпт показывает, почему KB-совпадение было выбрано."""
+    """Промпт показывает понятное объяснение KB-совпадения вместо технического tier."""
     match = make_kb_match_result(
         score=0.75,
         matched_on=["Tier 1: exact substring match (score=0.75)"],
@@ -181,7 +211,89 @@ def test_prompt_kb_matches_include_match_reason() -> None:
 
     prompt = build_cluster_prompt(cluster, kb_matches=[match])
 
-    assert "Почему похоже: Tier 1: exact substring match (score=0.75)" in prompt
+    assert "Почему похоже: " in prompt
+    assert "найден целиком" in prompt
+    assert "Tier 1: exact substring match" not in prompt
+
+
+def test_prompt_includes_error_example_for_top_kb_matches() -> None:
+    """error_example из KB включается в промпт для первых 2 совпадений."""
+    entry1 = make_kb_entry(
+        id="e1",
+        title="DNS Failure",
+        error_example="ERROR: DNS resolution failed for service-x.namespace.svc.cluster.local",
+    )
+    entry2 = make_kb_entry(
+        id="e2",
+        title="Timeout",
+        error_example="Connection timed out after 30000ms",
+    )
+    entry3 = make_kb_entry(
+        id="e3",
+        title="OOM",
+        error_example="java.lang.OutOfMemoryError: Java heap space",
+    )
+    matches = [
+        make_kb_match_result(entry=entry1, score=0.91),
+        make_kb_match_result(entry=entry2, score=0.75),
+        make_kb_match_result(entry=entry3, score=0.50),
+    ]
+    cluster = make_failure_cluster()
+    prompt = build_cluster_prompt(cluster, kb_matches=matches)
+
+    # First 2 KB matches include error_example
+    assert "DNS resolution failed for service-x" in prompt
+    assert "Connection timed out after 30000ms" in prompt
+    # KB #3 does NOT include error_example
+    assert "OutOfMemoryError" not in prompt
+    assert "Пример ошибки из KB (с чем сравнивалось)" in prompt
+
+
+def test_prompt_truncates_long_error_example() -> None:
+    """error_example > 500 символов обрезается."""
+    entry = make_kb_entry(error_example="e" * 800)
+    match = make_kb_match_result(entry=entry, score=0.91)
+    cluster = make_failure_cluster()
+    prompt = build_cluster_prompt(cluster, kb_matches=[match])
+
+    assert "e" * 501 not in prompt
+    assert "Пример ошибки из KB (с чем сравнивалось)" in prompt
+
+
+def test_prompt_includes_verification_framing_for_high_score_kb() -> None:
+    """score >= 0.70 (не exact) добавляет инструкцию по проверке KB."""
+    match = make_kb_match_result(
+        score=0.85,
+        matched_on=["Tier 2: line match (score=0.85)"],
+    )
+    cluster = make_failure_cluster()
+    prompt = build_cluster_prompt(cluster, kb_matches=[match])
+
+    assert "Инструкция по проверке KB #1" in prompt
+    assert "НЕ является противоречием" in prompt
+    assert "ПРЯМО указывают на другую причину" in prompt
+
+
+def test_prompt_no_verification_framing_for_low_score_kb() -> None:
+    """score < 0.70 не добавляет инструкцию по проверке."""
+    match = make_kb_match_result(
+        score=0.45,
+        matched_on=["Tier 3: TF-IDF similarity: 0.45 (example)"],
+    )
+    cluster = make_failure_cluster()
+    prompt = build_cluster_prompt(cluster, kb_matches=[match])
+
+    assert "Инструкция по проверке KB #1" not in prompt
+
+
+def test_prompt_decision_rules_require_citation_to_override_kb() -> None:
+    """Правила принятия решения требуют цитату для отклонения KB #1."""
+    match = make_kb_match_result(score=0.91)
+    cluster = make_failure_cluster()
+    prompt = build_cluster_prompt(cluster, kb_matches=[match])
+
+    assert "ОБЯЗАН процитировать" in prompt
+    assert "Различие в формулировке" in prompt
 
 
 def test_prompt_marks_exact_kb_match_as_mandatory() -> None:
