@@ -69,6 +69,22 @@ _LONG_NUMBER_RE = re.compile(r"\b\d{4,}\b")
 _IP_RE = re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
 
 
+def _normalize_common(text: str, *, replace_long_numbers: bool) -> str:
+    """Применить общую normalizer-цепочку с настраиваемой заменой длинных чисел."""
+    text = _UUID_RE.sub("<ID>", text)
+    text = _UUID_NOHYPHEN_RE.sub("<ID>", text)
+    text = _DATETIME_ISO_RE.sub("<TS>", text)
+    text = _DATETIME_NAMED_MONTH_RE.sub("<TS>", text)
+    text = _IP_RE.sub("<IP>", text)
+    text = _DATE_SLASH_RE.sub("<TS>", text)
+    text = _DATE_DOT_RE.sub("<TS>", text)
+    text = _DATE_ISO_RE.sub("<TS>", text)
+    text = _TIME_ONLY_RE.sub("<TS>", text)
+    if replace_long_numbers:
+        text = _LONG_NUMBER_RE.sub("<NUM>", text)
+    return text
+
+
 def normalize_text(text: str) -> str:
     """Заменить волатильные данные плейсхолдерами.
 
@@ -81,14 +97,9 @@ def normalize_text(text: str) -> str:
     - IP до точка-дат (192.168.1.1 не должен стать <TS>)
     - Long numbers последними (иначе год «2026» станет <NUM> до матча даты)
     """
-    text = _UUID_RE.sub("<ID>", text)
-    text = _UUID_NOHYPHEN_RE.sub("<ID>", text)
-    text = _DATETIME_ISO_RE.sub("<TS>", text)
-    text = _DATETIME_NAMED_MONTH_RE.sub("<TS>", text)
-    text = _IP_RE.sub("<IP>", text)
-    text = _DATE_SLASH_RE.sub("<TS>", text)
-    text = _DATE_DOT_RE.sub("<TS>", text)
-    text = _DATE_ISO_RE.sub("<TS>", text)
-    text = _TIME_ONLY_RE.sub("<TS>", text)
-    text = _LONG_NUMBER_RE.sub("<NUM>", text)
-    return text
+    return _normalize_common(text, replace_long_numbers=True)
+
+
+def normalize_text_for_llm(text: str) -> str:
+    """Мягкая normalizer-версия для LLM: без замены длинных plain-number значений."""
+    return _normalize_common(text, replace_long_numbers=False)

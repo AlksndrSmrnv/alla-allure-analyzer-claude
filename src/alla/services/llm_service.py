@@ -11,12 +11,17 @@ from alla.models.clustering import ClusteringReport, FailureCluster
 from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis, LLMLaunchSummary, LLMPushResult
 from alla.models.testops import FailedTestSummary, TriageReport
 from alla.utils.log_utils import has_explicit_errors
+from alla.utils.text_normalization import normalize_text_for_llm
 
 logger = logging.getLogger(__name__)
 
 _LLM_HEADER = "[alla] LLM-анализ ошибки"
 _SEPARATOR = "=" * 40
 _EXACT_KB_SCORE = 0.999  # Нужен для метки EXACT MATCH в промпте.
+_PROMPT_MESSAGE_MAX_CHARS = 2000
+_PROMPT_TRACE_MAX_CHARS = 400
+_PROMPT_LOG_MAX_CHARS = 8000
+_TRUNCATION_SUFFIX = "...[обрезано]"
 
 def _interpret_kb_score(score: float) -> str:
     """Перевести числовой KB-score в текстовое описание уровня уверенности."""
@@ -65,6 +70,13 @@ def _humanize_match_reason(matched_on: list[str]) -> str:
     if "Tier 3" in reason or "TF-IDF" in reason:
         return "Нечёткое текстовое совпадение (похожие слова и фразы)"
     return reason
+
+
+def _truncate_prompt_text(text: str, max_chars: int) -> str:
+    """Обрезать текст для prompt по началу, сохранив явную пометку."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + _TRUNCATION_SUFFIX
 
 
 def build_cluster_prompt(
@@ -182,21 +194,27 @@ def build_cluster_prompt(
             )
 
     if cluster.example_message:
-        msg = cluster.example_message
-        if len(msg) > 2000:
-            msg = msg[:2000] + "...[обрезано]"
+        msg = _truncate_prompt_text(
+            cluster.example_message,
+            _PROMPT_MESSAGE_MAX_CHARS,
+        )
         parts.append(f"\n--- Сообщение об ошибке ---\n{msg}")
 
     trace_text = full_trace or cluster.example_trace_snippet
     if trace_text:
-        if len(trace_text) > 3000:
-            trace_text = trace_text[:3000] + "...[обрезано]"
+        trace_text = normalize_text_for_llm(trace_text)
+        trace_text = _truncate_prompt_text(
+            trace_text,
+            _PROMPT_TRACE_MAX_CHARS,
+        )
         parts.append(f"\n--- Стек-трейс ---\n{trace_text}")
 
     if log_snippet:
-        log_text = log_snippet
-        if len(log_text) > 2000:
-            log_text = log_text[:2000] + "...[обрезано]"
+        log_text = normalize_text_for_llm(log_snippet)
+        log_text = _truncate_prompt_text(
+            log_text,
+            _PROMPT_LOG_MAX_CHARS,
+        )
         parts.append(f"\n--- Фрагмент лога ---\n{log_text}")
 
     parts.append("")
