@@ -181,10 +181,6 @@ def _render_onboarding(
             "</div>"
         )
 
-    prioritized_html = _render_prioritized_clusters(
-        clustering,
-        onboarding.prioritized_cluster_ids,
-    )
     interactive_note = (
         '<div class="onboarding-note">'
         'Интерактивное обучение из HTML-отчёта доступно через alla-server: '
@@ -204,52 +200,16 @@ def _render_onboarding(
     return (
         '<div class="section">'
         '<div class="onboarding-banner guided" data-onboarding-banner>'
-        '<div class="onboarding-kicker">Guided onboarding</div>'
-        '<div class="onboarding-title">Alla ещё не знает этот проект</div>'
+        '<div class="onboarding-title">Алла ещё не знает этот проект</div>'
         '<div class="onboarding-copy">'
-        'Сначала инструмент показывает реальные кластеры и evidence. '
-        'Следующий шаг — сохранить хотя бы одно project-scoped знание, '
-        'чтобы на следующем анализе рекомендации стали точнее.'
+        'Сначала инструмент показывает реальные кластеры ошибок, которые найдены '
+        'по результатам Allure отчета. Следующий шаг - ваш: написать для каждого '
+        'кластера описание ошибки и её решение, чтобы на следующем анализе '
+        'рекомендации стали точнее.'
         '</div>'
-        f"{prioritized_html}"
         f"{starter_pack_note}"
         f"{interactive_note}"
         "</div>"
-        "</div>"
-    )
-
-
-def _render_prioritized_clusters(
-    clustering: "ClusteringReport | None",
-    prioritized_cluster_ids: list[str],
-) -> str:
-    """Показать top-3 кластера для first-run."""
-    if not clustering or not prioritized_cluster_ids:
-        return ""
-
-    by_id = {cluster.cluster_id: cluster for cluster in clustering.clusters}
-    items: list[str] = []
-    for idx, cluster_id in enumerate(prioritized_cluster_ids, start=1):
-        cluster = by_id.get(cluster_id)
-        if cluster is None:
-            continue
-        items.append(
-            '<li class="onboarding-item">'
-            f'<span class="onboarding-rank">#{idx}</span>'
-            '<span class="onboarding-item-body">'
-            f'<span class="onboarding-item-title">{_e(cluster.label)}</span>'
-            f'<span class="onboarding-item-meta">{cluster.member_count} тест(ов)</span>'
-            "</span>"
-            "</li>"
-        )
-
-    if not items:
-        return ""
-
-    return (
-        '<div class="onboarding-block">'
-        '<div class="onboarding-block-title">С чего начать</div>'
-        f'<ol class="onboarding-list">{"".join(items)}</ol>'
         "</div>"
     )
 
@@ -323,10 +283,6 @@ def _render_cluster(
 ) -> str:
     kb_matches = kb_results.get(cluster.cluster_id, [])
     guided_mode = onboarding is not None and onboarding.mode == OnboardingMode.GUIDED
-    prioritized_ids = onboarding.prioritized_cluster_ids if onboarding else []
-    priority_rank = None
-    if cluster.cluster_id in prioritized_ids:
-        priority_rank = prioritized_ids.index(cluster.cluster_id) + 1
 
     llm_text: str | None = None
     if llm_result:
@@ -482,21 +438,45 @@ def _render_cluster(
             if guided_mode
             else "Добавить знание проекта"
         )
+        toggle_cls = (
+            "create-kb-toggle create-kb-toggle-primary"
+            if guided_mode
+            else "create-kb-toggle"
+        )
+        form_cls = (
+            "create-kb-form create-kb-form-primary hidden"
+            if guided_mode
+            else "create-kb-form hidden"
+        )
+        resolution_control = (
+            f'<textarea name="resolution_steps" rows="4" '
+            f'placeholder="Шаг 1&#10;Шаг 2&#10;Шаг 3" autofocus>{steps_value}</textarea>'
+        )
+        title_control = (
+            f'<input name="title" placeholder="Описание проблемы" '
+            f'value="{_e(prefill["title"])}">'
+        )
+        category_control = (
+            f'<select name="category">{_render_category_options(prefill["category"])}</select>'
+        )
+        error_example_control = (
+            f'<textarea name="error_example" rows="4">{_e(prefill["error_example"])}</textarea>'
+        )
+        description_control = (
+            f'<textarea name="description" rows="3" placeholder="Подробное описание">'
+            f'{_e(prefill["description"])}</textarea>'
+        )
         create_kb_html = (
-            '<div class="block">'
-            '<button class="create-kb-toggle" '
+            '<div class="block create-kb-action">'
+            f'<button class="{toggle_cls}" '
             'onclick="this.nextElementSibling.classList.toggle(\'hidden\')">'
             f'{_e(cta_label)}</button>'
-            f'<form class="create-kb-form hidden" data-api-url="{_e(feedback_api_url)}">'
-            '<label>Шаги по устранению <span class="field-required">(основное поле)</span>:'
-            f'<textarea name="resolution_steps" rows="4" placeholder="Шаг 1&#10;Шаг 2&#10;Шаг 3" autofocus>{steps_value}</textarea></label>'
-            f'<label>Заголовок <span class="field-optional">(необязательно)</span>:<input name="title" placeholder="Описание проблемы" value="{_e(prefill["title"])}"></label>'
-            '<label>Категория:'
-            '<select name="category">'
-            f'{_render_category_options(prefill["category"])}'
-            '</select></label>'
-            f'<label>Пример ошибки <span class="field-optional">(необязательно)</span>:<textarea name="error_example" rows="4">{_e(prefill["error_example"])}</textarea></label>'
-            f'<label>Описание <span class="field-optional">(необязательно)</span>:<textarea name="description" rows="3" placeholder="Подробное описание">{_e(prefill["description"])}</textarea></label>'
+            f'<form class="{form_cls}" data-api-url="{_e(feedback_api_url)}">'
+            f'{_render_form_field("Шаги по устранению", "основное поле", resolution_control, required=True)}'
+            f'{_render_form_field("Заголовок", "необязательно", title_control)}'
+            f'{_render_form_field("Категория", "", category_control)}'
+            f'{_render_form_field("Пример ошибки", "необязательно", error_example_control)}'
+            f'{_render_form_field("Описание", "необязательно", description_control)}'
             f'<input type="hidden" name="project_id" value="{pid}">'
             '<button type="submit" class="create-kb-submit">Сохранить в проект</button>'
             '<span class="create-kb-status"></span>'
@@ -535,19 +515,12 @@ def _render_cluster(
     else:
         body_parts.extend([llm_html, error_html, kb_html, create_kb_html, tests_html])
 
-    priority_badge = ""
-    if priority_rank is not None:
-        priority_badge = (
-            f'<span class="cluster-priority">Top {priority_rank} для onboarding</span>'
-        )
-
     cluster_cls = "cluster guided-cluster" if guided_mode else "cluster"
     return (
         f'<div class="{cluster_cls}">'
         '<div class="cluster-header">'
         f'<span class="cluster-num">#{idx}</span>'
         f'<span class="cluster-label">{_e(cluster.label)}</span>'
-        f"{priority_badge}"
         f'<span class="cluster-count">{cluster.member_count} тест(ов)</span>'
         "</div>"
         '<div class="cluster-body">'
@@ -653,6 +626,30 @@ def _render_category_options(selected: str) -> str:
             f'<option value="{category}"{selected_attr}>{category}</option>'
         )
     return "".join(parts)
+
+
+def _render_form_field(
+    label: str,
+    meta: str,
+    control_html: str,
+    *,
+    required: bool = False,
+) -> str:
+    """Отрендерить поле формы KB как отдельный визуальный блок."""
+    meta_html = ""
+    if meta:
+        badge_cls = "field-required" if required else "field-optional"
+        meta_html = f'<span class="{badge_cls}">{_e(meta)}</span>'
+
+    return (
+        '<div class="create-kb-field">'
+        '<div class="create-kb-field-head">'
+        f'<span class="create-kb-field-label">{_e(label)}:</span>'
+        f"{meta_html}"
+        "</div>"
+        f"{control_html}"
+        "</div>"
+    )
 
 
 def _build_kb_prefill(
@@ -1020,99 +1017,47 @@ _CSS = """
 
     /* ---- Onboarding ---- */
     .onboarding-banner {
-      background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
-      border: 1px solid #bfdbfe;
+      background: linear-gradient(135deg, #fff3d6 0%, #ffd7b8 42%, #fff8ef 100%);
+      border: 2px solid #f59e0b;
       border-radius: var(--radius);
-      padding: 1.5rem 1.75rem;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      padding: 1.75rem 2rem;
+      box-shadow: 0 14px 32px rgba(245, 158, 11, 0.18);
       display: flex;
       flex-direction: column;
-      gap: 1rem;
+      gap: 0.85rem;
     }
     .onboarding-banner.hidden { display: none; }
     .onboarding-banner.setup {
       background: linear-gradient(135deg, #fff7ed 0%, #ffffff 100%);
       border-color: #fdba74;
+      box-shadow: 0 8px 24px rgba(249, 115, 22, 0.12);
     }
     .onboarding-kicker {
-      font-size: 0.75rem;
+      font-size: 0.78rem;
       font-weight: 700;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
-      color: var(--primary);
+      color: var(--warning);
     }
-    .onboarding-banner.setup .onboarding-kicker { color: var(--warning); }
     .onboarding-title {
-      font-size: 1.35rem;
+      font-size: 1.55rem;
       font-weight: 700;
       line-height: 1.2;
+      color: #7c2d12;
     }
     .onboarding-copy {
-      font-size: 0.95rem;
-      color: var(--text);
-      max-width: 70rem;
-    }
-    .onboarding-block {
-      display: flex;
-      flex-direction: column;
-      gap: 0.75rem;
-    }
-    .onboarding-block-title {
-      font-size: 0.8rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--text-muted);
-    }
-    .onboarding-list {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 0.75rem;
-      list-style: none;
-      margin: 0;
-      padding: 0;
-    }
-    .onboarding-item {
-      background: rgba(255,255,255,0.8);
-      border: 1px solid #dbeafe;
-      border-radius: var(--radius-sm);
-      padding: 0.875rem 1rem;
-      display: flex;
-      gap: 0.75rem;
-      align-items: flex-start;
-    }
-    .onboarding-rank {
-      min-width: 2rem;
-      height: 2rem;
-      border-radius: 9999px;
-      background: var(--primary);
-      color: white;
-      font-size: 0.875rem;
-      font-weight: 700;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .onboarding-item-body {
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
-    }
-    .onboarding-item-title {
-      font-weight: 600;
-      line-height: 1.3;
-    }
-    .onboarding-item-meta {
-      font-size: 0.8125rem;
-      color: var(--text-muted);
+      font-size: 1rem;
+      color: #9a3412;
+      max-width: 76rem;
+      line-height: 1.65;
     }
     .onboarding-note {
-      font-size: 0.875rem;
+      font-size: 0.825rem;
       color: var(--text-muted);
-      background: rgba(255,255,255,0.7);
+      background: rgba(255,255,255,0.8);
       border: 1px dashed var(--border);
       border-radius: var(--radius-sm);
-      padding: 0.75rem 1rem;
+      padding: 0.65rem 0.9rem;
     }
 
     /* ---- LLM Summary ---- */
@@ -1173,17 +1118,8 @@ _CSS = """
       gap: 1.5rem;
     }
     .guided-cluster {
-      border-color: #bfdbfe;
-      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
-    }
-    .cluster-priority {
-      background: #eff6ff;
-      color: var(--primary);
-      font-size: 0.75rem;
-      font-weight: 700;
-      padding: 0.25rem 0.75rem;
-      border: 1px solid #bfdbfe;
-      border-radius: 9999px;
+      border-color: #fdba74;
+      box-shadow: 0 10px 24px rgba(249, 115, 22, 0.08);
     }
 
     /* ---- Blocks ---- */
@@ -1468,7 +1404,9 @@ _CSS = """
       .container { padding: 1rem; }
       .header { padding: 1.25rem; }
       .stats { grid-template-columns: repeat(2, 1fr); }
-      .onboarding-list { grid-template-columns: 1fr; }
+      .onboarding-banner { padding: 1.35rem 1.15rem; }
+      .onboarding-title { font-size: 1.35rem; }
+      .create-kb-toggle-primary { padding: .95rem 1rem; font-size: .95rem; }
       .cluster-header { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
       .cluster-label { min-width: 100%; }
     }
@@ -1490,19 +1428,27 @@ _FEEDBACK_CSS = """
     .fb-status-error{color:var(--danger)}
 
     /* ---- Create KB Entry Form ---- */
+    .create-kb-action{gap:.8rem}
     .create-kb-toggle{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.5rem 1rem;cursor:pointer;color:var(--text-muted);font-size:.875rem;width:100%;text-align:left;transition:all .2s}
     .create-kb-toggle:hover{border-color:var(--primary);color:var(--primary)}
-    .create-kb-form{display:flex;flex-direction:column;gap:.75rem;padding:1rem;border:1px solid var(--border);border-radius:var(--radius-sm);margin-top:.5rem}
+    .create-kb-toggle-primary{background:linear-gradient(135deg,#f97316 0%,#ea580c 100%);border:none;color:#fff;font-size:1rem;font-weight:700;padding:1rem 1.25rem;border-radius:14px;text-align:center;box-shadow:0 14px 30px rgba(234,88,12,.28)}
+    .create-kb-toggle-primary:hover{color:#fff;opacity:.96;transform:translateY(-1px)}
+    .create-kb-form{display:flex;flex-direction:column;gap:.9rem;padding:1rem;border:1px solid var(--border);border-radius:var(--radius-sm);margin-top:.25rem;background:#fff}
     .create-kb-form.hidden{display:none}
-    .create-kb-form label{display:flex;flex-direction:column;gap:.25rem;font-size:.8125rem;font-weight:600;color:var(--text-muted)}
-    .create-kb-form input,.create-kb-form textarea,.create-kb-form select{font-family:inherit;font-size:.875rem;padding:.5rem;border:1px solid var(--border);border-radius:6px;background:var(--bg)}
-    .create-kb-submit{align-self:flex-start;padding:.5rem 1.5rem;background:var(--primary);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:.875rem}
+    .create-kb-form-primary{border:1px solid #fdba74;background:linear-gradient(180deg,#fffaf5 0%,#ffffff 100%);box-shadow:0 10px 24px rgba(249,115,22,.08)}
+    .create-kb-field{display:flex;flex-direction:column;gap:.55rem;padding:.9rem 1rem;border:1px solid #e5e7eb;border-radius:12px;background:#f8fafc}
+    .create-kb-field-head{display:flex;align-items:center;gap:.65rem;flex-wrap:wrap}
+    .create-kb-field-label{font-size:.875rem;font-weight:700;color:#0f172a}
+    .create-kb-field input,.create-kb-field textarea,.create-kb-field select{width:100%;font-family:inherit;font-size:.9rem;padding:.75rem .8rem;border:1px solid #cbd5e1;border-radius:10px;background:#fff;color:var(--text)}
+    .create-kb-field textarea{resize:vertical;min-height:3.25rem}
+    .create-kb-submit{align-self:flex-start;padding:.7rem 1.5rem;background:var(--primary);color:white;border:none;border-radius:10px;cursor:pointer;font-weight:700;font-size:.92rem}
     .create-kb-submit:hover{opacity:.9}
     .create-kb-submit:disabled{opacity:.5;cursor:not-allowed}
     .create-kb-ok{color:var(--success);font-size:.875rem}
     .create-kb-error{color:var(--danger);font-size:.875rem}
-    .field-required{font-weight:700;color:var(--primary);font-size:.75rem}
-    .field-optional{font-weight:400;color:var(--text-muted);font-size:.75rem}
+    .field-required,.field-optional{display:inline-flex;align-items:center;height:1.45rem;padding:0 .55rem;border-radius:9999px;font-size:.72rem;line-height:1;font-weight:700;white-space:nowrap}
+    .field-required{background:#dbeafe;color:var(--primary)}
+    .field-optional{background:#e2e8f0;color:var(--text-muted)}
     .starter-pack-actions{display:flex;align-items:center;gap:.75rem;margin-top:.75rem}
     .starter-pack-copy{padding:.45rem .95rem;background:var(--warning-light);color:var(--warning);border:1px solid #fed7aa;border-radius:6px;cursor:pointer;font-weight:600;font-size:.8125rem}
     .starter-pack-copy:hover{border-color:#fb923c}
