@@ -61,9 +61,13 @@ def test_guided_onboarding_hides_global_matches_from_primary_block() -> None:
         feedback_api_url="http://feedback.local",
     )
 
-    assert "Алла ещё не знает этот проект" in html
+    assert "Alla ещё не знает этот проект" in html
+    assert "Алла" not in html
     assert "Сначала инструмент показывает реальные кластеры ошибок" in html
-    assert "Создать решение для проекта" in html
+    assert "Следующий шаг - ваш" in html
+    assert "Опишите каждый кластер и добавьте для него решение" in html
+    assert "Создать решение для кластера" in html
+    assert "Создать решение для проекта" not in html
     assert "Показать starter pack" in html
     assert "Скопировать в проект" in html
     assert '<div class="block-title">База знаний</div>' not in html
@@ -74,7 +78,7 @@ def test_guided_onboarding_hides_global_matches_from_primary_block() -> None:
 
 
 def test_guided_onboarding_prefills_create_form_from_llm() -> None:
-    """LLM-анализ предзаполняет category/description/steps в create form."""
+    """LLM-анализ предзаполняет category и description, но steps остаются пустыми."""
     cluster = make_failure_cluster(cluster_id="c2", label="Gateway timeout")
     triage = make_triage_report(project_id=42)
     llm_result = LLMAnalysisResult(
@@ -118,6 +122,7 @@ def test_guided_onboarding_prefills_create_form_from_llm() -> None:
     assert 'class="create-kb-toggle create-kb-toggle-primary"' in html
     assert 'class="create-kb-field"' in html
     assert "Шаги по устранению:" in html
+    assert 'placeholder="Шаг 1&#10;Шаг 2&#10;Шаг 3" autofocus></textarea>' in html
     assert ">основное поле<" in html
     assert "(основное поле):" not in html
     assert "(необязательно):" not in html
