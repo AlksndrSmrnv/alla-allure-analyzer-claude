@@ -5,8 +5,10 @@
 -- ---------------------------------------------------------------------------
 -- Таблица обратной связи: like / dislike на KB-совпадения из HTML-отчёта.
 --
--- Связывает KB-запись (entry_id) с паттерном ошибки (error_fingerprint).
--- Один голос на пару (entry_id, fingerprint). Повторный голос — UPSERT.
+-- Связывает KB-запись (entry_id) с текстом ошибки (error_text).
+-- Один голос на пару (entry_id, md5(error_text)). Повторный голос — UPSERT.
+-- Fuzzy matching: при поиске голосов используется TF-IDF cosine similarity
+-- между текущей ошибкой и сохранёнными error_text.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS alla.kb_feedback (
     feedback_id       BIGSERIAL    PRIMARY KEY,
@@ -17,14 +19,17 @@ CREATE TABLE IF NOT EXISTS alla.kb_feedback (
                                    REFERENCES alla.kb_entry(entry_id)
                                    ON DELETE CASCADE,
 
-    -- SHA-256 hex нормализованного текста ошибки (message + trace + logs)
-    -- с версией нормализации: sha256(f"v{VERSION}:{normalize_text(error)}").
-    -- Привязывает голос к конкретному паттерну ошибки, а не к запуску/тесту.
-    error_fingerprint CHAR(64)     NOT NULL,
+    -- Нормализованный текст ошибки (assertion message + application log, без stack trace).
+    -- Используется для fuzzy matching при поиске голосов для новых ошибок.
+    error_text        TEXT         NOT NULL,
+
+    -- md5 hash error_text для эффективного UNIQUE constraint на длинных текстах.
+    -- GENERATED ALWAYS: автоматически вычисляется PostgreSQL.
+    error_text_hash   TEXT         GENERATED ALWAYS AS (md5(error_text)) STORED,
 
     -- Тип голоса.
-    -- 'like'    → повысить score записи для этого паттерна (boost)
-    -- 'dislike' → не показывать запись для этого паттерна (exclusion)
+    -- 'like'    → повысить score записи для похожих ошибок (boost пропорционален similarity)
+    -- 'dislike' → понизить или исключить запись для похожих ошибок
     vote              TEXT         NOT NULL CHECK (vote IN ('like', 'dislike')),
 
     -- Контекст (аудит, не участвует в matching).
@@ -33,19 +38,21 @@ CREATE TABLE IF NOT EXISTS alla.kb_feedback (
 
     created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
 
-    -- Один голос на (запись, паттерн). UPSERT при повторном клике.
-    UNIQUE (kb_entry_id, error_fingerprint)
+    -- Один голос на (запись, нормализованный текст). UPSERT при повторном клике.
+    UNIQUE (kb_entry_id, error_text_hash)
 );
 
 COMMENT ON TABLE  alla.kb_feedback IS
     'Обратная связь тестировщиков: like/dislike на KB-совпадения из HTML-отчёта alla';
 COMMENT ON COLUMN alla.kb_feedback.kb_entry_id IS
     'FK на alla.kb_entry.entry_id — суррогатный PK, не slug';
-COMMENT ON COLUMN alla.kb_feedback.error_fingerprint IS
-    'SHA-256 hex нормализованного error_text (message+trace+logs) с версией';
+COMMENT ON COLUMN alla.kb_feedback.error_text IS
+    'Нормализованный текст ошибки (assertion + log). Для fuzzy TF-IDF matching';
+COMMENT ON COLUMN alla.kb_feedback.error_text_hash IS
+    'md5(error_text) — generated column для UNIQUE constraint';
 COMMENT ON COLUMN alla.kb_feedback.vote IS
-    'like = boost score, dislike = exclude from results';
+    'like = boost score, dislike = penalize/exclude from results';
 
--- Индекс для быстрого lookup exclusions/boosts по fingerprint.
-CREATE INDEX IF NOT EXISTS idx_kb_feedback_fingerprint
-    ON alla.kb_feedback (error_fingerprint);
+-- Индекс для быстрой загрузки всех голосов по entry_id.
+CREATE INDEX IF NOT EXISTS idx_kb_feedback_entry_id
+    ON alla.kb_feedback (kb_entry_id);

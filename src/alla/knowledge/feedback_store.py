@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from alla.knowledge.feedback_models import FeedbackRequest, FeedbackResponse, FeedbackVote
+from alla.knowledge.feedback_models import (
+    FeedbackRecord,
+    FeedbackRequest,
+    FeedbackResponse,
+    FeedbackVote,
+)
 from alla.knowledge.models import KBEntry
 
 
@@ -23,25 +28,33 @@ class FeedbackStore(Protocol):
         """Записать like/dislike. UPSERT: повторный вызов обновляет голос."""
         ...
 
-    def get_exclusions(self, error_fingerprint: str) -> set[int]:
-        """Вернуть entry_id записей с dislike для данного fingerprint.
+    def get_feedback_for_entries(
+        self, entry_ids: set[int],
+    ) -> list[FeedbackRecord]:
+        """Загрузить все записи feedback для данных entry_id.
 
-        Используется TextMatcher для фильтрации результатов.
+        Вызывающий код использует результат для fuzzy matching
+        через TF-IDF cosine similarity.
         """
         ...
 
-    def get_boosts(self, error_fingerprint: str) -> set[int]:
-        """Вернуть entry_id записей с like для данного fingerprint.
-
-        Используется TextMatcher для повышения score.
-        """
-        ...
-
-    def get_votes_for_fingerprint(
+    def resolve_votes(
         self,
-        error_fingerprint: str,
-    ) -> dict[int, FeedbackVote]:
-        """Вернуть все голоса для fingerprint: ``{entry_id: vote}``."""
+        items: list[tuple[int, str, str]],
+    ) -> dict[str, tuple[FeedbackVote, float]]:
+        """Найти наиболее похожий голос для каждой тройки (entry_id, error_text, key).
+
+        Использует fuzzy text similarity (TF-IDF cosine) для поиска
+        ближайшего сохранённого голоса.
+
+        Args:
+            items: Список ``(kb_entry_id, error_text, resolve_key)``.
+                resolve_key — произвольный ключ для идентификации элемента
+                в ответе (например ``"entry_id:cluster_id"``).
+
+        Returns:
+            ``{resolve_key: (vote, similarity)}`` для элементов с подходящим feedback.
+        """
         ...
 
     def create_kb_entry(self, entry: KBEntry, project_id: int | None) -> int | None:

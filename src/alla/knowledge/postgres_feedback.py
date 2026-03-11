@@ -1,4 +1,24 @@
-"""PostgreSQL-реализация хранилища обратной связи KB."""
+"""PostgreSQL-реализация хранилища обратной связи KB.
+
+Миграция со старой (fingerprint-based) схемы:
+
+    -- Вариант 1: чистый старт (потеря старых голосов — ОК, т.к.
+    -- fingerprint-based голоса всё равно бесполезны в fuzzy системе)
+    DROP TABLE IF EXISTS alla.kb_feedback;
+
+    CREATE TABLE alla.kb_feedback (
+        feedback_id    SERIAL       PRIMARY KEY,
+        kb_entry_id    INTEGER      NOT NULL,
+        error_text     TEXT         NOT NULL,
+        error_text_hash TEXT        GENERATED ALWAYS AS (md5(error_text)) STORED,
+        vote           TEXT         NOT NULL CHECK (vote IN ('like', 'dislike')),
+        launch_id      INTEGER,
+        cluster_id     TEXT,
+        created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        UNIQUE (kb_entry_id, error_text_hash)
+    );
+    CREATE INDEX idx_kb_feedback_entry_id ON alla.kb_feedback(kb_entry_id);
+"""
 
 from __future__ import annotations
 
@@ -8,6 +28,7 @@ import psycopg
 
 from alla.exceptions import KnowledgeBaseError
 from alla.knowledge.feedback_models import (
+    FeedbackRecord,
     FeedbackRequest,
     FeedbackResponse,
     FeedbackVote,
@@ -15,6 +36,9 @@ from alla.knowledge.feedback_models import (
 from alla.knowledge.models import KBEntry
 
 logger = logging.getLogger(__name__)
+
+# Порог similarity для resolve_votes (ниже — игнорируем feedback).
+_RESOLVE_SIM_THRESHOLD = 0.3
 
 
 class PostgresFeedbackStore:
@@ -35,14 +59,14 @@ class PostgresFeedbackStore:
     def record_vote(self, request: FeedbackRequest) -> FeedbackResponse:
         """UPSERT голос в alla.kb_feedback.
 
-        При повторном вызове с тем же (kb_entry_id, error_fingerprint)
-        обновляет vote и created_at.
+        Дедупликация по (kb_entry_id, md5(error_text)):
+        при повторном вызове с тем же нормализованным текстом обновляет vote.
         """
         query = """
             INSERT INTO alla.kb_feedback
-                (kb_entry_id, error_fingerprint, vote, launch_id, cluster_id)
+                (kb_entry_id, error_text, vote, launch_id, cluster_id)
             VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (kb_entry_id, error_fingerprint)
+            ON CONFLICT (kb_entry_id, error_text_hash)
             DO UPDATE SET vote = EXCLUDED.vote, created_at = now()
             RETURNING (xmax = 0) AS is_insert
         """
@@ -53,7 +77,7 @@ class PostgresFeedbackStore:
                         query,
                         (
                             request.kb_entry_id,
-                            request.error_fingerprint,
+                            request.error_text,
                             request.vote.value,
                             request.launch_id,
                             request.cluster_id,
@@ -69,63 +93,71 @@ class PostgresFeedbackStore:
 
         return FeedbackResponse(
             kb_entry_id=request.kb_entry_id,
-            error_fingerprint=request.error_fingerprint,
+            error_text_preview=request.error_text[:80],
             vote=request.vote,
             created=is_insert,
         )
 
-    def get_exclusions(self, error_fingerprint: str) -> set[int]:
-        """Вернуть entry_id записей с dislike для данного fingerprint."""
+    def get_feedback_for_entries(
+        self, entry_ids: set[int],
+    ) -> list[FeedbackRecord]:
+        """Загрузить все feedback-записи для данных entry_id."""
+        if not entry_ids:
+            return []
+
         query = """
-            SELECT kb_entry_id
+            SELECT kb_entry_id, error_text, vote
             FROM alla.kb_feedback
-            WHERE error_fingerprint = %s AND vote = 'dislike'
+            WHERE kb_entry_id = ANY(%s)
         """
         try:
             with psycopg.connect(self._dsn) as conn:
                 with conn.cursor() as cur:
-                    cur.execute(query, (error_fingerprint,))
-                    return {row[0] for row in cur.fetchall()}
+                    cur.execute(query, (list(entry_ids),))
+                    return [
+                        FeedbackRecord(
+                            kb_entry_id=row[0],
+                            error_text=row[1],
+                            vote=FeedbackVote(row[2]),
+                        )
+                        for row in cur.fetchall()
+                    ]
         except Exception as exc:
-            logger.warning("Ошибка чтения exclusions: %s", exc)
-            return set()
+            logger.warning("Ошибка загрузки feedback: %s", exc)
+            return []
 
-    def get_boosts(self, error_fingerprint: str) -> set[int]:
-        """Вернуть entry_id записей с like для данного fingerprint."""
-        query = """
-            SELECT kb_entry_id
-            FROM alla.kb_feedback
-            WHERE error_fingerprint = %s AND vote = 'like'
-        """
-        try:
-            with psycopg.connect(self._dsn) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(query, (error_fingerprint,))
-                    return {row[0] for row in cur.fetchall()}
-        except Exception as exc:
-            logger.warning("Ошибка чтения boosts: %s", exc)
-            return set()
-
-    def get_votes_for_fingerprint(
+    def resolve_votes(
         self,
-        error_fingerprint: str,
-    ) -> dict[int, FeedbackVote]:
-        """Вернуть все голоса для fingerprint: ``{entry_id: vote}``."""
-        query = """
-            SELECT kb_entry_id, vote
-            FROM alla.kb_feedback
-            WHERE error_fingerprint = %s
+        items: list[tuple[int, str, str]],
+    ) -> dict[str, tuple[FeedbackVote, float]]:
+        """Найти наиболее похожий голос для каждой тройки (entry_id, error_text, key).
+
+        Используется HTML-отчётом для инициализации состояния кнопок.
+        key — произвольный ключ (например ``"entry_id:cluster_id"``).
         """
-        try:
-            with psycopg.connect(self._dsn) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(query, (error_fingerprint,))
-                    return {
-                        row[0]: FeedbackVote(row[1]) for row in cur.fetchall()
-                    }
-        except Exception as exc:
-            logger.warning("Ошибка чтения votes: %s", exc)
+        if not items:
             return {}
+
+        entry_ids = {eid for eid, _, _ in items}
+        all_feedback = self.get_feedback_for_entries(entry_ids)
+        if not all_feedback:
+            return {}
+
+        # Группировка по entry_id
+        fb_by_entry: dict[int, list[FeedbackRecord]] = {}
+        for rec in all_feedback:
+            fb_by_entry.setdefault(rec.kb_entry_id, []).append(rec)
+
+        result: dict[str, tuple[FeedbackVote, float]] = {}
+        for entry_id, error_text, resolve_key in items:
+            records = fb_by_entry.get(entry_id)
+            if not records:
+                continue
+            vote, sim = _find_best_feedback_match(error_text, records)
+            if vote is not None and sim >= _RESOLVE_SIM_THRESHOLD:
+                result[resolve_key] = (vote, sim)
+
+        return result
 
     def create_kb_entry(
         self,
@@ -167,3 +199,42 @@ class PostgresFeedbackStore:
             raise KnowledgeBaseError(
                 f"Ошибка создания KB-записи: {exc}"
             ) from exc
+
+
+def _find_best_feedback_match(
+    query_text: str,
+    records: list[FeedbackRecord],
+) -> tuple[FeedbackVote | None, float]:
+    """Найти feedback-запись с наибольшей TF-IDF cosine similarity к query_text.
+
+    Returns:
+        (vote, similarity) лучшего совпадения, или (None, 0.0) если записей нет.
+    """
+    if not records:
+        return None, 0.0
+
+    from alla.utils.text_normalization import normalize_text
+
+    query_normalized = normalize_text(query_text)
+    record_texts = [normalize_text(r.error_text) for r in records]
+
+    all_docs = [query_normalized] + record_texts
+
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    vectorizer = TfidfVectorizer(
+        max_features=500,
+        ngram_range=(1, 2),
+        token_pattern=r"(?u)\b\w\w+\b",
+        lowercase=True,
+    )
+    try:
+        matrix = vectorizer.fit_transform(all_docs)
+    except ValueError:
+        return None, 0.0
+
+    sims = cosine_similarity(matrix[0:1], matrix[1:])[0]
+    best_idx = int(sims.argmax())
+    best_sim = float(sims[best_idx])
+    return records[best_idx].vote, best_sim

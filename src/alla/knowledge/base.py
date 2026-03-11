@@ -21,18 +21,17 @@ class KnowledgeBaseProvider(Protocol):
         error_text: str,
         *,
         query_label: str | None = None,
-        error_fingerprint: str | None = None,
+        feedback_error_text: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
 
         Args:
-            error_text: Текст ошибки для поиска.
+            error_text: Текст ошибки для поиска (message + trace/log).
             query_label: Метка для логирования.
-            error_fingerprint: Опциональный предвычисленный fingerprint (SHA-256 hex).
-                Если задан — используется для lookup exclusions/boosts вместо
-                вычисления fingerprint из error_text. Позволяет передать
-                fingerprint report_text при поиске по log_text, обеспечивая
-                соответствие фидбэку из HTML-отчёта.
+            feedback_error_text: Текст для fuzzy feedback matching
+                (message + log, без trace). Если задан и feedback store
+                доступен — загружает голоса, применяет boost/penalize/exclude
+                через TF-IDF cosine similarity.
         """
         ...
 

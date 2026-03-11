@@ -59,3 +59,14 @@ class KBMatchResult(BaseModel):
         default_factory=list,
         description="Объяснение совпадения (что именно совпало)",
     )
+    feedback_vote: str | None = Field(
+        default=None,
+        description=(
+            "Pre-resolved голос для данного совпадения: 'like', 'dislike' или None. "
+            "Вычисляется при KB-matching через fuzzy similarity."
+        ),
+    )
+    feedback_similarity: float | None = Field(
+        default=None,
+        description="Cosine similarity между текущей ошибкой и сохранённым feedback (0–1).",
+    )

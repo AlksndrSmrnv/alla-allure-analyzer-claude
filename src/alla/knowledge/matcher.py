@@ -80,8 +80,11 @@ class MatcherConfig:
     example_weight: float = 0.8
     title_desc_weight: float = 0.2
 
-    # --- Feedback boost ---
+    # --- Feedback (fuzzy) ---
     boost_factor: float = 1.25
+    feedback_sim_threshold: float = 0.3
+    strong_dislike_threshold: float = 0.7
+    dislike_penalty_factor: float = 0.3
 
 
 # ---------------------------------------------------------------------------
@@ -164,8 +167,8 @@ class TextMatcher:
         entries: list[KBEntry],
         *,
         query_label: str | None = None,
-        exclusions: set[int] | None = None,
-        boosts: set[int] | None = None,
+        feedback_records: list | None = None,
+        feedback_error_text: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
 
@@ -173,8 +176,8 @@ class TextMatcher:
             error_text: Объединённый текст ошибки (message + trace + logs).
             entries: Записи KB для сопоставления.
             query_label: Метка для отладочных логов (cluster_id).
-            exclusions: entry_id записей с dislike — полностью исключаются.
-            boosts: entry_id записей с like — score умножается на boost_factor.
+            feedback_records: Список FeedbackRecord для fuzzy matching.
+            feedback_error_text: Текст ошибки для feedback (message + log, без trace).
 
         Returns:
             Список KBMatchResult, отсортированный по score desc.
@@ -205,19 +208,6 @@ class TextMatcher:
 
         # --- Tier 1 + Tier 2: per-entry ---
         for i, entry in enumerate(entries):
-            # Feedback exclusion: disliked entry для этого fingerprint
-            if (
-                exclusions
-                and entry.entry_id is not None
-                and entry.entry_id in exclusions
-            ):
-                logger.debug(
-                    "KB excluded%s: '%s' (entry_id=%d) — disliked",
-                    f" [{query_label}]" if query_label else "",
-                    entry.title, entry.entry_id,
-                )
-                continue
-
             # Tier 1: exact substring
             t1_score = self._tier1_exact_substring(
                 query_collapsed, example_collapsed[i],
@@ -286,15 +276,12 @@ class TextMatcher:
                     entry.title, entry.id, capped_score, ex_sim, td_sim,
                 )
 
-        # --- Feedback boosts: увеличить score liked записей ---
-        if boosts:
-            for r in results:
-                if r.entry.entry_id is not None and r.entry.entry_id in boosts:
-                    original = r.score
-                    r.score = round(min(1.0, r.score * cfg.boost_factor), 4)
-                    r.matched_on.append(
-                        f"Boosted: {original:.2f} → {r.score:.2f} (liked)"
-                    )
+        # --- Fuzzy feedback: boost liked, penalize/exclude disliked ---
+        if feedback_records and feedback_error_text:
+            results = self._apply_fuzzy_feedback(
+                results, feedback_error_text, feedback_records,
+                query_label=query_label,
+            )
 
         # --- Сортировка + лимит ---
         results.sort(key=lambda r: -r.score)
@@ -544,3 +531,116 @@ class TextMatcher:
             hits.append((local_i, capped_score, ex_sim, td_sim))
 
         return hits
+
+    # ------------------------------------------------------------------
+    # Fuzzy feedback adjustments
+    # ------------------------------------------------------------------
+
+    def _apply_fuzzy_feedback(
+        self,
+        results: list[KBMatchResult],
+        feedback_error_text: str,
+        feedback_records: list,
+        *,
+        query_label: str | None = None,
+    ) -> list[KBMatchResult]:
+        """Применить fuzzy feedback: boost liked, penalize/exclude disliked.
+
+        Для каждого результата ищет наиболее похожую feedback-запись
+        (по TF-IDF cosine similarity), затем корректирует score.
+        """
+        from alla.knowledge.feedback_models import FeedbackRecord, FeedbackVote
+
+        cfg = self._config
+
+        # Группировка feedback по entry_id
+        fb_by_entry: dict[int, list[FeedbackRecord]] = {}
+        for rec in feedback_records:
+            fb_by_entry.setdefault(rec.kb_entry_id, []).append(rec)
+
+        if not fb_by_entry:
+            return results
+
+        adjusted: list[KBMatchResult] = []
+        for r in results:
+            entry_id = r.entry.entry_id
+            if entry_id is None or entry_id not in fb_by_entry:
+                adjusted.append(r)
+                continue
+
+            records = fb_by_entry[entry_id]
+            best_vote, best_sim = _find_best_feedback_match(
+                feedback_error_text, records,
+            )
+
+            if best_vote is None or best_sim < cfg.feedback_sim_threshold:
+                adjusted.append(r)
+                continue
+
+            if best_vote == FeedbackVote.DISLIKE:
+                if best_sim >= cfg.strong_dislike_threshold:
+                    # Жёсткое исключение
+                    logger.debug(
+                        "KB excluded%s: '%s' (entry_id=%d) — dislike sim=%.2f",
+                        f" [{query_label}]" if query_label else "",
+                        r.entry.title, entry_id, best_sim,
+                    )
+                    continue  # пропускаем запись
+                # Мягкий штраф
+                penalty = 1.0 - best_sim * cfg.dislike_penalty_factor
+                original = r.score
+                r.score = round(max(0.0, r.score * penalty), 4)
+                r.feedback_vote = "dislike"
+                r.feedback_similarity = round(best_sim, 4)
+                r.matched_on.append(
+                    f"Penalized: {original:.2f} → {r.score:.2f} "
+                    f"(dislike sim={best_sim:.2f})"
+                )
+            else:  # LIKE
+                boost = 1.0 + best_sim * (cfg.boost_factor - 1.0)
+                original = r.score
+                r.score = round(min(1.0, r.score * boost), 4)
+                r.feedback_vote = "like"
+                r.feedback_similarity = round(best_sim, 4)
+                r.matched_on.append(
+                    f"Boosted: {original:.2f} → {r.score:.2f} "
+                    f"(like sim={best_sim:.2f})"
+                )
+
+            adjusted.append(r)
+
+        return adjusted
+
+
+def _find_best_feedback_match(
+    query_text: str,
+    records: list,
+) -> tuple:
+    """Найти feedback-запись с наибольшей TF-IDF cosine similarity к query_text.
+
+    Returns:
+        (vote, similarity) лучшего совпадения, или (None, 0.0) если записей нет.
+    """
+    if not records:
+        return None, 0.0
+
+    query_normalized = normalize_text(query_text)
+    record_texts = [normalize_text(r.error_text) for r in records]
+
+    all_docs = [query_normalized] + record_texts
+
+    vectorizer = TfidfVectorizer(
+        max_features=500,
+        ngram_range=(1, 2),
+        token_pattern=r"(?u)\b\w\w+\b",
+        lowercase=True,
+    )
+    try:
+        matrix = vectorizer.fit_transform(all_docs)
+    except ValueError:
+        return None, 0.0
+
+    sims = cosine_similarity(matrix[0:1], matrix[1:])[0]
+    best_idx = int(sims.argmax())
+    best_sim = float(sims[best_idx])
+    return records[best_idx].vote, best_sim

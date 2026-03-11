@@ -48,7 +48,7 @@ class PostgresKnowledgeBase:
                         глобальные записи (project_id IS NULL) + записи этого
                         проекта (project_id = N). Если None — только глобальные.
             feedback_store: Хранилище обратной связи. Если задан,
-                        search_by_error() учитывает exclusions/boosts из feedback.
+                        search_by_error() загружает feedback-записи для fuzzy matching.
         """
         self._dsn = dsn
         self._project_id = project_id
@@ -151,46 +151,43 @@ class PostgresKnowledgeBase:
         error_text: str,
         *,
         query_label: str | None = None,
-        error_fingerprint: str | None = None,
+        feedback_error_text: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
 
-        Если feedback_store задан, использует error_fingerprint для lookup
-        exclusions/boosts из БД. Если error_fingerprint не передан — вычисляет
-        его из error_text (fallback).
+        Если feedback_store задан и feedback_error_text передан, загружает
+        все feedback-записи для KB-entries и передаёт в matcher для fuzzy
+        matching (TF-IDF cosine similarity).
 
         Args:
-            error_text: Текст ошибки для поиска (report_text или log_text).
+            error_text: Текст ошибки для поиска (message + trace/log).
             query_label: Метка для логирования.
-            error_fingerprint: Предвычисленный fingerprint (SHA-256 hex).
-                Должен соответствовать fingerprint'у, встроенному в HTML-отчёт
-                (вычисленному из report_text). Передача одного fingerprint'а
-                в оба вызова (report_text и log_text) гарантирует, что
-                feedback применяется одинаково для обоих поисков.
+            feedback_error_text: Текст для fuzzy feedback matching
+                (message + log, без trace). Если None — feedback не применяется.
         """
-        exclusions: set[int] | None = None
-        boosts: set[int] | None = None
+        feedback_records = None
 
-        if self._feedback_store is not None:
-            if error_fingerprint is None:
-                from alla.utils.fingerprint import compute_fingerprint
-                error_fingerprint = compute_fingerprint(error_text)
-            fp = error_fingerprint
-            exclusions = self._feedback_store.get_exclusions(fp)
-            boosts = self._feedback_store.get_boosts(fp)
-            if exclusions or boosts:
-                logger.debug(
-                    "PostgresKB: feedback for fingerprint %.16s…: "
-                    "exclusions=%s, boosts=%s",
-                    fp, exclusions, boosts,
+        if self._feedback_store is not None and feedback_error_text:
+            entry_ids = {
+                e.entry_id for e in self._entries
+                if e.entry_id is not None
+            }
+            if entry_ids:
+                feedback_records = self._feedback_store.get_feedback_for_entries(
+                    entry_ids,
                 )
+                if feedback_records:
+                    logger.debug(
+                        "PostgresKB: loaded %d feedback records for %d entries",
+                        len(feedback_records), len(entry_ids),
+                    )
 
         return self._matcher.match(
             error_text,
             self._entries,
             query_label=query_label,
-            exclusions=exclusions,
-            boosts=boosts,
+            feedback_records=feedback_records,
+            feedback_error_text=feedback_error_text,
         )
 
     def get_all_entries(self) -> list[KBEntry]:
