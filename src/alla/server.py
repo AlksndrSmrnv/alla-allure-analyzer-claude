@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from alla import __version__
+from alla.utils.text_normalization import canonicalize_kb_error_example
 
 logger = logging.getLogger(__name__)
 
@@ -573,6 +574,8 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
         req = CreateKBEntryRequest(**request)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    req.error_example = canonicalize_kb_error_example(req.error_example or "")
 
     # Авто-генерация title и id если не указаны
     if not req.title:

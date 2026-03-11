@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import html as _html
+import re
+
 from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis
 from alla.models.onboarding import OnboardingMode, OnboardingState
 from alla.orchestrator import AnalysisResult
@@ -15,6 +18,17 @@ from conftest import (
     make_kb_match_result,
     make_triage_report,
 )
+
+
+def _extract_error_example_textarea(report_html: str) -> str:
+    """Достать canonicalized содержимое textarea error_example из HTML-формы."""
+    match = re.search(
+        r'<textarea name="error_example" rows="4">(.*?)</textarea>',
+        report_html,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    return _html.unescape(match.group(1))
 
 
 def test_guided_onboarding_hides_global_matches_from_primary_block() -> None:
@@ -126,6 +140,61 @@ def test_guided_onboarding_prefills_create_form_from_llm() -> None:
     assert ">основное поле<" in html
     assert "(основное поле):" not in html
     assert "(необязательно):" not in html
+
+
+def test_guided_onboarding_canonicalizes_error_example_prefill() -> None:
+    """Форма KB показывает normalized message+log без UI-маркеров и raw volatile-данных."""
+    cluster = make_failure_cluster(
+        cluster_id="c3",
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message=(
+            "Order 123e4567-e89b-12d3-a456-426614174000 failed "
+            "at 2026-02-10 12:00:00 from 10.20.30.40"
+        ),
+        example_trace_snippet="at Service.java:42",
+    )
+    triage = make_triage_report(
+        project_id=42,
+        failed_tests=[
+            make_failed_test_summary(
+                test_result_id=1,
+                log_snippet=(
+                    "--- [файл: app.log] ---\n"
+                    "2026-02-10 12:00:00 [ERROR] requestId="
+                    "123e4567e89b12d3a456426614174000 from 10.20.30.40 build 123456"
+                ),
+            )
+        ],
+    )
+    result = AnalysisResult(
+        triage_report=triage,
+        clustering_report=make_clustering_report(clusters=[cluster], cluster_count=1),
+        onboarding=OnboardingState(
+            mode=OnboardingMode.GUIDED,
+            needs_bootstrap=True,
+            prioritized_cluster_ids=["c3"],
+        ),
+    )
+
+    report_html = generate_html_report(
+        result,
+        feedback_api_url="http://feedback.local",
+    )
+    textarea_value = _extract_error_example_textarea(report_html)
+
+    assert "--- Лог приложения ---" not in textarea_value
+    assert "at Service.java:42" not in textarea_value
+    assert "2026-02-10 12:00:00" not in textarea_value
+    assert "123e4567-e89b-12d3-a456-426614174000" not in textarea_value
+    assert "123e4567e89b12d3a456426614174000" not in textarea_value
+    assert "10.20.30.40" not in textarea_value
+    assert "<TS>" in textarea_value
+    assert "<ID>" in textarea_value
+    assert "<IP>" in textarea_value
+    assert "<NUM>" in textarea_value
+    assert "Order <ID> failed at <TS> from <IP>" in textarea_value
 
 
 def test_html_report_shows_kb_setup_callout() -> None:
