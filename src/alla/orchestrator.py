@@ -397,16 +397,16 @@ def _build_kb_query_text(
     *,
     include_trace: bool = True,
 ) -> tuple[str, int, int, int]:
-    """Собрать единый текст запроса для KB: message + trace + log_snippet.
+    """Собрать единый текст запроса для KB: message + log или message + trace.
 
-    Объединяет данные из Allure-отчёта (message, trace) и логов приложения
-    (log_snippet representative теста) в один документ. Это позволяет KB-записям,
-    содержащим фрагменты и ошибки и лога, эффективно сопоставляться.
+    Если у кластера есть application log, он важнее Allure-trace для KB-matching,
+    поэтому основной query строится как ``message + log``. Trace используется
+    только fallback'ом, когда лог отсутствует.
 
     Args:
         cluster: Кластер падений.
         test_by_id: Словарь test_result_id → FailedTestSummary.
-        include_trace: Включать ли Allure-trace (stack trace) в query.
+        include_trace: Разрешать ли fallback на Allure-trace при отсутствии лога.
 
     Returns:
         (combined_text, message_len, trace_len, log_len)
@@ -440,8 +440,17 @@ def _build_kb_query_text(
                 log_snippet = member.log_snippet.strip()
                 break
 
-    parts = [part for part in (message, trace, log_snippet) if part]
-    return "\n".join(parts), len(message), len(trace), len(log_snippet)
+    effective_trace = ""
+    parts: list[str] = []
+    if message:
+        parts.append(message)
+    if log_snippet:
+        parts.append(log_snippet)
+    elif trace:
+        effective_trace = trace
+        parts.append(trace)
+
+    return "\n".join(parts), len(message), len(effective_trace), len(log_snippet)
 
 
 def _build_fingerprint_text(

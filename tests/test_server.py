@@ -25,7 +25,7 @@ from alla.models.testops import (
     TriageReport,
 )
 from alla.orchestrator import AnalysisResult
-from alla.server import _AppState, app
+from alla.server import _AppState, _make_slug, app
 from alla.services.comment_delete_service import DeleteCommentsResult
 
 
@@ -336,3 +336,55 @@ async def test_delete_comments_skips_tests_without_tc_id(_http_client) -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert data["skipped_test_cases"] == 1
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/kb/entries
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_kb_entry_canonicalizes_error_example_before_save(monkeypatch, _http_client) -> None:
+    """Сервер сохраняет normalized error_example и генерирует slug по нему."""
+    captured: dict[str, Any] = {}
+
+    class _Store:
+        def create_kb_entry(self, entry, project_id):
+            captured["entry"] = entry
+            captured["project_id"] = project_id
+            return 77
+
+    monkeypatch.setattr("alla.server._get_feedback_store", lambda: _Store())
+
+    payload = {
+        "title": "Gateway timeout",
+        "description": "desc",
+        "error_example": (
+            "Order 123e4567-e89b-12d3-a456-426614174000 failed at 2026-02-10 12:00:00\n"
+            "--- Лог приложения ---\n"
+            "--- [файл: app.log] ---\n"
+            "2026-02-10 12:00:00 [ERROR] requestId=123e4567e89b12d3a456426614174000 "
+            "from 10.20.30.40 build 123456"
+        ),
+        "category": "service",
+        "resolution_steps": ["step 1"],
+        "project_id": 42,
+    }
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/kb/entries", json=payload)
+
+    assert resp.status_code == 201
+    data = resp.json()
+    entry = captured["entry"]
+    assert captured["project_id"] == 42
+    assert entry.error_example == (
+        "Order <ID> failed at <TS>\n"
+        "--- [файл: app.log] ---\n"
+        "<TS> [ERROR] requestId=<ID> from <IP> build <NUM>"
+    )
+    assert "--- Лог приложения ---" not in entry.error_example
+    assert "123e4567-e89b-12d3-a456-426614174000" not in entry.error_example
+    assert "2026-02-10 12:00:00" not in entry.error_example
+    assert data["id"] == _make_slug("Gateway timeout", entry.error_example)
+    assert entry.id == data["id"]

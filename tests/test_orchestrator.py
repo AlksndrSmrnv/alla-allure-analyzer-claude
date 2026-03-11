@@ -30,7 +30,7 @@ def _failed_test(
 
 
 def test_build_kb_query_text_uses_member_log_when_representative_has_none() -> None:
-    """Если у representative нет лога, запрос включает лог другого теста кластера."""
+    """Если у representative нет лога, KB query строится как message + member log."""
     cluster = FailureCluster(
         cluster_id="c2",
         label="cluster",
@@ -62,9 +62,44 @@ def test_build_kb_query_text_uses_member_log_when_representative_has_none() -> N
     )
 
     assert message_len > 0
-    assert trace_len > 0
+    assert trace_len == 0
     assert log_len > 0
+    assert "AssertionError: expected true" in query_text
+    assert "at test.py:42" not in query_text
     assert "RootCauseException: boom" in query_text
+
+
+def test_build_kb_query_text_falls_back_to_trace_when_log_missing() -> None:
+    """При отсутствии application log KB query использует message + trace."""
+    cluster = FailureCluster(
+        cluster_id="c4",
+        label="cluster",
+        signature=ClusterSignature(),
+        representative_test_id=301,
+        member_test_ids=[301],
+        member_count=1,
+        example_message="fallback message",
+        example_trace_snippet="fallback trace",
+    )
+    test_by_id = {
+        301: _failed_test(
+            301,
+            status_message="AssertionError: expected false",
+            status_trace="at test.py:99",
+            log_snippet=None,
+        ),
+    }
+
+    query_text, message_len, trace_len, log_len = _build_kb_query_text(
+        cluster,
+        test_by_id,
+    )
+
+    assert message_len > 0
+    assert trace_len > 0
+    assert log_len == 0
+    assert "AssertionError: expected false" in query_text
+    assert "at test.py:99" in query_text
 
 
 def test_build_onboarding_state_guided_for_project_without_project_entries() -> None:

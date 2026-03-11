@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from alla.models.onboarding import OnboardingMode, OnboardingState
+from alla.utils.text_normalization import canonicalize_kb_error_example
 
 if TYPE_CHECKING:
     from alla.knowledge.models import KBMatchResult
@@ -667,14 +668,16 @@ def _build_kb_prefill(
     if cluster.example_message:
         prefill_parts.append(cluster.example_message)
     if rep_log_snippet:
-        if prefill_parts:
-            prefill_parts.append("\n--- Лог приложения ---")
         prefill_parts.append(rep_log_snippet.strip())
+
+    error_example = ""
+    if prefill_parts:
+        error_example = canonicalize_kb_error_example("\n".join(prefill_parts))
 
     return {
         "title": cluster.label or parsed_llm["title"],
         "category": parsed_llm["category"] or "service",
-        "error_example": "\n".join(prefill_parts),
+        "error_example": error_example,
         "description": parsed_llm["description"],
         "resolution_steps": parsed_llm["resolution_steps"],
     }

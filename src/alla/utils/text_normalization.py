@@ -67,6 +67,7 @@ _TIME_ONLY_RE = re.compile(
 
 _LONG_NUMBER_RE = re.compile(r"\b\d{4,}\b")
 _IP_RE = re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
+_REPORT_LOG_MARKER_RE = re.compile(r"^\s*---\s*Лог приложения\s*---\s*$")
 
 
 def _normalize_common(text: str, *, replace_long_numbers: bool) -> str:
@@ -103,3 +104,24 @@ def normalize_text(text: str) -> str:
 def normalize_text_for_llm(text: str) -> str:
     """Мягкая normalizer-версия для LLM: без замены длинных plain-number значений."""
     return _normalize_common(text, replace_long_numbers=False)
+
+
+def canonicalize_kb_error_example(text: str) -> str:
+    """Подготовить каноничный error_example для KB из UI/raw-пользовательского текста.
+
+    Убирает служебные UI-маркеры отчёта, очищает пустые строки и затем
+    применяет обычную KB-нормализацию с заменой volatile-данных.
+    """
+    cleaned_lines: list[str] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if _REPORT_LOG_MARKER_RE.match(stripped):
+            continue
+        cleaned_lines.append(stripped)
+
+    cleaned = "\n".join(cleaned_lines).strip()
+    if not cleaned:
+        return ""
+    return normalize_text(cleaned)
