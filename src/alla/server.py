@@ -518,7 +518,11 @@ def _get_feedback_store():
 
 @app.post("/api/v1/kb/feedback")
 def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
-    """Записать like/dislike для KB-совпадения из HTML-отчёта."""
+    """Записать like/dislike для KB-совпадения из HTML-отчёта.
+
+    Принимает error_text (assertion + log, без trace). Текст нормализуется
+    перед сохранением для стабильного fuzzy matching.
+    """
     store = _get_feedback_store()
     if store is None:
         raise HTTPException(
@@ -527,11 +531,15 @@ def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
         )
 
     from alla.knowledge.feedback_models import FeedbackRequest
+    from alla.utils.text_normalization import normalize_text
 
     try:
         fb_request = FeedbackRequest(**request)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    # Нормализация перед хранением: UUID, timestamps, IP → placeholders
+    fb_request.error_text = normalize_text(fb_request.error_text)
 
     from alla.exceptions import KnowledgeBaseError
 
@@ -622,21 +630,44 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
     return resp.model_dump()
 
 
-@app.get("/api/v1/kb/feedback/{error_fingerprint}")
-def get_feedback_for_fingerprint(
-    error_fingerprint: str,
-) -> dict[str, str]:
-    """Получить текущие голоса для error_fingerprint.
+@app.post("/api/v1/kb/feedback/resolve")
+def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
+    """Найти актуальные голоса для пар (entry_id, error_text).
 
-    Используется HTML-отчётом для инициализации состояния кнопок.
-    Возвращает ``{entry_id: "like"|"dislike"}``.
+    Используется HTML-отчётом при загрузке для инициализации кнопок.
+    Применяет fuzzy text similarity — находит ближайший сохранённый
+    голос для каждой пары.
+
+    Body: {"items": [{"kb_entry_id": 123, "error_text": "..."}]}
+    Response: {"votes": {"123": {"vote": "like", "similarity": 0.85}}}
     """
     store = _get_feedback_store()
     if store is None:
         raise HTTPException(status_code=501, detail="Requires postgres backend")
 
-    votes = store.get_votes_for_fingerprint(error_fingerprint)
-    return {str(k): v.value for k, v in votes.items()}
+    from alla.knowledge.feedback_models import FeedbackResolveRequest
+    from alla.utils.text_normalization import normalize_text
+
+    try:
+        req = FeedbackResolveRequest(**request)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    items = [
+        (
+            it.kb_entry_id,
+            normalize_text(it.error_text),
+            f"{it.kb_entry_id}:{it.cluster_id}",
+        )
+        for it in req.items
+    ]
+    resolved = store.resolve_votes(items)
+
+    votes: dict[str, dict[str, object]] = {}
+    for resolve_key, (vote, sim) in resolved.items():
+        votes[resolve_key] = {"vote": vote.value, "similarity": round(sim, 4)}
+
+    return {"votes": votes}
 
 
 def main() -> None:

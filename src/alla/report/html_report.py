@@ -36,7 +36,7 @@ def generate_html_report(
     kb_results = result.kb_results or {}
     llm_result = result.llm_result
     llm_summary = result.llm_launch_summary
-    error_fingerprints = result.error_fingerprints or {}
+    feedback_texts = result.feedback_texts or {}
     onboarding = result.onboarding
 
     generated_at = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -59,13 +59,23 @@ def generate_html_report(
         triage.failed_tests,
         onboarding=onboarding,
         feedback_api_url=feedback_api_url,
-        error_fingerprints=error_fingerprints,
+        feedback_texts=feedback_texts,
         launch_id=triage.launch_id,
         project_id=triage.project_id,
     )
 
     feedback_css = _FEEDBACK_CSS if feedback_api_url else ""
     feedback_js = _build_feedback_js(feedback_api_url) if feedback_api_url else ""
+
+    # Embed feedback texts as JS data for vote submission
+    feedback_data_js = ""
+    if feedback_api_url and feedback_texts:
+        safe_data = _json.dumps(feedback_texts, ensure_ascii=False).replace(
+            "</", "<\\/"
+        )
+        feedback_data_js = (
+            f"<script>var CLUSTER_FEEDBACK_TEXTS = {safe_data};</script>\n"
+        )
 
     csp_meta = ""
     if feedback_api_url:
@@ -111,7 +121,7 @@ def generate_html_report(
 
   </div>
 
-{feedback_js}
+{feedback_data_js}{feedback_js}
 </body>
 </html>"""
 
@@ -228,7 +238,7 @@ def _render_clusters(
     *,
     onboarding: OnboardingState | None = None,
     feedback_api_url: str = "",
-    error_fingerprints: dict[str, str] | None = None,
+    feedback_texts: dict[str, str] | None = None,
     launch_id: int = 0,
     project_id: int | None = None,
 ) -> str:
@@ -252,14 +262,12 @@ def _render_clusters(
         f"из {clustering.total_failures} падений)"
     )
 
-    fp_map = error_fingerprints or {}
-
     body = "".join(
         _render_cluster(
             i, cluster, kb_results, llm_result, test_by_id,
             onboarding=onboarding,
             feedback_api_url=feedback_api_url,
-            error_fingerprint=fp_map.get(cluster.cluster_id, ""),
+            cluster_id=cluster.cluster_id,
             launch_id=launch_id,
             project_id=project_id,
         )
@@ -283,7 +291,7 @@ def _render_cluster(
     *,
     onboarding: OnboardingState | None = None,
     feedback_api_url: str = "",
-    error_fingerprint: str = "",
+    cluster_id: str = "",
     launch_id: int = 0,
     project_id: int | None = None,
 ) -> str:
@@ -364,10 +372,9 @@ def _render_cluster(
         entries_html = "".join(
             _render_kb_entry(
                 m,
-                error_fingerprint=error_fingerprint,
                 feedback_api_url=feedback_api_url,
                 launch_id=launch_id,
-                cluster_id=cluster.cluster_id,
+                cluster_id=cluster_id,
             )
             for m in kb_matches
         )
@@ -384,10 +391,9 @@ def _render_cluster(
             entries_html = "".join(
                 _render_kb_entry(
                     m,
-                    error_fingerprint=error_fingerprint,
                     feedback_api_url=feedback_api_url,
                     launch_id=launch_id,
-                    cluster_id=cluster.cluster_id,
+                    cluster_id=cluster_id,
                 )
                 for m in project_matches
             )
@@ -414,10 +420,9 @@ def _render_cluster(
         entries_html = "".join(
             _render_kb_entry(
                 m,
-                error_fingerprint=error_fingerprint,
                 feedback_api_url=feedback_api_url,
                 launch_id=launch_id,
-                cluster_id=cluster.cluster_id,
+                cluster_id=cluster_id,
                 copy_payload=_build_starter_pack_payload(m, project_id),
                 copy_api_url=feedback_api_url,
             )
@@ -538,7 +543,6 @@ def _render_cluster(
 def _render_kb_entry(
     m: "KBMatchResult",
     *,
-    error_fingerprint: str = "",
     feedback_api_url: str = "",
     launch_id: int = 0,
     cluster_id: str = "",
@@ -571,16 +575,22 @@ def _render_kb_entry(
         )
 
     feedback_html = ""
-    if feedback_api_url and error_fingerprint:
+    if feedback_api_url and cluster_id:
         entry_id = _e(str(m.entry.entry_id)) if m.entry.entry_id is not None else _e(m.entry.id)
+        # Pre-compute CSS classes from feedback_vote (set during KB matching)
+        like_cls = "fb-btn fb-like"
+        dislike_cls = "fb-btn fb-dislike"
+        if m.feedback_vote == "like":
+            like_cls += " fb-active"
+        elif m.feedback_vote == "dislike":
+            dislike_cls += " fb-active"
         feedback_html = (
             f'<div class="kb-feedback" '
             f'data-entry-id="{entry_id}" '
-            f'data-fingerprint="{_e(error_fingerprint)}" '
             f'data-launch-id="{_e(str(launch_id))}" '
             f'data-cluster-id="{_e(cluster_id)}">'
-            '<button class="fb-btn fb-like" title="Полезное совпадение">&#x2713; Полезно</button>'
-            '<button class="fb-btn fb-dislike" title="Неверное совпадение">&#x2717; Не то</button>'
+            f'<button class="{like_cls}" title="Полезное совпадение">&#x2713; Полезно</button>'
+            f'<button class="{dislike_cls}" title="Неверное совпадение">&#x2717; Не то</button>'
             '<span class="fb-status"></span>'
             "</div>"
         )
@@ -1530,11 +1540,19 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "  function sendFeedback(el, isLike) {\n"
         "    var wrap = el.closest('.kb-feedback');\n"
         "    var status = wrap.querySelector('.fb-status');\n"
+        "    var clusterId = wrap.dataset.clusterId;\n"
+        "    var errorText = (typeof CLUSTER_FEEDBACK_TEXTS !== 'undefined')\n"
+        "      ? CLUSTER_FEEDBACK_TEXTS[clusterId] : '';\n"
+        "    if (!errorText) {\n"
+        "      status.textContent = 'No feedback text';\n"
+        "      status.className = 'fb-status fb-status-error';\n"
+        "      return;\n"
+        "    }\n"
         "    var body = JSON.stringify({\n"
         "      kb_entry_id: parseInt(wrap.dataset.entryId, 10),\n"
-        "      error_fingerprint: wrap.dataset.fingerprint,\n"
+        "      error_text: errorText,\n"
         "      launch_id: parseInt(wrap.dataset.launchId, 10) || null,\n"
-        "      cluster_id: wrap.dataset.clusterId || null,\n"
+        "      cluster_id: clusterId || null,\n"
         "      vote: isLike ? 'like' : 'dislike'\n"
         "    });\n"
         "    status.textContent = '...';\n"
@@ -1616,31 +1634,43 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    });\n"
         "  });\n"
         "\n"
-        "  // --- Load existing votes on page load ---\n"
+        "  // --- Load existing votes on page load (fuzzy resolve) ---\n"
         "  document.addEventListener('DOMContentLoaded', function() {\n"
-        "    var fps = {};\n"
-        "    document.querySelectorAll('.kb-feedback[data-fingerprint]').forEach(function(el) {\n"
-        "      fps[el.dataset.fingerprint] = true;\n"
+        "    if (typeof CLUSTER_FEEDBACK_TEXTS === 'undefined') return;\n"
+        "    var items = [];\n"
+        "    var seen = {};\n"
+        "    document.querySelectorAll('.kb-feedback').forEach(function(el) {\n"
+        "      var entryId = parseInt(el.dataset.entryId, 10);\n"
+        "      var clusterId = el.dataset.clusterId;\n"
+        "      var errorText = CLUSTER_FEEDBACK_TEXTS[clusterId];\n"
+        "      if (!errorText) return;\n"
+        "      var key = entryId + ':' + clusterId;\n"
+        "      if (seen[key]) return;\n"
+        "      seen[key] = true;\n"
+        "      items.push({kb_entry_id: entryId, error_text: errorText, cluster_id: clusterId || ''});\n"
         "    });\n"
-        "    Object.keys(fps).forEach(function(fp) {\n"
-        "      fetch(FEEDBACK_API_URL + '/api/v1/kb/feedback/' + encodeURIComponent(fp))\n"
-        "        .then(function(r) { return r.ok ? r.json() : null; })\n"
-        "        .then(function(data) {\n"
-        "          if (!data) return;\n"
-        "          // data is {entry_id_str: 'like'|'dislike'}\n"
-        "          Object.keys(data).forEach(function(entryIdStr) {\n"
-        "            var vote = data[entryIdStr];\n"
-        "            document.querySelectorAll('.kb-feedback[data-fingerprint=\"' + fp + '\"]').forEach(function(wrap) {\n"
-        "              if (wrap.dataset.entryId === entryIdStr) {\n"
-        "                var cls = vote === 'like' ? '.fb-like' : '.fb-dislike';\n"
-        "                var btn = wrap.querySelector(cls);\n"
-        "                if (btn) btn.classList.add('fb-active');\n"
-        "              }\n"
-        "            });\n"
-        "          });\n"
-        "        })\n"
-        "        .catch(function() {});\n"
-        "    });\n"
+        "    if (items.length === 0) return;\n"
+        "    fetch(FEEDBACK_API_URL + '/api/v1/kb/feedback/resolve', {\n"
+        "      method: 'POST',\n"
+        "      headers: {'Content-Type': 'application/json'},\n"
+        "      body: JSON.stringify({items: items})\n"
+        "    })\n"
+        "    .then(function(r) { return r.ok ? r.json() : null; })\n"
+        "    .then(function(data) {\n"
+        "      if (!data || !data.votes) return;\n"
+        "      document.querySelectorAll('.kb-feedback').forEach(function(wrap) {\n"
+        "        var eid = wrap.dataset.entryId;\n"
+        "        var cid = wrap.dataset.clusterId || '';\n"
+        "        var key = eid + ':' + cid;\n"
+        "        var info = data.votes[key];\n"
+        "        if (!info) return;\n"
+        "        wrap.querySelectorAll('.fb-btn').forEach(function(b) { b.classList.remove('fb-active'); });\n"
+        "        var cls = info.vote === 'like' ? '.fb-like' : '.fb-dislike';\n"
+        "        var btn = wrap.querySelector(cls);\n"
+        "        if (btn) btn.classList.add('fb-active');\n"
+        "      });\n"
+        "    })\n"
+        "    .catch(function() {});\n"
         "  });\n"
         "})();\n"
         "</script>"

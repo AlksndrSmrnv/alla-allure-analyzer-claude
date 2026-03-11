@@ -93,25 +93,26 @@ CREATE TABLE IF NOT EXISTS alla.kb_feedback (
     kb_entry_id       BIGINT       NOT NULL
                                    REFERENCES alla.kb_entry(entry_id)
                                    ON DELETE CASCADE,
-    error_fingerprint CHAR(64)     NOT NULL,
+    error_text        TEXT         NOT NULL,
+    error_text_hash   TEXT         GENERATED ALWAYS AS (md5(error_text)) STORED,
     vote              TEXT         NOT NULL CHECK (vote IN ('like', 'dislike')),
     launch_id         INTEGER,
     cluster_id        TEXT,
     created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    UNIQUE (kb_entry_id, error_fingerprint)
+    UNIQUE (kb_entry_id, error_text_hash)
 );
 
 COMMENT ON TABLE  alla.kb_feedback IS
     'Обратная связь тестировщиков: like/dislike на KB-совпадения из HTML-отчёта alla';
 COMMENT ON COLUMN alla.kb_feedback.kb_entry_id IS
     'FK на alla.kb_entry.entry_id — суррогатный PK, не slug';
-COMMENT ON COLUMN alla.kb_feedback.error_fingerprint IS
-    'SHA-256 hex нормализованного error_text (message+trace+logs) с версией';
+COMMENT ON COLUMN alla.kb_feedback.error_text IS
+    'Нормализованный текст ошибки (assertion + log). Для fuzzy TF-IDF matching';
 COMMENT ON COLUMN alla.kb_feedback.vote IS
-    'like = boost score, dislike = exclude from results';
+    'like = boost score, dislike = penalize/exclude from results';
 
-CREATE INDEX IF NOT EXISTS idx_kb_feedback_fingerprint
-    ON alla.kb_feedback (error_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_kb_feedback_entry_id
+    ON alla.kb_feedback (kb_entry_id);
 """
 
 # ---------------------------------------------------------------------------

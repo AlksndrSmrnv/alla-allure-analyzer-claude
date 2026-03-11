@@ -40,7 +40,7 @@ class AnalysisResult:
     llm_result: LLMAnalysisResult | None = None
     llm_push_result: LLMPushResult | None = None
     llm_launch_summary: LLMLaunchSummary | None = None
-    error_fingerprints: dict[str, str] = field(default_factory=dict)
+    feedback_texts: dict[str, str] = field(default_factory=dict)
     onboarding: OnboardingState = field(default_factory=OnboardingState)
 
 
@@ -102,7 +102,7 @@ async def analyze_launch(
     kb_results: dict[str, list[KBMatchResult]] = {}
     kb_push_result = None
     kb_provenance: dict[str, tuple[int, int, int]] = {}
-    error_fingerprints: dict[str, str] = {}
+    feedback_texts: dict[str, str] = {}
     onboarding = OnboardingState(
         mode=OnboardingMode.KB_NOT_CONFIGURED
         if not settings.kb_active
@@ -157,17 +157,11 @@ async def analyze_launch(
                     )
                     kb_provenance[cluster.cluster_id] = (message_len, trace_len, log_len)
 
-                    # Fingerprint из report_text (message + trace, без лога) —
-                    # лог варьируется между прогонами, fingerprint должен быть стабильным.
-                    fingerprint_text = _build_fingerprint_text(
-                        cluster, test_by_id,
-                        include_trace=True,
-                    )
-                    if fingerprint_text.strip():
-                        from alla.utils.fingerprint import compute_fingerprint
-
-                        fingerprint = compute_fingerprint(fingerprint_text)
-                        error_fingerprints[cluster.cluster_id] = fingerprint
+                    # Feedback text: message + log (без trace) — то, что видит
+                    # пользователь при голосовании. Нормализован для fuzzy matching.
+                    fb_text = _build_feedback_text(cluster, test_by_id)
+                    if fb_text.strip():
+                        feedback_texts[cluster.cluster_id] = fb_text
 
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
@@ -187,12 +181,12 @@ async def analyze_launch(
                                 _preview_head(query_text, _KB_QUERY_LOG_PREVIEW_CHARS),
                             )
 
-                    fp = error_fingerprints.get(cluster.cluster_id)
+                    fb = feedback_texts.get(cluster.cluster_id)
                     matches = (
                         kb.search_by_error(
                             query_text,
                             query_label=f"{cluster.cluster_id}:combined",
-                            error_fingerprint=fp,
+                            feedback_error_text=fb if fb else None,
                         )
                         if query_text.strip()
                         else []
@@ -336,7 +330,7 @@ async def analyze_launch(
         llm_result=llm_result,
         llm_push_result=llm_push_result,
         llm_launch_summary=llm_launch_summary,
-        error_fingerprints=error_fingerprints,
+        feedback_texts=feedback_texts,
         onboarding=onboarding,
     )
 
@@ -453,17 +447,17 @@ def _build_kb_query_text(
     return "\n".join(parts), len(message), len(effective_trace), len(log_snippet)
 
 
-def _build_fingerprint_text(
+def _build_feedback_text(
     cluster: FailureCluster,
     test_by_id: dict[int, FailedTestSummary],
-    *,
-    include_trace: bool = True,
 ) -> str:
-    """Собрать текст для вычисления fingerprint (message + trace, без лога).
+    """Собрать текст ошибки для feedback: message + log (без trace).
 
-    Fingerprint должен быть стабильным между прогонами — логи варьируются,
-    поэтому исключены.
+    Это текст, который видит пользователь при голосовании. Нормализуется
+    для fuzzy matching: UUID, timestamps, IP → placeholders.
     """
+    from alla.utils.text_normalization import normalize_text
+
     representative = (
         test_by_id.get(cluster.representative_test_id)
         if cluster.representative_test_id is not None
@@ -475,16 +469,20 @@ def _build_fingerprint_text(
         if representative and representative.status_message
         else cluster.example_message
     ) or ""
-    trace = ""
-    if include_trace:
-        trace = (
-            representative.status_trace
-            if representative and representative.status_trace
-            else cluster.example_trace_snippet
-        ) or ""
 
-    parts = [part for part in (message, trace) if part]
-    return "\n".join(parts)
+    log_snippet = ""
+    if representative and representative.log_snippet:
+        log_snippet = representative.log_snippet.strip()
+    if not log_snippet:
+        for tid in cluster.member_test_ids:
+            member = test_by_id.get(tid)
+            if member and member.log_snippet and member.log_snippet.strip():
+                log_snippet = member.log_snippet.strip()
+                break
+
+    parts = [p for p in (message, log_snippet) if p]
+    raw = "\n".join(parts)
+    return normalize_text(raw) if raw.strip() else ""
 
 
 def _preview_head(text: str, max_chars: int) -> str:
