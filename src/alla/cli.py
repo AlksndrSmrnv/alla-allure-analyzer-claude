@@ -104,12 +104,14 @@ async def async_main(args: argparse.Namespace) -> int:
         if args.page_size is not None:
             overrides["page_size"] = args.page_size
         settings = Settings(**overrides)  # type: ignore[arg-type]
-    except Exception as exc:
-        # pydantic-settings выбрасывает ValidationError при отсутствии обязательных полей
+        settings.resolve_secrets()
+        settings.validate_required()
+    except (ConfigurationError, Exception) as exc:
         print(
             f"Ошибка конфигурации: {exc}\n\n"
             f"Обязательные переменные окружения: "
             f"ALLURE_ENDPOINT, ALLURE_TOKEN\n"
+            f"Секреты можно получить из Vault Proxy (ALLURE_VAULT_URL).\n"
             f"Подробности см. в .env.example.",
             file=sys.stderr,
         )
@@ -615,11 +617,14 @@ async def async_delete(args: argparse.Namespace) -> int:
     # 1. Загрузка настроек
     try:
         settings = Settings()
-    except Exception as exc:
+        settings.resolve_secrets()
+        settings.validate_required()
+    except (ConfigurationError, Exception) as exc:
         print(
             f"Ошибка конфигурации: {exc}\n\n"
             f"Обязательные переменные окружения: "
             f"ALLURE_ENDPOINT, ALLURE_TOKEN\n"
+            f"Секреты можно получить из Vault Proxy (ALLURE_VAULT_URL).\n"
             f"Подробности см. в .env.example.",
             file=sys.stderr,
         )

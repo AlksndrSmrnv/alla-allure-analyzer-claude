@@ -1,8 +1,11 @@
 """Конфигурация приложения, загружаемая из переменных окружения."""
 
+import logging
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger("alla.config")
 
 
 class Settings(BaseSettings):
@@ -18,8 +21,16 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
     )
 
+    vault_url: str = Field(
+        default="",
+        description="Полный URL Vault Proxy для получения секретов "
+        "(например http://vault-proxy/v1/secret/data/alla). "
+        "Если задан — ALLURE_TOKEN, ALLURE_KB_POSTGRES_DSN, ALLURE_LANGFLOW_API_KEY "
+        "загружаются из Vault с fallback на env vars.",
+    )
+
     endpoint: str = Field(description="URL сервера Allure TestOps")
-    token: str = Field(description="API-токен для аутентификации")
+    token: str = Field(default="", description="API-токен для аутентификации")
 
     @field_validator("endpoint")
     @classmethod
@@ -133,3 +144,51 @@ class Settings(BaseSettings):
     def llm_active(self) -> bool:
         """LLM включён автоматически если заданы Langflow URL и flow ID."""
         return bool(self.langflow_base_url and self.langflow_flow_id)
+
+    # -- Vault Proxy integration --
+
+    _VAULT_SECRET_FIELDS: dict[str, str] = {
+        "ALLURE_TOKEN": "token",
+        "ALLURE_KB_POSTGRES_DSN": "kb_postgres_dsn",
+        "ALLURE_LANGFLOW_API_KEY": "langflow_api_key",
+    }
+
+    def resolve_secrets(self) -> None:
+        """Загрузить секреты из Vault Proxy, если ``ALLURE_VAULT_URL`` задан.
+
+        При ошибке соединения — warning в лог, значения из env vars сохраняются.
+        """
+        if not self.vault_url:
+            return
+
+        import httpx
+
+        try:
+            resp = httpx.get(self.vault_url, timeout=5)
+            resp.raise_for_status()
+            data: dict[str, str] = resp.json().get("data", {})
+        except Exception as exc:
+            logger.warning("Vault Proxy недоступен (%s), используем env vars", exc)
+            return
+
+        resolved: list[str] = []
+        for vault_key, field_name in self._VAULT_SECRET_FIELDS.items():
+            value = data.get(vault_key)
+            if value:
+                object.__setattr__(self, field_name, value)
+                resolved.append(vault_key)
+
+        if resolved:
+            logger.info("Секреты загружены из Vault: %s", ", ".join(resolved))
+        else:
+            logger.warning("Vault ответил, но не содержит ожидаемых ключей")
+
+    def validate_required(self) -> None:
+        """Проверить обязательные поля после :meth:`resolve_secrets`."""
+        from alla.exceptions import ConfigurationError
+
+        if not self.token:
+            raise ConfigurationError(
+                "ALLURE_TOKEN не задан. "
+                "Укажите через env var или Vault Proxy (ALLURE_VAULT_URL)."
+            )

@@ -84,6 +84,8 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
     from alla.logging_config import setup_logging
 
     settings = Settings()
+    settings.resolve_secrets()
+    settings.validate_required()
     setup_logging(settings.log_level)
 
     logger.info("alla server v%s запускается", __version__)
@@ -678,11 +680,14 @@ def main() -> None:
 
     try:
         settings = Settings()
+        settings.resolve_secrets()
+        settings.validate_required()
     except Exception as exc:
         print(
             f"Ошибка конфигурации: {exc}\n\n"
             f"Обязательные переменные окружения: "
             f"ALLURE_ENDPOINT, ALLURE_TOKEN\n"
+            f"Секреты можно получить из Vault Proxy (ALLURE_VAULT_URL).\n"
             f"Подробности см. в .env.example.",
             file=sys.stderr,
         )
