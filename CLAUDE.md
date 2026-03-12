@@ -117,9 +117,11 @@ alla <launch_id>
         ├── clients/
         │   ├── base.py             # TestResultsProvider(Protocol) — чтение,
         │   │                       #   TestResultsUpdater(Protocol) — запись,
-        │   │                       #   CommentManager(Protocol) — чтение/удаление комментариев
+        │   │                       #   CommentManager(Protocol) — чтение/удаление комментариев,
+        │   │                       #   SecmanProvider(Protocol) — чтение секретов secman
         │   ├── auth.py             # AllureAuthManager — JWT exchange через /api/uaa/oauth/token
         │   ├── langflow_client.py  # LangflowClient — HTTP-клиент Langflow с retry/backoff
+        │   ├── secman_client.py    # SecmanClient — hvac-клиент для чтения секретов из secman
         │   └── testops_client.py   # AllureTestOpsClient — HTTP клиент (httpx async)
         ├── knowledge/
         │   ├── base.py             # KnowledgeBaseProvider(Protocol) — интерфейс KB
@@ -178,6 +180,13 @@ alla <launch_id>
 | `ALLURE_LLM_RETRY_BASE_DELAY` | нет | `1.0` | Базовая задержка в секундах для exponential backoff (delay = base × 2^attempt) |
 | `ALLURE_REPORTS_DIR` | нет | `""` | Директория для сохранения HTML-отчётов. В Kubernetes — путь к PersistentVolume. Если пусто — отчёты не сохраняются на диск |
 | `ALLURE_SERVER_EXTERNAL_URL` | нет | `""` | Внешний URL alla-сервера для формирования ссылок на отчёты в TestOps (например `https://alla.company.com`) |
+| `ALLURE_SECMAN_ADDR` | нет | `""` | URL secman/Vault API для чтения секретов через `hvac` |
+| `ALLURE_SECMAN_NAMESPACE` | нет | `""` | Namespace secman/Vault Enterprise. Если не используется — оставить пустым |
+| `ALLURE_SECMAN_K8S_ROLE` | нет | `""` | Имя Kubernetes auth role в secman |
+| `ALLURE_SECMAN_K8S_JWT_PATH` | нет | `/var/run/secrets/kubernetes.io/serviceaccount/token` | Путь к service account JWT для Kubernetes auth в secman |
+| `ALLURE_SECMAN_KV_VERSION` | нет | `v2` | Версия KV secret engine для secman helper-а. Сейчас поддерживается только `v2` |
+| `ALLURE_SECMAN_MOUNT_POINT` | нет | `""` | KV mount point в secman, например `secret` |
+| `ALLURE_SECMAN_SECRET_PATH` | нет | `""` | Путь секрета внутри KV mount point, например `alla/prod` |
 
 ## Установка и запуск
 

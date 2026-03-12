@@ -6,53 +6,71 @@ from pathlib import Path
 
 import pytest
 
+from alla.config import Settings
+from alla.clients import secman_client
 from alla.exceptions import ConfigurationError
-from alla import secman
+
+
+def _make_settings(**overrides) -> Settings:
+    defaults = {
+        "endpoint": "https://allure.example.com",
+        "token": "secret-token",
+        "secman_addr": "https://secman.example.com",
+        "secman_namespace": "",
+        "secman_k8s_role": "alla-role",
+        "secman_k8s_jwt_path": secman_client.DEFAULT_K8S_JWT_PATH,
+        "secman_kv_version": "v2",
+        "secman_mount_point": "kv",
+        "secman_secret_path": "alla/prod",
+    }
+    defaults.update(overrides)
+    return Settings(**defaults)
 
 
 def test_build_secman_client_requires_addr(monkeypatch) -> None:
-    """Без SECMAN_ADDR helper не создаёт клиента."""
-    monkeypatch.delenv("SECMAN_ADDR", raising=False)
+    """Без ALLURE_SECMAN_ADDR helper не создаёт клиента."""
+    client = secman_client.SecmanClient(_make_settings(secman_addr=""))
 
-    with pytest.raises(ConfigurationError, match="SECMAN_ADDR"):
-        secman.build_secman_client()
+    with pytest.raises(ConfigurationError, match="ALLURE_SECMAN_ADDR"):
+        client.build_secman_client()
 
 
 def test_login_with_kubernetes_requires_existing_jwt_file(monkeypatch, tmp_path: Path) -> None:
     """Отсутствующий JWT-файл приводит к ConfigurationError."""
     jwt_path = tmp_path / "missing-jwt"
-    monkeypatch.setenv("SECMAN_K8S_ROLE", "alla-role")
-    monkeypatch.setenv("SECMAN_K8S_JWT_PATH", str(jwt_path))
+    client = secman_client.SecmanClient(
+        _make_settings(secman_k8s_jwt_path=str(jwt_path)),
+    )
 
     class _Client:
         auth = None
 
     with pytest.raises(ConfigurationError, match="JWT file not found"):
-        secman.login_with_kubernetes(_Client())
+        client.login_with_kubernetes(_Client())
 
 
 def test_login_with_kubernetes_requires_non_empty_jwt(monkeypatch, tmp_path: Path) -> None:
     """Пустой JWT-файл приводит к ConfigurationError."""
     jwt_path = tmp_path / "jwt"
     jwt_path.write_text("   \n", encoding="utf-8")
-
-    monkeypatch.setenv("SECMAN_K8S_ROLE", "alla-role")
-    monkeypatch.setenv("SECMAN_K8S_JWT_PATH", str(jwt_path))
+    client = secman_client.SecmanClient(
+        _make_settings(secman_k8s_jwt_path=str(jwt_path)),
+    )
 
     class _Client:
         auth = None
 
     with pytest.raises(ConfigurationError, match="JWT file is empty"):
-        secman.login_with_kubernetes(_Client())
+        client.login_with_kubernetes(_Client())
 
 
 def test_login_with_kubernetes_calls_hvac_login(monkeypatch, tmp_path: Path) -> None:
     """Helper вызывает kubernetes login с ролью и JWT."""
     jwt_path = tmp_path / "jwt"
     jwt_path.write_text("jwt-token\n", encoding="utf-8")
-
-    monkeypatch.setenv("SECMAN_K8S_ROLE", "alla-role")
-    monkeypatch.setenv("SECMAN_K8S_JWT_PATH", str(jwt_path))
+    client = secman_client.SecmanClient(
+        _make_settings(secman_k8s_jwt_path=str(jwt_path)),
+    )
 
     captured: dict[str, str] = {}
 
@@ -68,7 +86,7 @@ def test_login_with_kubernetes_calls_hvac_login(monkeypatch, tmp_path: Path) -> 
     class _Client:
         auth = _Auth()
 
-    secman.login_with_kubernetes(_Client())
+    client.login_with_kubernetes(_Client())
 
     assert captured == {
         "role": "alla-role",
@@ -79,8 +97,7 @@ def test_login_with_kubernetes_calls_hvac_login(monkeypatch, tmp_path: Path) -> 
 
 def test_fetch_allure_secrets_reads_kv_v2(monkeypatch) -> None:
     """KV v2-ответ корректно преобразуется в словарь секретов."""
-    monkeypatch.setenv("SECMAN_MOUNT_POINT", "kv")
-    monkeypatch.setenv("SECMAN_SECRET_PATH", "alla/prod")
+    client = secman_client.SecmanClient(_make_settings())
 
     login_called = False
     captured: dict[str, str] = {}
@@ -115,10 +132,10 @@ def test_fetch_allure_secrets_reads_kv_v2(monkeypatch) -> None:
         nonlocal login_called
         login_called = True
 
-    monkeypatch.setattr(secman, "build_secman_client", _fake_build_client)
-    monkeypatch.setattr(secman, "login_with_kubernetes", _fake_login)
+    monkeypatch.setattr(client, "build_secman_client", _fake_build_client)
+    monkeypatch.setattr(client, "login_with_kubernetes", _fake_login)
 
-    secrets = secman.fetch_allure_secrets()
+    secrets = client.fetch_allure_secrets()
 
     assert login_called is True
     assert captured == {
@@ -134,8 +151,7 @@ def test_fetch_allure_secrets_reads_kv_v2(monkeypatch) -> None:
 
 def test_fetch_allure_secrets_requires_all_expected_keys(monkeypatch) -> None:
     """Если хотя бы одного ключа нет, helper падает."""
-    monkeypatch.setenv("SECMAN_MOUNT_POINT", "kv")
-    monkeypatch.setenv("SECMAN_SECRET_PATH", "alla/prod")
+    client = secman_client.SecmanClient(_make_settings())
 
     class _V2:
         def read_secret_version(self, *, path: str, mount_point: str) -> dict:
@@ -157,17 +173,16 @@ def test_fetch_allure_secrets_requires_all_expected_keys(monkeypatch) -> None:
     class _Client:
         secrets = _Secrets()
 
-    monkeypatch.setattr(secman, "build_secman_client", lambda: _Client())
-    monkeypatch.setattr(secman, "login_with_kubernetes", lambda client: None)
+    monkeypatch.setattr(client, "build_secman_client", lambda: _Client())
+    monkeypatch.setattr(client, "login_with_kubernetes", lambda client: None)
 
     with pytest.raises(ConfigurationError, match="ALLURE_LANGFLOW_API_KEY"):
-        secman.fetch_allure_secrets()
+        client.fetch_allure_secrets()
 
 
 def test_fetch_allure_secrets_rejects_null_response_data(monkeypatch) -> None:
     """data=null в ответе KV не должен приводить к AttributeError."""
-    monkeypatch.setenv("SECMAN_MOUNT_POINT", "kv")
-    monkeypatch.setenv("SECMAN_SECRET_PATH", "alla/prod")
+    client = secman_client.SecmanClient(_make_settings())
 
     class _V2:
         def read_secret_version(self, *, path: str, mount_point: str) -> dict:
@@ -182,26 +197,27 @@ def test_fetch_allure_secrets_rejects_null_response_data(monkeypatch) -> None:
     class _Client:
         secrets = _Secrets()
 
-    monkeypatch.setattr(secman, "build_secman_client", lambda: _Client())
-    monkeypatch.setattr(secman, "login_with_kubernetes", lambda client: None)
+    monkeypatch.setattr(client, "build_secman_client", lambda: _Client())
+    monkeypatch.setattr(client, "login_with_kubernetes", lambda client: None)
 
     with pytest.raises(ConfigurationError, match="KV v2 secret data"):
-        secman.fetch_allure_secrets()
+        client.fetch_allure_secrets()
 
 
 def test_main_masks_secret_values(monkeypatch, capsys) -> None:
     """Demo-режим печатает только ключи и маскировку, не значения секретов."""
+    monkeypatch.setattr(secman_client, "_build_demo_settings", _make_settings)
     monkeypatch.setattr(
-        secman,
+        secman_client.SecmanClient,
         "fetch_allure_secrets",
-        lambda: {
+        lambda self: {
             "ALLURE_TOKEN": "super-secret-token",
             "ALLURE_KB_POSTGRES_DSN": "postgresql://user:pass@db/app",
             "ALLURE_LANGFLOW_API_KEY": "langflow-secret",
         },
     )
 
-    exit_code = secman.main()
+    exit_code = secman_client.main()
     captured = capsys.readouterr()
 
     assert exit_code == 0
@@ -215,13 +231,18 @@ def test_main_masks_secret_values(monkeypatch, capsys) -> None:
 
 def test_main_returns_exit_code_2_for_configuration_error(monkeypatch, capsys) -> None:
     """ConfigurationError должен следовать общей CLI-конвенции exit code 2."""
+    monkeypatch.setattr(secman_client, "_build_demo_settings", _make_settings)
 
-    def _raise_configuration_error() -> dict[str, str]:
+    def _raise_configuration_error(self) -> dict[str, str]:
         raise ConfigurationError("missing env")
 
-    monkeypatch.setattr(secman, "fetch_allure_secrets", _raise_configuration_error)
+    monkeypatch.setattr(
+        secman_client.SecmanClient,
+        "fetch_allure_secrets",
+        _raise_configuration_error,
+    )
 
-    exit_code = secman.main()
+    exit_code = secman_client.main()
     captured = capsys.readouterr()
 
     assert exit_code == 2
@@ -230,13 +251,18 @@ def test_main_returns_exit_code_2_for_configuration_error(monkeypatch, capsys) -
 
 def test_main_handles_unexpected_errors(monkeypatch, capsys) -> None:
     """Неожиданные ошибки helper-а должны печататься без traceback."""
+    monkeypatch.setattr(secman_client, "_build_demo_settings", _make_settings)
 
-    def _raise_runtime_error() -> dict[str, str]:
+    def _raise_runtime_error(self) -> dict[str, str]:
         raise RuntimeError("vault unavailable")
 
-    monkeypatch.setattr(secman, "fetch_allure_secrets", _raise_runtime_error)
+    monkeypatch.setattr(
+        secman_client.SecmanClient,
+        "fetch_allure_secrets",
+        _raise_runtime_error,
+    )
 
-    exit_code = secman.main()
+    exit_code = secman_client.main()
     captured = capsys.readouterr()
 
     assert exit_code == 1
@@ -245,13 +271,18 @@ def test_main_handles_unexpected_errors(monkeypatch, capsys) -> None:
 
 def test_main_handles_keyboard_interrupt(monkeypatch, capsys) -> None:
     """Ctrl+C должен завершать demo-режим без traceback."""
+    monkeypatch.setattr(secman_client, "_build_demo_settings", _make_settings)
 
-    def _raise_keyboard_interrupt() -> dict[str, str]:
+    def _raise_keyboard_interrupt(self) -> dict[str, str]:
         raise KeyboardInterrupt()
 
-    monkeypatch.setattr(secman, "fetch_allure_secrets", _raise_keyboard_interrupt)
+    monkeypatch.setattr(
+        secman_client.SecmanClient,
+        "fetch_allure_secrets",
+        _raise_keyboard_interrupt,
+    )
 
-    exit_code = secman.main()
+    exit_code = secman_client.main()
     captured = capsys.readouterr()
 
     assert exit_code == 130

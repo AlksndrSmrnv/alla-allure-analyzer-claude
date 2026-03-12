@@ -172,3 +172,12 @@ class LaunchLinksUpdater(Protocol):
             url: URL ссылки.
         """
         ...
+
+
+@runtime_checkable
+class SecmanProvider(Protocol):
+    """Протокол для чтения секретов из secman/Vault."""
+
+    def fetch_allure_secrets(self) -> dict[str, str]:
+        """Прочитать секреты alla из secman."""
+        ...

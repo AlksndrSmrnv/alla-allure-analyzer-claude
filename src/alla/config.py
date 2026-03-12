@@ -123,6 +123,34 @@ class Settings(BaseSettings):
         description="Внешний URL alla-сервера (ALLURE_SERVER_EXTERNAL_URL). "
         "Используется для ссылок на отчёты в TestOps. Пример: https://alla.company.com",
     )
+    secman_addr: str = Field(
+        default="",
+        description="URL secman/Vault API для чтения секретов через hvac.",
+    )
+    secman_namespace: str = Field(
+        default="",
+        description="Namespace secman/Vault Enterprise. Если не используется — оставить пустым.",
+    )
+    secman_k8s_role: str = Field(
+        default="",
+        description="Имя Kubernetes auth role в secman.",
+    )
+    secman_k8s_jwt_path: str = Field(
+        default="/var/run/secrets/kubernetes.io/serviceaccount/token",
+        description="Путь к service account JWT для Kubernetes auth в secman.",
+    )
+    secman_kv_version: str = Field(
+        default="v2",
+        description="Версия KV secret engine для secman helper-а. Сейчас поддерживается только v2.",
+    )
+    secman_mount_point: str = Field(
+        default="",
+        description="KV mount point в secman, например secret.",
+    )
+    secman_secret_path: str = Field(
+        default="",
+        description="Путь секрета внутри KV mount point, например alla/prod.",
+    )
 
     @property
     def kb_active(self) -> bool:
