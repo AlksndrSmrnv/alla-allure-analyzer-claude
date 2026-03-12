@@ -126,7 +126,7 @@ def main() -> int:
         secrets = fetch_allure_secrets()
     except ConfigurationError as exc:
         print(f"secman helper error: {exc}", file=sys.stderr)
-        return 1
+        return 2
     except KeyboardInterrupt:
         print("secman helper interrupted", file=sys.stderr)
         return 130

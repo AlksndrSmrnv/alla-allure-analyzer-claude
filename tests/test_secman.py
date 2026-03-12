@@ -213,6 +213,21 @@ def test_main_masks_secret_values(monkeypatch, capsys) -> None:
     assert "langflow-secret" not in captured.out
 
 
+def test_main_returns_exit_code_2_for_configuration_error(monkeypatch, capsys) -> None:
+    """ConfigurationError должен следовать общей CLI-конвенции exit code 2."""
+
+    def _raise_configuration_error() -> dict[str, str]:
+        raise ConfigurationError("missing env")
+
+    monkeypatch.setattr(secman, "fetch_allure_secrets", _raise_configuration_error)
+
+    exit_code = secman.main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "secman helper error: missing env" in captured.err
+
+
 def test_main_handles_unexpected_errors(monkeypatch, capsys) -> None:
     """Неожиданные ошибки helper-а должны печататься без traceback."""
 
