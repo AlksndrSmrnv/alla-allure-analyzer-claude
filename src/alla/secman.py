@@ -5,17 +5,9 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+import hvac
 from alla.exceptions import ConfigurationError
-
-if TYPE_CHECKING:
-    import hvac
-else:
-    try:
-        import hvac  # type: ignore[import-not-found]
-    except ImportError:
-        hvac = None  # type: ignore[assignment]
 
 ALLURE_SECRET_KEYS = (
     "ALLURE_TOKEN",
@@ -58,11 +50,6 @@ def _mask_secret(value: str) -> str:
 
 def build_secman_client() -> hvac.Client:
     """Создать hvac-клиент для secman."""
-    if hvac is None:
-        raise ConfigurationError(
-            "hvac is not installed. Reinstall project dependencies to enable secman access."
-        )
-
     addr = _require_env("SECMAN_ADDR")
     namespace = os.environ.get("SECMAN_NAMESPACE", "").strip()
 
@@ -139,6 +126,12 @@ def main() -> int:
         secrets = fetch_allure_secrets()
     except ConfigurationError as exc:
         print(f"secman helper error: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("secman helper interrupted", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"secman helper failed: {exc}", file=sys.stderr)
         return 1
 
     print("Fetched secrets from secman:")

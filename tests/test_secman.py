@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -14,18 +13,8 @@ from alla import secman
 def test_build_secman_client_requires_addr(monkeypatch) -> None:
     """Без SECMAN_ADDR helper не создаёт клиента."""
     monkeypatch.delenv("SECMAN_ADDR", raising=False)
-    monkeypatch.setattr(secman, "hvac", SimpleNamespace(Client=lambda **kwargs: None))
 
     with pytest.raises(ConfigurationError, match="SECMAN_ADDR"):
-        secman.build_secman_client()
-
-
-def test_build_secman_client_reports_missing_hvac_before_env(monkeypatch) -> None:
-    """Отсутствующий hvac должен давать основную ошибку раньше env-валидации."""
-    monkeypatch.delenv("SECMAN_ADDR", raising=False)
-    monkeypatch.setattr(secman, "hvac", None)
-
-    with pytest.raises(ConfigurationError, match="hvac is not installed"):
         secman.build_secman_client()
 
 
@@ -222,3 +211,33 @@ def test_main_masks_secret_values(monkeypatch, capsys) -> None:
     assert "super-secret-token" not in captured.out
     assert "postgresql://user:pass@db/app" not in captured.out
     assert "langflow-secret" not in captured.out
+
+
+def test_main_handles_unexpected_errors(monkeypatch, capsys) -> None:
+    """Неожиданные ошибки helper-а должны печататься без traceback."""
+
+    def _raise_runtime_error() -> dict[str, str]:
+        raise RuntimeError("vault unavailable")
+
+    monkeypatch.setattr(secman, "fetch_allure_secrets", _raise_runtime_error)
+
+    exit_code = secman.main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "secman helper failed: vault unavailable" in captured.err
+
+
+def test_main_handles_keyboard_interrupt(monkeypatch, capsys) -> None:
+    """Ctrl+C должен завершать demo-режим без traceback."""
+
+    def _raise_keyboard_interrupt() -> dict[str, str]:
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(secman, "fetch_allure_secrets", _raise_keyboard_interrupt)
+
+    exit_code = secman.main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 130
+    assert "secman helper interrupted" in captured.err
