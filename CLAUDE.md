@@ -149,8 +149,9 @@ alla <launch_id>
 
 | Переменная | Обязательная | По умолчанию | Описание |
 |------------|:---:|---|---|
+| `ALLURE_VAULT_URL` | нет | `""` | Полный URL Vault Proxy для получения секретов (например `http://vault-proxy/v1/secret/data/alla`). Если задан — `ALLURE_TOKEN`, `ALLURE_KB_POSTGRES_DSN`, `ALLURE_LANGFLOW_API_KEY` загружаются из Vault с fallback на env vars |
 | `ALLURE_ENDPOINT` | да | — | URL Allure TestOps (например `https://allure.company.com`) |
-| `ALLURE_TOKEN` | да | — | API-токен (Profile → API Tokens в Allure TestOps) |
+| `ALLURE_TOKEN` | да* | `""` | API-токен (Profile → API Tokens в Allure TestOps). *Можно не задавать через env var, если секрет приходит из Vault Proxy |
 | `ALLURE_PROJECT_ID` | да | — | ID проекта в Allure TestOps |
 | `ALLURE_LOG_LEVEL` | нет | `INFO` | Уровень логирования: DEBUG, INFO, WARNING, ERROR |
 | `ALLURE_SSL_VERIFY` | нет | `true` | Проверка SSL-сертификатов. Для корпоративных сетей — `false` |

@@ -84,6 +84,8 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
     from alla.logging_config import setup_logging
 
     settings = Settings()
+    settings.resolve_secrets()
+    settings.validate_required()
     setup_logging(settings.log_level)
 
     logger.info("alla server v%s запускается", __version__)
