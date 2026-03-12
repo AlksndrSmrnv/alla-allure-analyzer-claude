@@ -66,21 +66,10 @@ WORKDIR /app
 COPY --chown=1001:0 knowledge_base/ knowledge_base/
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 
-# ==========================================================================
-# ──────────────── КОРПОРАТИВНЫЙ CA ДЛЯ SECMAN/VAULT ─────────────────────
-# Добавить корпоративный CA в системный бандл, чтобы hvac (requests)
-# доверял self-signed сертификату secman. Файл corporate-ca.pem лежит
-# в корне проекта рядом с Dockerfile.
-#
-# Если корпоративный CA не нужен — удалите эти 2 строки.
-# ==========================================================================
-COPY corporate-ca.pem /etc/pki/ca-trust/source/anchors/corporate-ca.pem
-
 # sed -i needs write access to the parent directory (creates a temp file).
 # Run as root, then lock down ownership and permissions before dropping privileges.
 USER root
-RUN update-ca-trust \
-    && sed -i 's/\r//' /app/docker-entrypoint.sh \
+RUN sed -i 's/\r//' /app/docker-entrypoint.sh \
     && chmod +x /app/docker-entrypoint.sh \
     && chown 1001:0 /app/docker-entrypoint.sh
 
