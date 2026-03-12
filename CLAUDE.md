@@ -615,6 +615,7 @@ CREATE TABLE alla.kb_entry (
 | fastapi | >=0.110,<1.0 | HTTP-сервер (REST API) |
 | uvicorn | >=0.29,<1.0 | ASGI-сервер для FastAPI |
 | psycopg | >=3.1,<4.0 | PostgreSQL-клиент для KB бэкенда |
+| hvac | >=2.3,<3.0 | Клиент Vault/secman для чтения секретов |
 
 ### Dev (опциональные)
 
