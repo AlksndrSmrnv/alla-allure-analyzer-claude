@@ -35,6 +35,7 @@ def test_settings_defaults_are_applied(monkeypatch, tmp_path) -> None:
     assert settings.log_level == "INFO"
     assert settings.secman_k8s_jwt_path == "/var/run/secrets/kubernetes.io/serviceaccount/token"
     assert settings.secman_kv_version == "v2"
+    assert settings.secman_ssl_verify == "true"
     assert settings.secman_addr == ""
     assert settings.secman_mount_point == ""
     assert settings.secman_secret_path == ""
@@ -48,6 +49,7 @@ def test_settings_loads_secman_fields_from_env(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ALLURE_ENDPOINT", "https://allure.example.com")
     monkeypatch.setenv("ALLURE_TOKEN", "secret-token")
+    monkeypatch.setenv("ALLURE_SECMAN_SSL_VERIFY", "/etc/ssl/certs/ca-bundle.crt")
     monkeypatch.setenv("ALLURE_SECMAN_ADDR", "https://secman.example.com")
     monkeypatch.setenv("ALLURE_SECMAN_NAMESPACE", "team-a")
     monkeypatch.setenv("ALLURE_SECMAN_K8S_ROLE", "alla-role")
@@ -58,6 +60,7 @@ def test_settings_loads_secman_fields_from_env(monkeypatch, tmp_path) -> None:
 
     settings = Settings()
 
+    assert settings.secman_ssl_verify == "/etc/ssl/certs/ca-bundle.crt"
     assert settings.secman_addr == "https://secman.example.com"
     assert settings.secman_namespace == "team-a"
     assert settings.secman_k8s_role == "alla-role"

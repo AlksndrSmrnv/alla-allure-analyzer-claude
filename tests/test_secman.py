@@ -15,6 +15,7 @@ def _make_settings(**overrides) -> Settings:
     defaults = {
         "endpoint": "https://allure.example.com",
         "token": "secret-token",
+        "secman_ssl_verify": "true",
         "secman_addr": "https://secman.example.com",
         "secman_namespace": "",
         "secman_k8s_role": "alla-role",
@@ -25,6 +26,66 @@ def _make_settings(**overrides) -> Settings:
     }
     defaults.update(overrides)
     return Settings(**defaults)
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("true", True),
+        ("True", True),
+        ("TRUE", True),
+        ("  true  ", True),
+        ("", True),
+        ("false", False),
+        ("False", False),
+        ("FALSE", False),
+        ("/etc/ssl/certs/ca-bundle.crt", "/etc/ssl/certs/ca-bundle.crt"),
+        ("/custom/path/ca.pem", "/custom/path/ca.pem"),
+    ],
+)
+def test_parse_ssl_verify(raw: str, expected: bool | str) -> None:
+    """_parse_ssl_verify корректно разбирает true/false/путь."""
+    assert secman_client.SecmanClient._parse_ssl_verify(raw) == expected
+
+
+def test_build_secman_client_passes_verify_true(monkeypatch) -> None:
+    """По умолчанию hvac.Client создаётся с verify=True."""
+    captured_kwargs = {}
+    monkeypatch.setattr(
+        secman_client.hvac,
+        "Client",
+        lambda **kwargs: captured_kwargs.update(kwargs),
+    )
+    client = secman_client.SecmanClient(_make_settings(secman_ssl_verify="true"))
+    client.build_secman_client()
+    assert captured_kwargs["verify"] is True
+
+
+def test_build_secman_client_passes_verify_false(monkeypatch) -> None:
+    """secman_ssl_verify=false отключает проверку SSL."""
+    captured_kwargs = {}
+    monkeypatch.setattr(
+        secman_client.hvac,
+        "Client",
+        lambda **kwargs: captured_kwargs.update(kwargs),
+    )
+    client = secman_client.SecmanClient(_make_settings(secman_ssl_verify="false"))
+    client.build_secman_client()
+    assert captured_kwargs["verify"] is False
+
+
+def test_build_secman_client_passes_verify_ca_path(monkeypatch) -> None:
+    """secman_ssl_verify с путём к CA bundle пробрасывает путь в hvac."""
+    captured_kwargs = {}
+    monkeypatch.setattr(
+        secman_client.hvac,
+        "Client",
+        lambda **kwargs: captured_kwargs.update(kwargs),
+    )
+    ca_path = "/etc/ssl/certs/ca-bundle.crt"
+    client = secman_client.SecmanClient(_make_settings(secman_ssl_verify=ca_path))
+    client.build_secman_client()
+    assert captured_kwargs["verify"] == ca_path
 
 
 def test_build_secman_client_requires_addr(monkeypatch) -> None:

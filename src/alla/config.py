@@ -123,6 +123,14 @@ class Settings(BaseSettings):
         description="Внешний URL alla-сервера (ALLURE_SERVER_EXTERNAL_URL). "
         "Используется для ссылок на отчёты в TestOps. Пример: https://alla.company.com",
     )
+    secman_ssl_verify: str = Field(
+        default="true",
+        description=(
+            "Проверка SSL-сертификатов secman/Vault. "
+            "Допустимые значения: 'true', 'false' или путь к CA bundle "
+            "(например /etc/ssl/certs/ca-bundle.crt)."
+        ),
+    )
     secman_addr: str = Field(
         default="",
         description="URL secman/Vault API для чтения секретов через hvac.",

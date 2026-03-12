@@ -57,12 +57,31 @@ class SecmanClient(SecmanProvider):
         """Вернуть безопасное представление секрета для demo-вывода."""
         return f"<hidden:{len(value)} chars>"
 
+    @staticmethod
+    def _parse_ssl_verify(raw: str) -> bool | str:
+        """Преобразовать строковую настройку SSL verify в значение для hvac.
+
+        Допустимые значения:
+        - ``"true"``  → ``True``  (проверять SSL, системный CA bundle)
+        - ``"false"`` → ``False`` (не проверять SSL — **только для отладки!**)
+        - путь к файлу → строка   (кастомный CA bundle, например
+          ``/etc/ssl/certs/ca-bundle.crt``)
+        """
+        value = raw.strip()
+        if value.lower() == "true" or value == "":
+            return True
+        if value.lower() == "false":
+            return False
+        # Всё остальное трактуем как путь к CA bundle
+        return value
+
     def build_secman_client(self) -> hvac.Client:
         """Создать hvac-клиент для secman."""
         addr = self._require_setting("ALLURE_SECMAN_ADDR", self._settings.secman_addr)
         namespace = self._settings.secman_namespace.strip()
+        verify = self._parse_ssl_verify(self._settings.secman_ssl_verify)
 
-        client_kwargs: dict[str, str] = {"url": addr}
+        client_kwargs: dict = {"url": addr, "verify": verify}
         if namespace:
             client_kwargs["namespace"] = namespace
 
@@ -142,6 +161,7 @@ def _read_demo_env(name: str, default: str = "") -> str:
 def _build_demo_settings() -> Settings:
     """Собрать partial Settings для standalone secman demo."""
     return Settings.model_construct(
+        secman_ssl_verify=_read_demo_env("ALLURE_SECMAN_SSL_VERIFY", "true"),
         secman_addr=_read_demo_env("ALLURE_SECMAN_ADDR"),
         secman_namespace=_read_demo_env("ALLURE_SECMAN_NAMESPACE"),
         secman_k8s_role=_read_demo_env("ALLURE_SECMAN_K8S_ROLE"),
