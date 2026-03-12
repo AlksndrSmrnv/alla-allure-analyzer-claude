@@ -58,13 +58,12 @@ def _mask_secret(value: str) -> str:
 
 def build_secman_client() -> hvac.Client:
     """Создать hvac-клиент для secman."""
-    addr = _require_env("SECMAN_ADDR")
-
     if hvac is None:
         raise ConfigurationError(
             "hvac is not installed. Reinstall project dependencies to enable secman access."
         )
 
+    addr = _require_env("SECMAN_ADDR")
     namespace = os.environ.get("SECMAN_NAMESPACE", "").strip()
 
     client_kwargs: dict[str, str] = {"url": addr}
@@ -108,7 +107,15 @@ def fetch_allure_secrets() -> dict[str, str]:
         path=secret_path,
         mount_point=mount_point,
     )
-    secret_data = response.get("data", {}).get("data", {})
+
+    if not isinstance(response, dict):
+        raise ConfigurationError("Secman response does not contain KV v2 secret data")
+
+    response_data = response.get("data")
+    if not isinstance(response_data, dict):
+        raise ConfigurationError("Secman response does not contain KV v2 secret data")
+
+    secret_data = response_data.get("data")
     if not isinstance(secret_data, dict):
         raise ConfigurationError("Secman response does not contain KV v2 secret data")
 

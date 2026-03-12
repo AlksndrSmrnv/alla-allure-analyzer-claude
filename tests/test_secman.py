@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,8 +14,18 @@ from alla import secman
 def test_build_secman_client_requires_addr(monkeypatch) -> None:
     """Без SECMAN_ADDR helper не создаёт клиента."""
     monkeypatch.delenv("SECMAN_ADDR", raising=False)
+    monkeypatch.setattr(secman, "hvac", SimpleNamespace(Client=lambda **kwargs: None))
 
     with pytest.raises(ConfigurationError, match="SECMAN_ADDR"):
+        secman.build_secman_client()
+
+
+def test_build_secman_client_reports_missing_hvac_before_env(monkeypatch) -> None:
+    """Отсутствующий hvac должен давать основную ошибку раньше env-валидации."""
+    monkeypatch.delenv("SECMAN_ADDR", raising=False)
+    monkeypatch.setattr(secman, "hvac", None)
+
+    with pytest.raises(ConfigurationError, match="hvac is not installed"):
         secman.build_secman_client()
 
 
@@ -161,6 +172,31 @@ def test_fetch_allure_secrets_requires_all_expected_keys(monkeypatch) -> None:
     monkeypatch.setattr(secman, "login_with_kubernetes", lambda client: None)
 
     with pytest.raises(ConfigurationError, match="ALLURE_LANGFLOW_API_KEY"):
+        secman.fetch_allure_secrets()
+
+
+def test_fetch_allure_secrets_rejects_null_response_data(monkeypatch) -> None:
+    """data=null в ответе KV не должен приводить к AttributeError."""
+    monkeypatch.setenv("SECMAN_MOUNT_POINT", "kv")
+    monkeypatch.setenv("SECMAN_SECRET_PATH", "alla/prod")
+
+    class _V2:
+        def read_secret_version(self, *, path: str, mount_point: str) -> dict:
+            return {"data": None}
+
+    class _KV:
+        v2 = _V2()
+
+    class _Secrets:
+        kv = _KV()
+
+    class _Client:
+        secrets = _Secrets()
+
+    monkeypatch.setattr(secman, "build_secman_client", lambda: _Client())
+    monkeypatch.setattr(secman, "login_with_kubernetes", lambda client: None)
+
+    with pytest.raises(ConfigurationError, match="KV v2 secret data"):
         secman.fetch_allure_secrets()
 
 
