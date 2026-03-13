@@ -393,9 +393,10 @@ def _build_kb_query_text(
 ) -> tuple[str, int, int, int]:
     """Собрать единый текст запроса для KB: message + log или message + trace.
 
-    Если у кластера есть application log, он важнее Allure-trace для KB-matching,
-    поэтому основной query строится как ``message + log``. Trace используется
-    только fallback'ом, когда лог отсутствует.
+    Если у кластера есть application log, query строится как ``message + log``.
+    Trace используется только fallback'ом, когда лог отсутствует. Лог и trace
+    взаимоисключающие в KB query, чтобы сохранить exact substring match (Tier 1)
+    с KB-записями, созданными из report form (error_example = message + log).
 
     Args:
         cluster: Кластер падений.
