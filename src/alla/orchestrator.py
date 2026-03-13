@@ -22,11 +22,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _KB_QUERY_LOG_PREVIEW_CHARS = 220
 
-# Кэш KB: (kb_postgres_dsn, min_score, max_results, project_id) → экземпляр.
-# Предотвращает повторное подключение к БД и re-fit TF-IDF на каждый запрос сервера.
-_kb_cache: dict[tuple[str, float, int], object] = {}
-_kb_cache_lock: object = None  # Ленивая инициализация asyncio.Lock
-
 
 @dataclass
 class AnalysisResult:
@@ -504,31 +499,14 @@ def _get_or_create_kb(
     *,
     kb_postgres_dsn: str = "",
 ) -> object:
-    """Вернуть кэшированный экземпляр KB или создать новый (PostgreSQL бэкенд).
+    """Создать новый экземпляр KB (PostgreSQL бэкенд).
 
-    Кэш по ключу (kb_postgres_dsn, min_score, max_results, project_id).
-    Предотвращает повторные подключения к БД и re-fit TF-IDF на каждый
-    запрос сервера. Feedback store создаётся всегда.
+    Каждый вызов создаёт свежий экземпляр, чтобы подхватывать
+    изменения в таблице alla.kb_entry без перезапуска сервера.
     """
-    from alla.knowledge.matcher import MatcherConfig
-
-    global _kb_cache
-
-    cfg = matcher_config if isinstance(matcher_config, MatcherConfig) else None
-    cache_key = (
-        kb_postgres_dsn,
-        cfg.min_score if cfg else 0.15,
-        cfg.max_results if cfg else 5,
-        project_id,
-    )
-
-    if cache_key in _kb_cache:
-        logger.debug("KB: используется кэшированный экземпляр")
-        return _kb_cache[cache_key]
-
+    from alla.knowledge.postgres_feedback import PostgresFeedbackStore
     from alla.knowledge.postgres_kb import PostgresKnowledgeBase
 
-    from alla.knowledge.postgres_feedback import PostgresFeedbackStore
     feedback_store = PostgresFeedbackStore(dsn=kb_postgres_dsn)
 
     kb = PostgresKnowledgeBase(
@@ -538,6 +516,5 @@ def _get_or_create_kb(
         feedback_store=feedback_store,
     )
 
-    _kb_cache[cache_key] = kb
-    logger.debug("KB: создан и закэширован новый экземпляр (postgres)")
+    logger.debug("KB: создан новый экземпляр (postgres)")
     return kb
