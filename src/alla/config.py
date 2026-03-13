@@ -129,6 +129,11 @@ class Settings(BaseSettings):
         description="Директория для сохранения HTML-отчётов (ALLURE_REPORTS_DIR). "
         "В Kubernetes — путь к PersistentVolume. Если пусто — отчёты не сохраняются.",
     )
+    reports_postgres: bool = Field(
+        default=False,
+        description="Сохранять HTML-отчёты в PostgreSQL (ALLURE_REPORTS_POSTGRES). "
+        "Требует ALLURE_KB_POSTGRES_DSN. Таблица alla.report создаётся автоматически.",
+    )
     server_external_url: str = Field(
         default="",
         description="Внешний URL alla-сервера (ALLURE_SERVER_EXTERNAL_URL). "

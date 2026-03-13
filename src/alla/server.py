@@ -67,6 +67,7 @@ class _AppState:
         self.settings: Any = None
         self.client: Any = None
         self.auth: Any = None
+        self.report_store: Any = None
 
 
 _state = _AppState()
@@ -107,6 +108,12 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
         Path(settings.reports_dir).mkdir(parents=True, exist_ok=True)
         logger.info("Директория отчётов: %s", Path(settings.reports_dir).resolve())
+
+    if settings.reports_postgres and settings.kb_postgres_dsn:
+        from alla.report.report_store import PostgresReportStore
+
+        _state.report_store = PostgresReportStore(dsn=settings.kb_postgres_dsn)
+        logger.info("Хранилище отчётов: PostgreSQL")
 
     yield
 
@@ -342,17 +349,25 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
         feedback_api_url=feedback_api_url,
     )
 
-    # Сохранить отчёт на диск для self-hosted раздачи.
+    # Сохранить отчёт для self-hosted раздачи (диск и/или PostgreSQL).
+    from datetime import datetime
+
     report_filename: str | None = None
-    if _state.settings.reports_dir:
-        from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    need_filename = _state.settings.reports_dir or _state.report_store
+    if need_filename:
+        report_filename = f"{launch_id}_{timestamp}.html"
+
+    if _state.settings.reports_dir and report_filename:
         from pathlib import Path
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        report_filename = f"{launch_id}_{timestamp}.html"
         report_path = Path(_state.settings.reports_dir) / report_filename
         report_path.write_text(html, encoding="utf-8")
         logger.info("HTML-отчёт сохранён: %s", report_path)
+
+    if _state.report_store and report_filename:
+        _state.report_store.save(report_filename, launch_id, html)
+        logger.info("HTML-отчёт сохранён в PostgreSQL: %s", report_filename)
 
     # Прикрепить ссылку на HTML-отчёт к прогону в TestOps.
     # Приоритет: query param → auto из server_external_url (только если reports_dir задан) → config fallback.
@@ -413,18 +428,20 @@ async def get_report(filename: str) -> HTMLResponse:
     if "/" in filename or "\\" in filename or not filename.endswith(".html"):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    if not _state.settings.reports_dir:
-        raise HTTPException(status_code=404, detail="Self-hosted reports are not configured")
+    # Попробовать PostgreSQL.
+    if _state.report_store:
+        content = _state.report_store.load(filename)
+        if content is not None:
+            return HTMLResponse(content=content, headers=_build_csp_headers())
 
-    report_path = Path(_state.settings.reports_dir) / filename
-    if not report_path.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Отчёт '{filename}' не найден",
-        )
+    # Fallback на файловую систему.
+    if _state.settings.reports_dir:
+        report_path = Path(_state.settings.reports_dir) / filename
+        if report_path.is_file():
+            content = report_path.read_text(encoding="utf-8")
+            return HTMLResponse(content=content, headers=_build_csp_headers())
 
-    content = report_path.read_text(encoding="utf-8")
-    return HTMLResponse(content=content, headers=_build_csp_headers())
+    raise HTTPException(status_code=404, detail=f"Отчёт '{filename}' не найден")
 
 
 @app.delete(
