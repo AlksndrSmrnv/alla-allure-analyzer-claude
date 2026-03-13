@@ -308,8 +308,13 @@ class PostgresMetricsStore:
         cur: psycopg.Cursor[Any],
         launch_id: int,
     ) -> dict[str, int]:
-        """Count feedback actions from alla.kb_feedback for the launch."""
+        """Count feedback actions from alla.kb_feedback for the launch.
+
+        Uses SAVEPOINT so that a missing ``alla.kb_feedback`` table
+        (UndefinedTable) does not abort the enclosing transaction.
+        """
         try:
+            cur.execute("SAVEPOINT _fb_check")
             cur.execute(
                 "SELECT "
                 "  count(*) FILTER (WHERE vote = 'like') AS likes, "
@@ -318,12 +323,12 @@ class PostgresMetricsStore:
                 (launch_id,),
             )
             row = cur.fetchone()
+            cur.execute("RELEASE SAVEPOINT _fb_check")
             if row:
                 return {
                     "likes": row["likes"],
                     "dislikes": row["dislikes"],
                 }
         except psycopg.errors.UndefinedTable:
-            # kb_feedback table may not exist if feedback is not configured
-            pass
+            cur.execute("ROLLBACK TO SAVEPOINT _fb_check")
         return {"likes": 0, "dislikes": 0}
