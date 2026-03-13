@@ -653,11 +653,6 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
             f"for project_id={req.project_id}",
         )
 
-    # Инвалидация KB-кэша — новая запись должна быть видна сразу
-    from alla.orchestrator import _kb_cache
-
-    _kb_cache.clear()
-
     resp = CreateKBEntryResponse(
         entry_id=entry_id,
         id=req.id,
