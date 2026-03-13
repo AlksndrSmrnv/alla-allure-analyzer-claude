@@ -746,7 +746,7 @@ def record_metrics_events(request: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Invalid session_id")
     if not isinstance(launch_id, int) or launch_id <= 0:
         raise HTTPException(status_code=400, detail="Invalid launch_id")
-    if not isinstance(events, list) or len(events) > 50:
+    if not isinstance(events, list) or len(events) == 0 or len(events) > 50:
         raise HTTPException(status_code=400, detail="events: 1-50 items required")
 
     accepted = store.record_events(
