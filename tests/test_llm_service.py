@@ -14,10 +14,16 @@ from alla.services.llm_service import (
     _humanize_match_reason,
     _interpret_kb_score,
     build_cluster_prompt,
+    build_launch_summary_prompt,
     format_llm_comment,
     push_llm_results,
 )
-from conftest import make_failure_cluster, make_kb_entry, make_kb_match_result
+from conftest import (
+    make_failure_cluster,
+    make_kb_entry,
+    make_kb_match_result,
+    make_triage_report,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +88,15 @@ def test_prompt_includes_label_and_count() -> None:
 
     assert "TimeoutError in API" in prompt
     assert "5" in prompt
+
+
+def test_prompt_requests_fix_steps_instead_of_checks() -> None:
+    """Промпт требует шаги исправления, а не секцию «что проверить»."""
+    cluster = make_failure_cluster()
+    prompt = build_cluster_prompt(cluster)
+
+    assert "КАК ИСПРАВИТЬ:" in prompt
+    assert "конкретный шаг исправления" in prompt
 
 
 def test_prompt_includes_message_and_trace() -> None:
@@ -233,19 +248,19 @@ def test_prompt_omits_log_section_when_none() -> None:
 
 
 def test_prompt_includes_kb_matches_max_3() -> None:
-    """Только первые 3 KB-совпадения включаются в промпт."""
+    """Только первые 3 совпадения с базой знаний включаются в промпт."""
     matches = [
-        make_kb_match_result(entry=make_kb_entry(title=f"KB Entry {i}"), score=0.8 - i * 0.1)
+        make_kb_match_result(entry=make_kb_entry(title=f"Entry {i}"), score=0.8 - i * 0.1)
         for i in range(5)
     ]
     cluster = make_failure_cluster()
     prompt = build_cluster_prompt(cluster, kb_matches=matches)
 
-    assert "KB Entry 0" in prompt
-    assert "KB Entry 1" in prompt
-    assert "KB Entry 2" in prompt
-    assert "KB Entry 3" not in prompt
-    assert "KB Entry 4" not in prompt
+    assert "Entry 0" in prompt
+    assert "Entry 1" in prompt
+    assert "Entry 2" in prompt
+    assert "Entry 3" not in prompt
+    assert "Entry 4" not in prompt
 
 
 def test_prompt_without_message_and_trace() -> None:
@@ -261,7 +276,7 @@ def test_prompt_without_message_and_trace() -> None:
 
 
 def test_prompt_kb_matches_include_resolution_steps() -> None:
-    """KB-совпадения включают шаги по устранению."""
+    """Совпадения с базой знаний включают шаги по устранению."""
     entry = make_kb_entry(
         title="DNS failure",
         resolution_steps=["Check DNS servers", "Restart pods"],
@@ -275,7 +290,7 @@ def test_prompt_kb_matches_include_resolution_steps() -> None:
 
 
 def test_prompt_prioritizes_top_kb_match() -> None:
-    """Промпт явно заставляет LLM начинать анализ с лучшего KB-совпадения."""
+    """Промпт явно заставляет LLM начинать анализ с лучшего совпадения с базой знаний."""
     entry = make_kb_entry(title="DNS failure", category=RootCauseCategory.ENV)
     match = make_kb_match_result(entry=entry, score=0.91)
     cluster = make_failure_cluster()
@@ -283,13 +298,13 @@ def test_prompt_prioritizes_top_kb_match() -> None:
     prompt = build_cluster_prompt(cluster, kb_matches=[match])
 
     assert "БАЗА ЗНАНИЙ — основной источник интерпретации" in prompt
-    assert "Сначала смотри KB #1" in prompt
-    assert "Если у KB #1 score >= 0.70" in prompt
-    assert "KB #1 [основная гипотеза; высокое совпадение; score 0.91]" in prompt
+    assert "Сначала смотри запись базы знаний #1" in prompt
+    assert "Если у записи базы знаний #1 score >= 0.70" in prompt
+    assert "Совпадение из базы знаний #1 [основная гипотеза; высокое совпадение; score 0.91]" in prompt
 
 
 def test_prompt_kb_category_is_translated_for_llm() -> None:
-    """KB category показывается в терминологии, которую должна вернуть LLM."""
+    """Категория из базы знаний показывается в терминологии, которую должна вернуть LLM."""
     entry = make_kb_entry(title="Service outage", category=RootCauseCategory.SERVICE)
     match = make_kb_match_result(entry=entry, score=0.75)
     cluster = make_failure_cluster()
@@ -301,7 +316,7 @@ def test_prompt_kb_category_is_translated_for_llm() -> None:
 
 
 def test_prompt_kb_matches_include_match_reason() -> None:
-    """Промпт показывает понятное объяснение KB-совпадения вместо технического tier."""
+    """Промпт показывает понятное объяснение совпадения с базой знаний вместо технического tier."""
     match = make_kb_match_result(
         score=0.75,
         matched_on=["Tier 1: exact substring match (score=0.75)"],
@@ -325,12 +340,12 @@ def test_prompt_describes_match_against_cluster_data() -> None:
 
     prompt = build_cluster_prompt(cluster, kb_matches=[match])
 
-    assert "Пример ошибки из KB найден целиком в данных кластера" in prompt
+    assert "Пример ошибки из базы знаний найден целиком в данных кластера" in prompt
     assert "тексте ошибки кластера" not in prompt
 
 
 def test_prompt_includes_error_example_for_top_kb_matches() -> None:
-    """error_example из KB включается в промпт для первых 2 совпадений."""
+    """error_example из базы знаний включается в промпт для первых 2 совпадений."""
     entry1 = make_kb_entry(
         id="e1",
         title="DNS Failure",
@@ -354,12 +369,12 @@ def test_prompt_includes_error_example_for_top_kb_matches() -> None:
     cluster = make_failure_cluster()
     prompt = build_cluster_prompt(cluster, kb_matches=matches)
 
-    # First 2 KB matches include error_example
+    # First 2 knowledge-base matches include error_example
     assert "DNS resolution failed for service-x" in prompt
     assert "Connection timed out after 30000ms" in prompt
-    # KB #3 does NOT include error_example
+    # Match #3 does NOT include error_example
     assert "OutOfMemoryError" not in prompt
-    assert "Пример ошибки из KB (с чем сравнивалось)" in prompt
+    assert "Пример ошибки из базы знаний (с чем сравнивалось)" in prompt
 
 
 def test_prompt_truncates_long_error_example() -> None:
@@ -370,11 +385,11 @@ def test_prompt_truncates_long_error_example() -> None:
     prompt = build_cluster_prompt(cluster, kb_matches=[match])
 
     assert "e" * 501 not in prompt
-    assert "Пример ошибки из KB (с чем сравнивалось)" in prompt
+    assert "Пример ошибки из базы знаний (с чем сравнивалось)" in prompt
 
 
 def test_prompt_includes_verification_framing_for_high_score_kb() -> None:
-    """score >= 0.70 (не exact) добавляет инструкцию по проверке KB."""
+    """score >= 0.70 (не exact) добавляет инструкцию по проверке совпадения из базы знаний."""
     match = make_kb_match_result(
         score=0.85,
         matched_on=["Tier 2: line match (score=0.85)"],
@@ -382,13 +397,13 @@ def test_prompt_includes_verification_framing_for_high_score_kb() -> None:
     cluster = make_failure_cluster()
     prompt = build_cluster_prompt(cluster, kb_matches=[match])
 
-    assert "Инструкция по проверке KB #1" in prompt
+    assert "Инструкция по проверке записи базы знаний #1" in prompt
     assert "НЕ является противоречием" in prompt
     assert "ПРЯМО указывают на другую причину" in prompt
 
 
 def test_prompt_includes_provenance_for_combined_kb_query() -> None:
-    """Промпт объясняет, что KB найдено по объединённым message/trace/log данным."""
+    """Промпт объясняет, что совпадение с базой знаний найдено по объединённым message/trace/log данным."""
     match = make_kb_match_result(score=0.91)
     cluster = make_failure_cluster()
 
@@ -398,7 +413,7 @@ def test_prompt_includes_provenance_for_combined_kb_query() -> None:
         kb_query_provenance=(120, 340, 560),
     )
 
-    assert "KB-совпадение найдено по объединённому тексту" in prompt
+    assert "Совпадение из базы знаний найдено по объединённому тексту" in prompt
     assert "сообщение об ошибке (120 симв.)" in prompt
     assert "стек-трейс (340 симв.)" in prompt
     assert "лог приложения (560 симв.)" in prompt
@@ -406,7 +421,7 @@ def test_prompt_includes_provenance_for_combined_kb_query() -> None:
 
 
 def test_prompt_includes_verification_framing_for_exact_high_score_kb() -> None:
-    """Даже exact/high-score KB отправляется на проверку по данным кластера."""
+    """Даже exact/high-score совпадение с базой знаний отправляется на проверку по данным кластера."""
     match = make_kb_match_result(
         score=1.0,
         matched_on=["Tier 1: exact substring match (score=1.00)"],
@@ -415,8 +430,8 @@ def test_prompt_includes_verification_framing_for_exact_high_score_kb() -> None:
 
     prompt = build_cluster_prompt(cluster, kb_matches=[match])
 
-    assert "EXACT MATCH: KB #1 имеет score 1.00" in prompt
-    assert "Инструкция по проверке KB #1" in prompt
+    assert "ТОЧНОЕ СОВПАДЕНИЕ: запись базы знаний #1 имеет score 1.00" in prompt
+    assert "Инструкция по проверке записи базы знаний #1" in prompt
     assert "Сообщение об ошибке тест-фреймворка (assertion) часто отличается" in prompt
 
 
@@ -429,11 +444,11 @@ def test_prompt_no_verification_framing_for_low_score_kb() -> None:
     cluster = make_failure_cluster()
     prompt = build_cluster_prompt(cluster, kb_matches=[match])
 
-    assert "Инструкция по проверке KB #1" not in prompt
+    assert "Инструкция по проверке записи базы знаний #1" not in prompt
 
 
 def test_prompt_decision_rules_require_citation_to_override_kb() -> None:
-    """Правила принятия решения требуют цитату для отклонения KB #1."""
+    """Правила принятия решения требуют цитату для отклонения записи базы знаний #1."""
     match = make_kb_match_result(score=0.91)
     cluster = make_failure_cluster()
     prompt = build_cluster_prompt(cluster, kb_matches=[match])
@@ -443,7 +458,7 @@ def test_prompt_decision_rules_require_citation_to_override_kb() -> None:
 
 
 def test_prompt_marks_exact_kb_match_as_mandatory() -> None:
-    """Exact KB match помечается как обязательная основная причина."""
+    """Точное совпадение с базой знаний помечается как обязательная основная причина."""
     match = make_kb_match_result(
         score=1.0,
         matched_on=["Tier 1: exact substring match (score=1.00)"],
@@ -452,23 +467,40 @@ def test_prompt_marks_exact_kb_match_as_mandatory() -> None:
 
     prompt = build_cluster_prompt(cluster, kb_matches=[match])
 
-    assert "EXACT MATCH: KB #1 имеет score 1.00" in prompt
-    assert "KB #2 и KB #3 игнорируй" in prompt
-    assert "KB #1 [exact match; обязательная основная причина;" in prompt
+    assert "ТОЧНОЕ СОВПАДЕНИЕ: запись базы знаний #1 имеет score 1.00" in prompt
+    assert "записи базы знаний #2 и #3 игнорируй" in prompt
+    assert "Совпадение из базы знаний #1 [exact match; обязательная основная причина;" in prompt
 
 
 def test_prompt_without_kb_has_continuous_rule_numbering() -> None:
-    """Без KB правила в секции решения нумеруются подряд, без пропусков."""
+    """Без базы знаний правила в секции решения нумеруются подряд, без пропусков."""
     cluster = make_failure_cluster()
     prompt = build_cluster_prompt(cluster, kb_matches=None)
 
     rules = prompt.split("ПРАВИЛА ПРИНЯТИЯ РЕШЕНИЯ:\n", 1)[1]
 
     assert "1. Базы знаний нет" in rules
-    assert "2. Каждый шаг должен быть привязан" in rules
-    assert "3. Не давай абстрактных советов" in rules
-    assert "4. Не выдумывай новые причины" in rules
-    assert "\n5. " not in rules
+    assert "2. Каждый шаг должен описывать" in rules
+    assert "3. Не пиши диагностические советы" in rules
+    assert "4. Не давай абстрактных советов" in rules
+    assert "5. Не выдумывай новые причины" in rules
+    assert "\n6. " not in rules
+
+
+def test_launch_summary_prompt_requests_prioritized_fixes() -> None:
+    """Итоговый prompt просит у LLM исправления, а не диагностические действия."""
+    cluster = make_failure_cluster(label="Gateway timeout", member_count=3)
+    clustering_report = _make_report(cluster)
+    triage_report = make_triage_report(
+        total_results=10,
+        failed_count=3,
+    )
+
+    prompt = build_launch_summary_prompt(clustering_report, triage_report)
+
+    assert "Приоритетные исправления" in prompt
+    assert "что именно нужно исправить" in prompt
+    assert "Пиши именно исправления, а не диагностику" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +597,7 @@ async def test_analyze_clusters_success() -> None:
 
 @pytest.mark.asyncio
 async def test_analyze_clusters_sends_exact_kb_match_to_langflow() -> None:
-    """Даже Tier 1 exact KB match идёт в Langflow для дополнительной проверки."""
+    """Даже Tier 1 exact match из базы знаний идёт в Langflow для дополнительной проверки."""
     captured_prompts: list[str] = []
 
     class _Client:
@@ -596,8 +628,8 @@ async def test_analyze_clusters_sends_exact_kb_match_to_langflow() -> None:
     assert result.failed_count == 0
     assert result.kb_bypass_count == 0
     assert len(captured_prompts) == 1
-    assert "EXACT MATCH: KB #1 имеет score 1.00" in captured_prompts[0]
-    assert "Инструкция по проверке KB #1" in captured_prompts[0]
+    assert "ТОЧНОЕ СОВПАДЕНИЕ: запись базы знаний #1 имеет score 1.00" in captured_prompts[0]
+    assert "Инструкция по проверке записи базы знаний #1" in captured_prompts[0]
     analysis = result.cluster_analyses["c1"]
     assert analysis.analysis_text == "validated by langflow"
     assert analysis.error is None
@@ -698,11 +730,11 @@ async def test_analyze_clusters_includes_kb_provenance_when_message_differs() ->
 
     assert len(captured_prompts) == 1
     prompt = captured_prompts[0]
-    assert "KB-совпадение найдено по объединённому тексту" in prompt
+    assert "Совпадение из базы знаний найдено по объединённому тексту" in prompt
     assert "сообщение об ошибке (34 симв.)" in prompt
     assert "стек-трейс (78 симв.)" in prompt
     assert "лог приложения (96 симв.)" in prompt
-    assert "Если сообщение об ошибке не похоже на пример из KB" in prompt
+    assert "Если сообщение об ошибке не похоже на пример из базы знаний" in prompt
     assert "проверь стек-трейс и лог" in prompt
     assert "AssertionError: expected 200 but got 500" in prompt
     assert "DNS resolution failed for service-x.namespace.svc.cluster.local" in prompt

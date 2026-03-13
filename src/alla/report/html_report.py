@@ -366,7 +366,7 @@ def _render_cluster(
 
     project_matches, starter_pack_matches = _split_kb_matches(kb_matches)
 
-    # --- KB matches ---
+    # --- matches from knowledge base ---
     kb_html = ""
     if not guided_mode and kb_matches:
         entries_html = "".join(
@@ -438,7 +438,7 @@ def _render_cluster(
             "</div>"
         )
 
-    # --- create KB entry form ---
+    # --- create knowledge-base entry form ---
     create_kb_html = ""
     if feedback_api_url:
         prefill = _build_kb_prefill(cluster, llm_text, rep_log_snippet)
@@ -577,7 +577,7 @@ def _render_kb_entry(
     feedback_html = ""
     if feedback_api_url and cluster_id:
         entry_id = _e(str(m.entry.entry_id)) if m.entry.entry_id is not None else _e(m.entry.id)
-        # Pre-compute CSS classes from feedback_vote (set during KB matching)
+        # Pre-compute CSS classes from feedback_vote.
         like_cls = "fb-btn fb-like"
         dislike_cls = "fb-btn fb-dislike"
         if m.feedback_vote == "like":
@@ -620,7 +620,7 @@ def _render_kb_entry(
 def _split_kb_matches(
     kb_matches: list["KBMatchResult"],
 ) -> tuple[list["KBMatchResult"], list["KBMatchResult"]]:
-    """Разделить KB-совпадения на project knowledge и global starter pack."""
+    """Разделить совпадения с базой знаний на project knowledge и global starter pack."""
     project_matches: list["KBMatchResult"] = []
     starter_pack_matches: list["KBMatchResult"] = []
     for match in kb_matches:
@@ -650,7 +650,7 @@ def _render_form_field(
     *,
     required: bool = False,
 ) -> str:
-    """Отрендерить поле формы KB как отдельный визуальный блок."""
+    """Отрендерить поле формы базы знаний как отдельный визуальный блок."""
     meta_html = ""
     if meta:
         badge_cls = "field-required" if required else "field-optional"
@@ -672,7 +672,7 @@ def _build_kb_prefill(
     llm_text: str | None,
     rep_log_snippet: str | None,
 ) -> dict[str, object]:
-    """Подготовить prefill для project KB формы."""
+    """Подготовить prefill для формы project knowledge."""
     parsed_llm = _extract_llm_prefill(llm_text or "")
     prefill_parts: list[str] = []
     if cluster.example_message:
@@ -716,7 +716,7 @@ def _extract_llm_prefill(analysis_text: str) -> dict[str, object]:
             category = _map_prefill_category(line.split(":", 1)[1].strip())
             in_steps = False
             continue
-        if upper.startswith("ЧТО ПРОВЕРИТЬ:"):
+        if upper.startswith("КАК ИСПРАВИТЬ:"):
             in_steps = True
             remainder = line.split(":", 1)[1].strip()
             if remainder:
@@ -1229,7 +1229,7 @@ _CSS = """
       padding: 1.25rem 1.5rem;
     }
 
-    /* ---- KB Matches ---- */
+    /* ---- Knowledge Base Matches ---- */
     .kb-matches {
       display: flex;
       flex-direction: column;
@@ -1457,7 +1457,7 @@ _CSS = """
 # ---------------------------------------------------------------------------
 
 _FEEDBACK_CSS = """
-    /* ---- KB Feedback Buttons ---- */
+    /* ---- Knowledge Base Feedback Buttons ---- */
     .kb-feedback{display:flex;align-items:center;gap:.5rem;margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--border)}
     .fb-btn{display:inline-flex;align-items:center;gap:.25rem;padding:.375rem .75rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);cursor:pointer;font-size:.8125rem;color:var(--text-muted);transition:all .2s}
     .fb-btn:hover{border-color:var(--primary);color:var(--primary)}
@@ -1467,7 +1467,7 @@ _FEEDBACK_CSS = """
     .fb-status-ok{color:var(--success)}
     .fb-status-error{color:var(--danger)}
 
-    /* ---- Create KB Entry Form ---- */
+    /* ---- Create Knowledge Base Entry Form ---- */
     .create-kb-action{gap:.8rem}
     .create-kb-toggle{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.5rem 1rem;cursor:pointer;color:var(--text-muted);font-size:.875rem;width:100%;text-align:left;transition:all .2s}
     .create-kb-toggle:hover{border-color:var(--primary);color:var(--primary)}
@@ -1601,7 +1601,7 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    }\n"
         "  });\n"
         "\n"
-        "  // --- Create KB Entry ---\n"
+        "  // --- Create Knowledge Base Entry ---\n"
         "  document.addEventListener('submit', function(e) {\n"
         "    var form = e.target.closest('.create-kb-form');\n"
         "    if (!form) return;\n"
