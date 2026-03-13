@@ -31,11 +31,17 @@ logger = logging.getLogger(__name__)
 
 _MULTI_WS_RE = re.compile(r"\s+")
 _WORD_RE = re.compile(r"(?u)\b\w\w+\b")
+_NUM_AGNOSTIC_RE = re.compile(r"\b\d+\b|<NUM>")
 
 
 def _collapse_whitespace(text: str) -> str:
     """Свернуть все пробельные последовательности в один пробел."""
     return _MULTI_WS_RE.sub(" ", text).strip()
+
+
+def _make_number_agnostic(text: str) -> str:
+    """Заменить все числа и <NUM> плейсхолдеры на <#> для number-agnostic сравнения."""
+    return _NUM_AGNOSTIC_RE.sub("<#>", text)
 
 
 def _preview_head(text: str, max_chars: int) -> str:
@@ -345,6 +351,9 @@ class TextMatcher:
             word_threshold: Минимальная доля слов для fuzzy-совпадения.
         """
         if line in query_collapsed:
+            return True
+        # Number-agnostic: "0", "1050444", "<NUM>" → "<#>"
+        if _make_number_agnostic(line) in _make_number_agnostic(query_collapsed):
             return True
         words = _WORD_RE.findall(line)
         if len(words) < 2:
