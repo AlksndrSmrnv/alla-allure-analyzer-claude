@@ -148,7 +148,7 @@ async def analyze_launch(
                 try:
                     query_text, message_len, trace_len, log_len = _build_kb_query_text(
                         cluster, test_by_id,
-                        include_trace=True,
+                        include_trace=False,
                     )
                     kb_provenance[cluster.cluster_id] = (message_len, trace_len, log_len)
 
