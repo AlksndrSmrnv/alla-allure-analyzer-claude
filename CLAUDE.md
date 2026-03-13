@@ -178,6 +178,7 @@ alla <launch_id>
 | `ALLURE_LLM_MAX_RETRIES` | нет | `3` | Число повторных попыток при 429/503/сетевых ошибках Langflow (0 = без retry) |
 | `ALLURE_LLM_RETRY_BASE_DELAY` | нет | `1.0` | Базовая задержка в секундах для exponential backoff (delay = base × 2^attempt) |
 | `ALLURE_REPORTS_DIR` | нет | `""` | Директория для сохранения HTML-отчётов. В Kubernetes — путь к PersistentVolume. Если пусто — отчёты не сохраняются на диск |
+| `ALLURE_REPORTS_POSTGRES` | нет | `false` | Сохранять HTML-отчёты в PostgreSQL (таблица `alla.report`). Требует `ALLURE_KB_POSTGRES_DSN`. Можно использовать вместе с `ALLURE_REPORTS_DIR` |
 | `ALLURE_SERVER_EXTERNAL_URL` | нет | `""` | Внешний URL alla-сервера для формирования ссылок на отчёты в TestOps (например `https://alla.company.com`) |
 
 ## Установка и запуск
