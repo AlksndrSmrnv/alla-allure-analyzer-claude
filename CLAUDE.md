@@ -132,7 +132,8 @@ alla <launch_id>
         ├── utils/
         │   └── text_normalization.py  # normalize_text() — UUID, timestamps, IP → placeholders
         ├── report/
-        │   └── html_report.py         # generate_html_report(result, endpoint) — self-contained HTML без внешних зависимостей
+        │   ├── html_report.py         # generate_html_report(result, endpoint) — self-contained HTML без внешних зависимостей
+        │   └── report_store.py        # PostgresReportStore — сохранение/загрузка HTML-отчётов в таблицу alla.report
         └── services/
             ├── triage_service.py          # TriageService.analyze_launch() — основная логика
             ├── clustering_service.py      # ClusteringService — кластеризация ошибок
