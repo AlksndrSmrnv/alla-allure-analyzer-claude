@@ -94,8 +94,8 @@ class Settings(BaseSettings):
         description="Макс. параллельных запросов при скачивании аттачментов",
     )
     logs_clustering_weight: float = Field(
-        default=0.0,
-        description="Вес лог-канала в кластеризации (0.0 = не используется в кластеризации)",
+        default=0.15,
+        description="Вес лог-канала в кластеризации. Лог участвует в сравнении когда доступен; при отсутствии лога вес перераспределяется на message",
     )
 
     langflow_base_url: str = Field(

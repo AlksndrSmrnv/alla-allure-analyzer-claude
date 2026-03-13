@@ -1,17 +1,21 @@
 """Сервис кластеризации похожих ошибок тестов по корневой причине.
 
 Алгоритм: message-first подход.
-1. Для каждого падения строятся два канала текста:
+1. Для каждого падения строятся три канала текста:
    - message-document: status_message + category
    - trace-document: status_trace (с компактацией длинных трасс)
+   - log-document: log_snippet (лог приложения, если прикреплён к тесту)
 2. Минимальная нормализация: замена волатильных данных (UUID, timestamps,
    длинные числа, IP) плейсхолдерами.
 3. TF-IDF + cosine similarity по каждому каналу отдельно.
 4. Итоговая similarity для пары:
-   - если message есть у обоих и message similarity ниже порога,
-     trace игнорируется (пара не может быть склеена)
-   - иначе взвешенная комбинация message/trace
-   - если message у одного/обоих пустой, fallback только на trace
+   - если message есть у обоих и message similarity ниже порога:
+     * если у обоих есть лог и log similarity ≥ порога — log override:
+       лог становится доминирующим каналом (0.6 log + 0.2 msg + 0.2 trace)
+     * иначе пара не может быть склеена (message gate)
+   - иначе взвешенная комбинация message/trace/log
+   - если message у одного/обоих пустой, fallback на trace (+log)
+   - если лога нет у одного/обоих тестов, его вес перераспределяется на message
 5. Agglomerative clustering (complete linkage) по итоговой distance.
 """
 
@@ -148,8 +152,9 @@ def _build_log_document(
 class ClusteringService:
     """Группирует похожие ошибки тестов в кластеры по корневой причине.
 
-    Алгоритм: message-first двухканальный TF-IDF + agglomerative clustering
-    (complete linkage). Универсальный — работает с любым языком и форматом.
+    Алгоритм: message-first трёхканальный TF-IDF + agglomerative clustering
+    (complete linkage). Каналы: message, trace, log (лог участвует когда
+    доступен). Универсальный — работает с любым языком и форматом.
     """
 
     def __init__(self, config: ClusteringConfig | None = None) -> None:
@@ -179,16 +184,14 @@ class ClusteringService:
             for f in failures
         ]
 
-        log_documents: list[str] | None = None
-        if self._config.log_similarity_weight > 0:
-            log_documents = [
-                _build_log_document(
-                    f,
-                    head_lines=self._config.log_compact_head_lines,
-                    tail_lines=self._config.log_compact_tail_lines,
-                )
-                for f in failures
-            ]
+        log_documents: list[str] = [
+            _build_log_document(
+                f,
+                head_lines=self._config.log_compact_head_lines,
+                tail_lines=self._config.log_compact_tail_lines,
+            )
+            for f in failures
+        ]
 
         # 2. Разделить на тесты с текстом и без (в любом канале)
         has_text_indices: list[int] = []
@@ -196,9 +199,7 @@ class ClusteringService:
         for i, (message_doc, trace_doc) in enumerate(
             zip(message_documents, trace_documents)
         ):
-            has_log = (
-                log_documents[i].strip() if log_documents else False
-            )
+            has_log = log_documents[i].strip()
             if message_doc.strip() or trace_doc.strip() or has_log:
                 has_text_indices.append(i)
             else:
@@ -214,11 +215,7 @@ class ClusteringService:
         else:
             message_docs = [message_documents[i] for i in has_text_indices]
             trace_docs = [trace_documents[i] for i in has_text_indices]
-            log_docs = (
-                [log_documents[i] for i in has_text_indices]
-                if log_documents
-                else None
-            )
+            log_docs = [log_documents[i] for i in has_text_indices]
             labels = self._cluster_texts(message_docs, trace_docs, log_docs)
 
             for idx, label in zip(has_text_indices, labels):
@@ -273,7 +270,7 @@ class ClusteringService:
         trace_sim = self._pairwise_similarity(trace_documents)
 
         log_sim: np.ndarray | None = None
-        if log_documents and self._config.log_similarity_weight > 0:
+        if log_documents:
             log_sim = self._pairwise_similarity(log_documents)
 
         message_weight = self._config.message_similarity_weight
@@ -303,10 +300,30 @@ class ClusteringService:
         for i in range(n):
             for j in range(i + 1, n):
                 if has_message[i] and has_message[j]:
-                    if message_sim[i, j] < self._config.similarity_threshold:
-                        # Message gate: если сообщения различаются ниже порога,
-                        # trace/log не могут "перетащить" пару в один кластер.
+                    # Log override: если оба теста имеют лог и лог-similarity
+                    # выше порога — обойти message gate. Одинаковый application
+                    # log при разных assertion → скорее всего одна проблема.
+                    log_overrides_gate = (
+                        log_sim is not None
+                        and has_log[i]
+                        and has_log[j]
+                        and log_sim[i, j] >= self._config.similarity_threshold
+                    )
+                    if (
+                        message_sim[i, j] < self._config.similarity_threshold
+                        and not log_overrides_gate
+                    ):
+                        # Message gate: если сообщения различаются ниже порога
+                        # и лог не override'ит — пара не может быть склеена.
                         pair_sim = message_sim[i, j]
+                    elif log_overrides_gate and message_sim[i, j] < self._config.similarity_threshold:
+                        # Log override: message различаются, но лог одинаковый.
+                        # Лог становится доминирующим каналом (0.6 log + 0.2 msg + 0.2 trace).
+                        pair_sim = 0.6 * log_sim[i, j] + 0.2 * message_sim[i, j]  # type: ignore[index]
+                        if has_trace[i] and has_trace[j]:
+                            pair_sim += 0.2 * trace_sim[i, j]
+                        else:
+                            pair_sim += 0.2 * message_sim[i, j]
                     elif not (has_trace[i] and has_trace[j]) and not (has_log[i] and has_log[j]):
                         # Нет дополнительных каналов — только message.
                         pair_sim = message_sim[i, j]
