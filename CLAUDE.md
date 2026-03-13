@@ -182,7 +182,7 @@ alla <launch_id>
 | `ALLURE_REPORTS_DIR` | нет | `""` | Директория для сохранения HTML-отчётов. В Kubernetes — путь к PersistentVolume. Если пусто — отчёты не сохраняются на диск |
 | `ALLURE_REPORTS_POSTGRES` | нет | `false` | Сохранять HTML-отчёты в PostgreSQL (таблица `alla.report`). Требует `ALLURE_KB_POSTGRES_DSN`. Можно использовать вместе с `ALLURE_REPORTS_DIR` |
 | `ALLURE_SERVER_EXTERNAL_URL` | нет | `""` | Внешний URL alla-сервера для формирования ссылок на отчёты в TestOps (например `https://alla.company.com`) |
-| `ALLURE_METRICS_ENABLED` | нет | `false` | Включить сбор метрик использования HTML-отчётов. Требует `ALLURE_KB_POSTGRES_DSN`. Встраивает JS-трекинг в HTML-отчёты |
+| `ALLURE_METRICS_ENABLED` | нет | `false` | Включить сбор метрик использования HTML-отчётов. Требует `ALLURE_KB_POSTGRES_DSN`. Для JS-трекинга нужен также `ALLURE_FEEDBACK_SERVER_URL` или `ALLURE_SERVER_EXTERNAL_URL` |
 
 ## Установка и запуск
 

@@ -143,7 +143,8 @@ class Settings(BaseSettings):
     metrics_enabled: bool = Field(
         default=False,
         description="Включить сбор метрик использования HTML-отчётов (ALLURE_METRICS_ENABLED). "
-        "Требует ALLURE_KB_POSTGRES_DSN. Встраивает JS-трекинг в HTML-отчёты.",
+        "Требует ALLURE_KB_POSTGRES_DSN. Для встраивания JS-трекинга в HTML-отчёты "
+        "нужен также ALLURE_FEEDBACK_SERVER_URL или ALLURE_SERVER_EXTERNAL_URL.",
     )
 
     @property

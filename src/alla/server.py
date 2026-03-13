@@ -345,7 +345,16 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
 
     metrics_api_url = ""
     if _state.settings.metrics_active:
-        metrics_api_url = _state.settings.feedback_server_url or ""
+        metrics_api_url = (
+            _state.settings.feedback_server_url
+            or _state.settings.server_external_url
+        )
+        if not metrics_api_url:
+            logger.warning(
+                "ALLURE_METRICS_ENABLED=true, но ни ALLURE_FEEDBACK_SERVER_URL, "
+                "ни ALLURE_SERVER_EXTERNAL_URL не заданы — JS-трекинг метрик "
+                "не будет встроен в отчёт",
+            )
 
     # Сгенерировать имя файла до создания HTML — оно встраивается в JS метрик.
     from datetime import datetime
