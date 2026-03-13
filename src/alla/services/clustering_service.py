@@ -300,11 +300,15 @@ class ClusteringService:
         for i in range(n):
             for j in range(i + 1, n):
                 if has_message[i] and has_message[j]:
-                    # Log override: если оба теста имеют лог и лог-similarity
-                    # выше порога — обойти message gate. Одинаковый application
-                    # log при разных assertion → скорее всего одна проблема.
+                    # Log override: если лог-кластеризация включена (weight > 0),
+                    # оба теста имеют лог и лог-similarity выше порога —
+                    # обойти message gate. Одинаковый application log при
+                    # разных assertion → скорее всего одна проблема.
+                    # Если log_weight == 0 (ALLURE_LOGS_CLUSTERING_WEIGHT=0),
+                    # override не срабатывает — явный opt-out уважается.
                     log_overrides_gate = (
-                        log_sim is not None
+                        log_weight > 0
+                        and log_sim is not None
                         and has_log[i]
                         and has_log[j]
                         and log_sim[i, j] >= self._config.similarity_threshold
