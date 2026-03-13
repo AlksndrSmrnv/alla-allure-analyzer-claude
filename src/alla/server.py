@@ -343,10 +343,15 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
     if _state.settings.kb_active:
         feedback_api_url = _state.settings.feedback_server_url
 
+    metrics_api_url = ""
+    if _state.settings.metrics_active:
+        metrics_api_url = _state.settings.feedback_server_url or ""
+
     html = generate_html_report(
         result,
         endpoint=_state.settings.endpoint,
         feedback_api_url=feedback_api_url,
+        metrics_api_url=metrics_api_url,
     )
 
     # Сохранить отчёт для self-hosted раздачи (диск и/или PostgreSQL).
@@ -687,6 +692,83 @@ def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
         votes[resolve_key] = {"vote": vote.value, "similarity": round(sim, 4)}
 
     return {"votes": votes}
+
+
+# --- Report Metrics endpoints ---
+
+
+def _get_metrics_store():
+    """Вернуть PostgresMetricsStore или None (ленивая инициализация)."""
+    settings = _state.settings
+    if settings is None or not settings.metrics_active:
+        return None
+
+    if not hasattr(_state, "_metrics_store"):
+        from alla.report.metrics_store import PostgresMetricsStore
+
+        _state._metrics_store = PostgresMetricsStore(dsn=settings.kb_postgres_dsn)
+    return _state._metrics_store
+
+
+@app.post("/api/v1/metrics/events")
+def record_metrics_events(request: dict[str, Any]) -> dict[str, Any]:
+    """Принять batch событий использования HTML-отчёта.
+
+    Вызывается из встроенного JS в HTML-отчёте. Best-effort:
+    невалидные события молча пропускаются.
+    """
+    store = _get_metrics_store()
+    if store is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Metrics requires ALLURE_METRICS_ENABLED=true and ALLURE_KB_POSTGRES_DSN",
+        )
+
+    session_id = request.get("session_id", "")
+    launch_id = request.get("launch_id")
+    events = request.get("events", [])
+
+    if not session_id or not isinstance(session_id, str) or len(session_id) > 32:
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    if not isinstance(launch_id, int) or launch_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid launch_id")
+    if not isinstance(events, list) or len(events) > 50:
+        raise HTTPException(status_code=400, detail="events: 1-50 items required")
+
+    accepted = store.record_events(
+        session_id=session_id,
+        launch_id=launch_id,
+        events=events,
+        report_filename=request.get("report_filename"),
+        project_id=request.get("project_id"),
+    )
+    return {"accepted": accepted}
+
+
+@app.get("/api/v1/metrics/launch/{launch_id}")
+def get_launch_metrics(launch_id: int) -> dict[str, Any]:
+    """Агрегированные метрики использования отчётов для запуска."""
+    store = _get_metrics_store()
+    if store is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Metrics requires ALLURE_METRICS_ENABLED=true and ALLURE_KB_POSTGRES_DSN",
+        )
+    return store.get_launch_metrics(launch_id)
+
+
+@app.get("/api/v1/metrics/project/{project_id}")
+def get_project_metrics(project_id: int, days: int = 30) -> dict[str, Any]:
+    """Агрегированные метрики использования отчётов для проекта."""
+    store = _get_metrics_store()
+    if store is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Metrics requires ALLURE_METRICS_ENABLED=true and ALLURE_KB_POSTGRES_DSN",
+        )
+    if days < 1 or days > 90:
+        raise HTTPException(status_code=400, detail="days must be between 1 and 90")
+    return store.get_project_metrics(project_id, days=days)
 
 
 def main() -> None:

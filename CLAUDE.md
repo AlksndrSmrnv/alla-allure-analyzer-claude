@@ -133,7 +133,8 @@ alla <launch_id>
         │   └── text_normalization.py  # normalize_text() — UUID, timestamps, IP → placeholders
         ├── report/
         │   ├── html_report.py         # generate_html_report(result, endpoint) — self-contained HTML без внешних зависимостей
-        │   └── report_store.py        # PostgresReportStore — сохранение/загрузка HTML-отчётов в таблицу alla.report
+        │   ├── report_store.py        # PostgresReportStore — сохранение/загрузка HTML-отчётов в таблицу alla.report
+        │   └── metrics_store.py       # PostgresMetricsStore — сбор и агрегация метрик использования HTML-отчётов (таблица alla.report_event)
         └── services/
             ├── triage_service.py          # TriageService.analyze_launch() — основная логика
             ├── clustering_service.py      # ClusteringService — кластеризация ошибок
@@ -181,6 +182,7 @@ alla <launch_id>
 | `ALLURE_REPORTS_DIR` | нет | `""` | Директория для сохранения HTML-отчётов. В Kubernetes — путь к PersistentVolume. Если пусто — отчёты не сохраняются на диск |
 | `ALLURE_REPORTS_POSTGRES` | нет | `false` | Сохранять HTML-отчёты в PostgreSQL (таблица `alla.report`). Требует `ALLURE_KB_POSTGRES_DSN`. Можно использовать вместе с `ALLURE_REPORTS_DIR` |
 | `ALLURE_SERVER_EXTERNAL_URL` | нет | `""` | Внешний URL alla-сервера для формирования ссылок на отчёты в TestOps (например `https://alla.company.com`) |
+| `ALLURE_METRICS_ENABLED` | нет | `false` | Включить сбор метрик использования HTML-отчётов. Требует `ALLURE_KB_POSTGRES_DSN`. Встраивает JS-трекинг в HTML-отчёты |
 
 ## Установка и запуск
 
@@ -247,6 +249,9 @@ REST API:
 | POST | `/api/v1/analyze/{launch_id}/html` | Полный pipeline анализа, возвращает self-contained HTML-отчёт. При `ALLURE_REPORTS_DIR` — сохраняет на диск. При `ALLURE_SERVER_EXTERNAL_URL` — прикрепляет ссылку на self-hosted отчёт к прогону в TestOps |
 | GET | `/reports/{filename}` | Отдать ранее сгенерированный HTML-отчёт по имени файла (например `12345_20260306_114500_296536.html`). Требует `ALLURE_REPORTS_DIR` |
 | DELETE | `/api/v1/comments/{launch_id}` | Удалить комментарии alla для тестов запуска. `?dry_run=true` — предпросмотр |
+| POST | `/api/v1/metrics/events` | Приём batch событий использования HTML-отчёта (из встроенного JS). Требует `ALLURE_METRICS_ENABLED` |
+| GET | `/api/v1/metrics/launch/{launch_id}` | Агрегированные метрики использования отчётов для запуска |
+| GET | `/api/v1/metrics/project/{project_id}` | Агрегированные метрики для проекта. `?days=30` (1-90) |
 | GET | `/docs` | Swagger UI (автогенерация FastAPI) |
 
 ```bash

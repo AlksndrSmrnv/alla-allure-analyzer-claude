@@ -140,6 +140,17 @@ class Settings(BaseSettings):
         "Используется для ссылок на отчёты в TestOps. Пример: https://alla.company.com",
     )
 
+    metrics_enabled: bool = Field(
+        default=False,
+        description="Включить сбор метрик использования HTML-отчётов (ALLURE_METRICS_ENABLED). "
+        "Требует ALLURE_KB_POSTGRES_DSN. Встраивает JS-трекинг в HTML-отчёты.",
+    )
+
+    @property
+    def metrics_active(self) -> bool:
+        """Метрики активны если включены и есть PostgreSQL DSN."""
+        return self.metrics_enabled and bool(self.kb_postgres_dsn)
+
     @property
     def kb_active(self) -> bool:
         """KB включена автоматически если задан PostgreSQL DSN."""
