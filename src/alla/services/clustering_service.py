@@ -194,12 +194,15 @@ class ClusteringService:
         ]
 
         # 2. Разделить на тесты с текстом и без (в любом канале)
+        # Лог считается «текстом» только когда log_weight > 0: при явном opt-out
+        # (ALLURE_LOGS_CLUSTERING_WEIGHT=0) log-only тест становится singleton.
+        log_weight_positive = self._config.log_similarity_weight > 0
         has_text_indices: list[int] = []
         empty_indices: list[int] = []
         for i, (message_doc, trace_doc) in enumerate(
             zip(message_documents, trace_documents)
         ):
-            has_log = log_documents[i].strip()
+            has_log = log_weight_positive and bool(log_documents[i].strip())
             if message_doc.strip() or trace_doc.strip() or has_log:
                 has_text_indices.append(i)
             else:
@@ -344,9 +347,9 @@ class ClusteringService:
                             # Перераспределить вес log на message
                             pair_sim += log_weight * message_sim[i, j]
                 else:
-                    # Нет message — fallback на trace (+ log если есть)
+                    # Нет message — fallback на trace (+ log если есть и weight > 0)
                     pair_sim = trace_sim[i, j]
-                    if log_sim is not None and has_log[i] and has_log[j]:
+                    if log_weight > 0 and log_sim is not None and has_log[i] and has_log[j]:
                         # Смешать trace и log когда нет message
                         if has_trace[i] and has_trace[j]:
                             tw = trace_weight / (trace_weight + log_weight) if (trace_weight + log_weight) > 0 else 1.0
