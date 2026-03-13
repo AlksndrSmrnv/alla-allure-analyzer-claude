@@ -32,7 +32,7 @@ def _extract_error_example_textarea(report_html: str) -> str:
 
 
 def test_guided_onboarding_hides_global_matches_from_primary_block() -> None:
-    """В guided-режиме seeded/global KB не показывается как primary block."""
+    """В guided-режиме seeded/global база знаний не показывается как primary block."""
     cluster = make_failure_cluster(cluster_id="c1", label="Payment timeout", member_count=5)
     triage = make_triage_report(
         project_id=42,
@@ -106,9 +106,9 @@ def test_guided_onboarding_prefills_create_form_from_llm() -> None:
                 analysis_text=(
                     "ЧТО СЛОМАЛОСЬ: Платёжный шлюз не ответил вовремя.\n"
                     "ПРИЧИНА: окружение — внешний gateway недоступен.\n"
-                    "ЧТО ПРОВЕРИТЬ:\n"
-                    "1. Проверить доступность gateway.\n"
-                    "2. Сверить сетевые ошибки в логах."
+                    "КАК ИСПРАВИТЬ:\n"
+                    "1. Перезапустить или восстановить внешний gateway.\n"
+                    "2. Починить сетевую доступность до gateway."
                 ),
             )
         },
@@ -131,8 +131,8 @@ def test_guided_onboarding_prefills_create_form_from_llm() -> None:
 
     assert '<option value="env" selected="selected">env</option>' in html
     assert "Платёжный шлюз не ответил вовремя." in html
-    assert "Проверить доступность gateway." in html
-    assert "Сверить сетевые ошибки в логах." in html
+    assert "Перезапустить или восстановить внешний gateway." in html
+    assert "Починить сетевую доступность до gateway." in html
     assert 'class="create-kb-toggle create-kb-toggle-primary"' in html
     assert 'class="create-kb-field"' in html
     assert "Шаги по устранению:" in html
@@ -141,9 +141,8 @@ def test_guided_onboarding_prefills_create_form_from_llm() -> None:
     assert "(основное поле):" not in html
     assert "(необязательно):" not in html
 
-
 def test_guided_onboarding_canonicalizes_error_example_prefill() -> None:
-    """Форма KB показывает normalized message+log без UI-маркеров и raw volatile-данных."""
+    """Форма базы знаний показывает normalized message+log без UI-маркеров и raw volatile-данных."""
     cluster = make_failure_cluster(
         cluster_id="c3",
         representative_test_id=1,
@@ -198,7 +197,7 @@ def test_guided_onboarding_canonicalizes_error_example_prefill() -> None:
 
 
 def test_html_report_shows_kb_setup_callout() -> None:
-    """При отключенной KB отчёт показывает setup-callout вместо guided CTA."""
+    """При отключенной базе знаний отчёт показывает setup-callout вместо guided CTA."""
     result = AnalysisResult(
         triage_report=make_triage_report(),
         clustering_report=make_clustering_report(),
