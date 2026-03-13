@@ -28,6 +28,7 @@ def generate_html_report(
     endpoint: str = "",
     feedback_api_url: str = "",
     metrics_api_url: str = "",
+    report_filename: str | None = None,
 ) -> str:
     """Сгенерировать self-contained HTML-отчёт из AnalysisResult."""
     from alla import __version__
@@ -84,6 +85,7 @@ def generate_html_report(
             metrics_api_url,
             launch_id=triage.launch_id,
             project_id=triage.project_id,
+            report_filename=report_filename,
         )
 
     # CSP: allow connect-src for feedback and/or metrics API
@@ -1693,6 +1695,7 @@ def _build_metrics_js(
     *,
     launch_id: int = 0,
     project_id: int | None = None,
+    report_filename: str | None = None,
 ) -> str:
     """Return a <script> block for lightweight usage tracking.
 
@@ -1704,6 +1707,7 @@ def _build_metrics_js(
     js_url = _json.dumps(metrics_api_url)
     js_lid = _json.dumps(launch_id)
     js_pid = _json.dumps(project_id)
+    js_fn = _json.dumps(report_filename)
     return (
         "<script>\n"
         "(function() {\n"
@@ -1711,6 +1715,7 @@ def _build_metrics_js(
         "  if (!API) return;\n"
         "  var LID = " + js_lid + ";\n"
         "  var PID = " + js_pid + ";\n"
+        "  var FN = " + js_fn + ";\n"
         "\n"
         "  // Random session id (8 hex chars, no cookies/storage)\n"
         "  var sid;\n"
@@ -1731,7 +1736,8 @@ def _build_metrics_js(
         "  function flush() {\n"
         "    if (!buf.length) return;\n"
         "    var payload = JSON.stringify({\n"
-        "      session_id: sid, launch_id: LID, project_id: PID, events: buf\n"
+        "      session_id: sid, launch_id: LID, project_id: PID,\n"
+        "      report_filename: FN, events: buf\n"
         "    });\n"
         "    buf = [];\n"
         "    if (navigator.sendBeacon) {\n"

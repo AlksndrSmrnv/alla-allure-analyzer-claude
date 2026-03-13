@@ -225,16 +225,17 @@ class PostgresMetricsStore:
         """Aggregate metrics for a project over a time period."""
         with psycopg.connect(self._dsn, row_factory=dict_row) as conn:
             with conn.cursor() as cur:
-                # Total reports generated (from alla.report)
+                # Launches with at least one report_open event
                 cur.execute(
-                    "SELECT count(*) AS cnt FROM alla.report r "
-                    "JOIN alla.report_event e ON r.launch_id = e.launch_id "
-                    "WHERE e.project_id = %s "
-                    "  AND r.created_at >= now() - make_interval(days => %s) "
-                    "GROUP BY r.filename",
+                    "SELECT count(DISTINCT launch_id) AS cnt "
+                    "FROM alla.report_event "
+                    "WHERE project_id = %s "
+                    "  AND event = 'report_open' "
+                    "  AND received_at >= now() - make_interval(days => %s)",
                     (project_id, days),
                 )
-                total_reports = cur.rowcount or 0
+                row = cur.fetchone()
+                launches_opened = row["cnt"] if row else 0
 
                 # Session-level stats
                 cur.execute(
@@ -292,7 +293,7 @@ class PostgresMetricsStore:
         return {
             "project_id": project_id,
             "period_days": days,
-            "total_reports_generated": total_reports,
+            "launches_opened": launches_opened,
             "total_sessions": total_sessions,
             "engagement_rate": engagement_rate,
             "daily_sessions": daily,

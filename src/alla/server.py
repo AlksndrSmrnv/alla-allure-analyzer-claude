@@ -347,21 +347,26 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
     if _state.settings.metrics_active:
         metrics_api_url = _state.settings.feedback_server_url or ""
 
+    # Сгенерировать имя файла до создания HTML — оно встраивается в JS метрик.
+    from datetime import datetime
+
+    report_filename: str | None = None
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    need_filename = (
+        _state.settings.reports_dir
+        or _state.report_store
+        or _state.settings.metrics_active
+    )
+    if need_filename:
+        report_filename = f"{launch_id}_{timestamp}.html"
+
     html = generate_html_report(
         result,
         endpoint=_state.settings.endpoint,
         feedback_api_url=feedback_api_url,
         metrics_api_url=metrics_api_url,
+        report_filename=report_filename,
     )
-
-    # Сохранить отчёт для self-hosted раздачи (диск и/или PostgreSQL).
-    from datetime import datetime
-
-    report_filename: str | None = None
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    need_filename = _state.settings.reports_dir or _state.report_store
-    if need_filename:
-        report_filename = f"{launch_id}_{timestamp}.html"
 
     if _state.settings.reports_dir and report_filename:
         from pathlib import Path
