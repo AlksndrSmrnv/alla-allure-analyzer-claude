@@ -213,10 +213,10 @@ def _find_best_feedback_match(
     if not records:
         return None, 0.0
 
-    from alla.utils.text_normalization import normalize_text
+    from alla.utils.text_normalization import normalize_text_for_llm
 
-    query_normalized = normalize_text(query_text)
-    record_texts = [normalize_text(r.error_text) for r in records]
+    query_normalized = normalize_text_for_llm(query_text)
+    record_texts = [normalize_text_for_llm(r.error_text) for r in records]
 
     all_docs = [query_normalized] + record_texts
 

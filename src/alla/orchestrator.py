@@ -452,7 +452,7 @@ def _build_feedback_text(
     Это текст, который видит пользователь при голосовании. Нормализуется
     для fuzzy matching: UUID, timestamps, IP → placeholders.
     """
-    from alla.utils.text_normalization import normalize_text
+    from alla.utils.text_normalization import normalize_text_for_llm
 
     representative = (
         test_by_id.get(cluster.representative_test_id)
@@ -478,7 +478,7 @@ def _build_feedback_text(
 
     parts = [p for p in (message, log_snippet) if p]
     raw = "\n".join(parts)
-    return normalize_text(raw) if raw.strip() else ""
+    return normalize_text_for_llm(raw) if raw.strip() else ""
 
 
 def _preview_head(text: str, max_chars: int) -> str:
