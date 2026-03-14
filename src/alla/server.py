@@ -569,7 +569,7 @@ def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
         )
 
     from alla.knowledge.feedback_models import FeedbackRequest
-    from alla.utils.text_normalization import normalize_text
+    from alla.utils.text_normalization import normalize_text_for_llm
 
     try:
         fb_request = FeedbackRequest(**request)
@@ -577,7 +577,9 @@ def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc))
 
     # Нормализация перед хранением: UUID, timestamps, IP → placeholders
-    fb_request.error_text = normalize_text(fb_request.error_text)
+    # Используем normalize_text_for_llm (сохраняет числа) для консистентности
+    # с _build_feedback_text() и _find_best_feedback_match()
+    fb_request.error_text = normalize_text_for_llm(fb_request.error_text)
 
     from alla.exceptions import KnowledgeBaseError
 
@@ -679,7 +681,7 @@ def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=501, detail="Requires postgres backend")
 
     from alla.knowledge.feedback_models import FeedbackResolveRequest
-    from alla.utils.text_normalization import normalize_text
+    from alla.utils.text_normalization import normalize_text_for_llm
 
     try:
         req = FeedbackResolveRequest(**request)
@@ -689,7 +691,7 @@ def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
     items = [
         (
             it.kb_entry_id,
-            normalize_text(it.error_text),
+            normalize_text_for_llm(it.error_text),
             f"{it.kb_entry_id}:{it.cluster_id}",
         )
         for it in req.items
