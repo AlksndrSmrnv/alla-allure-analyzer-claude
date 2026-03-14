@@ -625,10 +625,14 @@ def _find_best_feedback_match(
     query_text: str,
     records: list,
 ) -> tuple:
-    """Найти feedback-запись с наибольшей TF-IDF cosine similarity к query_text.
+    """Найти feedback-запись с точным совпадением нормализованного текста.
+
+    normalize_text_for_llm уже нормализует volatile данные (UUID, timestamps,
+    IP), поэтому exact match корректно находит «тот же» голос между запусками,
+    но не путает кластеры с разными числовыми значениями.
 
     Returns:
-        (vote, similarity) лучшего совпадения, или (None, 0.0) если записей нет.
+        (vote, similarity) — (vote, 1.0) при exact match, или (None, 0.0).
     """
     if not records:
         return None, 0.0
@@ -636,22 +640,10 @@ def _find_best_feedback_match(
     from alla.utils.text_normalization import normalize_text_for_llm
 
     query_normalized = normalize_text_for_llm(query_text)
-    record_texts = [normalize_text_for_llm(r.error_text) for r in records]
 
-    all_docs = [query_normalized] + record_texts
+    for record in records:
+        record_normalized = normalize_text_for_llm(record.error_text)
+        if record_normalized == query_normalized:
+            return record.vote, 1.0
 
-    vectorizer = TfidfVectorizer(
-        max_features=500,
-        ngram_range=(1, 2),
-        token_pattern=r"(?u)\b\w\w+\b",
-        lowercase=True,
-    )
-    try:
-        matrix = vectorizer.fit_transform(all_docs)
-    except ValueError:
-        return None, 0.0
-
-    sims = cosine_similarity(matrix[0:1], matrix[1:])[0]
-    best_idx = int(sims.argmax())
-    best_sim = float(sims[best_idx])
-    return records[best_idx].vote, best_sim
+    return None, 0.0
