@@ -169,46 +169,46 @@ async def async_main(args: argparse.Namespace) -> int:
 
             # HTML-отчёт + прикрепление ссылки к запуску
             # (внутри async with — клиент ещё открыт, нужен для PATCH)
-            html_report_file = getattr(args, "html_report_file", None)
-            if html_report_file:
-                from pathlib import Path
+            html_report_file = getattr(args, "html_report_file", None) or f"alla_report_{launch_id}.html"
 
-                from alla.report.html_report import generate_html_report
+            from pathlib import Path
 
-                feedback_url = (
-                    settings.feedback_server_url
-                    if settings.kb_active
-                    else ""
-                )
-                html_content = generate_html_report(
-                    result,
-                    endpoint=settings.endpoint,
-                    feedback_api_url=feedback_url,
-                )
-                Path(html_report_file).write_text(html_content, encoding="utf-8")
-                logger.info("HTML-отчёт сохранён: %s", html_report_file)
+            from alla.report.html_report import generate_html_report
 
-                report_url = getattr(args, "report_url", None) or settings.report_url
-                if report_url:
-                    from alla.clients.base import LaunchLinksUpdater
+            feedback_url = (
+                settings.feedback_server_url
+                if settings.kb_active
+                else ""
+            )
+            html_content = generate_html_report(
+                result,
+                endpoint=settings.endpoint,
+                feedback_api_url=feedback_url,
+            )
+            Path(html_report_file).write_text(html_content, encoding="utf-8")
+            logger.info("HTML-отчёт сохранён: %s", html_report_file)
 
-                    if isinstance(client, LaunchLinksUpdater):
-                        try:
-                            await client.patch_launch_links(
-                                launch_id=launch_id,
-                                name=settings.report_link_name,
-                                url=report_url,
-                            )
-                            logger.info(
-                                "Ссылка на HTML-отчёт прикреплена к запуску #%d",
-                                launch_id,
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "Не удалось прикрепить ссылку к запуску #%d: %s",
-                                launch_id,
-                                exc,
-                            )
+            report_url = getattr(args, "report_url", None) or settings.report_url
+            if report_url:
+                from alla.clients.base import LaunchLinksUpdater
+
+                if isinstance(client, LaunchLinksUpdater):
+                    try:
+                        await client.patch_launch_links(
+                            launch_id=launch_id,
+                            name=settings.report_link_name,
+                            url=report_url,
+                        )
+                        logger.info(
+                            "Ссылка на HTML-отчёт прикреплена к запуску #%d",
+                            launch_id,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Не удалось прикрепить ссылку к запуску #%d: %s",
+                            launch_id,
+                            exc,
+                        )
 
     except ConfigurationError as exc:
         logger.error("Ошибка конфигурации: %s", exc)
