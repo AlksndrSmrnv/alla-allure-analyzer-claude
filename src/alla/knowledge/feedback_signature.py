@@ -45,6 +45,10 @@ _NUMERIC_CONTEXT_RE = re.compile(
     r"(?P<number>\d{4,})\b",
     re.IGNORECASE,
 )
+_EMBEDDED_NUMERIC_CODE_RE = re.compile(
+    r"\b(?P<prefix>[a-z][a-z0-9_]{1,15})-(?P<number>\d{4,}[a-z0-9-]*)\b",
+    re.IGNORECASE,
+)
 _GENERIC_LOG_WORDS = frozenset(
     {
         "error",
@@ -90,13 +94,21 @@ def _normalize_signature_soft_base_fragment(text: str) -> str:
 
 def _build_numeric_fingerprint(text: str) -> str:
     normalized = _collapse_whitespace(normalize_text_for_llm(text)).casefold()
-    values = [
+    contextual_values = [
         f"{match.group('label').casefold()}={match.group('number')}"
         for match in _NUMERIC_CONTEXT_RE.finditer(normalized)
     ]
+    embedded_values: list[str] = []
+    for match in _EMBEDDED_NUMERIC_CODE_RE.finditer(normalized):
+        prefix = match.group("prefix").casefold()
+        if prefix in _GENERIC_LOG_WORDS:
+            continue
+        embedded_values.append(f"{prefix}-{match.group('number')}")
+
+    values = _dedupe(contextual_values + embedded_values)
     if not values:
         return ""
-    return "|".join(sorted(_dedupe(values)[:_MAX_NUMERIC_FINGERPRINT_VALUES]))
+    return "|".join(sorted(values[:_MAX_NUMERIC_FINGERPRINT_VALUES]))
 
 
 def _normalize_signature_soft_fragment(
@@ -149,6 +161,14 @@ class _Anchor:
 
 
 @dataclass(frozen=True)
+class _AnchorCandidate:
+    anchor: _Anchor
+    has_cause: bool
+    has_matched: bool
+    selected_line_count: int
+
+
+@dataclass(frozen=True)
 class _AnchorLine:
     raw_text: str
     strict_signature: bool
@@ -194,7 +214,7 @@ def _collect_cluster_log_snippets(
     cluster: FailureCluster,
     test_by_id: dict[int, FailedTestSummary],
 ) -> list[str]:
-    """Собрать все доступные log_snippet для построения exact-memory сигнатуры."""
+    """Собрать все доступные log_snippet для выбора fallback anchor."""
     candidate_ids: list[int] = []
     if cluster.representative_test_id is not None:
         candidate_ids.append(cluster.representative_test_id)
@@ -211,6 +231,20 @@ def _collect_cluster_log_snippets(
             continue
         result.append(member.log_snippet.strip())
     return result
+
+
+def _get_representative_log_snippet(
+    cluster: FailureCluster,
+    test_by_id: dict[int, FailedTestSummary],
+) -> str:
+    representative = (
+        test_by_id.get(cluster.representative_test_id)
+        if cluster.representative_test_id is not None
+        else None
+    )
+    if not representative or not representative.log_snippet:
+        return ""
+    return representative.log_snippet.strip()
 
 
 def _anchor_line_sort_key(line: _AnchorLine) -> tuple[str, int, int]:
@@ -260,34 +294,36 @@ def _build_anchor(lines: list[_AnchorLine]) -> _Anchor:
     )
 
 
-def _extract_log_anchor(log_snippets: list[str]) -> _Anchor:
-    if not log_snippets:
-        return _Anchor(signature_text="", audit_text="")
+def _extract_log_anchor(log_snippet: str) -> _AnchorCandidate:
+    if not log_snippet:
+        return _AnchorCandidate(
+            anchor=_Anchor(signature_text="", audit_text=""),
+            has_cause=False,
+            has_matched=False,
+            selected_line_count=0,
+        )
 
     cause_lines: list[_AnchorLine] = []
     matched_lines: list[_AnchorLine] = []
     fallback_lines: list[_AnchorLine] = []
 
-    for log_snippet in log_snippets:
-        for _, body in parse_log_sections(log_snippet):
-            for raw_line in body.splitlines():
-                stripped = raw_line.strip()
-                if not stripped or _STACK_FRAME_RE.match(stripped):
-                    continue
-                if _CAUSAL_HINT_RE.search(stripped):
-                    cause_lines.append(_AnchorLine(raw_text=stripped, strict_signature=True))
-                elif _ERROR_HINT_RE.search(stripped) and _has_informative_signal_words(stripped):
-                    matched_lines.append(
-                        _AnchorLine(
-                            raw_text=stripped,
-                            strict_signature=False,
-                            include_numeric_fingerprint=True,
-                        )
+    for _, body in parse_log_sections(log_snippet):
+        for raw_line in body.splitlines():
+            stripped = raw_line.strip()
+            if not stripped or _STACK_FRAME_RE.match(stripped):
+                continue
+            if _CAUSAL_HINT_RE.search(stripped):
+                cause_lines.append(_AnchorLine(raw_text=stripped, strict_signature=True))
+            elif _ERROR_HINT_RE.search(stripped) and _has_informative_signal_words(stripped):
+                matched_lines.append(
+                    _AnchorLine(
+                        raw_text=stripped,
+                        strict_signature=False,
+                        include_numeric_fingerprint=True,
                     )
-                else:
-                    fallback_lines.append(
-                        _AnchorLine(raw_text=stripped, strict_signature=False)
-                    )
+                )
+            else:
+                fallback_lines.append(_AnchorLine(raw_text=stripped, strict_signature=False))
 
     if cause_lines or matched_lines:
         selected: list[_AnchorLine] = []
@@ -304,10 +340,47 @@ def _extract_log_anchor(log_snippets: list[str]) -> _Anchor:
             remaining_slots = _MAX_LOG_ANCHOR_LINES - len(selected)
         if remaining_slots > 0:
             selected.extend(ordered_matched[1 : 1 + remaining_slots])
-        return _build_anchor(selected)
+        return _AnchorCandidate(
+            anchor=_build_anchor(selected),
+            has_cause=bool(cause_lines),
+            has_matched=bool(matched_lines),
+            selected_line_count=len(selected),
+        )
 
-    ordered_fallback = sorted(fallback_lines, key=_anchor_line_sort_key)
-    return _build_anchor(ordered_fallback[:3])
+    selected_fallback = sorted(fallback_lines, key=_anchor_line_sort_key)[:3]
+    return _AnchorCandidate(
+        anchor=_build_anchor(selected_fallback),
+        has_cause=False,
+        has_matched=False,
+        selected_line_count=len(selected_fallback),
+    )
+
+
+def _select_log_anchor(log_snippets: list[str], representative_log: str) -> _Anchor:
+    if representative_log:
+        return _extract_log_anchor(representative_log).anchor
+
+    candidates = [
+        _extract_log_anchor(log_snippet)
+        for log_snippet in log_snippets
+        if log_snippet.strip()
+    ]
+    candidates = [candidate for candidate in candidates if candidate.anchor.signature_text]
+    if not candidates:
+        return _Anchor(signature_text="", audit_text="")
+
+    best = min(
+        candidates,
+        key=lambda candidate: (
+            0 if candidate.has_cause else 1,
+            0 if candidate.has_matched else 1,
+            -candidate.selected_line_count,
+            -len(candidate.anchor.signature_text),
+            candidate.anchor.signature_text,
+            candidate.anchor.audit_text,
+        ),
+    )
+    return best.anchor
 
 
 def _extract_trace_anchor(trace: str) -> _Anchor:
@@ -355,6 +428,7 @@ def build_feedback_cluster_context(
     """Построить exact-memory context для feedback по одному кластеру."""
     message_raw, trace_raw, _ = get_cluster_feedback_sources(cluster, test_by_id)
     log_snippets = _collect_cluster_log_snippets(cluster, test_by_id)
+    representative_log = _get_representative_log_snippet(cluster, test_by_id)
 
     message_soft = (
         _normalize_signature_soft_fragment(
@@ -369,7 +443,7 @@ def build_feedback_cluster_context(
     )
     message_audit = _normalize_audit_fragment(message_raw) if message_raw.strip() else ""
     trace_anchor = _extract_trace_anchor(trace_raw)
-    log_anchor = _extract_log_anchor(log_snippets)
+    log_anchor = _select_log_anchor(log_snippets, representative_log)
 
     signature_parts: list[str]
     basis: str

@@ -382,6 +382,61 @@ def test_feedback_signature_is_stable_when_representative_log_falls_back_to_memb
     assert first.issue_signature.signature_hash == second.issue_signature.signature_hash
 
 
+def test_feedback_signature_does_not_drift_when_representative_log_stays_the_same() -> None:
+    """Дополнительный member-log не должен менять hash, если representative log не менялся."""
+    base_cluster = FailureCluster(
+        cluster_id="c-representative-stable",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Gateway timeout while saving order",
+    )
+    expanded_cluster = base_cluster.model_copy(
+        update={"member_test_ids": [1, 2], "member_count": 2}
+    )
+
+    base = build_feedback_cluster_context(
+        base_cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+    expanded = build_feedback_cluster_context(
+        expanded_cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+            2: _failed_test(
+                2,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Region EU validation failed\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+
+    assert base is not None
+    assert expanded is not None
+    assert base.issue_signature.signature_hash == expanded.issue_signature.signature_hash
+
+
 def test_feedback_signature_is_case_insensitive_for_same_issue() -> None:
     """Одинаковая ошибка с другой капитализацией должна матчиться как один issue."""
     cluster = FailureCluster(
@@ -550,6 +605,49 @@ def test_feedback_signature_preserves_long_numeric_codes_in_log_anchor() -> None
     assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
 
 
+def test_feedback_signature_preserves_embedded_numeric_codes_in_log_anchor() -> None:
+    """Embedded codes вроде ORA-12541 и ORA-12514 не должны схлопываться."""
+    cluster = FailureCluster(
+        cluster_id="c-ora-code",
+        label="Oracle error",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Database connect failure",
+    )
+    first = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Database connect failure",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Oracle returned ORA-12541 during connect\n"
+                    "Caused by: java.sql.SQLException: connect failed"
+                ),
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Database connect failure",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Oracle returned ORA-12514 during connect\n"
+                    "Caused by: java.sql.SQLException: connect failed"
+                ),
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
+
+
 def test_feedback_signature_preserves_long_numeric_codes_in_anchored_message() -> None:
     """Длинный message с одинаковым anchor не должен схлопываться по soft-path."""
     first_message = (
@@ -683,7 +781,7 @@ def test_apply_exact_feedback_memory_pins_injected_entry_and_hides_disliked() ->
                 audit_text="legacy dislike",
                 vote=FeedbackVote.DISLIKE,
                 issue_signature_hash="a" * 64,
-                issue_signature_version=3,
+                issue_signature_version=4,
             ),
             FeedbackRecord(
                 feedback_id=88,
@@ -691,7 +789,7 @@ def test_apply_exact_feedback_memory_pins_injected_entry_and_hides_disliked() ->
                 audit_text="confirmed like",
                 vote=FeedbackVote.LIKE,
                 issue_signature_hash="b" * 64,
-                issue_signature_version=3,
+                issue_signature_version=4,
             ),
         ],
         {
