@@ -226,8 +226,8 @@ def test_feedback_signature_is_stable_for_large_logs_with_volatile_values() -> N
     assert first.issue_signature.signature_hash == second.issue_signature.signature_hash
 
 
-def test_feedback_signature_uses_exact_short_message_even_with_different_logs() -> None:
-    """Короткая ошибка даёт один и тот же signature даже если лог различается."""
+def test_feedback_signature_uses_anchor_for_short_message_when_log_differs() -> None:
+    """Короткая ошибка не должна схлопываться, если причина в логе отличается."""
     cluster = FailureCluster(
         cluster_id="c-short",
         label="Gateway timeout",
@@ -260,8 +260,133 @@ def test_feedback_signature_uses_exact_short_message_even_with_different_logs() 
 
     assert first is not None
     assert second is not None
-    assert first.issue_signature.basis == "message_exact"
+    assert first.issue_signature.basis == "message_log_anchor"
+    assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
+
+
+def test_feedback_signature_is_case_insensitive_for_same_issue() -> None:
+    """Одинаковая ошибка с другой капитализацией должна матчиться как один issue."""
+    cluster = FailureCluster(
+        cluster_id="c-case",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Gateway Timeout While Saving Order",
+    )
+    first = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway Timeout While Saving Order",
+                log_snippet="2026-02-10 [ERROR] requestId=1\nCaused by: Root Cause Timeout",
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="gateway timeout while saving order",
+                log_snippet="2026-02-11 [error] requestId=2\ncaused by: root cause timeout",
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
     assert first.issue_signature.signature_hash == second.issue_signature.signature_hash
+
+
+def test_feedback_signature_preserves_long_numeric_error_codes() -> None:
+    """Разные длинные error-code не должны коллапсировать в один exact signature."""
+    first_cluster = FailureCluster(
+        cluster_id="c-code-1",
+        label="DB error",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Database error code 10001",
+    )
+    second_cluster = first_cluster.model_copy(
+        update={
+            "cluster_id": "c-code-2",
+            "example_message": "Database error code 10002",
+        }
+    )
+
+    first = build_feedback_cluster_context(
+        first_cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Database error code 10001",
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        second_cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Database error code 10002",
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.issue_signature.basis == "message_exact"
+    assert second.issue_signature.basis == "message_exact"
+    assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
+
+
+def test_feedback_signature_preserves_short_numeric_codes_even_with_same_anchor() -> None:
+    """Короткий message с разными кодами не должен схлопываться даже при одинаковом anchor."""
+    cluster = FailureCluster(
+        cluster_id="c-anchor-code-1",
+        label="Remote error",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Remote error code 10001",
+    )
+    first = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Remote error code 10001",
+                log_snippet="2026-02-10 [ERROR] requestId=1\nCaused by: BackendException: boom",
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        cluster.model_copy(
+            update={
+                "cluster_id": "c-anchor-code-2",
+                "example_message": "Remote error code 10002",
+            }
+        ),
+        {
+            1: _failed_test(
+                1,
+                status_message="Remote error code 10002",
+                log_snippet="2026-02-11 [ERROR] requestId=2\nCaused by: BackendException: boom",
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.issue_signature.basis == "message_log_anchor"
+    assert second.issue_signature.basis == "message_log_anchor"
+    assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
 
 
 def test_apply_exact_feedback_memory_pins_injected_entry_and_hides_disliked() -> None:
