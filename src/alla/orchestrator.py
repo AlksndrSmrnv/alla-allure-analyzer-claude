@@ -9,6 +9,15 @@ from typing import TYPE_CHECKING
 
 from alla.clients.base import TestResultsProvider, TestResultsUpdater
 from alla.config import Settings
+from alla.knowledge.feedback_models import (
+    FeedbackClusterContext,
+    FeedbackRecord,
+    FeedbackVote,
+)
+from alla.knowledge.feedback_signature import (
+    build_feedback_cluster_context,
+    get_cluster_feedback_sources,
+)
 from alla.knowledge.models import KBMatchResult
 from alla.models.clustering import ClusteringReport, FailureCluster
 from alla.models.onboarding import OnboardingMode, OnboardingState
@@ -35,7 +44,7 @@ class AnalysisResult:
     llm_result: LLMAnalysisResult | None = None
     llm_push_result: LLMPushResult | None = None
     llm_launch_summary: LLMLaunchSummary | None = None
-    feedback_texts: dict[str, str] = field(default_factory=dict)
+    feedback_contexts: dict[str, FeedbackClusterContext] = field(default_factory=dict)
     onboarding: OnboardingState = field(default_factory=OnboardingState)
 
 
@@ -97,7 +106,7 @@ async def analyze_launch(
     kb_results: dict[str, list[KBMatchResult]] = {}
     kb_push_result = None
     kb_provenance: dict[str, tuple[int, int, int]] = {}
-    feedback_texts: dict[str, str] = {}
+    feedback_contexts: dict[str, FeedbackClusterContext] = {}
     onboarding = OnboardingState(
         mode=OnboardingMode.KB_NOT_CONFIGURED
         if not settings.kb_active
@@ -132,6 +141,9 @@ async def analyze_launch(
             min_score=settings.kb_min_score,
             max_results=settings.kb_max_results,
         )
+        feedback_store = _get_feedback_store(
+            kb_postgres_dsn=settings.kb_postgres_dsn,
+        )
         kb = _get_or_create_kb(
             matcher_config,
             report.project_id,
@@ -139,6 +151,11 @@ async def analyze_launch(
         )
         if hasattr(kb, "get_all_entries"):
             kb_entries = kb.get_all_entries()
+        entries_by_entry_id = {
+            entry.entry_id: entry
+            for entry in kb_entries
+            if entry.entry_id is not None
+        }
 
         if clustering_report is not None:
             # Индекс test_result_id → FailedTestSummary для быстрого lookup
@@ -152,11 +169,12 @@ async def analyze_launch(
                     )
                     kb_provenance[cluster.cluster_id] = (message_len, trace_len, log_len)
 
-                    # Feedback text: message + log (без trace) — то, что видит
-                    # пользователь при голосовании. Нормализован для fuzzy matching.
-                    fb_text = _build_feedback_text(cluster, test_by_id)
-                    if fb_text.strip():
-                        feedback_texts[cluster.cluster_id] = fb_text
+                    feedback_context = build_feedback_cluster_context(
+                        cluster,
+                        test_by_id,
+                    )
+                    if feedback_context is not None:
+                        feedback_contexts[cluster.cluster_id] = feedback_context
 
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
@@ -176,16 +194,25 @@ async def analyze_launch(
                                 _preview_head(query_text, _KB_QUERY_LOG_PREVIEW_CHARS),
                             )
 
-                    fb = feedback_texts.get(cluster.cluster_id)
                     matches = (
                         kb.search_by_error(
                             query_text,
                             query_label=f"{cluster.cluster_id}:combined",
-                            feedback_error_text=fb if fb else None,
                         )
                         if query_text.strip()
                         else []
                     )
+                    if feedback_context is not None:
+                        exact_feedback = feedback_store.get_feedback_for_signature(
+                            feedback_context.issue_signature.signature_hash,
+                            feedback_context.issue_signature.version,
+                        )
+                        matches = _apply_exact_feedback_memory(
+                            matches,
+                            exact_feedback,
+                            entries_by_entry_id,
+                            max_results=settings.kb_max_results,
+                        )
                     if matches:
                         kb_results[cluster.cluster_id] = matches
                 except Exception as exc:
@@ -325,7 +352,7 @@ async def analyze_launch(
         llm_result=llm_result,
         llm_push_result=llm_push_result,
         llm_launch_summary=llm_launch_summary,
-        feedback_texts=feedback_texts,
+        feedback_contexts=feedback_contexts,
         onboarding=onboarding,
     )
 
@@ -401,34 +428,9 @@ def _build_kb_query_text(
     Returns:
         (combined_text, message_len, trace_len, log_len)
     """
-    representative = (
-        test_by_id.get(cluster.representative_test_id)
-        if cluster.representative_test_id is not None
-        else None
-    )
-
-    message = (
-        representative.status_message
-        if representative and representative.status_message
-        else cluster.example_message
-    ) or ""
-    trace = ""
-    if include_trace:
-        trace = (
-            representative.status_trace
-            if representative and representative.status_trace
-            else cluster.example_trace_snippet
-        ) or ""
-
-    log_snippet = ""
-    if representative and representative.log_snippet:
-        log_snippet = representative.log_snippet.strip()
-    if not log_snippet:
-        for tid in cluster.member_test_ids:
-            member = test_by_id.get(tid)
-            if member and member.log_snippet and member.log_snippet.strip():
-                log_snippet = member.log_snippet.strip()
-                break
+    message, trace, log_snippet = get_cluster_feedback_sources(cluster, test_by_id)
+    if not include_trace:
+        trace = ""
 
     effective_trace = ""
     parts: list[str] = []
@@ -443,42 +445,61 @@ def _build_kb_query_text(
     return "\n".join(parts), len(message), len(effective_trace), len(log_snippet)
 
 
-def _build_feedback_text(
-    cluster: FailureCluster,
-    test_by_id: dict[int, FailedTestSummary],
-) -> str:
-    """Собрать текст ошибки для feedback: message + log (без trace).
+def _apply_exact_feedback_memory(
+    matches: list[KBMatchResult],
+    exact_feedback: list[FeedbackRecord],
+    entries_by_entry_id: dict[int, "KBEntry"],
+    *,
+    max_results: int,
+) -> list[KBMatchResult]:
+    """Применить exact feedback memory поверх обычных KB text matches."""
+    result_by_entry_id: dict[int, KBMatchResult] = {}
+    passthrough_matches: list[KBMatchResult] = []
 
-    Это текст, который видит пользователь при голосовании. Нормализуется
-    для fuzzy matching: UUID, timestamps, IP → placeholders.
-    """
-    from alla.utils.text_normalization import normalize_text_for_llm
+    for match in matches:
+        entry_id = match.entry.entry_id
+        if entry_id is None:
+            passthrough_matches.append(match)
+            continue
+        result_by_entry_id[entry_id] = match
 
-    representative = (
-        test_by_id.get(cluster.representative_test_id)
-        if cluster.representative_test_id is not None
-        else None
+    for record in exact_feedback:
+        entry_id = record.kb_entry_id
+        if record.vote == FeedbackVote.DISLIKE:
+            result_by_entry_id.pop(entry_id, None)
+            continue
+
+        match = result_by_entry_id.get(entry_id)
+        if match is None:
+            entry = entries_by_entry_id.get(entry_id)
+            if entry is None:
+                continue
+            match = KBMatchResult(
+                entry=entry,
+                score=1.0,
+                matched_on=[],
+                match_origin="feedback_exact",
+            )
+            result_by_entry_id[entry_id] = match
+
+        reason = "Feedback memory: exact issue signature was confirmed previously"
+        match.score = 1.0
+        match.match_origin = "feedback_exact"
+        match.feedback_vote = record.vote.value
+        match.feedback_id = record.feedback_id
+        match.matched_on = [reason] + [
+            item for item in match.matched_on if item != reason
+        ]
+
+    merged = list(result_by_entry_id.values()) + passthrough_matches
+    merged.sort(
+        key=lambda item: (
+            0 if item.match_origin == "feedback_exact" else 1,
+            -item.score,
+            item.entry.title,
+        ),
     )
-
-    message = (
-        representative.status_message
-        if representative and representative.status_message
-        else cluster.example_message
-    ) or ""
-
-    log_snippet = ""
-    if representative and representative.log_snippet:
-        log_snippet = representative.log_snippet.strip()
-    if not log_snippet:
-        for tid in cluster.member_test_ids:
-            member = test_by_id.get(tid)
-            if member and member.log_snippet and member.log_snippet.strip():
-                log_snippet = member.log_snippet.strip()
-                break
-
-    parts = [p for p in (message, log_snippet) if p]
-    raw = "\n".join(parts)
-    return normalize_text_for_llm(raw) if raw.strip() else ""
+    return merged[:max_results]
 
 
 def _preview_head(text: str, max_chars: int) -> str:
@@ -504,17 +525,20 @@ def _get_or_create_kb(
     Каждый вызов создаёт свежий экземпляр, чтобы подхватывать
     изменения в таблице alla.kb_entry без перезапуска сервера.
     """
-    from alla.knowledge.postgres_feedback import PostgresFeedbackStore
     from alla.knowledge.postgres_kb import PostgresKnowledgeBase
-
-    feedback_store = PostgresFeedbackStore(dsn=kb_postgres_dsn)
 
     kb = PostgresKnowledgeBase(
         dsn=kb_postgres_dsn,
         matcher_config=matcher_config,
         project_id=project_id,
-        feedback_store=feedback_store,
     )
 
     logger.debug("KB: создан новый экземпляр (postgres)")
     return kb
+
+
+def _get_feedback_store(*, kb_postgres_dsn: str):
+    """Создать exact feedback store для текущего запуска анализа."""
+    from alla.knowledge.postgres_feedback import PostgresFeedbackStore
+
+    return PostgresFeedbackStore(dsn=kb_postgres_dsn)

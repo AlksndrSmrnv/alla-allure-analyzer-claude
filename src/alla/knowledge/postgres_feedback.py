@@ -1,30 +1,11 @@
-"""PostgreSQL-реализация хранилища обратной связи KB.
-
-Миграция со старой (fingerprint-based) схемы:
-
-    -- Вариант 1: чистый старт (потеря старых голосов — ОК, т.к.
-    -- fingerprint-based голоса всё равно бесполезны в fuzzy системе)
-    DROP TABLE IF EXISTS alla.kb_feedback;
-
-    CREATE TABLE alla.kb_feedback (
-        feedback_id    SERIAL       PRIMARY KEY,
-        kb_entry_id    INTEGER      NOT NULL,
-        error_text     TEXT         NOT NULL,
-        error_text_hash TEXT        GENERATED ALWAYS AS (md5(error_text)) STORED,
-        vote           TEXT         NOT NULL CHECK (vote IN ('like', 'dislike')),
-        launch_id      INTEGER,
-        cluster_id     TEXT,
-        created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-        UNIQUE (kb_entry_id, error_text_hash)
-    );
-    CREATE INDEX idx_kb_feedback_entry_id ON alla.kb_feedback(kb_entry_id);
-"""
+"""PostgreSQL-реализация хранилища exact feedback memory."""
 
 from __future__ import annotations
 
 import logging
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 from alla.exceptions import KnowledgeBaseError
 from alla.knowledge.feedback_models import (
@@ -37,39 +18,42 @@ from alla.knowledge.models import KBEntry
 
 logger = logging.getLogger(__name__)
 
-# Порог similarity для resolve_votes больше не используется:
-# TF-IDF заменён на exact match после normalize_text_for_llm.
-
 
 class PostgresFeedbackStore:
-    """Реализация FeedbackStore для PostgreSQL.
-
-    Использует синхронный psycopg3 (как PostgresKnowledgeBase).
-    Каждый метод открывает и закрывает соединение (short-lived connections) —
-    достаточно для MVP с низкой частотой вызовов (ручные клики тестировщиков).
-    """
+    """Реализация FeedbackStore для PostgreSQL."""
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
 
-    # ------------------------------------------------------------------
-    # FeedbackStore Protocol
-    # ------------------------------------------------------------------
-
     def record_vote(self, request: FeedbackRequest) -> FeedbackResponse:
-        """UPSERT голос в alla.kb_feedback.
-
-        Дедупликация по (kb_entry_id, md5(error_text)):
-        при повторном вызове с тем же нормализованным текстом обновляет vote.
-        """
+        """UPSERT голос в alla.kb_feedback по exact issue signature."""
         query = """
-            INSERT INTO alla.kb_feedback
-                (kb_entry_id, error_text, vote, launch_id, cluster_id)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (kb_entry_id, error_text_hash)
-            DO UPDATE SET vote = EXCLUDED.vote, created_at = now()
-            RETURNING (xmax = 0) AS is_insert
+            INSERT INTO alla.kb_feedback (
+                kb_entry_id,
+                error_text,
+                vote,
+                launch_id,
+                cluster_id,
+                issue_signature_hash,
+                issue_signature_version,
+                issue_signature_payload
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (kb_entry_id, issue_signature_hash)
+            DO UPDATE SET
+                error_text = EXCLUDED.error_text,
+                vote = EXCLUDED.vote,
+                launch_id = EXCLUDED.launch_id,
+                cluster_id = EXCLUDED.cluster_id,
+                issue_signature_version = EXCLUDED.issue_signature_version,
+                issue_signature_payload = EXCLUDED.issue_signature_payload,
+                created_at = now()
+            RETURNING (xmax = 0) AS is_insert, feedback_id
         """
+        payload = request.issue_signature_payload or {
+            "signature_hash": request.issue_signature_hash,
+            "version": request.issue_signature_version,
+        }
         try:
             with psycopg.connect(self._dsn) as conn:
                 with conn.cursor() as cur:
@@ -77,14 +61,18 @@ class PostgresFeedbackStore:
                         query,
                         (
                             request.kb_entry_id,
-                            request.error_text,
+                            request.audit_text,
                             request.vote.value,
                             request.launch_id,
                             request.cluster_id,
+                            request.issue_signature_hash,
+                            request.issue_signature_version,
+                            Jsonb(payload),
                         ),
                     )
                     row = cur.fetchone()
                     is_insert = row[0] if row else True
+                    fb_id = row[1] if row else None
                     conn.commit()
         except Exception as exc:
             raise KnowledgeBaseError(
@@ -93,82 +81,106 @@ class PostgresFeedbackStore:
 
         return FeedbackResponse(
             kb_entry_id=request.kb_entry_id,
-            error_text_preview=request.error_text[:80],
+            audit_text_preview=request.audit_text[:80],
             vote=request.vote,
             created=is_insert,
+            feedback_id=fb_id,
         )
 
-    def get_feedback_for_entries(
-        self, entry_ids: set[int],
+    def resolve_votes(
+        self,
+        items: list[tuple[int, str, int, str]],
+    ) -> dict[str, tuple[FeedbackVote, int | None]]:
+        """Найти exact-memory голос для каждой пары entry + issue_signature."""
+        if not items:
+            return {}
+
+        signature_hashes = sorted({issue_hash for _, issue_hash, _, _ in items if issue_hash})
+        if not signature_hashes:
+            return {}
+
+        query = """
+            SELECT feedback_id, kb_entry_id, vote, issue_signature_hash, issue_signature_version
+            FROM alla.kb_feedback
+            WHERE issue_signature_hash = ANY(%s)
+        """
+        records: dict[tuple[int, str, int], tuple[FeedbackVote, int | None]] = {}
+        try:
+            with psycopg.connect(self._dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (signature_hashes,))
+                    for row in cur.fetchall():
+                        feedback_id, kb_entry_id, vote_raw, issue_hash, version = row
+                        if not issue_hash or version is None:
+                            continue
+                        records[(kb_entry_id, issue_hash, version)] = (
+                            FeedbackVote(vote_raw),
+                            feedback_id,
+                        )
+        except Exception as exc:
+            logger.warning("Ошибка exact-resolve feedback: %s", exc)
+            return {}
+
+        resolved: dict[str, tuple[FeedbackVote, int | None]] = {}
+        for entry_id, issue_hash, version, resolve_key in items:
+            hit = records.get((entry_id, issue_hash, version))
+            if hit is not None:
+                resolved[resolve_key] = hit
+
+        return resolved
+
+    def get_feedback_for_signature(
+        self,
+        issue_signature_hash: str,
+        issue_signature_version: int,
     ) -> list[FeedbackRecord]:
-        """Загрузить все feedback-записи для данных entry_id."""
-        if not entry_ids:
+        """Загрузить все feedback-записи для exact issue signature."""
+        if not issue_signature_hash:
             return []
 
         query = """
-            SELECT kb_entry_id, error_text, vote
+            SELECT
+                feedback_id,
+                kb_entry_id,
+                error_text,
+                vote,
+                issue_signature_hash,
+                issue_signature_version,
+                issue_signature_payload
             FROM alla.kb_feedback
-            WHERE kb_entry_id = ANY(%s)
+            WHERE issue_signature_hash = %s
+              AND issue_signature_version = %s
         """
         try:
             with psycopg.connect(self._dsn) as conn:
                 with conn.cursor() as cur:
-                    cur.execute(query, (list(entry_ids),))
+                    cur.execute(
+                        query,
+                        (issue_signature_hash, issue_signature_version),
+                    )
                     return [
                         FeedbackRecord(
-                            kb_entry_id=row[0],
-                            error_text=row[1],
-                            vote=FeedbackVote(row[2]),
+                            feedback_id=row[0],
+                            kb_entry_id=row[1],
+                            audit_text=row[2],
+                            vote=FeedbackVote(row[3]),
+                            issue_signature_hash=row[4],
+                            issue_signature_version=row[5],
+                            issue_signature_payload=row[6],
                         )
                         for row in cur.fetchall()
+                        if row[4] is not None
                     ]
         except Exception as exc:
-            logger.warning("Ошибка загрузки feedback: %s", exc)
+            logger.warning("Ошибка загрузки feedback по сигнатуре: %s", exc)
             return []
-
-    def resolve_votes(
-        self,
-        items: list[tuple[int, str, str]],
-    ) -> dict[str, tuple[FeedbackVote, float]]:
-        """Найти наиболее похожий голос для каждой тройки (entry_id, error_text, key).
-
-        Используется HTML-отчётом для инициализации состояния кнопок.
-        key — произвольный ключ (например ``"entry_id:cluster_id"``).
-        """
-        if not items:
-            return {}
-
-        entry_ids = {eid for eid, _, _ in items}
-        all_feedback = self.get_feedback_for_entries(entry_ids)
-        if not all_feedback:
-            return {}
-
-        # Группировка по entry_id
-        fb_by_entry: dict[int, list[FeedbackRecord]] = {}
-        for rec in all_feedback:
-            fb_by_entry.setdefault(rec.kb_entry_id, []).append(rec)
-
-        result: dict[str, tuple[FeedbackVote, float]] = {}
-        for entry_id, error_text, resolve_key in items:
-            records = fb_by_entry.get(entry_id)
-            if not records:
-                continue
-            vote, sim = _find_best_feedback_match(error_text, records)
-            if vote is not None and sim > 0:
-                result[resolve_key] = (vote, sim)
-
-        return result
 
     def create_kb_entry(
         self,
         entry: KBEntry,
         project_id: int | None,
     ) -> int | None:
-        """INSERT новую запись в alla.kb_entry.
-
-        Returns:
-            entry_id при успехе, None при конфликте slug (ON CONFLICT DO NOTHING).
-        """
+        """INSERT новую запись в alla.kb_entry."""
         query = """
             INSERT INTO alla.kb_entry
                 (id, title, description, error_example, category,
@@ -199,31 +211,3 @@ class PostgresFeedbackStore:
             raise KnowledgeBaseError(
                 f"Ошибка создания KB-записи: {exc}"
             ) from exc
-
-
-def _find_best_feedback_match(
-    query_text: str,
-    records: list[FeedbackRecord],
-) -> tuple[FeedbackVote | None, float]:
-    """Найти feedback-запись с точным совпадением нормализованного текста.
-
-    normalize_text_for_llm уже нормализует volatile данные (UUID, timestamps,
-    IP), поэтому exact match корректно находит «тот же» голос между запусками,
-    но не путает кластеры с разными числовыми значениями.
-
-    Returns:
-        (vote, similarity) — (vote, 1.0) при exact match, или (None, 0.0).
-    """
-    if not records:
-        return None, 0.0
-
-    from alla.utils.text_normalization import normalize_text_for_llm
-
-    query_normalized = normalize_text_for_llm(query_text)
-
-    for record in records:
-        record_normalized = normalize_text_for_llm(record.error_text)
-        if record_normalized == query_normalized:
-            return record.vote, 1.0
-
-    return None, 0.0

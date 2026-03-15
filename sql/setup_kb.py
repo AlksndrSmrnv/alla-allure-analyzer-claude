@@ -86,7 +86,7 @@ CREATE INDEX IF NOT EXISTS idx_kb_entry_project_id
     ON alla.kb_entry (project_id);
 
 -- ---------------------------------------------------------------------------
--- Таблица обратной связи: like / dislike на KB-совпадения из HTML-отчёта
+-- Таблица обратной связи: exact feedback memory на KB-совпадения
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS alla.kb_feedback (
     feedback_id       BIGSERIAL    PRIMARY KEY,
@@ -95,24 +95,60 @@ CREATE TABLE IF NOT EXISTS alla.kb_feedback (
                                    ON DELETE CASCADE,
     error_text        TEXT         NOT NULL,
     error_text_hash   TEXT         GENERATED ALWAYS AS (md5(error_text)) STORED,
+    issue_signature_hash     TEXT,
+    issue_signature_version  INTEGER      NOT NULL DEFAULT 1,
+    issue_signature_payload  JSONB,
     vote              TEXT         NOT NULL CHECK (vote IN ('like', 'dislike')),
     launch_id         INTEGER,
     cluster_id        TEXT,
-    created_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    UNIQUE (kb_entry_id, error_text_hash)
+    created_at        TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
+ALTER TABLE alla.kb_feedback
+    ADD COLUMN IF NOT EXISTS issue_signature_hash TEXT;
+
+ALTER TABLE alla.kb_feedback
+    ADD COLUMN IF NOT EXISTS issue_signature_version INTEGER NOT NULL DEFAULT 1;
+
+ALTER TABLE alla.kb_feedback
+    ADD COLUMN IF NOT EXISTS issue_signature_payload JSONB;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'kb_feedback_kb_entry_id_error_text_hash_key'
+    ) THEN
+        ALTER TABLE alla.kb_feedback
+            DROP CONSTRAINT kb_feedback_kb_entry_id_error_text_hash_key;
+    END IF;
+END
+$$;
+
 COMMENT ON TABLE  alla.kb_feedback IS
-    'Обратная связь тестировщиков: like/dislike на KB-совпадения из HTML-отчёта alla';
+    'Exact feedback memory тестировщиков: like/dislike на KB-совпадения из HTML-отчёта alla';
 COMMENT ON COLUMN alla.kb_feedback.kb_entry_id IS
     'FK на alla.kb_entry.entry_id — суррогатный PK, не slug';
 COMMENT ON COLUMN alla.kb_feedback.error_text IS
-    'Нормализованный текст ошибки (assertion + log). Для fuzzy TF-IDF matching';
+    'Audit-текст exact issue signature';
+COMMENT ON COLUMN alla.kb_feedback.issue_signature_hash IS
+    'Stable hash exact issue signature; основной ключ feedback memory';
+COMMENT ON COLUMN alla.kb_feedback.issue_signature_version IS
+    'Версия алгоритма exact issue signature';
+COMMENT ON COLUMN alla.kb_feedback.issue_signature_payload IS
+    'Опциональный JSON payload с metadata issue signature';
 COMMENT ON COLUMN alla.kb_feedback.vote IS
-    'like = boost score, dislike = penalize/exclude from results';
+    'like = pin exact KB match, dislike = hide exact KB match';
 
 CREATE INDEX IF NOT EXISTS idx_kb_feedback_entry_id
     ON alla.kb_feedback (kb_entry_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_feedback_issue_signature
+    ON alla.kb_feedback (kb_entry_id, issue_signature_hash);
+
+CREATE INDEX IF NOT EXISTS idx_kb_feedback_issue_signature
+    ON alla.kb_feedback (issue_signature_hash, issue_signature_version);
 """
 
 # ---------------------------------------------------------------------------

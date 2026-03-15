@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -16,17 +17,42 @@ class FeedbackVote(str, Enum):
     DISLIKE = "dislike"
 
 
+class FeedbackIssueSignature(BaseModel):
+    """Стабильная сигнатура ошибки для exact feedback memory."""
+
+    DEFAULT_VERSION: ClassVar[int] = 1
+
+    signature_hash: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[a-f0-9]{64}$",
+    )
+    version: int = Field(default=DEFAULT_VERSION, ge=1)
+    basis: str = Field(min_length=1, max_length=64)
+
+
+class FeedbackClusterContext(BaseModel):
+    """Контекст кластера, который использует report UI для feedback."""
+
+    audit_text: str = Field(min_length=1)
+    issue_signature: FeedbackIssueSignature
+
+
 # ------------------------------------------------------------------
 # Feedback (like / dislike)
 # ------------------------------------------------------------------
 
 
 class FeedbackRecord(BaseModel):
-    """Запись голоса из БД для fuzzy matching."""
+    """Запись exact feedback из БД."""
 
+    feedback_id: int | None = None
     kb_entry_id: int
-    error_text: str
+    audit_text: str
     vote: FeedbackVote
+    issue_signature_hash: str | None = None
+    issue_signature_version: int | None = None
+    issue_signature_payload: dict[str, Any] | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -35,11 +61,18 @@ class FeedbackRequest(BaseModel):
     kb_entry_id: int = Field(
         description="Суррогатный PK записи KB (alla.kb_entry.entry_id)",
     )
-    error_text: str = Field(
+    audit_text: str = Field(
         min_length=1,
-        description="Нормализованный текст ошибки (assertion + log, без trace)",
+        description="Компактный audit-текст exact issue signature",
     )
     vote: FeedbackVote
+    issue_signature_hash: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[a-f0-9]{64}$",
+    )
+    issue_signature_version: int = Field(default=FeedbackIssueSignature.DEFAULT_VERSION, ge=1)
+    issue_signature_payload: dict[str, Any] | None = None
     launch_id: int | None = Field(default=None, description="ID запуска (аудит)")
     cluster_id: str | None = Field(default=None, description="ID кластера (аудит)")
 
@@ -48,17 +81,21 @@ class FeedbackResponse(BaseModel):
     """Ответ POST /api/v1/kb/feedback."""
 
     kb_entry_id: int
-    error_text_preview: str = Field(
-        description="Первые 80 символов сохранённого error_text",
+    audit_text_preview: str = Field(
+        description="Первые 80 символов сохранённого audit_text",
     )
     vote: FeedbackVote
     created: bool = Field(
         description="True — создан новый голос, False — обновлён существующий",
     )
+    feedback_id: int | None = Field(
+        default=None,
+        description="PK записи alla.kb_feedback (для отображения в UI)",
+    )
 
 
 # ------------------------------------------------------------------
-# Resolve votes (batch fuzzy lookup)
+# Resolve votes (batch exact lookup)
 # ------------------------------------------------------------------
 
 
@@ -66,10 +103,15 @@ class FeedbackResolveItem(BaseModel):
     """Элемент запроса на резолв голосов."""
 
     kb_entry_id: int
-    error_text: str
+    issue_signature_hash: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[a-f0-9]{64}$",
+    )
+    issue_signature_version: int = Field(default=FeedbackIssueSignature.DEFAULT_VERSION, ge=1)
     cluster_id: str = Field(
         default="",
-        description="ID кластера — для disambiguation одной KB-записи в разных кластерах",
+        description="ID кластера — только для ключа ответа в UI",
     )
 
 
@@ -83,7 +125,10 @@ class FeedbackResolveVote(BaseModel):
     """Результат резолва для одного entry."""
 
     vote: FeedbackVote
-    similarity: float
+    feedback_id: int | None = Field(
+        default=None,
+        description="PK записи alla.kb_feedback (для отображения в UI)",
+    )
 
 
 class FeedbackResolveResponse(BaseModel):

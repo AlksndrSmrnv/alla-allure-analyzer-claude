@@ -38,7 +38,7 @@ def generate_html_report(
     kb_results = result.kb_results or {}
     llm_result = result.llm_result
     llm_summary = result.llm_launch_summary
-    feedback_texts = result.feedback_texts or {}
+    feedback_contexts = result.feedback_contexts or {}
     onboarding = result.onboarding
 
     generated_at = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -61,7 +61,6 @@ def generate_html_report(
         triage.failed_tests,
         onboarding=onboarding,
         feedback_api_url=feedback_api_url,
-        feedback_texts=feedback_texts,
         launch_id=triage.launch_id,
         project_id=triage.project_id,
     )
@@ -69,14 +68,18 @@ def generate_html_report(
     feedback_css = _FEEDBACK_CSS if feedback_api_url else ""
     feedback_js = _build_feedback_js(feedback_api_url) if feedback_api_url else ""
 
-    # Embed feedback texts as JS data for vote submission
+    # Embed exact feedback contexts as JS data for vote submission / resolve
     feedback_data_js = ""
-    if feedback_api_url and feedback_texts:
-        safe_data = _json.dumps(feedback_texts, ensure_ascii=False).replace(
+    if feedback_api_url and feedback_contexts:
+        safe_payload = {
+            cluster_id: context.model_dump()
+            for cluster_id, context in feedback_contexts.items()
+        }
+        safe_data = _json.dumps(safe_payload, ensure_ascii=False).replace(
             "</", "<\\/"
         )
         feedback_data_js = (
-            f"<script>var CLUSTER_FEEDBACK_TEXTS = {safe_data};</script>\n"
+            f"<script>var CLUSTER_FEEDBACK_CONTEXTS = {safe_data};</script>\n"
         )
 
     metrics_js = ""
@@ -251,7 +254,6 @@ def _render_clusters(
     *,
     onboarding: OnboardingState | None = None,
     feedback_api_url: str = "",
-    feedback_texts: dict[str, str] | None = None,
     launch_id: int = 0,
     project_id: int | None = None,
 ) -> str:
@@ -605,6 +607,7 @@ def _render_kb_entry(
             f'<button class="{like_cls}" title="Полезное совпадение">&#x2713; Полезно</button>'
             f'<button class="{dislike_cls}" title="Неверное совпадение">&#x2717; Не то</button>'
             '<span class="fb-status"></span>'
+            f'<span class="fb-id">{"fb#" + str(m.feedback_id) if m.feedback_id else ""}</span>'
             "</div>"
         )
 
@@ -614,11 +617,22 @@ def _render_kb_entry(
         else '<span class="kb-origin project">project</span>'
     )
 
+    entry_id_badge = ""
+    if m.entry.entry_id is not None:
+        entry_id_badge = f'<span class="kb-id">#{m.entry.entry_id}</span>'
+
+    score_html = (
+        '<span class="kb-memory">Ранее подтверждено</span>'
+        if m.match_origin == "feedback_exact"
+        else f'<span class="kb-score">{(m.score * 100):.0f}%</span>'
+    )
+
     return (
         '<div class="kb-entry">'
         '<div class="kb-entry-header">'
-        f'<span class="kb-score">{(m.score * 100):.0f}%</span>'
+        f"{score_html}"
         f'<span class="kb-title">{_e(m.entry.title)}</span>'
+        f"{entry_id_badge}"
         f"{origin_badge}"
         f'<span class="kb-category">{_e(m.entry.category.value)}</span>'
         "</div>"
@@ -1270,10 +1284,23 @@ _CSS = """
       padding: 0.125rem 0.5rem;
       border-radius: 9999px;
     }
+    .kb-memory {
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 0.125rem 0.5rem;
+      border-radius: 9999px;
+    }
     .kb-title {
       font-weight: 600;
       font-size: 1rem;
       flex: 1;
+    }
+    .kb-id {
+      font-size: .7rem;
+      color: var(--text-muted);
+      font-weight: 400;
     }
     .kb-origin {
       font-size: 0.7rem;
@@ -1479,6 +1506,7 @@ _FEEDBACK_CSS = """
     .fb-status{font-size:.75rem;color:var(--text-muted)}
     .fb-status-ok{color:var(--success)}
     .fb-status-error{color:var(--danger)}
+    .fb-id{font-size:.65rem;color:var(--text-muted);font-variant-numeric:tabular-nums}
 
     /* ---- Create Knowledge Base Entry Form ---- */
     .create-kb-action{gap:.8rem}
@@ -1554,16 +1582,19 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    var wrap = el.closest('.kb-feedback');\n"
         "    var status = wrap.querySelector('.fb-status');\n"
         "    var clusterId = wrap.dataset.clusterId;\n"
-        "    var errorText = (typeof CLUSTER_FEEDBACK_TEXTS !== 'undefined')\n"
-        "      ? CLUSTER_FEEDBACK_TEXTS[clusterId] : '';\n"
-        "    if (!errorText) {\n"
-        "      status.textContent = 'No feedback text';\n"
+        "    var context = (typeof CLUSTER_FEEDBACK_CONTEXTS !== 'undefined')\n"
+        "      ? CLUSTER_FEEDBACK_CONTEXTS[clusterId] : null;\n"
+        "    if (!context || !context.audit_text || !context.issue_signature) {\n"
+        "      status.textContent = 'No feedback context';\n"
         "      status.className = 'fb-status fb-status-error';\n"
         "      return;\n"
         "    }\n"
         "    var body = JSON.stringify({\n"
         "      kb_entry_id: parseInt(wrap.dataset.entryId, 10),\n"
-        "      error_text: errorText,\n"
+        "      audit_text: context.audit_text,\n"
+        "      issue_signature_hash: context.issue_signature.signature_hash,\n"
+        "      issue_signature_version: context.issue_signature.version,\n"
+        "      issue_signature_payload: context.issue_signature,\n"
         "      launch_id: parseInt(wrap.dataset.launchId, 10) || null,\n"
         "      cluster_id: clusterId || null,\n"
         "      vote: isLike ? 'like' : 'dislike'\n"
@@ -1577,11 +1608,13 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    }).then(function(r) {\n"
         "      if (!r.ok) throw new Error(r.status);\n"
         "      return r.json();\n"
-        "    }).then(function() {\n"
+        "    }).then(function(data) {\n"
         "      wrap.querySelectorAll('.fb-btn').forEach(function(b) { b.classList.remove('fb-active'); });\n"
         "      el.classList.add('fb-active');\n"
         "      status.textContent = 'Saved';\n"
         "      status.className = 'fb-status fb-status-ok';\n"
+        "      var fbIdEl = wrap.querySelector('.fb-id');\n"
+        "      if (fbIdEl && data.feedback_id) fbIdEl.textContent = 'fb#' + data.feedback_id;\n"
         "    }).catch(function(err) {\n"
         "      status.textContent = 'Error: ' + err.message;\n"
         "      status.className = 'fb-status fb-status-error';\n"
@@ -1647,20 +1680,25 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    });\n"
         "  });\n"
         "\n"
-        "  // --- Load existing votes on page load (fuzzy resolve) ---\n"
+        "  // --- Load existing votes on page load (exact resolve) ---\n"
         "  document.addEventListener('DOMContentLoaded', function() {\n"
-        "    if (typeof CLUSTER_FEEDBACK_TEXTS === 'undefined') return;\n"
+        "    if (typeof CLUSTER_FEEDBACK_CONTEXTS === 'undefined') return;\n"
         "    var items = [];\n"
         "    var seen = {};\n"
         "    document.querySelectorAll('.kb-feedback').forEach(function(el) {\n"
         "      var entryId = parseInt(el.dataset.entryId, 10);\n"
         "      var clusterId = el.dataset.clusterId;\n"
-        "      var errorText = CLUSTER_FEEDBACK_TEXTS[clusterId];\n"
-        "      if (!errorText) return;\n"
+        "      var context = CLUSTER_FEEDBACK_CONTEXTS[clusterId];\n"
+        "      if (!context || !context.issue_signature) return;\n"
         "      var key = entryId + ':' + clusterId;\n"
         "      if (seen[key]) return;\n"
         "      seen[key] = true;\n"
-        "      items.push({kb_entry_id: entryId, error_text: errorText, cluster_id: clusterId || ''});\n"
+        "      items.push({\n"
+        "        kb_entry_id: entryId,\n"
+        "        issue_signature_hash: context.issue_signature.signature_hash,\n"
+        "        issue_signature_version: context.issue_signature.version,\n"
+        "        cluster_id: clusterId || ''\n"
+        "      });\n"
         "    });\n"
         "    if (items.length === 0) return;\n"
         "    fetch(FEEDBACK_API_URL + '/api/v1/kb/feedback/resolve', {\n"
@@ -1681,6 +1719,8 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "        var cls = info.vote === 'like' ? '.fb-like' : '.fb-dislike';\n"
         "        var btn = wrap.querySelector(cls);\n"
         "        if (btn) btn.classList.add('fb-active');\n"
+        "        var fbIdEl = wrap.querySelector('.fb-id');\n"
+        "        if (fbIdEl && info.feedback_id) fbIdEl.textContent = 'fb#' + info.feedback_id;\n"
         "      });\n"
         "    })\n"
         "    .catch(function() {});\n"

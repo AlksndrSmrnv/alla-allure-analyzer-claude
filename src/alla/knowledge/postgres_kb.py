@@ -1,23 +1,14 @@
-"""PostgreSQL-реализация базы знаний.
-
-Загружает все записи из PostgreSQL при инициализации (load-at-init-time),
-кэширует их в памяти и делегирует поиск существующему TextMatcher.
-Реализует контракт KnowledgeBaseProvider для PostgreSQL-бэкенда.
-"""
+"""PostgreSQL-реализация базы знаний."""
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 import psycopg  # psycopg[binary] — обязательная зависимость (см. pyproject.toml)
 
 from alla.exceptions import KnowledgeBaseError
 from alla.knowledge.matcher import MatcherConfig, TextMatcher
 from alla.knowledge.models import KBEntry, KBMatchResult, RootCauseCategory
-
-if TYPE_CHECKING:
-    from alla.knowledge.postgres_feedback import PostgresFeedbackStore
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +28,6 @@ class PostgresKnowledgeBase:
         *,
         matcher_config: MatcherConfig | None = None,
         project_id: int | None = None,
-        feedback_store: PostgresFeedbackStore | None = None,
     ) -> None:
         """
         Args:
@@ -47,13 +37,10 @@ class PostgresKnowledgeBase:
             project_id: ID проекта Allure TestOps. Если задан, загружаются
                         глобальные записи (project_id IS NULL) + записи этого
                         проекта (project_id = N). Если None — только глобальные.
-            feedback_store: Хранилище обратной связи. Если задан,
-                        search_by_error() загружает feedback-записи для fuzzy matching.
         """
         self._dsn = dsn
         self._project_id = project_id
         self._matcher = TextMatcher(config=matcher_config)
-        self._feedback_store = feedback_store
         self._entries: list[KBEntry] = []
         self._entries_by_id: dict[str, KBEntry] = {}
         self._load()
@@ -151,43 +138,17 @@ class PostgresKnowledgeBase:
         error_text: str,
         *,
         query_label: str | None = None,
-        feedback_error_text: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
-
-        Если feedback_store задан и feedback_error_text передан, загружает
-        все feedback-записи для KB-entries и передаёт в matcher для fuzzy
-        matching (TF-IDF cosine similarity).
 
         Args:
             error_text: Текст ошибки для поиска (message + trace/log).
             query_label: Метка для логирования.
-            feedback_error_text: Текст для fuzzy feedback matching
-                (message + log, без trace). Если None — feedback не применяется.
         """
-        feedback_records = None
-
-        if self._feedback_store is not None and feedback_error_text:
-            entry_ids = {
-                e.entry_id for e in self._entries
-                if e.entry_id is not None
-            }
-            if entry_ids:
-                feedback_records = self._feedback_store.get_feedback_for_entries(
-                    entry_ids,
-                )
-                if feedback_records:
-                    logger.debug(
-                        "PostgresKB: loaded %d feedback records for %d entries",
-                        len(feedback_records), len(entry_ids),
-                    )
-
         return self._matcher.match(
             error_text,
             self._entries,
             query_label=query_label,
-            feedback_records=feedback_records,
-            feedback_error_text=feedback_error_text,
         )
 
     def get_all_entries(self) -> list[KBEntry]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -59,14 +60,17 @@ class KBMatchResult(BaseModel):
         default_factory=list,
         description="Объяснение совпадения (что именно совпало)",
     )
+    match_origin: Literal["kb", "feedback_exact"] = Field(
+        default="kb",
+        description="Откуда появился результат: text-match KB или exact feedback memory",
+    )
     feedback_vote: str | None = Field(
         default=None,
         description=(
-            "Pre-resolved голос для данного совпадения: 'like', 'dislike' или None. "
-            "Вычисляется при KB-matching через fuzzy similarity."
+            "Pre-resolved голос для exact-memory совпадения: 'like', 'dislike' или None."
         ),
     )
-    feedback_similarity: float | None = Field(
+    feedback_id: int | None = Field(
         default=None,
-        description="Cosine similarity между текущей ошибкой и сохранённым feedback (0–1).",
+        description="PK записи alla.kb_feedback для exact-memory совпадения.",
     )
