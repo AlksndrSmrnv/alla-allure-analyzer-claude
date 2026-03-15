@@ -413,10 +413,10 @@ async def test_submit_feedback_uses_exact_signature_payload(monkeypatch, _http_c
         "kb_entry_id": 77,
         "audit_text": "[message]\nGateway timeout while saving order",
         "issue_signature_hash": "a" * 64,
-        "issue_signature_version": 4,
+        "issue_signature_version": 5,
         "issue_signature_payload": {
             "signature_hash": "a" * 64,
-            "version": 4,
+            "version": 5,
             "basis": "message_exact",
         },
         "vote": "like",
@@ -431,7 +431,7 @@ async def test_submit_feedback_uses_exact_signature_payload(monkeypatch, _http_c
     data = resp.json()
     req = captured["request"]
     assert req.issue_signature_hash == "a" * 64
-    assert req.issue_signature_version == 4
+    assert req.issue_signature_version == 5
     assert req.audit_text == payload["audit_text"]
     assert data["feedback_id"] == 91
     assert data["audit_text_preview"] == payload["audit_text"][:80]
@@ -454,7 +454,7 @@ async def test_resolve_feedback_uses_exact_signature_hash(monkeypatch, _http_cli
             {
                 "kb_entry_id": 77,
                 "issue_signature_hash": "b" * 64,
-                "issue_signature_version": 4,
+                "issue_signature_version": 5,
                 "cluster_id": "c1",
             }
         ]
@@ -464,7 +464,7 @@ async def test_resolve_feedback_uses_exact_signature_hash(monkeypatch, _http_cli
         resp = await client.post("/api/v1/kb/feedback/resolve", json=payload)
 
     assert resp.status_code == 200
-    assert captured["items"] == [(77, "b" * 64, 4, "77:c1")]
+    assert captured["items"] == [(77, "b" * 64, 5, "77:c1")]
     assert resp.json() == {
         "votes": {
             "77:c1": {

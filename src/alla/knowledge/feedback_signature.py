@@ -163,6 +163,7 @@ class _Anchor:
 @dataclass(frozen=True)
 class _AnchorCandidate:
     anchor: _Anchor
+    primary_signature_text: str
     has_cause: bool
     has_matched: bool
     selected_line_count: int
@@ -298,6 +299,7 @@ def _extract_log_anchor(log_snippet: str) -> _AnchorCandidate:
     if not log_snippet:
         return _AnchorCandidate(
             anchor=_Anchor(signature_text="", audit_text=""),
+            primary_signature_text="",
             has_cause=False,
             has_matched=False,
             selected_line_count=0,
@@ -333,6 +335,7 @@ def _extract_log_anchor(log_snippet: str) -> _AnchorCandidate:
             selected.append(ordered_cause[0])
         if ordered_matched:
             selected.append(ordered_matched[0])
+        primary_signature_text = _build_anchor(selected).signature_text
 
         remaining_slots = _MAX_LOG_ANCHOR_LINES - len(selected)
         if remaining_slots > 0:
@@ -342,6 +345,7 @@ def _extract_log_anchor(log_snippet: str) -> _AnchorCandidate:
             selected.extend(ordered_matched[1 : 1 + remaining_slots])
         return _AnchorCandidate(
             anchor=_build_anchor(selected),
+            primary_signature_text=primary_signature_text,
             has_cause=bool(cause_lines),
             has_matched=bool(matched_lines),
             selected_line_count=len(selected),
@@ -350,6 +354,7 @@ def _extract_log_anchor(log_snippet: str) -> _AnchorCandidate:
     selected_fallback = sorted(fallback_lines, key=_anchor_line_sort_key)[:3]
     return _AnchorCandidate(
         anchor=_build_anchor(selected_fallback),
+        primary_signature_text=_build_anchor(selected_fallback[:1]).signature_text,
         has_cause=False,
         has_matched=False,
         selected_line_count=len(selected_fallback),
@@ -374,8 +379,9 @@ def _select_log_anchor(log_snippets: list[str], representative_log: str) -> _Anc
         key=lambda candidate: (
             0 if candidate.has_cause else 1,
             0 if candidate.has_matched else 1,
-            -candidate.selected_line_count,
-            -len(candidate.anchor.signature_text),
+            candidate.primary_signature_text,
+            candidate.selected_line_count,
+            len(candidate.anchor.signature_text),
             candidate.anchor.signature_text,
             candidate.anchor.audit_text,
         ),

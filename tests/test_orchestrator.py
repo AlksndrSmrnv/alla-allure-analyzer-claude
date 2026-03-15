@@ -382,6 +382,70 @@ def test_feedback_signature_is_stable_when_representative_log_falls_back_to_memb
     assert first.issue_signature.signature_hash == second.issue_signature.signature_hash
 
 
+def test_feedback_signature_fallback_ignores_richer_member_log_for_same_issue() -> None:
+    """Более подробный member-log не должен менять fallback hash при том же core issue."""
+    base_cluster = FailureCluster(
+        cluster_id="c-fallback-rich-base",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=10,
+        member_test_ids=[10, 11],
+        member_count=2,
+        example_message="Gateway timeout while saving order",
+    )
+    expanded_cluster = FailureCluster(
+        cluster_id="c-fallback-rich-expanded",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=20,
+        member_test_ids=[20, 21, 22],
+        member_count=3,
+        example_message="Gateway timeout while saving order",
+    )
+
+    base = build_feedback_cluster_context(
+        base_cluster,
+        {
+            10: _failed_test(10, status_message="Gateway timeout while saving order"),
+            11: _failed_test(
+                11,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+    expanded = build_feedback_cluster_context(
+        expanded_cluster,
+        {
+            20: _failed_test(20, status_message="Gateway timeout while saving order"),
+            21: _failed_test(
+                21,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+            22: _failed_test(
+                22,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed\n"
+                    "java.lang.RuntimeException: upstream failed"
+                ),
+            ),
+        },
+    )
+
+    assert base is not None
+    assert expanded is not None
+    assert base.issue_signature.signature_hash == expanded.issue_signature.signature_hash
+
+
 def test_feedback_signature_does_not_drift_when_representative_log_stays_the_same() -> None:
     """Дополнительный member-log не должен менять hash, если representative log не менялся."""
     base_cluster = FailureCluster(
@@ -781,7 +845,7 @@ def test_apply_exact_feedback_memory_pins_injected_entry_and_hides_disliked() ->
                 audit_text="legacy dislike",
                 vote=FeedbackVote.DISLIKE,
                 issue_signature_hash="a" * 64,
-                issue_signature_version=4,
+                issue_signature_version=5,
             ),
             FeedbackRecord(
                 feedback_id=88,
@@ -789,7 +853,7 @@ def test_apply_exact_feedback_memory_pins_injected_entry_and_hides_disliked() ->
                 audit_text="confirmed like",
                 vote=FeedbackVote.LIKE,
                 issue_signature_hash="b" * 64,
-                issue_signature_version=4,
+                issue_signature_version=5,
             ),
         ],
         {
