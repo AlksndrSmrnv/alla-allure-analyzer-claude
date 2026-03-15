@@ -21,17 +21,12 @@ class KnowledgeBaseProvider(Protocol):
         error_text: str,
         *,
         query_label: str | None = None,
-        feedback_error_text: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
 
         Args:
             error_text: Текст ошибки для поиска (message + trace/log).
             query_label: Метка для логирования.
-            feedback_error_text: Текст для fuzzy feedback matching
-                (message + log, без trace). Если задан и feedback store
-                доступен — загружает голоса, применяет boost/penalize/exclude
-                через TF-IDF cosine similarity.
         """
         ...
 

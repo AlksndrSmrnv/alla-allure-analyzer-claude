@@ -558,8 +558,8 @@ def _get_feedback_store():
 def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
     """Записать like/dislike для KB-совпадения из HTML-отчёта.
 
-    Принимает error_text (assertion + log, без trace). Текст нормализуется
-    перед сохранением для стабильного fuzzy matching.
+    Привязка выполняется по stable issue signature, а audit_text хранится
+    только для последующего разбора человеком.
     """
     store = _get_feedback_store()
     if store is None:
@@ -569,17 +569,11 @@ def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
         )
 
     from alla.knowledge.feedback_models import FeedbackRequest
-    from alla.utils.text_normalization import normalize_text_for_llm
 
     try:
         fb_request = FeedbackRequest(**request)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-
-    # Нормализация перед хранением: UUID, timestamps, IP → placeholders
-    # Используем normalize_text_for_llm (сохраняет числа) для консистентности
-    # с _build_feedback_text() и _find_best_feedback_match()
-    fb_request.error_text = normalize_text_for_llm(fb_request.error_text)
 
     from alla.exceptions import KnowledgeBaseError
 
@@ -667,21 +661,20 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/api/v1/kb/feedback/resolve")
 def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
-    """Найти актуальные голоса для пар (entry_id, error_text).
+    """Найти актуальные голоса для пар (entry_id, issue_signature_hash).
 
     Используется HTML-отчётом при загрузке для инициализации кнопок.
-    Применяет fuzzy text similarity — находит ближайший сохранённый
-    голос для каждой пары.
+    Учитывает только новые exact-memory записи; legacy feedback без
+    issue_signature_hash здесь не участвует.
 
-    Body: {"items": [{"kb_entry_id": 123, "error_text": "..."}]}
-    Response: {"votes": {"123": {"vote": "like", "similarity": 0.85}}}
+    Body: {"items": [{"kb_entry_id": 123, "issue_signature_hash": "..."}]}
+    Response: {"votes": {"123": {"vote": "like"}}}
     """
     store = _get_feedback_store()
     if store is None:
         raise HTTPException(status_code=501, detail="Requires postgres backend")
 
     from alla.knowledge.feedback_models import FeedbackResolveRequest
-    from alla.utils.text_normalization import normalize_text_for_llm
 
     try:
         req = FeedbackResolveRequest(**request)
@@ -691,7 +684,8 @@ def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
     items = [
         (
             it.kb_entry_id,
-            normalize_text_for_llm(it.error_text),
+            it.issue_signature_hash,
+            it.issue_signature_version,
             f"{it.kb_entry_id}:{it.cluster_id}",
         )
         for it in req.items
@@ -699,8 +693,11 @@ def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
     resolved = store.resolve_votes(items)
 
     votes: dict[str, dict[str, object]] = {}
-    for resolve_key, (vote, sim) in resolved.items():
-        votes[resolve_key] = {"vote": vote.value, "similarity": round(sim, 4)}
+    for resolve_key, (vote, fb_id) in resolved.items():
+        votes[resolve_key] = {
+            "vote": vote.value,
+            "feedback_id": fb_id,
+        }
 
     return {"votes": votes}
 

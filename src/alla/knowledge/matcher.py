@@ -1,11 +1,4 @@
-"""Трёхуровневый алгоритм сопоставления ошибок с записями базы знаний.
-
-Уровни (tiers):
-  1. Exact substring — нормализованный error_example целиком найден в логе.
-  2. Line match — ≥80% строк error_example найдены в логе (точно или по word-overlap).
-  3. TF-IDF cosine similarity — нечёткий поиск (fallback), score ограничен сверху.
-     Если вызван fit(), TF-IDF предобучается на корпусе KB один раз (стабильный IDF).
-"""
+"""Трёхуровневый алгоритм сопоставления ошибок с записями базы знаний."""
 
 from __future__ import annotations
 
@@ -86,18 +79,6 @@ class MatcherConfig:
     example_weight: float = 0.8
     title_desc_weight: float = 0.2
 
-    # --- Feedback (fuzzy) ---
-    boost_factor: float = 1.25
-    feedback_sim_threshold: float = 0.3
-    strong_dislike_threshold: float = 0.7
-    dislike_penalty_factor: float = 0.3
-
-
-# ---------------------------------------------------------------------------
-# TextMatcher
-# ---------------------------------------------------------------------------
-
-
 class TextMatcher:
     """Сопоставляет текст ошибки с записями KB через 3-уровневый алгоритм.
 
@@ -173,8 +154,6 @@ class TextMatcher:
         entries: list[KBEntry],
         *,
         query_label: str | None = None,
-        feedback_records: list | None = None,
-        feedback_error_text: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
 
@@ -182,8 +161,6 @@ class TextMatcher:
             error_text: Объединённый текст ошибки (message + trace + logs).
             entries: Записи KB для сопоставления.
             query_label: Метка для отладочных логов (cluster_id).
-            feedback_records: Список FeedbackRecord для fuzzy matching.
-            feedback_error_text: Текст ошибки для feedback (message + log, без trace).
 
         Returns:
             Список KBMatchResult, отсортированный по score desc.
@@ -281,13 +258,6 @@ class TextMatcher:
                     f" [{query_label}]" if query_label else "",
                     entry.title, entry.id, capped_score, ex_sim, td_sim,
                 )
-
-        # --- Fuzzy feedback: boost liked, penalize/exclude disliked ---
-        if feedback_records and feedback_error_text:
-            results = self._apply_fuzzy_feedback(
-                results, feedback_error_text, feedback_records,
-                query_label=query_label,
-            )
 
         # --- Сортировка + лимит ---
         results.sort(key=lambda r: -r.score)
@@ -540,110 +510,3 @@ class TextMatcher:
             hits.append((local_i, capped_score, ex_sim, td_sim))
 
         return hits
-
-    # ------------------------------------------------------------------
-    # Fuzzy feedback adjustments
-    # ------------------------------------------------------------------
-
-    def _apply_fuzzy_feedback(
-        self,
-        results: list[KBMatchResult],
-        feedback_error_text: str,
-        feedback_records: list,
-        *,
-        query_label: str | None = None,
-    ) -> list[KBMatchResult]:
-        """Применить fuzzy feedback: boost liked, penalize/exclude disliked.
-
-        Для каждого результата ищет наиболее похожую feedback-запись
-        (по TF-IDF cosine similarity), затем корректирует score.
-        """
-        from alla.knowledge.feedback_models import FeedbackRecord, FeedbackVote
-
-        cfg = self._config
-
-        # Группировка feedback по entry_id
-        fb_by_entry: dict[int, list[FeedbackRecord]] = {}
-        for rec in feedback_records:
-            fb_by_entry.setdefault(rec.kb_entry_id, []).append(rec)
-
-        if not fb_by_entry:
-            return results
-
-        adjusted: list[KBMatchResult] = []
-        for r in results:
-            entry_id = r.entry.entry_id
-            if entry_id is None or entry_id not in fb_by_entry:
-                adjusted.append(r)
-                continue
-
-            records = fb_by_entry[entry_id]
-            best_vote, best_sim = _find_best_feedback_match(
-                feedback_error_text, records,
-            )
-
-            if best_vote is None or best_sim < cfg.feedback_sim_threshold:
-                adjusted.append(r)
-                continue
-
-            if best_vote == FeedbackVote.DISLIKE:
-                if best_sim >= cfg.strong_dislike_threshold:
-                    # Жёсткое исключение
-                    logger.debug(
-                        "KB excluded%s: '%s' (entry_id=%d) — dislike sim=%.2f",
-                        f" [{query_label}]" if query_label else "",
-                        r.entry.title, entry_id, best_sim,
-                    )
-                    continue  # пропускаем запись
-                # Мягкий штраф
-                penalty = 1.0 - best_sim * cfg.dislike_penalty_factor
-                original = r.score
-                r.score = round(max(0.0, r.score * penalty), 4)
-                r.feedback_vote = "dislike"
-                r.feedback_similarity = round(best_sim, 4)
-                r.matched_on.append(
-                    f"Penalized: {original:.2f} → {r.score:.2f} "
-                    f"(dislike sim={best_sim:.2f})"
-                )
-            else:  # LIKE
-                boost = 1.0 + best_sim * (cfg.boost_factor - 1.0)
-                original = r.score
-                r.score = round(min(1.0, r.score * boost), 4)
-                r.feedback_vote = "like"
-                r.feedback_similarity = round(best_sim, 4)
-                r.matched_on.append(
-                    f"Boosted: {original:.2f} → {r.score:.2f} "
-                    f"(like sim={best_sim:.2f})"
-                )
-
-            adjusted.append(r)
-
-        return adjusted
-
-
-def _find_best_feedback_match(
-    query_text: str,
-    records: list,
-) -> tuple:
-    """Найти feedback-запись с точным совпадением нормализованного текста.
-
-    normalize_text_for_llm уже нормализует volatile данные (UUID, timestamps,
-    IP), поэтому exact match корректно находит «тот же» голос между запусками,
-    но не путает кластеры с разными числовыми значениями.
-
-    Returns:
-        (vote, similarity) — (vote, 1.0) при exact match, или (None, 0.0).
-    """
-    if not records:
-        return None, 0.0
-
-    from alla.utils.text_normalization import normalize_text_for_llm
-
-    query_normalized = normalize_text_for_llm(query_text)
-
-    for record in records:
-        record_normalized = normalize_text_for_llm(record.error_text)
-        if record_normalized == query_normalized:
-            return record.vote, 1.0
-
-    return None, 0.0

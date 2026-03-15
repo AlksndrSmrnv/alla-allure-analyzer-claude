@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 import alla
+from alla.knowledge.feedback_models import FeedbackResponse, FeedbackVote
 from alla.exceptions import (
     AllureApiError,
     AuthenticationError,
@@ -388,3 +389,87 @@ async def test_create_kb_entry_canonicalizes_error_example_before_save(monkeypat
     assert "2026-02-10 12:00:00" not in entry.error_example
     assert data["id"] == _make_slug("Gateway timeout", entry.error_example)
     assert entry.id == data["id"]
+
+
+@pytest.mark.asyncio
+async def test_submit_feedback_uses_exact_signature_payload(monkeypatch, _http_client) -> None:
+    """POST /api/v1/kb/feedback передаёт stable issue signature в store."""
+    captured: dict[str, Any] = {}
+
+    class _Store:
+        def record_vote(self, request):
+            captured["request"] = request
+            return FeedbackResponse(
+                kb_entry_id=request.kb_entry_id,
+                audit_text_preview=request.audit_text[:80],
+                vote=request.vote,
+                created=True,
+                feedback_id=91,
+            )
+
+    monkeypatch.setattr("alla.server._get_feedback_store", lambda: _Store())
+
+    payload = {
+        "kb_entry_id": 77,
+        "audit_text": "[message]\nGateway timeout while saving order",
+        "issue_signature_hash": "a" * 64,
+        "issue_signature_version": 1,
+        "issue_signature_payload": {
+            "signature_hash": "a" * 64,
+            "version": 1,
+            "basis": "message_exact",
+        },
+        "vote": "like",
+        "cluster_id": "c1",
+        "launch_id": 123,
+    }
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/kb/feedback", json=payload)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    req = captured["request"]
+    assert req.issue_signature_hash == "a" * 64
+    assert req.issue_signature_version == 1
+    assert req.audit_text == payload["audit_text"]
+    assert data["feedback_id"] == 91
+    assert data["audit_text_preview"] == payload["audit_text"][:80]
+
+
+@pytest.mark.asyncio
+async def test_resolve_feedback_uses_exact_signature_hash(monkeypatch, _http_client) -> None:
+    """Resolve endpoint работает только по issue_signature_hash/version."""
+    captured: dict[str, Any] = {}
+
+    class _Store:
+        def resolve_votes(self, items):
+            captured["items"] = items
+            return {"77:c1": (FeedbackVote.LIKE, 44)}
+
+    monkeypatch.setattr("alla.server._get_feedback_store", lambda: _Store())
+
+    payload = {
+        "items": [
+            {
+                "kb_entry_id": 77,
+                "issue_signature_hash": "b" * 64,
+                "issue_signature_version": 1,
+                "cluster_id": "c1",
+            }
+        ]
+    }
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/kb/feedback/resolve", json=payload)
+
+    assert resp.status_code == 200
+    assert captured["items"] == [(77, "b" * 64, 1, "77:c1")]
+    assert resp.json() == {
+        "votes": {
+            "77:c1": {
+                "vote": "like",
+                "feedback_id": 44,
+            }
+        }
+    }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import html as _html
 import re
 
+from alla.knowledge.feedback_models import FeedbackClusterContext, FeedbackIssueSignature
 from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis
 from alla.models.onboarding import OnboardingMode, OnboardingState
 from alla.orchestrator import AnalysisResult
@@ -208,3 +209,43 @@ def test_html_report_shows_kb_setup_callout() -> None:
 
     assert "Alla ещё не может учиться на ваших кластерах" in html
     assert "ALLURE_KB_POSTGRES_DSN" in html
+
+
+def test_html_report_shows_exact_feedback_badge_and_context_payload() -> None:
+    """Exact feedback memory показывает отдельный badge и новый JS payload."""
+    cluster = make_failure_cluster(cluster_id="c-exact")
+    result = AnalysisResult(
+        triage_report=make_triage_report(project_id=42),
+        clustering_report=make_clustering_report(clusters=[cluster], cluster_count=1),
+        kb_results={
+            "c-exact": [
+                make_kb_match_result(
+                    score=0.33,
+                    match_origin="feedback_exact",
+                    feedback_vote="like",
+                    feedback_id=55,
+                    entry=make_kb_entry(entry_id=101, project_id=42, title="Confirmed KB"),
+                )
+            ]
+        },
+        feedback_contexts={
+            "c-exact": FeedbackClusterContext(
+                audit_text="[message]\nGateway timeout while saving order",
+                issue_signature=FeedbackIssueSignature(
+                    signature_hash="a" * 64,
+                    basis="message_exact",
+                ),
+            )
+        },
+    )
+
+    html = generate_html_report(
+        result,
+        feedback_api_url="http://feedback.local",
+    )
+
+    assert "Ранее подтверждено" in html
+    assert "33%" not in html
+    assert "fb#55" in html
+    assert "CLUSTER_FEEDBACK_CONTEXTS" in html
+    assert "issue_signature_hash" in html

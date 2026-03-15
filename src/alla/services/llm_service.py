@@ -45,6 +45,8 @@ def _format_kb_category(category: RootCauseCategory) -> str:
 
 def _is_exact_kb_match(match: KBMatchResult) -> bool:
     """Определить, что совпадение с базой знаний является точным."""
+    if match.match_origin == "feedback_exact":
+        return True
     if match.score < _EXACT_KB_SCORE:
         return False
     if not match.matched_on:
@@ -60,6 +62,11 @@ def _humanize_match_reason(matched_on: list[str]) -> str:
     if not matched_on:
         return "текстовое совпадение"
     reason = matched_on[0]
+    if "Feedback memory" in reason:
+        return (
+            "Пользователь ранее подтвердил эту запись для точной сигнатуры "
+            "той же ошибки"
+        )
     if "Tier 1" in reason or "exact substring" in reason.lower():
         return "Пример ошибки из базы знаний найден целиком в данных кластера"
     if "Tier 2" in reason or "line match" in reason.lower():
