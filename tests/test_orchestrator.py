@@ -264,6 +264,243 @@ def test_feedback_signature_uses_anchor_for_short_message_when_log_differs() -> 
     assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
 
 
+def test_feedback_signature_uses_matched_error_line_for_short_message() -> None:
+    """Short-case должен различать одинаковый summary с одной exception, но разными error lines."""
+    cluster = FailureCluster(
+        cluster_id="c-short-matched",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Gateway timeout while saving order",
+    )
+    first = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Order validation failed for region EU\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-11 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.issue_signature.basis == "message_log_anchor"
+    assert second.issue_signature.basis == "message_log_anchor"
+    assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
+
+
+def test_feedback_signature_is_stable_when_representative_log_falls_back_to_members() -> None:
+    """Одинаковый набор member logs даёт тот же hash даже при других test_result_id."""
+    first_cluster = FailureCluster(
+        cluster_id="c-fallback-a",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=10,
+        member_test_ids=[10, 11, 12],
+        member_count=3,
+        example_message="Gateway timeout while saving order",
+    )
+    second_cluster = FailureCluster(
+        cluster_id="c-fallback-b",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=20,
+        member_test_ids=[20, 21, 22],
+        member_count=3,
+        example_message="Gateway timeout while saving order",
+    )
+
+    first = build_feedback_cluster_context(
+        first_cluster,
+        {
+            10: _failed_test(10, status_message="Gateway timeout while saving order"),
+            11: _failed_test(
+                11,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Region EU validation failed\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+            12: _failed_test(
+                12,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        second_cluster,
+        {
+            20: _failed_test(20, status_message="Gateway timeout while saving order"),
+            21: _failed_test(
+                21,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+            22: _failed_test(
+                22,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Region EU validation failed\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.issue_signature.basis == "message_log_anchor"
+    assert second.issue_signature.basis == "message_log_anchor"
+    assert first.issue_signature.signature_hash == second.issue_signature.signature_hash
+
+
+def test_feedback_signature_fallback_ignores_richer_member_log_for_same_issue() -> None:
+    """Более подробный member-log не должен менять fallback hash при том же core issue."""
+    base_cluster = FailureCluster(
+        cluster_id="c-fallback-rich-base",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=10,
+        member_test_ids=[10, 11],
+        member_count=2,
+        example_message="Gateway timeout while saving order",
+    )
+    expanded_cluster = FailureCluster(
+        cluster_id="c-fallback-rich-expanded",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=20,
+        member_test_ids=[20, 21, 22],
+        member_count=3,
+        example_message="Gateway timeout while saving order",
+    )
+
+    base = build_feedback_cluster_context(
+        base_cluster,
+        {
+            10: _failed_test(10, status_message="Gateway timeout while saving order"),
+            11: _failed_test(
+                11,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+    expanded = build_feedback_cluster_context(
+        expanded_cluster,
+        {
+            20: _failed_test(20, status_message="Gateway timeout while saving order"),
+            21: _failed_test(
+                21,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+            22: _failed_test(
+                22,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed\n"
+                    "java.lang.RuntimeException: upstream failed"
+                ),
+            ),
+        },
+    )
+
+    assert base is not None
+    assert expanded is not None
+    assert base.issue_signature.signature_hash == expanded.issue_signature.signature_hash
+
+
+def test_feedback_signature_does_not_drift_when_representative_log_stays_the_same() -> None:
+    """Дополнительный member-log не должен менять hash, если representative log не менялся."""
+    base_cluster = FailureCluster(
+        cluster_id="c-representative-stable",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Gateway timeout while saving order",
+    )
+    expanded_cluster = base_cluster.model_copy(
+        update={"member_test_ids": [1, 2], "member_count": 2}
+    )
+
+    base = build_feedback_cluster_context(
+        base_cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+    expanded = build_feedback_cluster_context(
+        expanded_cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+            2: _failed_test(
+                2,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Region EU validation failed\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+
+    assert base is not None
+    assert expanded is not None
+    assert base.issue_signature.signature_hash == expanded.issue_signature.signature_hash
+
+
 def test_feedback_signature_is_case_insensitive_for_same_issue() -> None:
     """Одинаковая ошибка с другой капитализацией должна матчиться как один issue."""
     cluster = FailureCluster(
@@ -389,6 +626,188 @@ def test_feedback_signature_preserves_short_numeric_codes_even_with_same_anchor(
     assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
 
 
+def test_feedback_signature_preserves_long_numeric_codes_in_log_anchor() -> None:
+    """Soft-normalized log-anchor должен различать разные error-code."""
+    cluster = FailureCluster(
+        cluster_id="c-log-code",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Gateway timeout while saving order",
+    )
+    first = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Backend returned code 10001\n"
+                    "Caused by: java.lang.RuntimeException: upstream failed"
+                ),
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Backend returned code 10002\n"
+                    "Caused by: java.lang.RuntimeException: upstream failed"
+                ),
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
+
+
+def test_feedback_signature_preserves_embedded_numeric_codes_in_log_anchor() -> None:
+    """Embedded codes вроде ORA-12541 и ORA-12514 не должны схлопываться."""
+    cluster = FailureCluster(
+        cluster_id="c-ora-code",
+        label="Oracle error",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Database connect failure",
+    )
+    first = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Database connect failure",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Oracle returned ORA-12541 during connect\n"
+                    "Caused by: java.sql.SQLException: connect failed"
+                ),
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Database connect failure",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Oracle returned ORA-12514 during connect\n"
+                    "Caused by: java.sql.SQLException: connect failed"
+                ),
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
+
+
+def test_feedback_signature_preserves_long_numeric_codes_in_anchored_message() -> None:
+    """Длинный message с одинаковым anchor не должен схлопываться по soft-path."""
+    first_message = (
+        "Gateway timeout while saving order after backend returned code 10001 "
+        "during multi-step reconciliation in payment pipeline with retry attempt "
+        "still pending for downstream orchestration"
+    )
+    second_message = (
+        "Gateway timeout while saving order after backend returned code 10002 "
+        "during multi-step reconciliation in payment pipeline with retry attempt "
+        "still pending for downstream orchestration"
+    )
+    cluster = FailureCluster(
+        cluster_id="c-long-code",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message=first_message,
+    )
+    shared_log = (
+        "2026-02-10 [ERROR] gateway timeout while saving order\n"
+        "Caused by: java.lang.RuntimeException: upstream failed"
+    )
+    first = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message=first_message,
+                log_snippet=shared_log,
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        cluster.model_copy(update={"example_message": second_message}),
+        {
+            1: _failed_test(
+                1,
+                status_message=second_message,
+                log_snippet=shared_log,
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.issue_signature.basis == "message_log_anchor"
+    assert second.issue_signature.basis == "message_log_anchor"
+    assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
+
+
+def test_feedback_signature_is_order_insensitive_for_anchor_lines() -> None:
+    """Одинаковый набор anchor-строк в другом порядке должен давать тот же hash."""
+    cluster = FailureCluster(
+        cluster_id="c-order",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Gateway timeout while saving order",
+    )
+    first = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "Caused by: java.lang.IllegalStateException: Remote service failed\n"
+                    "2026-02-11 [ERROR] Currency mismatch for payment gateway"
+                ),
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.issue_signature.signature_hash == second.issue_signature.signature_hash
+
+
 def test_apply_exact_feedback_memory_pins_injected_entry_and_hides_disliked() -> None:
     """Exact memory может добавить liked entry и убрать disliked entry."""
     weak_entry = KBEntry(
@@ -426,7 +845,7 @@ def test_apply_exact_feedback_memory_pins_injected_entry_and_hides_disliked() ->
                 audit_text="legacy dislike",
                 vote=FeedbackVote.DISLIKE,
                 issue_signature_hash="a" * 64,
-                issue_signature_version=1,
+                issue_signature_version=5,
             ),
             FeedbackRecord(
                 feedback_id=88,
@@ -434,7 +853,7 @@ def test_apply_exact_feedback_memory_pins_injected_entry_and_hides_disliked() ->
                 audit_text="confirmed like",
                 vote=FeedbackVote.LIKE,
                 issue_signature_hash="b" * 64,
-                issue_signature_version=1,
+                issue_signature_version=5,
             ),
         ],
         {
