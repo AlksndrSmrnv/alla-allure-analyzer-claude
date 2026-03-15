@@ -216,9 +216,9 @@ cp .env.example .env
 ### Запуск
 
 ```bash
-alla 12345                              # текстовый отчёт по launch #12345
-alla 12345 --output-format json         # JSON для автоматизации
-alla 12345 --output-format json --html-report-file alla-report.html > alla-report.json  # JSON + HTML за один прогон
+alla 12345                              # текстовый отчёт + HTML-отчёт (alla_report_12345.html)
+alla 12345 --output-format json         # JSON для автоматизации + HTML-отчёт
+alla 12345 --html-report-file custom.html  # HTML-отчёт в указанный файл (вместо alla_report_{id}.html)
 alla 12345 --log-level DEBUG            # подробные HTTP-логи
 alla 12345 --page-size 50               # 50 результатов на страницу
 alla --version                          # версия
@@ -588,7 +588,7 @@ CREATE TABLE alla.kb_entry (
 - [x] **Удаление комментариев alla** — команда `alla delete <launch_id>` сканирует комментарии к failed/broken тестам запуска, фильтрует по префиксу `[alla]` в теле комментария и удаляет через `DELETE /api/comment/{id}`. `CommentManager` Protocol для чтения/удаления комментариев. `CommentDeleteService` с двухфазным алгоритмом (scan → delete), semaphore-based concurrency и per-test error resilience. Флаг `--dry-run` для предварительного просмотра без удаления. REST API: `DELETE /api/v1/comments/{launch_id}?dry_run=true`.
 - [x] **LLM-анализ кластеров (Langflow)** — `LLMService.analyze_clusters()` отправляет каждый кластер в Langflow с контекстом (ошибка + трейс + KB-совпадения + лог). Ответ — 4 секции: что произошло / категория / что делать / критичность. Параллелизм через semaphore (`ALLURE_LLM_CONCURRENCY`). Клиент: `clients/langflow_client.py` с exponential backoff retry (`ALLURE_LLM_MAX_RETRIES`, `ALLURE_LLM_RETRY_BASE_DELAY`). LLM push (`ALLURE_LLM_PUSH_ENABLED`): комментарии `[alla] LLM-анализ ошибки` к тест-кейсам. При включённом LLM — KB push не выполняется (LLM включает KB в промпт).
 - [x] **Итоговый LLM-отчёт по прогону** — `LLMService.generate_launch_summary()` делает один дополнительный LLM-вызов после `analyze_clusters()`. Промпт содержит метаданные запуска + все кластеры (с их per-cluster анализами если доступны). LLM пишет 2-4 абзаца: общая картина → ключевые проблемы по убыванию критичности → приоритетные действия. CLI: секция `=== Итоговый отчёт ===` после кластерных рамок. Модель: `LLMLaunchSummary` в `models/llm.py`.
-- [x] **HTML-отчёт** — `alla/report/html_report.py`, `generate_html_report(result, endpoint)`. Self-contained HTML (pure Python, без Jinja2/внешних зависимостей): заголовок прогона, стат-карточки, итоговый LLM-summary, карточки кластеров (LLM-анализ + KB-совпадения + ссылки на тесты в Allure TestOps). Флаг CLI `--html-report-file PATH` — генерирует JSON и HTML за один прогон (без повторных API-вызовов).
+- [x] **HTML-отчёт** — `alla/report/html_report.py`, `generate_html_report(result, endpoint)`. Self-contained HTML (pure Python, без Jinja2/внешних зависимостей): заголовок прогона, стат-карточки, итоговый LLM-summary, карточки кластеров (LLM-анализ + KB-совпадения + ссылки на тесты в Allure TestOps). CLI автоматически генерирует `alla_report_{launch_id}.html` в текущей директории. Флаг `--html-report-file PATH` переопределяет путь.
 - [x] **Self-hosted отчёты** — alla-server сохраняет HTML-отчёты на диск (`ALLURE_REPORTS_DIR`) и раздаёт через `GET /reports/{filename}`. При заданном `ALLURE_SERVER_EXTERNAL_URL` автоматически формирует ссылку на отчёт и прикрепляет к прогону в TestOps через `PATCH /api/launch/{id}`. Jenkins только триггерит анализ, не хостит артефакты. CSP-заголовки для feedback API управляются alla-server.
 
 ## Что не сделано (план на следующие фазы)
