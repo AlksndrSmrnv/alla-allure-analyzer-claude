@@ -249,3 +249,4 @@ def test_html_report_shows_exact_feedback_badge_and_context_payload() -> None:
     assert "fb#55" in html
     assert "CLUSTER_FEEDBACK_CONTEXTS" in html
     assert "issue_signature_hash" in html
+    assert '"version": 2' in html

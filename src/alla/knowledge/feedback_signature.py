@@ -21,6 +21,7 @@ _MAX_LOG_ANCHOR_LINES = 6
 _MAX_TRACE_ANCHOR_LINES = 4
 _MAX_AUDIT_TEXT_CHARS = 2000
 _MULTI_WS_RE = re.compile(r"\s+")
+_WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_$.:-]*")
 _ERROR_HINT_RE = re.compile(
     r"\b(?:ERROR|FATAL|SEVERE|CRITICAL)\b"
     r"|(?:Exception|Error|Traceback|Caused by)\b"
@@ -34,6 +35,39 @@ _CAUSAL_HINT_RE = re.compile(
 )
 _STACK_FRAME_RE = re.compile(
     r"^\s*(?:at\s+\S+\(|\.\.\.\s+\d+\s+more\b|File \".+\", line \d+)",
+)
+_GENERIC_LOG_WORDS = frozenset(
+    {
+        "error",
+        "fatal",
+        "severe",
+        "critical",
+        "traceback",
+        "failed",
+        "failure",
+        "caused",
+        "by",
+        "requestid",
+        "correlationid",
+        "traceid",
+        "spanid",
+        "sessionid",
+        "build",
+        "job",
+        "task",
+        "thread",
+        "worker",
+        "process",
+        "pid",
+        "tid",
+        "from",
+        "for",
+        "the",
+        "and",
+        "with",
+        "while",
+        "during",
+    }
 )
 
 
@@ -64,10 +98,25 @@ def _dedupe(items: list[str]) -> list[str]:
     return result
 
 
+def _has_informative_signal_words(text: str) -> bool:
+    words = [
+        word.casefold()
+        for word in _WORD_RE.findall(_normalize_signature_soft_fragment(text))
+    ]
+    informative = [word for word in words if word not in _GENERIC_LOG_WORDS]
+    return len(informative) >= 2
+
+
 @dataclass(frozen=True)
 class _Anchor:
     signature_text: str
     audit_text: str
+
+
+@dataclass(frozen=True)
+class _AnchorLine:
+    raw_text: str
+    strict_signature: bool
 
 
 def get_cluster_feedback_sources(
@@ -105,20 +154,35 @@ def get_cluster_feedback_sources(
     return message, trace, log_snippet
 
 
-def _build_anchor(raw_lines: list[str], *, strict_signature: bool) -> _Anchor:
-    if not raw_lines:
+def _build_anchor(lines: list[_AnchorLine]) -> _Anchor:
+    if not lines:
         return _Anchor(signature_text="", audit_text="")
 
-    raw_deduped = _dedupe(raw_lines)
-    signature_normalize = (
-        _normalize_signature_strict_fragment
-        if strict_signature
-        else _normalize_signature_soft_fragment
-    )
-    signature_lines = _dedupe([signature_normalize(line) for line in raw_deduped])
-    audit_lines = _dedupe([_normalize_audit_fragment(line) for line in raw_deduped])
+    ordered_raw: list[str] = []
+    strict_by_raw: dict[str, bool] = {}
+    for line in lines:
+        if not line.raw_text:
+            continue
+        if line.raw_text not in strict_by_raw:
+            ordered_raw.append(line.raw_text)
+            strict_by_raw[line.raw_text] = line.strict_signature
+        else:
+            strict_by_raw[line.raw_text] = strict_by_raw[line.raw_text] or line.strict_signature
+
+    signature_lines: list[str] = []
+    for raw_text in ordered_raw:
+        normalize = (
+            _normalize_signature_strict_fragment
+            if strict_by_raw[raw_text]
+            else _normalize_signature_soft_fragment
+        )
+        normalized = normalize(raw_text)
+        if normalized:
+            signature_lines.append(normalized)
+
+    audit_lines = _dedupe([_normalize_audit_fragment(raw_text) for raw_text in ordered_raw])
     return _Anchor(
-        signature_text="\n".join(signature_lines),
+        signature_text="\n".join(sorted(_dedupe(signature_lines))),
         audit_text="\n".join(audit_lines),
     )
 
@@ -127,9 +191,9 @@ def _extract_log_anchor(log_snippet: str) -> _Anchor:
     if not log_snippet.strip():
         return _Anchor(signature_text="", audit_text="")
 
-    cause_lines: list[str] = []
-    matched_lines: list[str] = []
-    fallback_lines: list[str] = []
+    cause_lines: list[_AnchorLine] = []
+    matched_lines: list[_AnchorLine] = []
+    fallback_lines: list[_AnchorLine] = []
 
     for _, body in parse_log_sections(log_snippet):
         for raw_line in body.splitlines():
@@ -137,17 +201,27 @@ def _extract_log_anchor(log_snippet: str) -> _Anchor:
             if not stripped or _STACK_FRAME_RE.match(stripped):
                 continue
             if _CAUSAL_HINT_RE.search(stripped):
-                cause_lines.append(stripped)
-            elif _ERROR_HINT_RE.search(stripped):
-                matched_lines.append(stripped)
+                cause_lines.append(_AnchorLine(raw_text=stripped, strict_signature=True))
+            elif _ERROR_HINT_RE.search(stripped) and _has_informative_signal_words(stripped):
+                matched_lines.append(_AnchorLine(raw_text=stripped, strict_signature=False))
             elif len(fallback_lines) < 3:
-                fallback_lines.append(stripped)
+                fallback_lines.append(_AnchorLine(raw_text=stripped, strict_signature=False))
 
-    if cause_lines:
-        return _build_anchor(cause_lines[:_MAX_LOG_ANCHOR_LINES], strict_signature=True)
-    if matched_lines:
-        return _build_anchor(matched_lines[:_MAX_LOG_ANCHOR_LINES], strict_signature=False)
-    return _build_anchor(fallback_lines[:3], strict_signature=False)
+    if cause_lines or matched_lines:
+        selected: list[_AnchorLine] = []
+        if cause_lines:
+            selected.append(cause_lines[0])
+        if matched_lines:
+            selected.append(matched_lines[0])
+
+        remaining_slots = _MAX_LOG_ANCHOR_LINES - len(selected)
+        if remaining_slots > 0:
+            selected.extend(cause_lines[1 : 1 + remaining_slots])
+            remaining_slots = _MAX_LOG_ANCHOR_LINES - len(selected)
+        if remaining_slots > 0:
+            selected.extend(matched_lines[1 : 1 + remaining_slots])
+        return _build_anchor(selected)
+    return _build_anchor(fallback_lines[:3])
 
 
 def _extract_trace_anchor(trace: str) -> _Anchor:
@@ -158,20 +232,29 @@ def _extract_trace_anchor(trace: str) -> _Anchor:
     if not lines:
         return _Anchor(signature_text="", audit_text="")
 
-    cause_lines: list[str] = []
-    fallback_lines: list[str] = []
+    first_meaningful_line: _AnchorLine | None = None
+    cause_lines: list[_AnchorLine] = []
 
     for raw_line in lines:
         if _STACK_FRAME_RE.match(raw_line):
             continue
+        if first_meaningful_line is None:
+            first_meaningful_line = _AnchorLine(
+                raw_text=raw_line,
+                strict_signature=False,
+            )
         if _CAUSAL_HINT_RE.search(raw_line):
-            cause_lines.append(raw_line)
-        elif not fallback_lines:
-            fallback_lines.append(raw_line)
+            cause_lines.append(_AnchorLine(raw_text=raw_line, strict_signature=True))
 
-    if cause_lines:
-        return _build_anchor(cause_lines[:_MAX_TRACE_ANCHOR_LINES], strict_signature=True)
-    return _build_anchor(fallback_lines[:1], strict_signature=False)
+    if first_meaningful_line or cause_lines:
+        selected: list[_AnchorLine] = []
+        if first_meaningful_line is not None:
+            selected.append(first_meaningful_line)
+        remaining_slots = _MAX_TRACE_ANCHOR_LINES - len(selected)
+        if remaining_slots > 0:
+            selected.extend(cause_lines[:remaining_slots])
+        return _build_anchor(selected)
+    return _Anchor(signature_text="", audit_text="")
 
 
 def _is_short_message(message: str) -> bool:

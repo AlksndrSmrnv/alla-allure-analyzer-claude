@@ -264,6 +264,51 @@ def test_feedback_signature_uses_anchor_for_short_message_when_log_differs() -> 
     assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
 
 
+def test_feedback_signature_uses_matched_error_line_for_short_message() -> None:
+    """Short-case должен различать одинаковый summary с одной exception, но разными error lines."""
+    cluster = FailureCluster(
+        cluster_id="c-short-matched",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Gateway timeout while saving order",
+    )
+    first = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Order validation failed for region EU\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-11 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.issue_signature.basis == "message_log_anchor"
+    assert second.issue_signature.basis == "message_log_anchor"
+    assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
+
+
 def test_feedback_signature_is_case_insensitive_for_same_issue() -> None:
     """Одинаковая ошибка с другой капитализацией должна матчиться как один issue."""
     cluster = FailureCluster(
@@ -389,6 +434,49 @@ def test_feedback_signature_preserves_short_numeric_codes_even_with_same_anchor(
     assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
 
 
+def test_feedback_signature_is_order_insensitive_for_anchor_lines() -> None:
+    """Одинаковый набор anchor-строк в другом порядке должен давать тот же hash."""
+    cluster = FailureCluster(
+        cluster_id="c-order",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Gateway timeout while saving order",
+    )
+    first = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "2026-02-10 [ERROR] Currency mismatch for payment gateway\n"
+                    "Caused by: java.lang.IllegalStateException: Remote service failed"
+                ),
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout while saving order",
+                log_snippet=(
+                    "Caused by: java.lang.IllegalStateException: Remote service failed\n"
+                    "2026-02-11 [ERROR] Currency mismatch for payment gateway"
+                ),
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.issue_signature.signature_hash == second.issue_signature.signature_hash
+
+
 def test_apply_exact_feedback_memory_pins_injected_entry_and_hides_disliked() -> None:
     """Exact memory может добавить liked entry и убрать disliked entry."""
     weak_entry = KBEntry(
@@ -426,7 +514,7 @@ def test_apply_exact_feedback_memory_pins_injected_entry_and_hides_disliked() ->
                 audit_text="legacy dislike",
                 vote=FeedbackVote.DISLIKE,
                 issue_signature_hash="a" * 64,
-                issue_signature_version=1,
+                issue_signature_version=2,
             ),
             FeedbackRecord(
                 feedback_id=88,
@@ -434,7 +522,7 @@ def test_apply_exact_feedback_memory_pins_injected_entry_and_hides_disliked() ->
                 audit_text="confirmed like",
                 vote=FeedbackVote.LIKE,
                 issue_signature_hash="b" * 64,
-                issue_signature_version=1,
+                issue_signature_version=2,
             ),
         ],
         {
