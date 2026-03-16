@@ -134,6 +134,7 @@ class FailedTestSummary(BaseModel):
     duration_ms: int | None = None
     test_start_ms: int | None = None
     log_snippet: str | None = None
+    failed_step_path: str | None = None
 
 
 class TriageReport(BaseModel):

@@ -124,6 +124,9 @@ def build_cluster_prompt(
         f"Затронуто тестов: {cluster.member_count}",
     ]
 
+    if cluster.example_step_path:
+        parts.append(f"Шаг теста: {cluster.example_step_path}")
+
     if kb_matches:
         parts.append("\n--- База знаний (читай первой) ---")
         if _is_exact_kb_match(kb_matches[0]):
@@ -341,6 +344,8 @@ def build_launch_summary_prompt(
                 continue
 
         # Fallback: сырые данные кластера
+        if cluster.example_step_path:
+            parts.append(f"Шаг теста: {cluster.example_step_path}")
         if cluster.example_message:
             msg = cluster.example_message
             if len(msg) > 500:

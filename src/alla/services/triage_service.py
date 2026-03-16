@@ -258,30 +258,37 @@ class TriageService:
     @staticmethod
     def _find_failure_in_steps(
         steps: list[ExecutionStep],
-    ) -> tuple[str | None, str | None]:
-        """Рекурсивно найти первый упавший шаг и извлечь message/trace.
+        _ancestors: list[str] | None = None,
+    ) -> tuple[str | None, str | None, str | None]:
+        """Рекурсивно найти первый упавший шаг и извлечь message/trace/breadcrumb.
 
-        Обходит дерево шагов в глубину. Возвращает (message, trace) из
-        первого шага со статусом failed/broken.
+        Обходит дерево шагов в глубину. Возвращает (message, trace, step_path) из
+        первого шага со статусом failed/broken. ``step_path`` — хлебные крошки
+        из имён всех предшествующих шагов и самого упавшего шага, разделённые « → ».
 
         Если явного статуса нет (корневой execution-объект), но есть
         данные об ошибке — тоже извлекает.
 
-        Если ни один шаг не содержит ошибку — возвращает (None, None).
+        Если ни один шаг не содержит ошибку — возвращает (None, None, None).
         """
+        ancestors = _ancestors or []
         failure_statuses = {"failed", "broken"}
 
         # Первый проход: шаги с явным failure-статусом (приоритет)
         for step in steps:
+            current_path = [*ancestors, step.name] if step.name else list(ancestors)
             if step.status and step.status.lower() in failure_statuses:
                 message, trace = TriageService._extract_error_from_step(step)
                 if message or trace:
-                    return message, trace
+                    breadcrumb = " → ".join(current_path) if current_path else None
+                    return message, trace, breadcrumb
             # Рекурсия во вложенные шаги
             if step.steps:
-                message, trace = TriageService._find_failure_in_steps(step.steps)
+                message, trace, breadcrumb = TriageService._find_failure_in_steps(
+                    step.steps, current_path,
+                )
                 if message or trace:
-                    return message, trace
+                    return message, trace, breadcrumb
 
         # Второй проход: шаги без статуса, но с данными об ошибке
         # (корневой execution-объект может не иметь поля status)
@@ -290,9 +297,11 @@ class TriageService:
                 continue
             message, trace = TriageService._extract_error_from_step(step)
             if message or trace:
-                return message, trace
+                current_path = [*ancestors, step.name] if step.name else list(ancestors)
+                breadcrumb = " → ".join(current_path) if current_path else None
+                return message, trace, breadcrumb
 
-        return None, None
+        return None, None, None
 
     def _build_failed_summary(
         self,
@@ -309,7 +318,9 @@ class TriageService:
             3. (позже) Из ``trace`` индивидуального результата (``GET /api/testresult/{id}``).
         """
         # Попытка 1: извлечь ошибку из execution-шагов
-        status_message, status_trace = self._find_failure_in_steps(execution_steps)
+        status_message, status_trace, failed_step_path = self._find_failure_in_steps(
+            execution_steps,
+        )
 
         # Попытка 2 (fallback): из statusDetails — заполнить отсутствующие поля
         if result.status_details and isinstance(result.status_details, dict):
@@ -345,6 +356,7 @@ class TriageService:
             link=link,
             duration_ms=result.duration,
             test_start_ms=result.created_date,
+            failed_step_path=failed_step_path,
         )
 
     @staticmethod

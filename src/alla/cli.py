@@ -332,6 +332,8 @@ def _print_text_report(report: TriageReport) -> None:  # noqa: F821
             print(f"  [{t.status.value.upper()}]  {t.name} (ID: {t.test_result_id})")
             if t.link:
                 print(f"            {t.link}")
+            if t.failed_step_path:
+                print(f"            Шаг: {t.failed_step_path}")
             if t.status_message:
                 # Обрезка длинных сообщений
                 msg = t.status_message
@@ -381,6 +383,8 @@ def _print_clustering_report(
         cluster_lines = [
             f"Кластер #{i} ({cluster.member_count} тестов)",
         ]
+        if cluster.example_step_path:
+            cluster_lines.append(f"Шаг: {cluster.example_step_path}")
         if cluster.example_message:
             msg = _normalize_single_line(cluster.example_message)
             if len(msg) > 200:

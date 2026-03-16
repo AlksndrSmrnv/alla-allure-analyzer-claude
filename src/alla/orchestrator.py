@@ -434,6 +434,8 @@ def _build_kb_query_text(
 
     effective_trace = ""
     parts: list[str] = []
+    if cluster.example_step_path:
+        parts.append(cluster.example_step_path)
     if message:
         parts.append(message)
     if log_snippet:
