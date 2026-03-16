@@ -509,16 +509,18 @@ def _render_cluster(
             "</div>"
         )
 
-    # --- test IDs ---
+    # --- test links ---
     _MAX_IDS = 60
     shown_ids = cluster.member_test_ids[:_MAX_IDS]
     links: list[str] = []
     for tid in shown_ids:
         test = test_by_id.get(tid)
+        display = _e(test.name) if test and test.name else str(tid)
         if test and test.link:
-            links.append(f'<a href="{_e(test.link)}" target="_blank" class="test-id">{tid}</a>')
+            href = _e(test.link.replace("/testresult/", "/errors/"))
+            links.append(f'<a href="{href}" target="_blank" class="test-id">{display}</a>')
         else:
-            links.append(f'<span class="test-id no-link">{tid}</span>')
+            links.append(f'<span class="test-id no-link">{display}</span>')
 
     tests_html = ""
     if links:
@@ -1423,19 +1425,22 @@ _CSS = """
     /* ---- Test IDs ---- */
     .test-list {
       display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
+      flex-direction: column;
+      gap: 0.25rem;
     }
     .test-id {
       background: var(--bg);
       border: 1px solid var(--border);
       color: var(--text);
       font-size: 0.8125rem;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      padding: 0.25rem 0.5rem;
+      padding: 0.3rem 0.5rem;
       border-radius: 6px;
       text-decoration: none;
       transition: all 0.2s;
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .test-id:hover {
       background: var(--primary-light);
@@ -1964,7 +1969,7 @@ def _build_metrics_js(
         "    var link = e.target.closest('a.test-id');\n"
         "    if (link) {\n"
         "      var href = link.getAttribute('href') || '';\n"
-        "      var m = href.match(/testresult\\/(\\d+)/);\n"
+        "      var m = href.match(/errors\\/(\\d+)/);\n"
         "      evt('link_click', {test_result_id: m ? parseInt(m[1],10) : 0});\n"
         "    }\n"
         "    var fb = e.target.closest('.fb-like,.fb-dislike');\n"
