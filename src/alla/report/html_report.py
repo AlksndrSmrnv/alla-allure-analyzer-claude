@@ -604,10 +604,39 @@ def _render_kb_entry(
             f'data-entry-id="{entry_id}" '
             f'data-launch-id="{_e(str(launch_id))}" '
             f'data-cluster-id="{_e(cluster_id)}">'
-            f'<button class="{like_cls}" title="Полезное совпадение">&#x2713; Полезно</button>'
-            f'<button class="{dislike_cls}" title="Неверное совпадение">&#x2717; Не то</button>'
+            f'<button class="{like_cls}" title="Полезное совпадение">👍</button>'
+            f'<button class="{dislike_cls}" title="Неверное совпадение">👎</button>'
             '<span class="fb-status"></span>'
             f'<span class="fb-id">{"fb#" + str(m.feedback_id) if m.feedback_id else ""}</span>'
+            "</div>"
+        )
+
+    edit_html = ""
+    if feedback_api_url and m.entry.entry_id is not None:
+        eid = str(m.entry.entry_id)
+        steps_text = "\n".join(m.entry.resolution_steps) if m.entry.resolution_steps else ""
+        title_ctrl = f'<input name="title" value="{_e(m.entry.title)}">'
+        desc_ctrl = f'<textarea name="description" rows="3">{_e(m.entry.description)}</textarea>'
+        cat_ctrl = f'<select name="category">{_render_category_options(m.entry.category.value)}</select>'
+        example_ctrl = f'<textarea name="error_example" rows="4">{_e(m.entry.error_example)}</textarea>'
+        steps_ctrl = f'<textarea name="resolution_steps" rows="4">{_e(steps_text)}</textarea>'
+        edit_html = (
+            '<div class="edit-kb-action">'
+            '<button class="edit-kb-toggle" '
+            "onclick=\"this.nextElementSibling.classList.toggle('hidden')\">"
+            "Обновить запись в базе знаний</button>"
+            f'<form class="edit-kb-form hidden" data-entry-id="{_e(eid)}">'
+            f'{_render_form_field("Заголовок", "", title_ctrl)}'
+            f'{_render_form_field("Описание", "необязательно", desc_ctrl)}'
+            f'{_render_form_field("Категория", "", cat_ctrl)}'
+            f'{_render_form_field("Пример ошибки", "необязательно", example_ctrl)}'
+            f'{_render_form_field("Шаги по устранению", "необязательно", steps_ctrl)}'
+            '<div class="edit-kb-actions">'
+            '<button type="submit" class="edit-kb-save">Сохранить</button>'
+            '<button type="button" class="edit-kb-cancel">Отменить</button>'
+            '<span class="edit-kb-status"></span>'
+            "</div>"
+            "</form>"
             "</div>"
         )
 
@@ -640,6 +669,7 @@ def _render_kb_entry(
         f"{error_example_html}"
         f"{copy_html}"
         f"{feedback_html}"
+        f"{edit_html}"
         "</div>"
     )
 
@@ -1537,6 +1567,22 @@ _FEEDBACK_CSS = """
     .copy-kb-status{font-size:.75rem;color:var(--text-muted)}
     .copy-kb-ok{color:var(--success)}
     .copy-kb-error{color:var(--danger)}
+
+    /* ---- Edit Knowledge Base Entry ---- */
+    .edit-kb-action{margin-top:.75rem}
+    .edit-kb-toggle{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.5rem 1rem;cursor:pointer;color:var(--text-muted);font-size:.8125rem;width:100%;text-align:left;transition:all .2s}
+    .edit-kb-toggle:hover{border-color:var(--primary);color:var(--primary)}
+    .edit-kb-form{display:flex;flex-direction:column;gap:.9rem;padding:1rem;border:1px solid var(--border);border-radius:var(--radius-sm);margin-top:.25rem;background:#fff}
+    .edit-kb-form.hidden{display:none}
+    .edit-kb-actions{display:flex;align-items:center;gap:.75rem}
+    .edit-kb-save{padding:.7rem 1.5rem;background:var(--primary);color:white;border:none;border-radius:10px;cursor:pointer;font-weight:700;font-size:.92rem}
+    .edit-kb-save:hover{opacity:.9}
+    .edit-kb-save:disabled{opacity:.5;cursor:not-allowed}
+    .edit-kb-cancel{padding:.7rem 1.5rem;background:var(--surface);color:var(--text-muted);border:1px solid var(--border);border-radius:10px;cursor:pointer;font-weight:600;font-size:.92rem}
+    .edit-kb-cancel:hover{border-color:var(--text-muted);color:var(--text)}
+    .edit-kb-status{font-size:.75rem;color:var(--text-muted)}
+    .edit-kb-ok{color:var(--success)}
+    .edit-kb-error{color:var(--danger)}
 """
 
 
@@ -1678,6 +1724,68 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "      status.className = 'create-kb-status create-kb-error';\n"
         "      submitBtn.disabled = false;\n"
         "    });\n"
+        "  });\n"
+        "\n"
+        "  // --- Edit Knowledge Base Entry ---\n"
+        "  document.addEventListener('submit', function(e) {\n"
+        "    var form = e.target.closest('.edit-kb-form');\n"
+        "    if (!form) return;\n"
+        "    e.preventDefault();\n"
+        "    var saveBtn = form.querySelector('.edit-kb-save');\n"
+        "    var status = form.querySelector('.edit-kb-status');\n"
+        "    var entryId = form.dataset.entryId;\n"
+        "    saveBtn.disabled = true;\n"
+        "    status.textContent = '...';\n"
+        "    status.className = 'edit-kb-status';\n"
+        "    var steps = (form.elements.resolution_steps.value || '').split('\\n').filter(function(s) { return s.trim(); });\n"
+        "    var payload = {\n"
+        "      title: form.elements.title.value,\n"
+        "      description: form.elements.description.value,\n"
+        "      category: form.elements.category.value,\n"
+        "      error_example: form.elements.error_example.value,\n"
+        "      resolution_steps: steps\n"
+        "    };\n"
+        "    fetch(FEEDBACK_API_URL + '/api/v1/kb/entries/' + entryId, {\n"
+        "      method: 'PUT',\n"
+        "      headers: {'Content-Type': 'application/json'},\n"
+        "      body: JSON.stringify(payload)\n"
+        "    }).then(function(r) {\n"
+        "      if (!r.ok) throw new Error(r.status);\n"
+        "      return r.json();\n"
+        "    }).then(function() {\n"
+        "      status.textContent = 'Сохранено!';\n"
+        "      status.className = 'edit-kb-status edit-kb-ok';\n"
+        "      saveBtn.disabled = false;\n"
+        "      // Update the displayed KB entry content\n"
+        "      var entry = form.closest('.kb-entry');\n"
+        "      if (entry) {\n"
+        "        var titleEl = entry.querySelector('.kb-title');\n"
+        "        if (titleEl) titleEl.textContent = payload.title;\n"
+        "        var catEl = entry.querySelector('.kb-category');\n"
+        "        if (catEl) catEl.textContent = payload.category;\n"
+        "        var stepsEl = entry.querySelector('.kb-steps');\n"
+        "        if (stepsEl && steps.length) {\n"
+        "          stepsEl.innerHTML = steps.map(function(s) { return '<li>' + s.replace(/</g,'&lt;') + '</li>'; }).join('');\n"
+        "        }\n"
+        "      }\n"
+        "    }).catch(function(err) {\n"
+        "      status.textContent = 'Ошибка: ' + err.message;\n"
+        "      status.className = 'edit-kb-status edit-kb-error';\n"
+        "      saveBtn.disabled = false;\n"
+        "    });\n"
+        "  });\n"
+        "\n"
+        "  // --- Cancel Edit Knowledge Base Entry ---\n"
+        "  document.addEventListener('click', function(e) {\n"
+        "    var cancelBtn = e.target.closest('.edit-kb-cancel');\n"
+        "    if (!cancelBtn) return;\n"
+        "    var form = cancelBtn.closest('.edit-kb-form');\n"
+        "    if (form) {\n"
+        "      form.reset();\n"
+        "      form.classList.add('hidden');\n"
+        "      var status = form.querySelector('.edit-kb-status');\n"
+        "      if (status) { status.textContent = ''; status.className = 'edit-kb-status'; }\n"
+        "    }\n"
         "  });\n"
         "\n"
         "  // --- Load existing votes on page load (exact resolve) ---\n"

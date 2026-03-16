@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from typing import Any
+
 from alla.knowledge.feedback_models import (
     FeedbackRecord,
     FeedbackRequest,
@@ -57,5 +59,18 @@ class FeedbackStore(Protocol):
 
         Returns:
             entry_id созданной записи, или None при конфликте slug.
+        """
+        ...
+
+    def update_kb_entry(self, entry_id: int, fields: dict[str, Any]) -> bool:
+        """Обновить существующую запись базы знаний.
+
+        Args:
+            entry_id: Surrogate PK записи (alla.kb_entry.entry_id).
+            fields: Словарь полей для обновления. Допустимые ключи:
+                title, description, error_example, category, resolution_steps.
+
+        Returns:
+            True если запись найдена и обновлена, False если entry_id не существует.
         """
         ...
