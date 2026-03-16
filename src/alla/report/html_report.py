@@ -841,6 +841,9 @@ def _linkify(text: str) -> str:
         url = m.group(1)
         # Strip trailing sentence punctuation that's unlikely to be part of the URL
         stripped = url.rstrip(".,)!?:;")
+        # Restore ';' if stripping broke an HTML entity (e.g., &amp; → &amp)
+        if re.search(r"&\w+$", stripped) and url[len(stripped):].startswith(";"):
+            stripped += ";"
         trail = url[len(stripped):]
         return f'<a href="{stripped}" target="_blank" rel="noopener">{stripped}</a>{trail}'
 
