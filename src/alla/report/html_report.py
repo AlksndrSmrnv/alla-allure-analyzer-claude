@@ -837,7 +837,7 @@ def _e(s: object) -> str:
 def _linkify(text: str) -> str:
     """Turn plain-text URLs into clickable <a> links (text must be HTML-escaped already)."""
     return re.sub(
-        r"(https?://[^\s<>&\"']+)",
+        r"(https?://(?:[^\s<>&\"']|&amp;)+)",
         r'<a href="\1" target="_blank" rel="noopener">\1</a>',
         text,
     )
