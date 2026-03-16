@@ -78,8 +78,11 @@ _normalize_text = normalize_text
 
 
 def _build_message_document(failure: FailedTestSummary) -> str:
-    """Собрать message-документ (message + category)."""
+    """Собрать message-документ (step_path + message + category)."""
     parts: list[str] = []
+
+    if failure.failed_step_path:
+        parts.append(failure.failed_step_path)
 
     if failure.status_message:
         parts.append(failure.status_message)
@@ -497,6 +500,7 @@ class ClusteringService:
                 representative.status_trace,
                 self._config.trace_snippet_lines,
             ),
+            example_step_path=representative.failed_step_path,
         )
 
     def _generate_label(self, representative: FailedTestSummary) -> str:

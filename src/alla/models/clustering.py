@@ -26,6 +26,7 @@ class FailureCluster(BaseModel):
     representative_test_id: int | None = None
     example_message: str | None = None
     example_trace_snippet: str | None = None
+    example_step_path: str | None = None
 
 
 class ClusteringReport(BaseModel):

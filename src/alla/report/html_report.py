@@ -338,6 +338,15 @@ def _render_cluster(
     )
     rep_log_snippet = rep_test.log_snippet if rep_test and rep_test.log_snippet else None
 
+    step_path_html = ""
+    if cluster.example_step_path:
+        step_path_html = (
+            '<div class="block">'
+            '<div class="block-title">Шаг теста</div>'
+            f'<div class="step-path">{_e(cluster.example_step_path)}</div>'
+            "</div>"
+        )
+
     error_html = ""
     if cluster.example_message or rep_log_snippet:
         error_parts: list[str] = []
@@ -537,10 +546,10 @@ def _render_cluster(
     body_parts: list[str] = []
     if guided_mode:
         body_parts.extend(
-            [error_html, llm_html, create_kb_html, project_kb_html, starter_pack_html, tests_html]
+            [step_path_html, error_html, llm_html, create_kb_html, project_kb_html, starter_pack_html, tests_html]
         )
     else:
-        body_parts.extend([llm_html, error_html, kb_html, create_kb_html, tests_html])
+        body_parts.extend([llm_html, step_path_html, error_html, kb_html, create_kb_html, tests_html])
 
     cluster_cls = "cluster guided-cluster" if guided_mode else "cluster"
     return (
@@ -1251,6 +1260,16 @@ _CSS = """
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: var(--text-muted);
+    }
+
+    /* ---- Step Path ---- */
+    .step-path {
+      font-family: var(--font-mono, monospace);
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      padding: 0.4rem 0.6rem;
+      background: var(--surface);
+      border-radius: 6px;
     }
 
     /* ---- Error Block ---- */
