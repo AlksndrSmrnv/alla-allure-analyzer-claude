@@ -225,7 +225,7 @@ class PostgresFeedbackStore:
         for col, val in to_update.items():
             set_parts.append(f"{col} = %s")
             if col == "resolution_steps":
-                params.append(Jsonb(val))
+                params.append(list(val))
             else:
                 params.append(val)
         params.append(entry_id)
