@@ -674,6 +674,17 @@ def update_kb_entry(entry_id: int, request: dict[str, Any]) -> dict[str, Any]:
     if not fields:
         raise HTTPException(status_code=422, detail="No valid fields to update")
 
+    if "category" in fields:
+        from alla.knowledge.models import RootCauseCategory
+        try:
+            RootCauseCategory(fields["category"])
+        except ValueError:
+            valid = [e.value for e in RootCauseCategory]
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid category '{fields['category']}'. Valid: {valid}",
+            )
+
     if "error_example" in fields and fields["error_example"]:
         fields["error_example"] = canonicalize_kb_error_example(fields["error_example"])
 
