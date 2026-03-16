@@ -566,7 +566,7 @@ def _render_kb_entry(
 ) -> str:
     steps_html = ""
     if m.entry.resolution_steps:
-        items = "".join(f"<li>{_e(s)}</li>" for s in m.entry.resolution_steps)
+        items = "".join(f"<li>{_linkify(_e(s))}</li>" for s in m.entry.resolution_steps)
         steps_html = f'<ul class="kb-steps">{items}</ul>'
 
     error_example_html = ""
@@ -834,8 +834,24 @@ def _e(s: object) -> str:
     return _html.escape(str(s))
 
 
+def _linkify(text: str) -> str:
+    """Turn plain-text URLs into clickable <a> links (text must be HTML-escaped already)."""
+
+    def _replace(m: re.Match) -> str:
+        url = m.group(1)
+        # Strip trailing sentence punctuation that's unlikely to be part of the URL
+        stripped = url.rstrip(".,)!?:;")
+        # Restore ';' if stripping broke an HTML entity (e.g., &amp; → &amp)
+        if re.search(r"&\w+$", stripped) and url[len(stripped):].startswith(";"):
+            stripped += ";"
+        trail = url[len(stripped):]
+        return f'<a href="{stripped}" target="_blank" rel="noopener">{stripped}</a>{trail}'
+
+    return re.sub(r"(https?://(?:[^\s<>&\"']|&amp;)+)", _replace, text)
+
+
 def _inline_md(text: str) -> str:
-    """HTML-escape text then apply inline Markdown (bold, italic, code)."""
+    """HTML-escape text then apply inline Markdown (bold, italic, code, links)."""
     text = _html.escape(text)
     # Bold **text**
     text = re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", text)
@@ -843,6 +859,8 @@ def _inline_md(text: str) -> str:
     text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", text)
     # Inline code `code`
     text = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", text)
+    # Auto-linkify URLs
+    text = _linkify(text)
     return text
 
 
