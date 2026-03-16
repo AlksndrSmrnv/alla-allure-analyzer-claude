@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -210,4 +211,34 @@ class PostgresFeedbackStore:
         except Exception as exc:
             raise KnowledgeBaseError(
                 f"Ошибка создания KB-записи: {exc}"
+            ) from exc
+
+    def update_kb_entry(self, entry_id: int, fields: dict[str, Any]) -> bool:
+        """UPDATE запись в alla.kb_entry по entry_id."""
+        allowed = {"title", "description", "error_example", "category", "resolution_steps"}
+        to_update = {k: v for k, v in fields.items() if k in allowed}
+        if not to_update:
+            return False
+
+        set_parts: list[str] = []
+        params: list[object] = []
+        for col, val in to_update.items():
+            set_parts.append(f"{col} = %s")
+            if col == "resolution_steps":
+                params.append(Jsonb(val))
+            else:
+                params.append(val)
+        params.append(entry_id)
+
+        query = f"UPDATE alla.kb_entry SET {', '.join(set_parts)} WHERE entry_id = %s"
+        try:
+            with psycopg.connect(self._dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                    updated = cur.rowcount > 0
+                    conn.commit()
+                    return updated
+        except Exception as exc:
+            raise KnowledgeBaseError(
+                f"Ошибка обновления записи базы знаний: {exc}"
             ) from exc

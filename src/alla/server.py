@@ -659,6 +659,48 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
     return resp.model_dump()
 
 
+@app.put("/api/v1/kb/entries/{entry_id}")
+def update_kb_entry(entry_id: int, request: dict[str, Any]) -> dict[str, Any]:
+    """Обновить существующую запись базы знаний по entry_id."""
+    store = _get_feedback_store()
+    if store is None:
+        raise HTTPException(
+            status_code=501,
+            detail="KB entry update requires postgres backend",
+        )
+
+    allowed = {"title", "description", "error_example", "category", "resolution_steps"}
+    fields = {k: v for k, v in request.items() if k in allowed}
+    if not fields:
+        raise HTTPException(status_code=422, detail="No valid fields to update")
+
+    if "category" in fields:
+        from alla.knowledge.models import RootCauseCategory
+        try:
+            RootCauseCategory(fields["category"])
+        except ValueError:
+            valid = [e.value for e in RootCauseCategory]
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid category '{fields['category']}'. Valid: {valid}",
+            )
+
+    if "error_example" in fields and fields["error_example"]:
+        fields["error_example"] = canonicalize_kb_error_example(fields["error_example"])
+
+    from alla.exceptions import KnowledgeBaseError
+
+    try:
+        updated = store.update_kb_entry(entry_id, fields)
+    except KnowledgeBaseError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
+
+    return {"entry_id": entry_id, "updated": True}
+
+
 @app.post("/api/v1/kb/feedback/resolve")
 def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
     """Найти актуальные голоса для пар (entry_id, issue_signature_hash).
