@@ -836,11 +836,15 @@ def _e(s: object) -> str:
 
 def _linkify(text: str) -> str:
     """Turn plain-text URLs into clickable <a> links (text must be HTML-escaped already)."""
-    return re.sub(
-        r"(https?://(?:[^\s<>&\"']|&amp;)+)",
-        r'<a href="\1" target="_blank" rel="noopener">\1</a>',
-        text,
-    )
+
+    def _replace(m: re.Match) -> str:
+        url = m.group(1)
+        # Strip trailing sentence punctuation that's unlikely to be part of the URL
+        stripped = url.rstrip(".,)!?:;")
+        trail = url[len(stripped):]
+        return f'<a href="{stripped}" target="_blank" rel="noopener">{stripped}</a>{trail}'
+
+    return re.sub(r"(https?://(?:[^\s<>&\"']|&amp;)+)", _replace, text)
 
 
 def _inline_md(text: str) -> str:
