@@ -381,9 +381,18 @@ def build_launch_summary_prompt(
     return "\n".join(parts)
 
 
-def format_llm_comment(analysis_text: str) -> str:
+def format_llm_comment(
+    analysis_text: str,
+    *,
+    step_path: str | None = None,
+) -> str:
     """Отформатировать LLM-анализ в текст комментария для TestOps."""
-    return "\n".join([_LLM_HEADER, _SEPARATOR, "", analysis_text])
+    parts = [_LLM_HEADER, _SEPARATOR, ""]
+    if step_path:
+        parts.append(f"Шаг теста: {step_path}")
+        parts.append("")
+    parts.append(analysis_text)
+    return "\n".join(parts)
 
 
 class LLMService:
@@ -610,7 +619,10 @@ async def push_llm_results(
             skipped += len(cluster.member_test_ids)
             continue
 
-        comment_text = format_llm_comment(analysis.analysis_text)
+        comment_text = format_llm_comment(
+            analysis.analysis_text,
+            step_path=cluster.example_step_path,
+        )
 
         for test_id in cluster.member_test_ids:
             tc_id = test_case_ids.get(test_id)

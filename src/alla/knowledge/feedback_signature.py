@@ -432,6 +432,7 @@ def build_feedback_cluster_context(
     test_by_id: dict[int, FailedTestSummary],
 ) -> FeedbackClusterContext | None:
     """Построить exact-memory context для feedback по одному кластеру."""
+    step_path = cluster.example_step_path or ""
     message_raw, trace_raw, _ = get_cluster_feedback_sources(cluster, test_by_id)
     log_snippets = _collect_cluster_log_snippets(cluster, test_by_id)
     representative_log = _get_representative_log_snippet(cluster, test_by_id)
@@ -483,6 +484,8 @@ def build_feedback_cluster_context(
     signature_hash = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
 
     audit_parts: list[str] = []
+    if step_path:
+        audit_parts.append(f"[step_path]\n{_normalize_audit_fragment(step_path)}")
     if message_audit:
         audit_parts.append(f"[message]\n{message_audit}")
     if trace_anchor.audit_text:
