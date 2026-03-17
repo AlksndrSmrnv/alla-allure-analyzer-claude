@@ -149,6 +149,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_feedback_issue_signature
 
 CREATE INDEX IF NOT EXISTS idx_kb_feedback_issue_signature
     ON alla.kb_feedback (issue_signature_hash, issue_signature_version);
+
+-- ---------------------------------------------------------------------------
+-- Группировка проектов для общей видимости KB-записей.
+--
+-- Все проекты с одинаковым group_id видят KB-записи друг друга.
+-- Управление — чистый SQL:
+--   INSERT INTO alla.project_group VALUES (1, 100), (2, 100), (3, 100);
+--   DELETE FROM alla.project_group WHERE project_id = 3 AND group_id = 100;
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS alla.project_group (
+    project_id   INTEGER NOT NULL,
+    group_id     INTEGER NOT NULL,
+    PRIMARY KEY (project_id, group_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_group_group_id
+    ON alla.project_group (group_id);
+
+COMMENT ON TABLE alla.project_group IS
+    'Группировка проектов Allure TestOps для общей видимости KB-записей. '
+    'Все проекты с одинаковым group_id видят KB-записи друг друга.';
 """
 
 # ---------------------------------------------------------------------------
@@ -404,7 +425,7 @@ def run(
 
     with conn:
         if run_schema:
-            print("Создание схемы alla, таблиц kb_entry и kb_feedback...")
+            print("Создание схемы alla, таблиц kb_entry, kb_feedback, project_group...")
             with conn.cursor() as cur:
                 cur.execute(SCHEMA_SQL)
             print("✓ Схема создана (или уже существовала)\n")
