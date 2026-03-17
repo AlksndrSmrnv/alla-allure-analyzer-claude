@@ -390,6 +390,10 @@ def _render_cluster(
 
     project_matches, starter_pack_matches = _split_kb_matches(kb_matches)
 
+    # Pre-compute cluster error example for edit-KB forms
+    prefill = _build_kb_prefill(cluster, llm_text, rep_log_snippet) if feedback_api_url else {}
+    cluster_error_example = str(prefill.get("error_example", ""))
+
     # --- matches from knowledge base ---
     kb_html = ""
     if not guided_mode and kb_matches:
@@ -399,6 +403,7 @@ def _render_cluster(
                 feedback_api_url=feedback_api_url,
                 launch_id=launch_id,
                 cluster_id=cluster_id,
+                cluster_error_example=cluster_error_example,
             )
             for m in kb_matches
         )
@@ -418,6 +423,7 @@ def _render_cluster(
                     feedback_api_url=feedback_api_url,
                     launch_id=launch_id,
                     cluster_id=cluster_id,
+                    cluster_error_example=cluster_error_example,
                 )
                 for m in project_matches
             )
@@ -449,6 +455,7 @@ def _render_cluster(
                 cluster_id=cluster_id,
                 copy_payload=_build_starter_pack_payload(m, project_id),
                 copy_api_url=feedback_api_url,
+                cluster_error_example=cluster_error_example,
             )
             for m in starter_pack_matches
         )
@@ -465,7 +472,6 @@ def _render_cluster(
     # --- create knowledge-base entry form ---
     create_kb_html = ""
     if feedback_api_url:
-        prefill = _build_kb_prefill(cluster, llm_text, rep_log_snippet)
         pid = _e(str(project_id)) if project_id is not None else ""
         cta_label = (
             "Создать решение для кластера"
@@ -574,6 +580,7 @@ def _render_kb_entry(
     cluster_id: str = "",
     copy_payload: dict[str, object] | None = None,
     copy_api_url: str = "",
+    cluster_error_example: str = "",
 ) -> str:
     steps_html = ""
     if m.entry.resolution_steps:
@@ -630,6 +637,15 @@ def _render_kb_entry(
         desc_ctrl = f'<textarea name="description" rows="3">{_e(m.entry.description)}</textarea>'
         cat_ctrl = f'<select name="category">{_render_category_options(m.entry.category.value)}</select>'
         example_ctrl = f'<textarea name="error_example" rows="4">{_e(m.entry.error_example)}</textarea>'
+        refresh_btn = ""
+        if cluster_error_example:
+            refresh_btn = (
+                '<button type="button" class="edit-kb-refresh-example" '
+                f'data-cluster-error="{_e(cluster_error_example)}" '
+                'title="Подставить актуальный пример ошибки из текущего кластера">'
+                '\u21bb Обновить из кластера</button>'
+            )
+        example_ctrl_with_btn = example_ctrl + refresh_btn
         steps_ctrl = f'<textarea name="resolution_steps" rows="4">{_e(steps_text)}</textarea>'
         edit_html = (
             '<div class="edit-kb-action">'
@@ -640,7 +656,7 @@ def _render_kb_entry(
             f'{_render_form_field("Заголовок", "", title_ctrl)}'
             f'{_render_form_field("Описание", "необязательно", desc_ctrl)}'
             f'{_render_form_field("Категория", "", cat_ctrl)}'
-            f'{_render_form_field("Пример ошибки", "необязательно", example_ctrl)}'
+            f'{_render_form_field("Пример ошибки", "необязательно", example_ctrl_with_btn)}'
             f'{_render_form_field("Шаги по устранению", "необязательно", steps_ctrl)}'
             '<div class="edit-kb-actions">'
             '<button type="submit" class="edit-kb-save">Сохранить</button>'
@@ -1627,6 +1643,8 @@ _FEEDBACK_CSS = """
     .edit-kb-status{font-size:.75rem;color:var(--text-muted)}
     .edit-kb-ok{color:var(--success)}
     .edit-kb-error{color:var(--danger)}
+    .edit-kb-refresh-example{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.35rem .75rem;cursor:pointer;color:var(--primary);font-size:.75rem;margin-top:.25rem;transition:all .2s;display:inline-block}
+    .edit-kb-refresh-example:hover{border-color:var(--primary);background:var(--surface)}
 """
 
 
@@ -1817,6 +1835,18 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "      status.className = 'edit-kb-status edit-kb-error';\n"
         "      saveBtn.disabled = false;\n"
         "    });\n"
+        "  });\n"
+        "\n"
+        "  // --- Refresh error_example from cluster ---\n"
+        "  document.addEventListener('click', function(e) {\n"
+        "    var btn = e.target.closest('.edit-kb-refresh-example');\n"
+        "    if (!btn) return;\n"
+        "    var form = btn.closest('.edit-kb-form');\n"
+        "    if (!form) return;\n"
+        "    var textarea = form.querySelector('textarea[name=\"error_example\"]');\n"
+        "    if (textarea) {\n"
+        "      textarea.value = btn.dataset.clusterError;\n"
+        "    }\n"
         "  });\n"
         "\n"
         "  // --- Cancel Edit Knowledge Base Entry ---\n"
