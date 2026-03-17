@@ -56,10 +56,18 @@ class PostgresKnowledgeBase:
                 SELECT entry_id, id, title, description, error_example,
                        category, resolution_steps, project_id
                 FROM alla.kb_entry
-                WHERE project_id IS NULL OR project_id = %s
+                WHERE project_id IS NULL
+                   OR project_id = %s
+                   OR project_id IN (
+                        SELECT pg2.project_id
+                        FROM alla.project_group pg1
+                        JOIN alla.project_group pg2
+                          ON pg1.group_id = pg2.group_id
+                        WHERE pg1.project_id = %s
+                      )
                 ORDER BY project_id NULLS FIRST, id
             """
-            params: tuple = (self._project_id,)
+            params: tuple = (self._project_id, self._project_id)
         else:
             query = """
                 SELECT entry_id, id, title, description, error_example,
