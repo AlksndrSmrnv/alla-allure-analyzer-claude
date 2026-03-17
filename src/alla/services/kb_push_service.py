@@ -27,11 +27,16 @@ class KBPushResult:
     skipped_count: int
 
 
-def format_kb_description(matches: list[KBMatchResult]) -> str:
+def format_kb_description(
+    matches: list[KBMatchResult],
+    *,
+    step_path: str | None = None,
+) -> str:
     """Отформатировать KB-совпадения в текст комментария.
 
     Args:
         matches: Список KB-совпадений для одного кластера.
+        step_path: Breadcrumb-путь до упавшего шага (опционально).
 
     Returns:
         Отформатированный текст комментария.
@@ -40,6 +45,10 @@ def format_kb_description(matches: list[KBMatchResult]) -> str:
         return ""
 
     parts: list[str] = [_ALLA_HEADER, _SEPARATOR, ""]
+
+    if step_path:
+        parts.append(f"Шаг теста: {step_path}")
+        parts.append("")
 
     for i, match in enumerate(matches):
         if i > 0:
@@ -110,7 +119,9 @@ class KBPushService:
                 skipped += len(cluster.member_test_ids)
                 continue
 
-            comment_text = format_kb_description(matches)
+            comment_text = format_kb_description(
+                matches, step_path=cluster.example_step_path,
+            )
             if not comment_text:
                 skipped += len(cluster.member_test_ids)
                 continue

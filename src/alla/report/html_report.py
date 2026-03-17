@@ -743,6 +743,8 @@ def _build_kb_prefill(
     """Подготовить prefill для формы project knowledge."""
     parsed_llm = _extract_llm_prefill(llm_text or "")
     prefill_parts: list[str] = []
+    if cluster.example_step_path:
+        prefill_parts.append(cluster.example_step_path)
     if cluster.example_message:
         prefill_parts.append(cluster.example_message)
     if rep_log_snippet:
