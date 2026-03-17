@@ -65,9 +65,15 @@ class PostgresKnowledgeBase:
                           ON pg1.group_id = pg2.group_id
                         WHERE pg1.project_id = %s
                       )
-                ORDER BY project_id NULLS FIRST, id
+                ORDER BY
+                    CASE
+                        WHEN project_id IS NULL THEN 0   -- глобальные первыми
+                        WHEN project_id = %s     THEN 2  -- текущий проект последним (побеждает)
+                        ELSE 1                            -- sibling-проекты посередине
+                    END,
+                    id
             """
-            params: tuple = (self._project_id, self._project_id)
+            params: tuple = (self._project_id, self._project_id, self._project_id)
         else:
             query = """
                 SELECT entry_id, id, title, description, error_example,
@@ -118,11 +124,12 @@ class PostgresKnowledgeBase:
                 continue
 
             if entry.id in self._entries_by_id:
-                # ORDER BY project_id NULLS FIRST: глобальные загружаются первыми.
-                # Проектная запись с тем же id переопределяет глобальную.
+                # Порядок загрузки: global → sibling → current project.
+                # Более приоритетная запись переопределяет менее приоритетную.
+                prev = self._entries_by_id[entry.id]
                 logger.debug(
-                    "PostgresKB: id=%r переопределена проектной записью (project_id=%s).",
-                    entry.id, self._project_id,
+                    "PostgresKB: id=%r переопределена: project_id=%s → project_id=%s.",
+                    entry.id, prev.project_id, entry.project_id,
                 )
                 self._entries = [e for e in self._entries if e.id != entry.id]
                 self._entries_by_id.pop(entry.id, None)

@@ -378,7 +378,7 @@ def _build_onboarding_state(
     project_kb_entries = 0
     if project_id is not None:
         project_kb_entries = sum(
-            1 for entry in entries if entry.project_id is not None
+            1 for entry in entries if entry.project_id == project_id
         )
 
     guided = project_id is not None and project_kb_entries == 0
