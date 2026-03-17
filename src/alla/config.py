@@ -140,6 +140,12 @@ class Settings(BaseSettings):
         "Используется для ссылок на отчёты в TestOps. Пример: https://alla.company.com",
     )
 
+    push_to_testops: bool = Field(
+        default=True,
+        description="Записывать результаты анализа (KB/LLM) в Allure TestOps "
+        "как комментарии к тест-кейсам (ALLURE_PUSH_TO_TESTOPS).",
+    )
+
     metrics_enabled: bool = Field(
         default=False,
         description="Включить сбор метрик использования HTML-отчётов (ALLURE_METRICS_ENABLED). "

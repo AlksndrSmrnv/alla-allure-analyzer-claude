@@ -297,7 +297,8 @@ async def analyze_launch(
 
     # 5. Запись LLM-рекомендаций в TestOps
     if (
-        settings.llm_active
+        settings.push_to_testops
+        and settings.llm_active
         and llm_result is not None
         and llm_result.analyzed_count > 0
         and updater is not None
@@ -323,7 +324,8 @@ async def analyze_launch(
         llm_result is not None and llm_result.analyzed_count > 0
     )
     if (
-        settings.kb_active
+        settings.push_to_testops
+        and settings.kb_active
         and not llm_succeeded
         and kb_results
         and clustering_report is not None
