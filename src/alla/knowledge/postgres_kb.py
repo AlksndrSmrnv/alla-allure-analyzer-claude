@@ -154,17 +154,20 @@ class PostgresKnowledgeBase:
         error_text: str,
         *,
         query_label: str | None = None,
+        step_path: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
 
         Args:
             error_text: Текст ошибки для поиска (message + trace/log).
             query_label: Метка для логирования.
+            step_path: Путь шага теста (опциональный бустер score).
         """
         return self._matcher.match(
             error_text,
             self._entries,
             query_label=query_label,
+            step_path=step_path,
         )
 
     def get_all_entries(self) -> list[KBEntry]:

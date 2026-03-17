@@ -179,11 +179,16 @@ async def health() -> HealthResponse:
         502: {"model": ErrorResponse, "description": "Ошибка Allure TestOps API"},
     },
 )
-async def analyze_launch(launch_id: int) -> dict[str, Any]:
+async def analyze_launch(
+    launch_id: int,
+    push_to_testops: bool | None = None,
+) -> dict[str, Any]:
     """Анализ запуска — эквивалент ``alla <launch_id> --output-format json``.
 
     Запускает полный pipeline: триаж → кластеризация → KB-поиск →
     LLM-анализ → LLM-push → KB-push (fallback). Возвращает объединённый JSON-результат.
+
+    Query parameter ``push_to_testops`` переопределяет ``ALLURE_PUSH_TO_TESTOPS``.
     """
     from alla.exceptions import (
         AllureApiError,
@@ -194,11 +199,17 @@ async def analyze_launch(launch_id: int) -> dict[str, Any]:
     )
     from alla.orchestrator import analyze_launch as run_analysis
 
+    effective_settings = _state.settings
+    if push_to_testops is not None:
+        effective_settings = _state.settings.model_copy(
+            update={"push_to_testops": push_to_testops},
+        )
+
     try:
         result = await run_analysis(
             launch_id=launch_id,
             client=_state.client,
-            settings=_state.settings,
+            settings=effective_settings,
             updater=_state.client,
         )
     except AuthenticationError as exc:
@@ -296,7 +307,11 @@ async def resolve_launch(name: str, project_id: int | None = None) -> dict[str, 
         502: {"model": ErrorResponse, "description": "Ошибка Allure TestOps API"},
     },
 )
-async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLResponse:
+async def analyze_launch_html(
+    launch_id: int,
+    report_url: str = "",
+    push_to_testops: bool | None = None,
+) -> HTMLResponse:
     """Анализ запуска — возвращает self-contained HTML-отчёт.
 
     Запускает полный pipeline (триаж → кластеризация → KB → LLM) и
@@ -319,11 +334,17 @@ async def analyze_launch_html(launch_id: int, report_url: str = "") -> HTMLRespo
     from alla.orchestrator import analyze_launch as run_analysis
     from alla.report.html_report import generate_html_report
 
+    effective_settings = _state.settings
+    if push_to_testops is not None:
+        effective_settings = _state.settings.model_copy(
+            update={"push_to_testops": push_to_testops},
+        )
+
     try:
         result = await run_analysis(
             launch_id=launch_id,
             client=_state.client,
-            settings=_state.settings,
+            settings=effective_settings,
             updater=_state.client,
         )
     except AuthenticationError as exc:

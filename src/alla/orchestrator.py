@@ -198,6 +198,7 @@ async def analyze_launch(
                         kb.search_by_error(
                             query_text,
                             query_label=f"{cluster.cluster_id}:combined",
+                            step_path=cluster.example_step_path,
                         )
                         if query_text.strip()
                         else []
@@ -296,7 +297,8 @@ async def analyze_launch(
 
     # 5. Запись LLM-рекомендаций в TestOps
     if (
-        settings.llm_active
+        settings.push_to_testops
+        and settings.llm_active
         and llm_result is not None
         and llm_result.analyzed_count > 0
         and updater is not None
@@ -322,7 +324,8 @@ async def analyze_launch(
         llm_result is not None and llm_result.analyzed_count > 0
     )
     if (
-        settings.kb_active
+        settings.push_to_testops
+        and settings.kb_active
         and not llm_succeeded
         and kb_results
         and clustering_report is not None
@@ -434,8 +437,6 @@ def _build_kb_query_text(
 
     effective_trace = ""
     parts: list[str] = []
-    if cluster.example_step_path:
-        parts.append(cluster.example_step_path)
     if message:
         parts.append(message)
     if log_snippet:
