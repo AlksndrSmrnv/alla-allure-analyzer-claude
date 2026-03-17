@@ -198,6 +198,7 @@ async def analyze_launch(
                         kb.search_by_error(
                             query_text,
                             query_label=f"{cluster.cluster_id}:combined",
+                            step_path=cluster.example_step_path,
                         )
                         if query_text.strip()
                         else []
@@ -434,8 +435,6 @@ def _build_kb_query_text(
 
     effective_trace = ""
     parts: list[str] = []
-    if cluster.example_step_path:
-        parts.append(cluster.example_step_path)
     if message:
         parts.append(message)
     if log_snippet:

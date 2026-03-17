@@ -502,6 +502,16 @@ def _render_cluster(
         error_example_control = (
             f'<textarea name="error_example" rows="4">{_e(prefill["error_example"])}</textarea>'
         )
+        step_path_value = str(prefill.get("step_path", ""))
+        step_path_checkbox = ""
+        if step_path_value:
+            step_path_checkbox = (
+                '<label class="step-path-toggle">'
+                f'<input type="checkbox" name="include_step_path" '
+                f'data-step-path="{_e(step_path_value)}">'
+                f' Добавить шаг теста: <span class="step-path-preview">{_e(step_path_value)}</span>'
+                '</label>'
+            )
         description_control = (
             f'<textarea name="description" rows="3" placeholder="Подробное описание">'
             f'{_e(prefill["description"])}</textarea>'
@@ -516,6 +526,7 @@ def _render_cluster(
             f'{_render_form_field("Заголовок", "необязательно", title_control)}'
             f'{_render_form_field("Категория", "", category_control)}'
             f'{_render_form_field("Пример ошибки", "необязательно", error_example_control)}'
+            f'{step_path_checkbox}'
             f'{_render_form_field("Описание", "необязательно", description_control)}'
             f'<input type="hidden" name="project_id" value="{pid}">'
             '<button type="submit" class="create-kb-submit">Сохранить в проект</button>'
@@ -759,8 +770,6 @@ def _build_kb_prefill(
     """Подготовить prefill для формы project knowledge."""
     parsed_llm = _extract_llm_prefill(llm_text or "")
     prefill_parts: list[str] = []
-    if cluster.example_step_path:
-        prefill_parts.append(cluster.example_step_path)
     if cluster.example_message:
         prefill_parts.append(cluster.example_message)
     if rep_log_snippet:
@@ -774,6 +783,7 @@ def _build_kb_prefill(
         "title": cluster.label or parsed_llm["title"],
         "category": parsed_llm["category"] or "service",
         "error_example": error_example,
+        "step_path": cluster.example_step_path or "",
         "description": parsed_llm["description"],
         "resolution_steps": parsed_llm["resolution_steps"],
     }
@@ -1289,6 +1299,21 @@ _CSS = """
       background: var(--surface);
       border-radius: 6px;
     }
+    .step-path-toggle {
+      display: flex;
+      align-items: baseline;
+      gap: 0.3rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      margin: 0.3rem 0 0.5rem;
+    }
+    .step-path-toggle input[type="checkbox"] { margin: 0; }
+    .step-path-preview {
+      font-family: var(--font-mono, monospace);
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
 
     /* ---- Error Block ---- */
     .error-block {
@@ -1767,10 +1792,15 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    status.className = 'create-kb-status';\n"
         "    var steps = (form.elements.resolution_steps.value || '').split('\\n').filter(function(s) { return s.trim(); });\n"
         "    var titleVal = form.elements.title.value.trim() || null;\n"
+        "    var errorExample = form.elements.error_example.value;\n"
+        "    var stepPathCb = form.querySelector('input[name=\"include_step_path\"]');\n"
+        "    if (stepPathCb && stepPathCb.checked && stepPathCb.dataset.stepPath) {\n"
+        "      errorExample = stepPathCb.dataset.stepPath + '\\n' + errorExample;\n"
+        "    }\n"
         "    var payload = {\n"
         "      title: titleVal,\n"
         "      category: form.elements.category.value,\n"
-        "      error_example: form.elements.error_example.value,\n"
+        "      error_example: errorExample,\n"
         "      description: form.elements.description.value,\n"
         "      resolution_steps: steps,\n"
         "      project_id: parseInt(form.elements.project_id.value, 10) || null\n"

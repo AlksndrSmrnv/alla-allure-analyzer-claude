@@ -79,6 +79,10 @@ class MatcherConfig:
     example_weight: float = 0.8
     title_desc_weight: float = 0.2
 
+    # --- Step path boost ---
+    step_path_boost: float = 0.03
+    step_path_word_threshold: float = 0.5
+
 class TextMatcher:
     """Сопоставляет текст ошибки с записями KB через 3-уровневый алгоритм.
 
@@ -154,6 +158,7 @@ class TextMatcher:
         entries: list[KBEntry],
         *,
         query_label: str | None = None,
+        step_path: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
 
@@ -258,6 +263,19 @@ class TextMatcher:
                     f" [{query_label}]" if query_label else "",
                     entry.title, entry.id, capped_score, ex_sim, td_sim,
                 )
+
+        # --- Step path boost ---
+        if step_path and results:
+            sp_normalized = normalize_text(step_path)
+            for result in results:
+                boost = self._compute_step_path_boost(
+                    sp_normalized, normalize_text(result.entry.error_example),
+                )
+                if boost > 0:
+                    result.score = round(min(result.score + boost, 1.0), 4)
+                    result.matched_on.append(
+                        f"step_path boost: +{boost:.2f}",
+                    )
 
         # --- Сортировка + лимит ---
         results.sort(key=lambda r: -r.score)
@@ -510,3 +528,26 @@ class TextMatcher:
             hits.append((local_i, capped_score, ex_sim, td_sim))
 
         return hits
+
+    # ------------------------------------------------------------------
+    # Step path boost
+    # ------------------------------------------------------------------
+
+    def _compute_step_path_boost(
+        self,
+        step_path_normalized: str,
+        example_normalized: str,
+    ) -> float:
+        """Мягкий бустер score за совпадение step_path с error_example.
+
+        Проверяет word-overlap между step_path и error_example KB-записи.
+        Если ≥50% слов step_path найдены в error_example → возвращает бонус.
+        """
+        sp_words = set(_WORD_RE.findall(step_path_normalized.lower()))
+        if not sp_words:
+            return 0.0
+        ex_words = set(_WORD_RE.findall(example_normalized.lower()))
+        overlap = len(sp_words & ex_words) / len(sp_words)
+        if overlap >= self._config.step_path_word_threshold:
+            return self._config.step_path_boost
+        return 0.0
