@@ -71,7 +71,8 @@ class PostgresKnowledgeBase:
                         WHEN project_id = %s     THEN 2  -- текущий проект последним (побеждает)
                         ELSE 1                            -- sibling-проекты посередине
                     END,
-                    id
+                    id,
+                    project_id
             """
             params: tuple = (self._project_id, self._project_id, self._project_id)
         else:
