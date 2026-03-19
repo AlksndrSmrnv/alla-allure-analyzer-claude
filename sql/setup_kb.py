@@ -53,12 +53,16 @@ CREATE TABLE IF NOT EXISTS alla.kb_entry (
     title            TEXT                      NOT NULL,
     description      TEXT                      NOT NULL DEFAULT '',
     error_example    TEXT                      NOT NULL,
+    step_path        TEXT                      NULL,
     category         alla.root_cause_category  NOT NULL,
     resolution_steps TEXT[]                    NOT NULL DEFAULT '{}',
     project_id       INTEGER                   NULL,
     created_at       TIMESTAMPTZ               NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ               NOT NULL DEFAULT now()
 );
+
+ALTER TABLE alla.kb_entry
+    ADD COLUMN IF NOT EXISTS step_path TEXT;
 
 COMMENT ON TABLE  alla.kb_entry IS
     'Известные шаблоны ошибок автотестов с рекомендациями по устранению';
@@ -68,7 +72,9 @@ COMMENT ON COLUMN alla.kb_entry.entry_id IS
 COMMENT ON COLUMN alla.kb_entry.id IS
     'Slug записи, например connection_timeout. Уникален внутри project_id.';
 COMMENT ON COLUMN alla.kb_entry.error_example IS
-    'Большой фрагмент лога для TF-IDF-сопоставления с ошибками тестов';
+    'Большой фрагмент лога для TF-IDF-сопоставления с ошибками тестов без step_path';
+COMMENT ON COLUMN alla.kb_entry.step_path IS
+    'Опциональный breadcrumb execution-шага. Если задан, запись становится step-aware';
 COMMENT ON COLUMN alla.kb_entry.resolution_steps IS
     'Упорядоченные шаги по устранению проблемы (массив TEXT)';
 COMMENT ON COLUMN alla.kb_entry.project_id IS
@@ -149,6 +155,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_feedback_issue_signature
 
 CREATE INDEX IF NOT EXISTS idx_kb_feedback_issue_signature
     ON alla.kb_feedback (issue_signature_hash, issue_signature_version);
+
+-- ---------------------------------------------------------------------------
+-- Группировка проектов для общей видимости KB-записей.
+--
+-- Все проекты с одинаковым group_id видят KB-записи друг друга.
+-- Управление — чистый SQL:
+--   INSERT INTO alla.project_group VALUES (1, 100), (2, 100), (3, 100);
+--   DELETE FROM alla.project_group WHERE project_id = 3 AND group_id = 100;
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS alla.project_group (
+    project_id   INTEGER NOT NULL,
+    group_id     INTEGER NOT NULL,
+    PRIMARY KEY (project_id, group_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_group_group_id
+    ON alla.project_group (group_id);
+
+COMMENT ON TABLE alla.project_group IS
+    'Группировка проектов Allure TestOps для общей видимости KB-записей. '
+    'Все проекты с одинаковым group_id видят KB-записи друг друга.';
 """
 
 # ---------------------------------------------------------------------------
@@ -404,7 +431,7 @@ def run(
 
     with conn:
         if run_schema:
-            print("Создание схемы alla, таблиц kb_entry и kb_feedback...")
+            print("Создание схемы alla, таблиц kb_entry, kb_feedback, project_group...")
             with conn.cursor() as cur:
                 cur.execute(SCHEMA_SQL)
             print("✓ Схема создана (или уже существовала)\n")

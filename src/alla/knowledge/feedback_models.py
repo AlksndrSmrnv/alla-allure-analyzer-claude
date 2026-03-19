@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from alla.knowledge.models import RootCauseCategory
 
@@ -34,8 +34,18 @@ class FeedbackIssueSignature(BaseModel):
 class FeedbackClusterContext(BaseModel):
     """Контекст кластера, который использует report UI для feedback."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     audit_text: str = Field(min_length=1)
-    issue_signature: FeedbackIssueSignature
+    base_issue_signature: FeedbackIssueSignature = Field(
+        validation_alias=AliasChoices("base_issue_signature", "issue_signature"),
+    )
+    step_issue_signature: FeedbackIssueSignature | None = None
+
+    @property
+    def issue_signature(self) -> FeedbackIssueSignature:
+        """Совместимость со старым кодом, ожидающим одно поле issue_signature."""
+        return self.base_issue_signature
 
 
 # ------------------------------------------------------------------
@@ -160,6 +170,12 @@ class CreateKBEntryRequest(BaseModel):
     )
     description: str = Field(default="")
     error_example: str = Field(default="")
+    step_path: str | None = Field(
+        default=None,
+        description=(
+            "Breadcrumb шага теста. Если задан, KB-запись становится step-aware."
+        ),
+    )
     category: RootCauseCategory = Field(default=RootCauseCategory.SERVICE)
     resolution_steps: list[str] = Field(default_factory=list)
     project_id: int | None = Field(

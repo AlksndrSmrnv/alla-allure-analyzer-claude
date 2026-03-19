@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS alla.kb_entry (
     -- Соответствует KBEntry.error_example.
     error_example    TEXT                      NOT NULL,
 
+    -- Опциональный breadcrumb execution-шага.
+    -- Если заполнен, запись становится step-aware.
+    step_path        TEXT                      NULL,
+
     -- Категория первопричины: test | service | env | data.
     category         alla.root_cause_category  NOT NULL,
 
@@ -61,6 +65,9 @@ CREATE TABLE IF NOT EXISTS alla.kb_entry (
     updated_at       TIMESTAMPTZ               NOT NULL DEFAULT now()
 );
 
+ALTER TABLE alla.kb_entry
+    ADD COLUMN IF NOT EXISTS step_path TEXT;
+
 COMMENT ON TABLE  alla.kb_entry IS
     'Известные шаблоны ошибок автотестов с рекомендациями по устранению';
 COMMENT ON COLUMN alla.kb_entry.entry_id         IS
@@ -69,7 +76,9 @@ COMMENT ON COLUMN alla.kb_entry.entry_id         IS
 COMMENT ON COLUMN alla.kb_entry.id               IS
     'Slug записи, например connection_timeout. Уникален внутри project_id.';
 COMMENT ON COLUMN alla.kb_entry.error_example    IS
-    'Большой фрагмент лога для TF-IDF-сопоставления с ошибками тестов';
+    'Большой фрагмент лога для TF-IDF-сопоставления с ошибками тестов без step_path';
+COMMENT ON COLUMN alla.kb_entry.step_path        IS
+    'Опциональный breadcrumb execution-шага. Если задан, запись становится step-aware';
 COMMENT ON COLUMN alla.kb_entry.resolution_steps IS
     'Упорядоченные шаги по устранению проблемы (массив TEXT)';
 COMMENT ON COLUMN alla.kb_entry.project_id       IS

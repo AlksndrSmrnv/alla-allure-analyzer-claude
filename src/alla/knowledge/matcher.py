@@ -11,6 +11,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from alla.knowledge.models import KBEntry, KBMatchResult
+from alla.utils.step_paths import are_step_paths_compatible, normalize_step_path
 from alla.utils.text_normalization import normalize_text
 
 if TYPE_CHECKING:
@@ -25,6 +26,8 @@ logger = logging.getLogger(__name__)
 _MULTI_WS_RE = re.compile(r"\s+")
 _WORD_RE = re.compile(r"(?u)\b\w\w+\b")
 _NUM_AGNOSTIC_RE = re.compile(r"\b\d+\b|<NUM>")
+_STEP_PATH_EXACT_BONUS = 0.08
+_STEP_PATH_COMPATIBLE_BONUS = 0.05
 
 
 def _collapse_whitespace(text: str) -> str:
@@ -78,10 +81,6 @@ class MatcherConfig:
     tfidf_ngram_range: tuple[int, int] = (1, 2)
     example_weight: float = 0.8
     title_desc_weight: float = 0.2
-
-    # --- Step path boost ---
-    step_path_boost: float = 0.03
-    step_path_word_threshold: float = 0.5
 
 class TextMatcher:
     """Сопоставляет текст ошибки с записями KB через 3-уровневый алгоритм.
@@ -158,7 +157,7 @@ class TextMatcher:
         entries: list[KBEntry],
         *,
         query_label: str | None = None,
-        step_path: str | None = None,
+        query_step_path: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
 
@@ -264,18 +263,12 @@ class TextMatcher:
                     entry.title, entry.id, capped_score, ex_sim, td_sim,
                 )
 
-        # --- Step path boost ---
-        if step_path and results:
-            sp_normalized = normalize_text(step_path)
-            for result in results:
-                boost = self._compute_step_path_boost(
-                    sp_normalized, normalize_text(result.entry.error_example),
-                )
-                if boost > 0:
-                    result.score = round(min(result.score + boost, 1.0), 4)
-                    result.matched_on.append(
-                        f"step_path boost: +{boost:.2f}",
-                    )
+        # --- Step-aware rerank / filtering ---
+        if results:
+            results = self._apply_step_path_policy(
+                results,
+                query_step_path=query_step_path,
+            )
 
         # --- Сортировка + лимит ---
         results.sort(key=lambda r: -r.score)
@@ -530,24 +523,55 @@ class TextMatcher:
         return hits
 
     # ------------------------------------------------------------------
-    # Step path boost
+    # Step path policy
     # ------------------------------------------------------------------
 
-    def _compute_step_path_boost(
+    def _classify_step_path_match(
         self,
-        step_path_normalized: str,
-        example_normalized: str,
-    ) -> float:
-        """Мягкий бустер score за совпадение step_path с error_example.
+        entry_step_path: str | None,
+        query_step_path: str | None,
+    ) -> str:
+        """Определить отношение между step_path KB-записи и текущего кластера."""
+        entry_normalized = normalize_step_path(entry_step_path)
+        if not entry_normalized:
+            return "not_applicable"
 
-        Проверяет word-overlap между step_path и error_example KB-записи.
-        Если ≥50% слов step_path найдены в error_example → возвращает бонус.
-        """
-        sp_words = set(_WORD_RE.findall(step_path_normalized.lower()))
-        if not sp_words:
-            return 0.0
-        ex_words = set(_WORD_RE.findall(example_normalized.lower()))
-        overlap = len(sp_words & ex_words) / len(sp_words)
-        if overlap >= self._config.step_path_word_threshold:
-            return self._config.step_path_boost
-        return 0.0
+        query_normalized = normalize_step_path(query_step_path)
+        if not query_normalized:
+            return "unknown"
+        if entry_normalized == query_normalized:
+            return "exact"
+        if are_step_paths_compatible(entry_normalized, query_normalized):
+            return "compatible"
+        return "mismatch"
+
+    def _apply_step_path_policy(
+        self,
+        results: list[KBMatchResult],
+        *,
+        query_step_path: str | None,
+    ) -> list[KBMatchResult]:
+        """Применить step-aware фильтрацию и бонусы к текстовым KB-совпадениям."""
+        filtered: list[KBMatchResult] = []
+        for result in results:
+            match_kind = self._classify_step_path_match(
+                result.entry.step_path,
+                query_step_path,
+            )
+            if match_kind == "mismatch":
+                continue
+            if match_kind == "exact":
+                result.score = round(min(result.score + _STEP_PATH_EXACT_BONUS, 1.0), 4)
+                result.matched_on.append(
+                    f"step_path exact: +{_STEP_PATH_EXACT_BONUS:.2f}",
+                )
+            elif match_kind == "compatible":
+                result.score = round(
+                    min(result.score + _STEP_PATH_COMPATIBLE_BONUS, 1.0),
+                    4,
+                )
+                result.matched_on.append(
+                    f"step_path compatible: +{_STEP_PATH_COMPATIBLE_BONUS:.2f}",
+                )
+            filtered.append(result)
+        return filtered

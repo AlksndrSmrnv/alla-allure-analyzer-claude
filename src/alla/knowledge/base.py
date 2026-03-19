@@ -21,14 +21,14 @@ class KnowledgeBaseProvider(Protocol):
         error_text: str,
         *,
         query_label: str | None = None,
-        step_path: str | None = None,
+        query_step_path: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
 
         Args:
             error_text: Текст ошибки для поиска (message + trace/log).
             query_label: Метка для логирования.
-            step_path: Путь шага теста (опциональный бустер score).
+            query_step_path: Путь шага текущего кластера.
         """
         ...
 

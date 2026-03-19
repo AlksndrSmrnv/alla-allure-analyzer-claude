@@ -184,9 +184,9 @@ class PostgresFeedbackStore:
         """INSERT новую запись в alla.kb_entry."""
         query = """
             INSERT INTO alla.kb_entry
-                (id, title, description, error_example, category,
+                (id, title, description, error_example, step_path, category,
                  resolution_steps, project_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING
             RETURNING entry_id
         """
@@ -200,6 +200,7 @@ class PostgresFeedbackStore:
                             entry.title,
                             entry.description,
                             entry.error_example,
+                            entry.step_path,
                             entry.category.value,
                             list(entry.resolution_steps),
                             project_id,
@@ -215,7 +216,14 @@ class PostgresFeedbackStore:
 
     def update_kb_entry(self, entry_id: int, fields: dict[str, Any]) -> bool:
         """UPDATE запись в alla.kb_entry по entry_id."""
-        allowed = {"title", "description", "error_example", "category", "resolution_steps"}
+        allowed = {
+            "title",
+            "description",
+            "error_example",
+            "step_path",
+            "category",
+            "resolution_steps",
+        }
         to_update = {k: v for k, v in fields.items() if k in allowed}
         if not to_update:
             return False
