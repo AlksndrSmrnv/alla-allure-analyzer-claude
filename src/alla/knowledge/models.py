@@ -16,6 +16,8 @@ class RootCauseCategory(str, Enum):
     ENV = "env"
     DATA = "data"
 
+    __str__ = str.__str__
+
 
 class KBEntry(BaseModel):
     """Запись базы знаний — известная ошибка с описанием и рекомендациями."""

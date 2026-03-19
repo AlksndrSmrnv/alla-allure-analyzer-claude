@@ -418,12 +418,12 @@ async def delete_comments(launch_id: int, dry_run: bool = False) -> dict[str, An
     ``[alla]`` и удаляет их. Query parameter ``?dry_run=true`` для
     предварительного просмотра без фактического удаления.
     """
-    from alla.clients.base import CommentCleanupProvider
+    from alla.clients.base import CommentManager
     from alla.exceptions import AllureApiError, AuthenticationError, PaginationLimitError
     from alla.services.comment_delete_service import CommentDeleteService
 
     client = _state.client
-    if not isinstance(client, CommentCleanupProvider):
+    if not isinstance(client, CommentManager):
         raise HTTPException(
             status_code=500,
             detail="Клиент не поддерживает управление комментариями",
@@ -618,7 +618,7 @@ def update_kb_entry(entry_id: int, request: dict[str, Any]) -> dict[str, Any]:
         try:
             RootCauseCategory(fields["category"])
         except ValueError:
-            valid = [e.value for e in RootCauseCategory]
+            valid = [str(e) for e in RootCauseCategory]
             raise HTTPException(
                 status_code=422,
                 detail=f"Invalid category '{fields['category']}'. Valid: {valid}",
@@ -672,7 +672,7 @@ def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
     votes: dict[str, dict[str, object]] = {}
     for resolve_key, (vote, fb_id) in resolved.items():
         votes[resolve_key] = {
-            "vote": vote.value,
+            "vote": str(vote),
             "feedback_id": fb_id,
         }
 

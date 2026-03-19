@@ -51,11 +51,12 @@ class PostgresKnowledgeBase:
         Raises:
             KnowledgeBaseError: При ошибке подключения или ошибке запроса.
         """
+        _COLUMNS = ("entry_id, id, title, description, error_example,"
+                    " step_path, category, resolution_steps, project_id")
+        base = f"SELECT {_COLUMNS} FROM alla.kb_entry"
+
         if self._project_id is not None:
-            query = """
-                SELECT entry_id, id, title, description, error_example,
-                       step_path, category, resolution_steps, project_id
-                FROM alla.kb_entry
+            where = """
                 WHERE project_id IS NULL
                    OR project_id = %s
                    OR project_id IN (
@@ -64,7 +65,8 @@ class PostgresKnowledgeBase:
                         JOIN alla.project_group pg2
                           ON pg1.group_id = pg2.group_id
                         WHERE pg1.project_id = %s
-                      )
+                      )"""
+            order = """
                 ORDER BY
                     CASE
                         WHEN project_id IS NULL THEN 0   -- глобальные первыми
@@ -72,22 +74,16 @@ class PostgresKnowledgeBase:
                         ELSE 1                            -- sibling-проекты посередине
                     END,
                     id,
-                    project_id
-            """
+                    project_id"""
             params: tuple[int, ...] = (
-                self._project_id,
-                self._project_id,
-                self._project_id,
+                self._project_id, self._project_id, self._project_id,
             )
         else:
-            query = """
-                SELECT entry_id, id, title, description, error_example,
-                       step_path, category, resolution_steps, project_id
-                FROM alla.kb_entry
-                WHERE project_id IS NULL
-                ORDER BY id
-            """
+            where = " WHERE project_id IS NULL"
+            order = " ORDER BY id"
             params = ()
+
+        query = base + where + order
 
         try:
             with psycopg.connect(self._dsn) as conn:

@@ -657,7 +657,7 @@ def _render_kb_entry(
         steps_text = "\n".join(m.entry.resolution_steps) if m.entry.resolution_steps else ""
         title_ctrl = f'<input name="title" value="{_e(m.entry.title)}">'
         desc_ctrl = f'<textarea name="description" rows="3">{_e(m.entry.description)}</textarea>'
-        cat_ctrl = f'<select name="category">{_render_category_options(m.entry.category.value)}</select>'
+        cat_ctrl = f'<select name="category">{_render_category_options(str(m.entry.category))}</select>'
         example_ctrl = f'<textarea name="error_example" rows="4">{_e(m.entry.error_example)}</textarea>'
         effective_step_path = m.entry.step_path or cluster_step_path
         step_toggle_html = ""
@@ -724,7 +724,7 @@ def _render_kb_entry(
         f'<span class="kb-title">{_e(m.entry.title)}</span>'
         f"{entry_id_badge}"
         f"{origin_badge}"
-        f'<span class="kb-category">{_e(m.entry.category.value)}</span>'
+        f'<span class="kb-category">{_e(str(m.entry.category))}</span>'
         "</div>"
         f"{steps_html}"
         f"{step_path_html}"
@@ -885,7 +885,7 @@ def _build_starter_pack_payload(
         "description": match.entry.description,
         "error_example": match.entry.error_example,
         "step_path": match.entry.step_path,
-        "category": match.entry.category.value,
+        "category": str(match.entry.category),
         "resolution_steps": list(match.entry.resolution_steps),
         "project_id": project_id,
     }

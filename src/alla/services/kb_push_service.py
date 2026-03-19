@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
 
 from alla.clients.base import TestResultsUpdater
 from alla.knowledge.models import KBMatchResult
 from alla.models.clustering import ClusteringReport
+from alla.models.common import PushResult
 from alla.models.testops import TriageReport
 
 logger = logging.getLogger(__name__)
@@ -16,15 +16,8 @@ logger = logging.getLogger(__name__)
 _ALLA_HEADER = "[alla] Рекомендация по результатам анализа"
 _SEPARATOR = "=" * 40
 
-
-@dataclass(frozen=True)
-class KBPushResult:
-    """Результат операции push KB-рекомендаций."""
-
-    total_tests: int
-    updated_count: int
-    failed_count: int
-    skipped_count: int
+# Backward-compatible alias
+KBPushResult = PushResult
 
 
 def format_kb_description(
@@ -58,7 +51,7 @@ def format_kb_description(
 
         entry = match.entry
         parts.append(f"KB: {entry.title}")
-        parts.append(f"Категория: {entry.category.value}")
+        parts.append(f"Категория: {entry.category}")
 
         if entry.resolution_steps:
             parts.append("")

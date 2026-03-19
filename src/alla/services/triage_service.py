@@ -396,7 +396,7 @@ class TriageService:
             for t in report.failed_tests:
                 logger.info(
                     "  [%s] %s (ID: %d) %s",
-                    t.status.value.upper(),
+                    t.status.upper(),
                     t.name,
                     t.test_result_id,
                     t.link or "",

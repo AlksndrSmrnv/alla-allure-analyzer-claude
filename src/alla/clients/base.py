@@ -155,25 +155,6 @@ class CommentManager(Protocol):
         ...
 
 
-@runtime_checkable
-class CommentCleanupProvider(Protocol):
-    """Полный контракт для удаления комментариев в рамках запуска."""
-
-    async def get_all_test_results_for_launch(
-        self,
-        launch_id: int,
-    ) -> list[TestResultResponse]:
-        """Получить все результаты тестов запуска."""
-        ...
-
-    async def get_comments(self, test_case_id: int) -> list[CommentResponse]:
-        """Получить все комментарии для тест-кейса."""
-        ...
-
-    async def delete_comment(self, comment_id: int) -> None:
-        """Удалить комментарий по ID."""
-        ...
-
 
 @runtime_checkable
 class LaunchLinksUpdater(Protocol):

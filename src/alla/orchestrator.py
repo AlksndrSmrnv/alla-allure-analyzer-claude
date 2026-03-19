@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from alla.clients.base import TestResultsProvider, TestResultsUpdater
 from alla.config import Settings
+from alla.knowledge.base import KnowledgeBaseProvider
 from alla.knowledge.feedback_models import (
     FeedbackClusterContext,
     FeedbackRecord,
@@ -18,6 +19,7 @@ from alla.knowledge.feedback_signature import (
     build_feedback_cluster_context,
     get_cluster_feedback_sources,
 )
+from alla.knowledge.feedback_store import FeedbackStore
 from alla.knowledge.models import KBMatchResult
 from alla.models.clustering import ClusteringReport, FailureCluster
 from alla.models.onboarding import OnboardingMode, OnboardingState
@@ -50,32 +52,6 @@ class AnalysisResult:
     feedback_contexts: dict[str, FeedbackClusterContext] = field(default_factory=dict)
     onboarding: OnboardingState = field(default_factory=OnboardingState)
 
-
-class KnowledgeBaseProvider(Protocol):
-    """Минимальный внутренний контракт KB для orchestration stage."""
-
-    def search_by_error(
-        self,
-        error_text: str,
-        *,
-        query_label: str | None = None,
-        query_step_path: str | None = None,
-    ) -> list[KBMatchResult]:
-        ...
-
-    def get_all_entries(self) -> list["KBEntry"]:
-        ...
-
-
-class FeedbackStore(Protocol):
-    """Минимальный внутренний контракт exact-feedback store."""
-
-    def get_feedback_for_signature(
-        self,
-        issue_signature_hash: str,
-        issue_signature_version: int,
-    ) -> list[FeedbackRecord]:
-        ...
 
 
 @dataclass
@@ -525,7 +501,17 @@ def _build_onboarding_state(
     kb_entries: list["KBEntry"] | None = None,
 ) -> OnboardingState:
     """Определить onboarding state проекта для JSON и HTML-отчёта."""
-    prioritized_cluster_ids = _prioritize_cluster_ids(clustering_report)
+    if (
+        clustering_report is not None
+        and clustering_report.clusters
+    ):
+        ranked = sorted(
+            enumerate(clustering_report.clusters),
+            key=lambda item: (-item[1].member_count, item[0]),
+        )
+        prioritized_cluster_ids = [c.cluster_id for _, c in ranked[:3]]
+    else:
+        prioritized_cluster_ids: list[str] = []
 
     if not settings.kb_active:
         return OnboardingState(
@@ -550,21 +536,6 @@ def _build_onboarding_state(
         starter_pack_available=starter_pack_available,
     )
 
-
-def _prioritize_cluster_ids(
-    clustering_report: ClusteringReport | None,
-    *,
-    limit: int = 3,
-) -> list[str]:
-    """Вернуть top-N cluster_id для guided onboarding."""
-    if clustering_report is None or not clustering_report.clusters or limit <= 0:
-        return []
-
-    ranked = sorted(
-        enumerate(clustering_report.clusters),
-        key=lambda item: (-item[1].member_count, item[0]),
-    )
-    return [cluster.cluster_id for _, cluster in ranked[:limit]]
 
 
 def _build_kb_query_text(
@@ -682,7 +653,7 @@ def _apply_exact_feedback_memory(
         )
         effective_match.score = 1.0
         effective_match.match_origin = "feedback_exact"
-        effective_match.feedback_vote = record.vote.value
+        effective_match.feedback_vote = str(record.vote)
         effective_match.feedback_id = record.feedback_id
         effective_match.matched_on = [reason] + [
             item for item in effective_match.matched_on if item != reason

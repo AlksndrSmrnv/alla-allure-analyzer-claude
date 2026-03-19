@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
+from alla.models.common import PushResult
+
 
 class LLMClusterAnalysis(BaseModel):
     """Результат LLM-анализа одного кластера ошибок."""
@@ -29,14 +31,8 @@ class LLMAnalysisResult:
     cluster_analyses: dict[str, LLMClusterAnalysis] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class LLMPushResult:
-    """Результат записи LLM-рекомендаций в TestOps."""
-
-    total_tests: int
-    updated_count: int
-    failed_count: int
-    skipped_count: int
+# Backward-compatible alias
+LLMPushResult = PushResult
 
 
 @dataclass(frozen=True)

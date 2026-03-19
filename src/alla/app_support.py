@@ -190,7 +190,7 @@ def filter_failed_results(
     results: Iterable[TestResultResponse],
 ) -> list[TestResultResponse]:
     """Select failed/broken test results for comment cleanup."""
-    failure_statuses = {status.value for status in TestStatus.failure_statuses()}
+    failure_statuses = {str(status) for status in TestStatus.failure_statuses()}
     return [
         result
         for result in results

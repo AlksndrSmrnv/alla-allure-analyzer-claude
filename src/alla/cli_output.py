@@ -35,7 +35,7 @@ def print_text_report(report: "TriageReport") -> None:
         print(f"Падения ({len(report.failed_tests)}):")
         for test in report.failed_tests:
             print(
-                f"  [{test.status.value.upper()}]  {test.name} "
+                f"  [{test.status.upper()}]  {test.name} "
                 f"(ID: {test.test_result_id})"
             )
             if test.link:
@@ -132,7 +132,7 @@ def print_clustering_report(
             for match in matches:
                 cluster_lines.append(f"  [{match.score:.2f}] {match.entry.title}")
                 cluster_lines.append(
-                    f"         Категория: {match.entry.category.value}"
+                    f"         Категория: {match.entry.category}"
                 )
                 for step in match.entry.resolution_steps[:2]:
                     step_text = step if len(step) <= 80 else step[:77] + "..."

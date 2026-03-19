@@ -16,6 +16,8 @@ class FeedbackVote(str, Enum):
     LIKE = "like"
     DISLIKE = "dislike"
 
+    __str__ = str.__str__
+
 
 class FeedbackIssueSignature(BaseModel):
     """Стабильная сигнатура ошибки для exact feedback memory."""

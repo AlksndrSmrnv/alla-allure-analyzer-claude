@@ -40,7 +40,7 @@ def _format_kb_category(category: RootCauseCategory) -> str:
         RootCauseCategory.ENV: "окружение",
         RootCauseCategory.DATA: "данные",
     }
-    return mapping.get(category, category.value)
+    return mapping.get(category, str(category))
 
 
 def _is_exact_kb_match(match: KBMatchResult) -> bool:
