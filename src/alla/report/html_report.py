@@ -28,6 +28,9 @@ class _KBPrefill(TypedDict):
     resolution_steps: list[str]
 
 
+_TEST_LIST_PREVIEW_COUNT = 3
+
+
 # ---------------------------------------------------------------------------
 # Публичный API
 # ---------------------------------------------------------------------------
@@ -539,27 +542,36 @@ def _render_cluster(
         )
 
     # --- test links ---
-    _MAX_IDS = 60
-    shown_ids = cluster.member_test_ids[:_MAX_IDS]
     links: list[str] = []
-    for tid in shown_ids:
+    for index, tid in enumerate(cluster.member_test_ids):
         test = test_by_id.get(tid)
         display = _e(test.name) if test and test.name else str(tid)
+        extra_cls = " test-id-extra" if index >= _TEST_LIST_PREVIEW_COUNT else ""
         if test and test.link:
             href = _e(test.link.replace("/testresult/", "/errors/"))
-            links.append(f'<a href="{href}" target="_blank" class="test-id">{display}</a>')
+            links.append(
+                f'<a href="{href}" target="_blank" class="test-id{extra_cls}">{display}</a>'
+            )
         else:
-            links.append(f'<span class="test-id no-link">{display}</span>')
+            links.append(f'<span class="test-id no-link{extra_cls}">{display}</span>')
 
     tests_html = ""
     if links:
-        extra = ""
-        if len(cluster.member_test_ids) > _MAX_IDS:
-            extra = f'<span class="test-more">и ещё {len(cluster.member_test_ids) - _MAX_IDS}…</span>'
+        has_hidden_tests = len(cluster.member_test_ids) > _TEST_LIST_PREVIEW_COUNT
+        toggle_html = ""
+        if has_hidden_tests:
+            toggle_html = (
+                '<button type="button" class="test-list-toggle" '
+                'data-expand-label="Развернуть" '
+                'data-collapse-label="Свернуть" '
+                'aria-expanded="false">Развернуть</button>'
+            )
+        list_cls = "test-list collapsed" if has_hidden_tests else "test-list"
         tests_html = (
-            '<div class="block">'
+            '<div class="block test-list-block">'
             '<div class="block-title">Затронутые тесты</div>'
-            f'<div class="test-list">{ "".join(links) }{extra}</div>'
+            f'<div class="{list_cls}">{"".join(links)}</div>'
+            f"{toggle_html}"
             "</div>"
         )
 
@@ -1517,6 +1529,9 @@ _CSS = """
       flex-direction: column;
       gap: 0.25rem;
     }
+    .test-list.collapsed .test-id-extra {
+      display: none;
+    }
     .test-id {
       background: var(--bg);
       border: 1px solid var(--border);
@@ -1544,12 +1559,20 @@ _CSS = """
       border-color: var(--border);
       color: var(--text);
     }
-    .test-more {
-      font-size: 0.8125rem;
+    .test-list-toggle {
+      background: none;
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-sm);
+      padding: 0.5rem 0.9rem;
+      cursor: pointer;
       color: var(--text-muted);
-      display: flex;
-      align-items: center;
-      padding: 0 0.5rem;
+      font-size: 0.8125rem;
+      align-self: flex-start;
+      transition: all 0.2s;
+    }
+    .test-list-toggle:hover {
+      border-color: var(--primary);
+      color: var(--primary);
     }
 
     /* ---- Markdown Rendered Styles ---- */
@@ -1829,6 +1852,24 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "      status.className = 'fb-status fb-status-error';\n"
         "    });\n"
         "  }\n"
+        "\n"
+        "  document.addEventListener('click', function(e) {\n"
+        "    var toggle = e.target.closest('.test-list-toggle');\n"
+        "    if (!toggle) return;\n"
+        "    var block = toggle.closest('.test-list-block');\n"
+        "    var list = block ? block.querySelector('.test-list') : null;\n"
+        "    if (!list) return;\n"
+        "    var isExpanded = !list.classList.contains('collapsed');\n"
+        "    if (isExpanded) {\n"
+        "      list.classList.add('collapsed');\n"
+        "      toggle.textContent = toggle.dataset.expandLabel || 'Развернуть';\n"
+        "      toggle.setAttribute('aria-expanded', 'false');\n"
+        "      return;\n"
+        "    }\n"
+        "    list.classList.remove('collapsed');\n"
+        "    toggle.textContent = toggle.dataset.collapseLabel || 'Свернуть';\n"
+        "    toggle.setAttribute('aria-expanded', 'true');\n"
+        "  });\n"
         "\n"
         "  document.addEventListener('click', function(e) {\n"
         "    var btn = e.target.closest('.fb-like');\n"

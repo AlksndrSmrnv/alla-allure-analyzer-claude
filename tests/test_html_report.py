@@ -175,3 +175,95 @@ def test_html_report_embeds_exact_feedback_payload() -> None:
     assert "fb#55" in html
     assert "CLUSTER_FEEDBACK_CONTEXTS" in html
     assert "issue_signature_hash" in html
+
+
+def test_html_report_collapses_cluster_test_list_after_first_three() -> None:
+    """Clusters with many tests render all items but hide extras behind a toggle."""
+    cluster = make_failure_cluster(
+        cluster_id="c-tests",
+        member_test_ids=[1, 2, 3, 4, 5],
+        member_count=5,
+    )
+    result = AnalysisResult(
+        triage_report=make_triage_report(
+            failed_tests=[
+                make_failed_test_summary(
+                    test_result_id=1,
+                    name="test_alpha",
+                    link="https://example.local/testresult/1",
+                ),
+                make_failed_test_summary(
+                    test_result_id=2,
+                    name="test_beta",
+                    link="https://example.local/testresult/2",
+                ),
+                make_failed_test_summary(
+                    test_result_id=3,
+                    name="test_gamma",
+                    link="https://example.local/testresult/3",
+                ),
+                make_failed_test_summary(
+                    test_result_id=4,
+                    name="test_delta",
+                    link="https://example.local/testresult/4",
+                ),
+                make_failed_test_summary(
+                    test_result_id=5,
+                    name="test_epsilon",
+                    link="https://example.local/testresult/5",
+                ),
+            ]
+        ),
+        clustering_report=make_clustering_report(
+            clusters=[cluster],
+            cluster_count=1,
+            total_failures=5,
+        ),
+    )
+
+    html = generate_html_report(result)
+
+    assert 'class="test-list collapsed"' in html
+    assert 'class="test-list-toggle"' in html
+    assert 'aria-expanded="false">Развернуть</button>' in html
+    assert html.count('class="test-id test-id-extra"') == 2
+    assert "test_alpha" in html
+    assert "test_beta" in html
+    assert "test_gamma" in html
+    assert "test_delta" in html
+    assert "test_epsilon" in html
+    assert 'href="https://example.local/errors/4"' in html
+    assert "https://example.local/testresult/4" not in html
+
+
+def test_html_report_keeps_short_cluster_test_list_expanded() -> None:
+    """Clusters with up to three tests render without collapse controls."""
+    cluster = make_failure_cluster(
+        cluster_id="c-short",
+        member_test_ids=[1, 2, 3],
+        member_count=3,
+    )
+    result = AnalysisResult(
+        triage_report=make_triage_report(
+            failed_tests=[
+                make_failed_test_summary(test_result_id=1, name="test_one"),
+                make_failed_test_summary(test_result_id=2, name="test_two"),
+                make_failed_test_summary(test_result_id=3, name="test_three"),
+            ]
+        ),
+        clustering_report=make_clustering_report(
+            clusters=[cluster],
+            cluster_count=1,
+            total_failures=3,
+        ),
+    )
+
+    html = generate_html_report(result)
+
+    assert 'class="test-list-toggle"' not in html
+    assert 'class="test-list collapsed"' not in html
+    assert 'class="test-id test-id-extra"' not in html
+    assert 'class="test-id no-link test-id-extra"' not in html
+    assert "test_one" in html
+    assert "test_two" in html
+    assert "test_three" in html
