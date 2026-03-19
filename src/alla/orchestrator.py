@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from alla.clients.base import TestResultsProvider, TestResultsUpdater
 from alla.config import Settings
@@ -27,6 +27,8 @@ from alla.utils.step_paths import are_step_paths_compatible, normalize_step_path
 from alla.utils.text_preview import preview_head
 
 if TYPE_CHECKING:
+    from alla.knowledge.base import KnowledgeBaseProvider
+    from alla.knowledge.feedback_store import FeedbackStore
     from alla.knowledge.matcher import MatcherConfig
     from alla.knowledge.models import KBEntry
     from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary, LLMPushResult
@@ -49,33 +51,6 @@ class AnalysisResult:
     llm_launch_summary: LLMLaunchSummary | None = None
     feedback_contexts: dict[str, FeedbackClusterContext] = field(default_factory=dict)
     onboarding: OnboardingState = field(default_factory=OnboardingState)
-
-
-class KnowledgeBaseProvider(Protocol):
-    """Минимальный внутренний контракт KB для orchestration stage."""
-
-    def search_by_error(
-        self,
-        error_text: str,
-        *,
-        query_label: str | None = None,
-        query_step_path: str | None = None,
-    ) -> list[KBMatchResult]:
-        ...
-
-    def get_all_entries(self) -> list["KBEntry"]:
-        ...
-
-
-class FeedbackStore(Protocol):
-    """Минимальный внутренний контракт exact-feedback store."""
-
-    def get_feedback_for_signature(
-        self,
-        issue_signature_hash: str,
-        issue_signature_version: int,
-    ) -> list[FeedbackRecord]:
-        ...
 
 
 @dataclass
