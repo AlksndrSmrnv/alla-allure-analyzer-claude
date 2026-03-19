@@ -140,12 +140,17 @@ def resolve_report_url(
 ) -> str:
     """Resolve the effective public report URL for CLI/server flows."""
     if report_url_override:
+        logger.info("URL отчёта (override): %s", report_url_override)
         return report_url_override
 
     if report_filename and settings.server_external_url:
         external_url = settings.server_external_url.rstrip("/")
-        return f"{external_url}/reports/{report_filename}"
+        report_url = f"{external_url}/reports/{report_filename}"
+        logger.info("URL отчёта (auto): %s", report_url)
+        return report_url
 
+    if settings.report_url:
+        logger.info("URL отчёта (config): %s", settings.report_url)
     return settings.report_url
 
 

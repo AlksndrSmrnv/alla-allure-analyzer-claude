@@ -168,7 +168,7 @@ def _wrap_test_ids(
         candidate = current + separator + test_id
 
         if len(candidate) > max_width and current not in (prefix, indent):
-            lines.append(current)
+            lines.append(current + ",")
             current = indent + test_id
         else:
             current = candidate

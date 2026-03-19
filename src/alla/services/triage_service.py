@@ -313,16 +313,6 @@ class TriageService:
 
         return None, None, None
 
-    @staticmethod
-    def _find_failure_in_steps(
-        steps: list[ExecutionStep],
-    ) -> tuple[str | None, str | None]:
-        """Backward-compatible wrapper that returns only message/trace."""
-        message, trace, _failed_step_path = TriageService._find_failure_details_in_steps(
-            steps,
-        )
-        return message, trace
-
     def _build_failed_summary(
         self,
         result: TestResultResponse,
