@@ -24,8 +24,12 @@ from alla.models.onboarding import OnboardingMode, OnboardingState
 from alla.models.testops import FailedTestSummary, TriageReport
 from alla.services.kb_push_service import KBPushResult
 from alla.utils.step_paths import are_step_paths_compatible, normalize_step_path
+from alla.utils.text_preview import preview_head
 
 if TYPE_CHECKING:
+    from alla.knowledge.base import KnowledgeBaseProvider
+    from alla.knowledge.feedback_store import FeedbackStore
+    from alla.knowledge.matcher import MatcherConfig
     from alla.knowledge.models import KBEntry
     from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary, LLMPushResult
 
@@ -47,6 +51,25 @@ class AnalysisResult:
     llm_launch_summary: LLMLaunchSummary | None = None
     feedback_contexts: dict[str, FeedbackClusterContext] = field(default_factory=dict)
     onboarding: OnboardingState = field(default_factory=OnboardingState)
+
+
+@dataclass
+class _KBStageResult:
+    """Результат KB stage, агрегированный в одном объекте."""
+
+    kb_results: dict[str, list[KBMatchResult]] = field(default_factory=dict)
+    kb_entries: list["KBEntry"] = field(default_factory=list)
+    kb_provenance: dict[str, tuple[int, int, int]] = field(default_factory=dict)
+    feedback_contexts: dict[str, FeedbackClusterContext] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _ClusterKBLookup:
+    """Результат KB lookup для одного кластера."""
+
+    matches: list[KBMatchResult]
+    provenance: tuple[int, int, int]
+    feedback_context: FeedbackClusterContext | None
 
 
 async def analyze_launch(
@@ -76,299 +99,397 @@ async def analyze_launch(
     """
     from alla.services.triage_service import TriageService
 
-    # 1. Триаж
     service = TriageService(client, settings)
     report = await service.analyze_launch(launch_id)
+    await _enrich_with_logs(report, client, settings)
 
-    # 1.5. Обогащение логами из аттачментов
-    if report.failed_tests:
-        from alla.clients.base import AttachmentProvider
-        from alla.services.log_extraction_service import (
-            LogExtractionConfig,
-            LogExtractionService,
-        )
-
-        if isinstance(client, AttachmentProvider):
-            log_config = LogExtractionConfig(
-                concurrency=settings.logs_concurrency,
-            )
-            log_service = LogExtractionService(client, log_config)
-            try:
-                await log_service.enrich_with_logs(report.failed_tests)
-            except Exception as exc:
-                logger.warning("Log enrichment: ошибка: %s", exc)
-        else:
-            logger.debug(
-                "Провайдер не реализует AttachmentProvider. "
-                "Логи из аттачментов пропущены."
-            )
-
-    clustering_report = None
-    kb_results: dict[str, list[KBMatchResult]] = {}
-    kb_push_result = None
-    kb_provenance: dict[str, tuple[int, int, int]] = {}
-    feedback_contexts: dict[str, FeedbackClusterContext] = {}
-    onboarding = OnboardingState(
-        mode=OnboardingMode.KB_NOT_CONFIGURED
-        if not settings.kb_active
-        else OnboardingMode.NORMAL,
-        prioritized_cluster_ids=_prioritize_cluster_ids(None),
-    )
-
-    # 2. Кластеризация
-    if report.failed_tests:
-        from alla.services.clustering_service import ClusteringConfig, ClusteringService
-
-        clustering_kwargs: dict = {
-            "similarity_threshold": settings.clustering_threshold,
-        }
-        if settings.logs_clustering_weight > 0:
-            clustering_kwargs["log_similarity_weight"] = settings.logs_clustering_weight
-
-        clustering_service = ClusteringService(
-            ClusteringConfig(**clustering_kwargs)
-        )
-        clustering_report = clustering_service.cluster_failures(
-            launch_id, report.failed_tests,
-        )
-
-    kb_entries: list["KBEntry"] = []
-
-    # 3. Поиск по базе знаний
-    if settings.kb_active:
-        from alla.knowledge.matcher import MatcherConfig
-
-        matcher_config = MatcherConfig(
-            min_score=settings.kb_min_score,
-            max_results=settings.kb_max_results,
-        )
-        feedback_store = _get_feedback_store(
-            kb_postgres_dsn=settings.kb_postgres_dsn,
-        )
-        kb = _get_or_create_kb(
-            matcher_config,
-            report.project_id,
-            kb_postgres_dsn=settings.kb_postgres_dsn,
-        )
-        if hasattr(kb, "get_all_entries"):
-            kb_entries = kb.get_all_entries()
-        entries_by_entry_id = {
-            entry.entry_id: entry
-            for entry in kb_entries
-            if entry.entry_id is not None
-        }
-
-        if clustering_report is not None:
-            # Индекс test_result_id → FailedTestSummary для быстрого lookup
-            test_by_id = {t.test_result_id: t for t in report.failed_tests}
-
-            for cluster in clustering_report.clusters:
-                try:
-                    query_text, message_len, trace_len, log_len = _build_kb_query_text(
-                        cluster, test_by_id,
-                        include_trace=False,
-                    )
-                    kb_provenance[cluster.cluster_id] = (message_len, trace_len, log_len)
-
-                    feedback_context = build_feedback_cluster_context(
-                        cluster,
-                        test_by_id,
-                    )
-                    if feedback_context is not None:
-                        feedback_contexts[cluster.cluster_id] = feedback_context
-
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(
-                            "KB query [%s]: rep_test_id=%s, "
-                            "combined_len=%d (msg=%d, trace=%d, log=%d)",
-                            cluster.cluster_id,
-                            cluster.representative_test_id,
-                            len(query_text),
-                            message_len,
-                            trace_len,
-                            log_len,
-                        )
-                        if query_text.strip():
-                            logger.debug(
-                                "KB query [%s]: head='%s'",
-                                cluster.cluster_id,
-                                _preview_head(query_text, _KB_QUERY_LOG_PREVIEW_CHARS),
-                            )
-
-                    matches = (
-                        kb.search_by_error(
-                            query_text,
-                            query_label=f"{cluster.cluster_id}:combined",
-                            query_step_path=cluster.example_step_path,
-                        )
-                        if query_text.strip()
-                        else []
-                    )
-                    if feedback_context is not None:
-                        base_exact_feedback = feedback_store.get_feedback_for_signature(
-                            feedback_context.base_issue_signature.signature_hash,
-                            feedback_context.base_issue_signature.version,
-                        )
-                        step_exact_feedback = (
-                            feedback_store.get_feedback_for_signature(
-                                feedback_context.step_issue_signature.signature_hash,
-                                feedback_context.step_issue_signature.version,
-                            )
-                            if feedback_context.step_issue_signature is not None
-                            else []
-                        )
-                        matches = _apply_exact_feedback_memory(
-                            matches,
-                            base_exact_feedback,
-                            entries_by_entry_id,
-                            step_exact_feedback=step_exact_feedback,
-                            query_step_path=cluster.example_step_path,
-                            max_results=settings.kb_max_results,
-                        )
-                    if matches:
-                        kb_results[cluster.cluster_id] = matches
-                except Exception as exc:
-                    logger.warning(
-                        "Ошибка KB-поиска для кластера %s: %s",
-                        cluster.cluster_id, exc,
-                    )
-
+    clustering_report = _cluster_failures(launch_id, report, settings)
+    kb_stage = _run_kb_stage(report, clustering_report, settings)
     onboarding = _build_onboarding_state(
         settings,
         report.project_id,
         clustering_report,
-        kb_entries=kb_entries,
+        kb_entries=kb_stage.kb_entries,
     )
 
-    # 4. LLM-анализ кластеров через Langflow
-    llm_result = None
-    llm_push_result = None
-    llm_launch_summary = None
-
-    if (
-        settings.llm_active
-        and clustering_report is not None
-        and clustering_report.clusters
-    ):
-        from alla.clients.langflow_client import LangflowClient
-        from alla.services.llm_service import LLMService
-
-        # Суммарная статистика перед LLM-анализом
-        _test_by_id_llm = (
-            {t.test_result_id: t for t in report.failed_tests}
-            if report.failed_tests
-            else {}
-        )
-        clusters_with_logs = 0
-        clusters_with_kb = 0
-        for _c in clustering_report.clusters:
-            if kb_results.get(_c.cluster_id):
-                clusters_with_kb += 1
-            if _test_by_id_llm and _c.representative_test_id is not None:
-                _rep = _test_by_id_llm.get(_c.representative_test_id)
-                if _rep and _rep.log_snippet:
-                    clusters_with_logs += 1
-        logger.info(
-            "LLM: отправка %d кластеров на анализ "
-            "(с логами: %d, с KB: %d)",
-            len(clustering_report.clusters),
-            clusters_with_logs,
-            clusters_with_kb,
-        )
-
-        async with LangflowClient(
-            base_url=settings.langflow_base_url,
-            flow_id=settings.langflow_flow_id,
-            api_key=settings.langflow_api_key,
-            timeout=settings.llm_timeout,
-            ssl_verify=settings.ssl_verify,
-            max_retries=settings.llm_max_retries,
-            retry_base_delay=settings.llm_retry_base_delay,
-        ) as langflow:
-            llm_service = LLMService(
-                langflow,
-                concurrency=settings.llm_concurrency,
-            )
-            try:
-                llm_result = await llm_service.analyze_clusters(
-                    clustering_report,
-                    kb_results=kb_results or None,
-                    failed_tests=report.failed_tests,
-                    kb_provenance=kb_provenance or None,
-                )
-            except Exception as exc:
-                logger.warning("LLM анализ: ошибка: %s", exc)
-
-            # Итоговый отчёт по всему прогону
-            llm_launch_summary = await llm_service.generate_launch_summary(
-                clustering_report,
-                report,
-                llm_result,
-            )
-
-    # 5. Запись LLM-рекомендаций в TestOps
-    if (
-        settings.push_to_testops
-        and settings.llm_active
-        and llm_result is not None
-        and llm_result.analyzed_count > 0
-        and updater is not None
-    ):
-        from alla.services.llm_service import push_llm_results
-
-        try:
-            llm_push_result = await push_llm_results(
-                clustering_report,
-                llm_result,
-                report,
-                updater,
-                concurrency=settings.detail_concurrency,
-            )
-        except Exception as exc:
-            logger.warning("LLM push: ошибка при записи рекомендаций: %s", exc)
-
-    # 6. Fallback: запись рекомендаций KB в TestOps
-    #    Выполняется только если LLM не включён или не дал успешных результатов.
-    #    Когда LLM работает — KB-данные интегрируются в LLM-анализ (Stage 4),
-    #    и дублирующий KB push не нужен.
-    llm_succeeded = (
-        llm_result is not None and llm_result.analyzed_count > 0
+    llm_result, llm_launch_summary = await _run_llm_stage(
+        report,
+        clustering_report,
+        settings,
+        kb_stage=kb_stage,
     )
-    if (
-        settings.push_to_testops
-        and settings.kb_active
-        and not llm_succeeded
-        and kb_results
-        and clustering_report is not None
-        and updater is not None
-    ):
-        from alla.services.kb_push_service import KBPushService
-
-        push_service = KBPushService(
-            updater,
-            concurrency=settings.detail_concurrency,
-        )
-        try:
-            kb_push_result = await push_service.push_kb_results(
-                clustering_report,
-                kb_results,
-                report,
-            )
-        except Exception as exc:
-            logger.warning("KB push: ошибка при записи рекомендаций: %s", exc)
+    llm_push_result = await _push_llm_stage(
+        report,
+        clustering_report,
+        llm_result,
+        updater,
+        settings,
+    )
+    kb_push_result = await _push_kb_stage(
+        report,
+        clustering_report,
+        kb_stage,
+        llm_result,
+        updater,
+        settings,
+    )
 
     return AnalysisResult(
         triage_report=report,
         clustering_report=clustering_report,
-        kb_results=kb_results,
+        kb_results=kb_stage.kb_results,
         kb_push_result=kb_push_result,
-        kb_provenance=kb_provenance,
+        kb_provenance=kb_stage.kb_provenance,
         llm_result=llm_result,
         llm_push_result=llm_push_result,
         llm_launch_summary=llm_launch_summary,
-        feedback_contexts=feedback_contexts,
+        feedback_contexts=kb_stage.feedback_contexts,
         onboarding=onboarding,
     )
+
+
+async def _enrich_with_logs(
+    report: TriageReport,
+    client: TestResultsProvider,
+    settings: Settings,
+) -> None:
+    """Обогатить failed tests логами из аттачментов, если клиент это поддерживает."""
+    if not report.failed_tests:
+        return
+
+    from alla.clients.base import AttachmentProvider
+    from alla.services.log_extraction_service import (
+        LogExtractionConfig,
+        LogExtractionService,
+    )
+
+    if not isinstance(client, AttachmentProvider):
+        logger.debug(
+            "Провайдер не реализует AttachmentProvider. "
+            "Логи из аттачментов пропущены."
+        )
+        return
+
+    log_service = LogExtractionService(
+        client,
+        LogExtractionConfig(concurrency=settings.logs_concurrency),
+    )
+    try:
+        await log_service.enrich_with_logs(report.failed_tests)
+    except Exception as exc:
+        logger.warning("Log enrichment: ошибка: %s", exc)
+
+
+def _cluster_failures(
+    launch_id: int,
+    report: TriageReport,
+    settings: Settings,
+) -> ClusteringReport | None:
+    """Построить clustering report для активных падений запуска."""
+    if not report.failed_tests:
+        return None
+
+    from alla.services.clustering_service import ClusteringConfig, ClusteringService
+
+    clustering_service = ClusteringService(
+        ClusteringConfig(
+            similarity_threshold=settings.clustering_threshold,
+            log_similarity_weight=settings.logs_clustering_weight,
+        )
+    )
+    return clustering_service.cluster_failures(launch_id, report.failed_tests)
+
+
+def _run_kb_stage(
+    report: TriageReport,
+    clustering_report: ClusteringReport | None,
+    settings: Settings,
+) -> _KBStageResult:
+    """Выполнить KB search stage и собрать его артефакты."""
+    if not settings.kb_active:
+        return _KBStageResult()
+
+    from alla.knowledge.matcher import MatcherConfig
+
+    matcher_config = MatcherConfig(
+        min_score=settings.kb_min_score,
+        max_results=settings.kb_max_results,
+    )
+    feedback_store = _get_feedback_store(
+        kb_postgres_dsn=settings.kb_postgres_dsn,
+    )
+    kb = _get_or_create_kb(
+        matcher_config,
+        report.project_id,
+        kb_postgres_dsn=settings.kb_postgres_dsn,
+    )
+
+    kb_stage = _KBStageResult(kb_entries=kb.get_all_entries())
+    if clustering_report is None:
+        return kb_stage
+
+    entries_by_entry_id = {
+        entry.entry_id: entry
+        for entry in kb_stage.kb_entries
+        if entry.entry_id is not None
+    }
+    test_by_id = _index_failed_tests(report.failed_tests)
+
+    for cluster in clustering_report.clusters:
+        try:
+            lookup = _lookup_cluster_kb(
+                cluster,
+                kb,
+                feedback_store,
+                entries_by_entry_id,
+                test_by_id,
+                settings,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Ошибка KB-поиска для кластера %s: %s",
+                cluster.cluster_id,
+                exc,
+            )
+            continue
+
+        kb_stage.kb_provenance[cluster.cluster_id] = lookup.provenance
+        if lookup.feedback_context is not None:
+            kb_stage.feedback_contexts[cluster.cluster_id] = lookup.feedback_context
+        if lookup.matches:
+            kb_stage.kb_results[cluster.cluster_id] = lookup.matches
+
+    return kb_stage
+
+
+def _lookup_cluster_kb(
+    cluster: FailureCluster,
+    kb: KnowledgeBaseProvider,
+    feedback_store: FeedbackStore,
+    entries_by_entry_id: dict[int, "KBEntry"],
+    test_by_id: dict[int, FailedTestSummary],
+    settings: Settings,
+) -> _ClusterKBLookup:
+    """Найти KB-совпадения для одного кластера с exact-feedback rerank."""
+    query_text, message_len, trace_len, log_len = _build_kb_query_text(
+        cluster,
+        test_by_id,
+        include_trace=False,
+    )
+    provenance = (message_len, trace_len, log_len)
+    feedback_context = build_feedback_cluster_context(cluster, test_by_id)
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "KB query [%s]: rep_test_id=%s, combined_len=%d (msg=%d, trace=%d, log=%d)",
+            cluster.cluster_id,
+            cluster.representative_test_id,
+            len(query_text),
+            message_len,
+            trace_len,
+            log_len,
+        )
+        if query_text.strip():
+            logger.debug(
+                "KB query [%s]: head='%s'",
+                cluster.cluster_id,
+                preview_head(query_text, _KB_QUERY_LOG_PREVIEW_CHARS),
+            )
+
+    matches = (
+        kb.search_by_error(
+            query_text,
+            query_label=f"{cluster.cluster_id}:combined",
+            query_step_path=cluster.example_step_path,
+        )
+        if query_text.strip()
+        else []
+    )
+
+    if feedback_context is not None:
+        base_exact_feedback = feedback_store.get_feedback_for_signature(
+            feedback_context.base_issue_signature.signature_hash,
+            feedback_context.base_issue_signature.version,
+        )
+        step_exact_feedback = (
+            feedback_store.get_feedback_for_signature(
+                feedback_context.step_issue_signature.signature_hash,
+                feedback_context.step_issue_signature.version,
+            )
+            if feedback_context.step_issue_signature is not None
+            else []
+        )
+        matches = _apply_exact_feedback_memory(
+            matches,
+            base_exact_feedback,
+            entries_by_entry_id,
+            step_exact_feedback=step_exact_feedback,
+            query_step_path=cluster.example_step_path,
+            max_results=settings.kb_max_results,
+        )
+
+    return _ClusterKBLookup(
+        matches=matches,
+        provenance=provenance,
+        feedback_context=feedback_context,
+    )
+
+
+async def _run_llm_stage(
+    report: TriageReport,
+    clustering_report: ClusteringReport | None,
+    settings: Settings,
+    *,
+    kb_stage: _KBStageResult,
+) -> tuple["LLMAnalysisResult | None", "LLMLaunchSummary | None"]:
+    """Выполнить LLM stage для кластеров и summary по прогону."""
+    if (
+        not settings.llm_active
+        or clustering_report is None
+        or not clustering_report.clusters
+    ):
+        return None, None
+
+    from alla.clients.langflow_client import LangflowClient
+    from alla.services.llm_service import LLMService
+
+    _log_llm_stage_input(clustering_report, report.failed_tests, kb_stage.kb_results)
+
+    llm_result = None
+    async with LangflowClient(
+        base_url=settings.langflow_base_url,
+        flow_id=settings.langflow_flow_id,
+        api_key=settings.langflow_api_key,
+        timeout=settings.llm_timeout,
+        ssl_verify=settings.ssl_verify,
+        max_retries=settings.llm_max_retries,
+        retry_base_delay=settings.llm_retry_base_delay,
+    ) as langflow:
+        llm_service = LLMService(
+            langflow,
+            concurrency=settings.llm_concurrency,
+        )
+        try:
+            llm_result = await llm_service.analyze_clusters(
+                clustering_report,
+                kb_results=kb_stage.kb_results or None,
+                failed_tests=report.failed_tests,
+                kb_provenance=kb_stage.kb_provenance or None,
+            )
+        except Exception as exc:
+            logger.warning("LLM анализ: ошибка: %s", exc)
+
+        llm_launch_summary = await llm_service.generate_launch_summary(
+            clustering_report,
+            report,
+            llm_result,
+        )
+
+    return llm_result, llm_launch_summary
+
+
+def _log_llm_stage_input(
+    clustering_report: ClusteringReport,
+    failed_tests: list[FailedTestSummary],
+    kb_results: dict[str, list[KBMatchResult]],
+) -> None:
+    """Залогировать суммарный объём данных перед LLM stage."""
+    test_by_id = _index_failed_tests(failed_tests)
+    clusters_with_logs = 0
+    clusters_with_kb = 0
+
+    for cluster in clustering_report.clusters:
+        if kb_results.get(cluster.cluster_id):
+            clusters_with_kb += 1
+        if cluster.representative_test_id is None:
+            continue
+        representative = test_by_id.get(cluster.representative_test_id)
+        if representative is not None and representative.log_snippet:
+            clusters_with_logs += 1
+
+    logger.info(
+        "LLM: отправка %d кластеров на анализ (с логами: %d, с KB: %d)",
+        len(clustering_report.clusters),
+        clusters_with_logs,
+        clusters_with_kb,
+    )
+
+
+async def _push_llm_stage(
+    report: TriageReport,
+    clustering_report: ClusteringReport | None,
+    llm_result: "LLMAnalysisResult | None",
+    updater: TestResultsUpdater | None,
+    settings: Settings,
+) -> "LLMPushResult | None":
+    """Записать LLM-рекомендации в TestOps, если stage дал результат."""
+    if (
+        not settings.push_to_testops
+        or not settings.llm_active
+        or clustering_report is None
+        or llm_result is None
+        or llm_result.analyzed_count <= 0
+        or updater is None
+    ):
+        return None
+
+    from alla.services.llm_service import push_llm_results
+
+    try:
+        return await push_llm_results(
+            clustering_report,
+            llm_result,
+            report,
+            updater,
+            concurrency=settings.detail_concurrency,
+        )
+    except Exception as exc:
+        logger.warning("LLM push: ошибка при записи рекомендаций: %s", exc)
+        return None
+
+
+async def _push_kb_stage(
+    report: TriageReport,
+    clustering_report: ClusteringReport | None,
+    kb_stage: _KBStageResult,
+    llm_result: "LLMAnalysisResult | None",
+    updater: TestResultsUpdater | None,
+    settings: Settings,
+) -> KBPushResult | None:
+    """Fallback KB push, когда LLM не сработал или отключён."""
+    llm_succeeded = llm_result is not None and llm_result.analyzed_count > 0
+    if (
+        not settings.push_to_testops
+        or not settings.kb_active
+        or llm_succeeded
+        or not kb_stage.kb_results
+        or clustering_report is None
+        or updater is None
+    ):
+        return None
+
+    from alla.services.kb_push_service import KBPushService
+
+    push_service = KBPushService(
+        updater,
+        concurrency=settings.detail_concurrency,
+    )
+    try:
+        return await push_service.push_kb_results(
+            clustering_report,
+            kb_stage.kb_results,
+            report,
+        )
+    except Exception as exc:
+        logger.warning("KB push: ошибка при записи рекомендаций: %s", exc)
+        return None
+
+
+def _index_failed_tests(
+    failed_tests: list[FailedTestSummary],
+) -> dict[int, FailedTestSummary]:
+    """Построить индекс test_result_id -> FailedTestSummary."""
+    return {test.test_result_id: test for test in failed_tests}
 
 
 def _build_onboarding_state(
@@ -491,8 +612,8 @@ def _apply_exact_feedback_memory(
     for entry_id in candidate_entry_ids:
         entry = entries_by_entry_id.get(entry_id)
         if entry is None:
-            match = result_by_entry_id.get(entry_id)
-            entry = match.entry if match is not None else None
+            existing_match = result_by_entry_id.get(entry_id)
+            entry = existing_match.entry if existing_match is not None else None
         if entry is None:
             continue
         if (
@@ -516,30 +637,30 @@ def _apply_exact_feedback_memory(
             result_by_entry_id.pop(entry_id, None)
             continue
 
-        match = result_by_entry_id.get(entry_id)
-        if match is None:
+        effective_match = result_by_entry_id.get(entry_id)
+        if effective_match is None:
             entry = entries_by_entry_id.get(entry_id)
             if entry is None:
                 continue
-            match = KBMatchResult(
+            effective_match = KBMatchResult(
                 entry=entry,
                 score=1.0,
                 matched_on=[],
                 match_origin="feedback_exact",
             )
-            result_by_entry_id[entry_id] = match
+            result_by_entry_id[entry_id] = effective_match
 
         reason = (
             "Feedback memory: exact step-aware issue signature was confirmed previously"
             if entry.step_path and entry_id in step_records_by_entry_id
             else "Feedback memory: exact issue signature was confirmed previously"
         )
-        match.score = 1.0
-        match.match_origin = "feedback_exact"
-        match.feedback_vote = record.vote.value
-        match.feedback_id = record.feedback_id
-        match.matched_on = [reason] + [
-            item for item in match.matched_on if item != reason
+        effective_match.score = 1.0
+        effective_match.match_origin = "feedback_exact"
+        effective_match.feedback_vote = record.vote.value
+        effective_match.feedback_id = record.feedback_id
+        effective_match.matched_on = [reason] + [
+            item for item in effective_match.matched_on if item != reason
         ]
 
     merged = list(result_by_entry_id.values()) + passthrough_matches
@@ -551,26 +672,12 @@ def _apply_exact_feedback_memory(
         ),
     )
     return merged[:max_results]
-
-
-def _preview_head(text: str, max_chars: int) -> str:
-    """Сжать head-preview для DEBUG-логов одной строкой."""
-    return text[:max_chars].replace("\n", " ")
-
-
-def _preview_tail(text: str, max_chars: int) -> str:
-    """Сжать tail-preview для DEBUG-логов одной строкой."""
-    if len(text) <= max_chars:
-        return text.replace("\n", " ")
-    return text[-max_chars:].replace("\n", " ")
-
-
 def _get_or_create_kb(
-    matcher_config: object,
+    matcher_config: "MatcherConfig",
     project_id: int | None = None,
     *,
     kb_postgres_dsn: str = "",
-) -> object:
+) -> KnowledgeBaseProvider:
     """Создать новый экземпляр KB (PostgreSQL бэкенд).
 
     Каждый вызов создаёт свежий экземпляр, чтобы подхватывать
@@ -588,7 +695,7 @@ def _get_or_create_kb(
     return kb
 
 
-def _get_feedback_store(*, kb_postgres_dsn: str):
+def _get_feedback_store(*, kb_postgres_dsn: str) -> FeedbackStore:
     """Создать exact feedback store для текущего запуска анализа."""
     from alla.knowledge.postgres_feedback import PostgresFeedbackStore
 

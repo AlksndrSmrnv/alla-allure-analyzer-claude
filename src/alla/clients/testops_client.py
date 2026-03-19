@@ -521,7 +521,7 @@ class AllureTestOpsClient:
             )
 
         try:
-            return resp.json()  # type: ignore[no-any-return]
+            return resp.json()
         except Exception as exc:
             raise AllureApiError(
                 resp.status_code,

@@ -1,7 +1,5 @@
 """Тесты для LogExtractionService — извлечение ERROR-блоков из логов."""
 
-import pytest
-
 from alla.services.log_extraction_service import _extract_error_blocks
 
 

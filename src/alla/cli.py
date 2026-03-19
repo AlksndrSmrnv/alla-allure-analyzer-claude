@@ -8,6 +8,11 @@ import logging
 import sys
 
 from alla import __version__
+from alla.cli_output import (
+    print_clustering_report,
+    print_launch_summary,
+    print_text_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,29 +97,25 @@ def build_parser() -> argparse.ArgumentParser:
 async def async_main(args: argparse.Namespace) -> int:
     """Собрать зависимости и запустить триаж. Возвращает код выхода."""
     # Отложенные импорты — чтобы --help работал быстро
+    from alla.app_support import (
+        attach_report_link,
+        build_analysis_response,
+        build_html_report_content,
+        format_configuration_error,
+        load_settings,
+        resolve_report_url,
+        save_html_report,
+    )
     from alla.clients.auth import AllureAuthManager
     from alla.clients.testops_client import AllureTestOpsClient
-    from alla.config import Settings
     from alla.exceptions import AllaError, ConfigurationError
     from alla.logging_config import setup_logging
 
     # 1. Загрузка настроек
     try:
-        overrides: dict[str, object] = {}
-        if args.page_size is not None:
-            overrides["page_size"] = args.page_size
-        settings = Settings(**overrides)  # type: ignore[arg-type]
-        settings.resolve_secrets()
-        settings.validate_required()
+        settings = load_settings(page_size=args.page_size)
     except (ConfigurationError, Exception) as exc:
-        print(
-            f"Ошибка конфигурации: {exc}\n\n"
-            f"Обязательные переменные окружения: "
-            f"ALLURE_ENDPOINT, ALLURE_TOKEN\n"
-            f"Секреты можно получить из Vault Proxy (ALLURE_VAULT_URL).\n"
-            f"Подробности см. в .env.example.",
-            file=sys.stderr,
-        )
+        print(format_configuration_error(exc), file=sys.stderr)
         return 2
 
     # 2. Настройка логирования
@@ -170,45 +171,19 @@ async def async_main(args: argparse.Namespace) -> int:
             # HTML-отчёт + прикрепление ссылки к запуску
             # (внутри async with — клиент ещё открыт, нужен для PATCH)
             html_report_file = getattr(args, "html_report_file", None) or f"alla_report_{launch_id}.html"
+            html_content = build_html_report_content(result, settings=settings)
+            save_html_report(html_report_file, html_content)
 
-            from pathlib import Path
-
-            from alla.report.html_report import generate_html_report
-
-            feedback_url = (
-                settings.feedback_server_url
-                if settings.kb_active
-                else ""
+            report_url = resolve_report_url(
+                settings,
+                report_url_override=getattr(args, "report_url", None),
             )
-            html_content = generate_html_report(
-                result,
-                endpoint=settings.endpoint,
-                feedback_api_url=feedback_url,
+            await attach_report_link(
+                client,
+                launch_id=launch_id,
+                settings=settings,
+                report_url=report_url,
             )
-            Path(html_report_file).write_text(html_content, encoding="utf-8")
-            logger.info("HTML-отчёт сохранён: %s", html_report_file)
-
-            report_url = getattr(args, "report_url", None) or settings.report_url
-            if report_url:
-                from alla.clients.base import LaunchLinksUpdater
-
-                if isinstance(client, LaunchLinksUpdater):
-                    try:
-                        await client.patch_launch_links(
-                            launch_id=launch_id,
-                            name=settings.report_link_name,
-                            url=report_url,
-                        )
-                        logger.info(
-                            "Ссылка на HTML-отчёт прикреплена к запуску #%d",
-                            launch_id,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Не удалось прикрепить ссылку к запуску #%d: %s",
-                            launch_id,
-                            exc,
-                        )
 
     except ConfigurationError as exc:
         logger.error("Ошибка конфигурации: %s", exc)
@@ -226,43 +201,13 @@ async def async_main(args: argparse.Namespace) -> int:
     # 6. Вывод отчёта
     if args.output_format == "json":
         import json
-        from dataclasses import asdict
 
-        output = {"triage_report": report.model_dump()}
-        output["onboarding"] = result.onboarding.model_dump()
-        if clustering_report is not None:
-            output["clustering_report"] = clustering_report.model_dump()
-        if kb_results:
-            output["kb_matches"] = {
-                cid: [m.model_dump() for m in matches]
-                for cid, matches in kb_results.items()
-            }
-        if kb_push_result is not None:
-            output["kb_push_result"] = asdict(kb_push_result)
-        if llm_result is not None:
-            output["llm_result"] = {
-                "total_clusters": llm_result.total_clusters,
-                "analyzed_count": llm_result.analyzed_count,
-                "failed_count": llm_result.failed_count,
-                "skipped_count": llm_result.skipped_count,
-                "kb_bypass_count": llm_result.kb_bypass_count,
-                "cluster_analyses": {
-                    cid: a.model_dump()
-                    for cid, a in llm_result.cluster_analyses.items()
-                },
-            }
-        if llm_push_result is not None:
-            output["llm_push_result"] = asdict(llm_push_result)
-        if llm_launch_summary is not None:
-            output["llm_launch_summary"] = {
-                "summary_text": llm_launch_summary.summary_text,
-                "error": llm_launch_summary.error,
-            }
+        output = build_analysis_response(result)
         print(json.dumps(output, indent=2, ensure_ascii=False, default=str))
     else:
         from alla.models.onboarding import OnboardingMode
 
-        _print_text_report(report)
+        print_text_report(report)
         if result.onboarding.mode == OnboardingMode.GUIDED:
             print(
                 "[Onboarding] Проект ещё не обучен. "
@@ -276,12 +221,12 @@ async def async_main(args: argparse.Namespace) -> int:
             )
             print()
         if clustering_report is not None:
-            _print_clustering_report(
+            print_clustering_report(
                 clustering_report, kb_results, llm_result,
                 failed_tests=report.failed_tests,
             )
         if llm_launch_summary is not None and llm_launch_summary.summary_text:
-            _print_launch_summary(llm_launch_summary.summary_text)
+            print_launch_summary(llm_launch_summary.summary_text)
         if kb_push_result is not None:
             print(
                 f"[KB Push] Комментариев: {kb_push_result.updated_count}"
@@ -302,285 +247,6 @@ async def async_main(args: argparse.Namespace) -> int:
             )
 
     return 0
-
-
-def _print_text_report(report: TriageReport) -> None:  # noqa: F821
-    """Вывод человекочитаемого отчёта триажа в stdout."""
-
-    print()
-    print("=== Отчёт триажа Allure ===")
-    launch_label = f"Запуск: #{report.launch_id}"
-    if report.launch_name:
-        launch_label += f" ({report.launch_name})"
-    print(launch_label)
-    stats = (
-        f"Всего: {report.total_results}"
-        f" | Успешно: {report.passed_count}"
-        f" | Провалено: {report.failed_count}"
-        f" | Сломано: {report.broken_count}"
-        f" | Пропущено: {report.skipped_count}"
-        f" | Неизвестно: {report.unknown_count}"
-    )
-    if report.muted_failure_count:
-        stats += f" | Muted: {report.muted_failure_count}"
-    print(stats)
-    print()
-
-    if report.failed_tests:
-        print(f"Падения ({len(report.failed_tests)}):")
-        for t in report.failed_tests:
-            print(f"  [{t.status.value.upper()}]  {t.name} (ID: {t.test_result_id})")
-            if t.link:
-                print(f"            {t.link}")
-            if t.failed_step_path:
-                print(f"            Шаг: {t.failed_step_path}")
-            if t.status_message:
-                # Обрезка длинных сообщений
-                msg = t.status_message
-                if len(msg) > 200:
-                    msg = msg[:200] + "..."
-                print(f"            {msg}")
-            if t.log_snippet:
-                log_lines = t.log_snippet.strip().splitlines()
-                print(f"            [LOG] {len(log_lines)} строк лога")
-    else:
-        print("Падения не найдены.")
-
-    print()
-
-
-def _print_launch_summary(summary_text: str) -> None:
-    """Вывод итогового LLM-отчёта по прогону в stdout."""
-    print()
-    print("=== Итоговый отчёт ===")
-    print()
-    print(summary_text)
-    print()
-    print("=" * 22)
-    print()
-
-
-def _print_clustering_report(
-    report: ClusteringReport,  # noqa: F821
-    kb_results: dict[str, list] | None = None,
-    llm_result: LLMAnalysisResult | None = None,  # noqa: F821
-    failed_tests: list[FailedTestSummary] | None = None,  # noqa: F821
-) -> None:
-    """Вывод отчёта кластеризации ошибок в stdout."""
-    from alla.utils.log_utils import has_explicit_errors, parse_log_sections
-
-    test_by_id: dict[int, FailedTestSummary] = {}
-    if failed_tests:
-        test_by_id = {t.test_result_id: t for t in failed_tests}
-
-    print(
-        f"=== Кластеры падений "
-        f"({report.cluster_count} уникальных проблем из {report.total_failures} падений) ==="
-    )
-    print()
-
-    for i, cluster in enumerate(report.clusters, 1):
-        cluster_lines = [
-            f"Кластер #{i} ({cluster.member_count} тестов)",
-        ]
-        if cluster.example_step_path:
-            cluster_lines.append(f"Шаг: {cluster.example_step_path}")
-        if cluster.example_message:
-            msg = _normalize_single_line(cluster.example_message)
-            if len(msg) > 200:
-                msg = msg[:200] + "..."
-            cluster_lines.append(f"Пример: {msg}")
-        cluster_lines.extend(
-            _wrap_test_ids(cluster.member_test_ids)
-        )
-
-        # Превью лога приложения
-        if test_by_id and cluster.representative_test_id is not None:
-            rep = test_by_id.get(cluster.representative_test_id)
-            log_snippet = rep.log_snippet if rep else None
-            has_log = bool(log_snippet and log_snippet.strip())
-            if has_log:
-                has_errors = has_explicit_errors(log_snippet)
-                total_lines = len(log_snippet.strip().splitlines())
-                error_label = ", содержит ошибки" if has_errors else ""
-                sections = parse_log_sections(log_snippet)
-                cluster_lines.append(
-                    f"Лог ({total_lines} строк{error_label}):"
-                )
-                for _log_filename, _log_body in sections:
-                    if _log_filename:
-                        cluster_lines.append(f"  --- {_log_filename} ---")
-                    file_lines = _log_body.splitlines()
-                    for line in file_lines[:3]:
-                        text = line if len(line) <= 120 else line[:117] + "..."
-                        cluster_lines.append(f"  | {text}")
-                    if len(file_lines) > 3:
-                        cluster_lines.append(
-                            f"  | ... ещё {len(file_lines) - 3} строк"
-                        )
-            else:
-                cluster_lines.append("Лог: отсутствует")
-
-        # KB-совпадения
-        matches = (kb_results or {}).get(cluster.cluster_id, [])
-        if matches:
-            cluster_lines.append("")
-            count_label = _pluralize_matches(len(matches))
-            cluster_lines.append(f"База знаний ({count_label}):")
-            for m in matches:
-                cluster_lines.append(
-                    f"  [{m.score:.2f}] {m.entry.title}"
-                )
-                cluster_lines.append(
-                    f"         Категория: {m.entry.category.value}"
-                )
-                for step in m.entry.resolution_steps[:2]:
-                    step_text = step if len(step) <= 80 else step[:77] + "..."
-                    cluster_lines.append(f"         -> {step_text}")
-
-        # LLM-анализ
-        if llm_result is not None:
-            analysis = llm_result.cluster_analyses.get(cluster.cluster_id)
-            if analysis and analysis.analysis_text:
-                cluster_lines.append("")
-                cluster_lines.append("LLM-анализ:")
-                for line in analysis.analysis_text.split("\n"):
-                    cluster_lines.append(f"  {line}")
-
-        for line in _render_box(cluster_lines):
-            print(line)
-        print()
-
-
-def _wrap_test_ids(
-    test_ids: list[int],
-    max_width: int = 80,
-) -> list[str]:
-    """Отформатировать список ID тестов с переносом строк."""
-    prefix = "Тесты: "
-    indent = " " * len(prefix)
-
-    all_ids = [str(tid) for tid in test_ids]
-    lines: list[str] = []
-    current = prefix
-
-    for i, tid in enumerate(all_ids):
-        separator = ", " if i > 0 else ""
-        candidate = current + separator + tid
-
-        if len(candidate) > max_width and current != prefix and current != indent:
-            lines.append(current + ",")
-            current = indent + tid
-        else:
-            current = candidate
-
-    lines.append(current)
-    return lines
-
-
-def _normalize_single_line(value: str) -> str:
-    """Схлопнуть переводы строк/табуляцию в одну строку для рамочного вывода."""
-    return " ".join(value.replace("\t", " ").split())
-
-
-def _pluralize_matches(count: int) -> str:
-    """Склонение слова 'совпадение' по числу."""
-    if count % 10 == 1 and count % 100 != 11:
-        return f"{count} совпадение"
-    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
-        return f"{count} совпадения"
-    return f"{count} совпадений"
-
-
-def _wrap_text(text: str, max_width: int, indent: str = "") -> list[str]:
-    """Разбить длинную строку на несколько строк с переносом по словам.
-    
-    Args:
-        text: Исходный текст для переноса.
-        max_width: Максимальная ширина строки.
-        indent: Отступ для продолжения (continuation lines).
-    
-    Returns:
-        Список строк, каждая не длиннее max_width.
-    """
-    if max_width <= 0:
-        return [text]
-
-    if len(text) <= max_width:
-        return [text]
-
-    # Сохраняем ведущие пробелы для первой строки
-    stripped = text.lstrip()
-    first_line_indent = text[: len(text) - len(stripped)]
-
-    words = stripped.split()
-    lines: list[str] = []
-    current_line = ""
-
-    for word in words:
-        # Определяем текущий отступ: для первой строки — исходный, для остальных — переданный
-        current_indent = first_line_indent if not lines and not current_line else ""
-        
-        # Проверяем, поместится ли слово
-        if not current_line:
-            candidate = current_indent + word
-        else:
-            candidate = current_line + " " + word
-
-        if len(candidate) <= max_width:
-            current_line = candidate
-        else:
-            # Сохраняем текущую строку, если она не пуста
-            if current_line:
-                lines.append(current_line)
-            # Выбираем отступ: first_line_indent для первого слова, indent для остальных
-            word_indent = first_line_indent if not lines else indent
-            current_line = word_indent + word
-            
-            # Если даже одно слово не помещается — принудительный разрыв
-            # Используем безопасный отступ, чтобы избежать бесконечного цикла
-            safe_indent = indent if len(indent) < max_width else ""
-            while len(current_line) > max_width:
-                lines.append(current_line[:max_width])
-                current_line = safe_indent + current_line[max_width:]
-
-    if current_line:
-        lines.append(current_line)
-
-    return lines if lines else [text]
-
-
-def _render_box(lines: list[str], max_width: int = 100) -> list[str]:
-    """Отрендерить список строк в Unicode-рамку с переносом длинных строк.
-    
-    Args:
-        lines: Строки для отображения внутри рамки.
-        max_width: Максимальная ширина содержимого (по умолчанию 100).
-    
-    Returns:
-        Список строк с Unicode-рамкой.
-    """
-    if not lines:
-        return []
-
-    # Переносим длинные строки
-    wrapped_lines: list[str] = []
-    for line in lines:
-        if len(line) <= max_width:
-            wrapped_lines.append(line)
-        else:
-            # Определяем отступ на основе начала строки
-            stripped = line.lstrip()
-            leading_spaces = len(line) - len(stripped)
-            indent = " " * leading_spaces if leading_spaces > 0 else "  "
-            wrapped_lines.extend(_wrap_text(line, max_width, indent))
-
-    width = max(len(line) for line in wrapped_lines) if wrapped_lines else 0
-    top = f"╔{'═' * (width + 2)}╗"
-    bottom = f"╚{'═' * (width + 2)}╝"
-    body = [f"║ {line.ljust(width)} ║" for line in wrapped_lines]
-
-    return [top, *body, bottom]
 
 
 def build_delete_parser() -> argparse.ArgumentParser:
@@ -610,28 +276,24 @@ def build_delete_parser() -> argparse.ArgumentParser:
 
 async def async_delete(args: argparse.Namespace) -> int:
     """Удалить комментарии alla для указанного запуска. Возвращает код выхода."""
+    from alla.app_support import (
+        collect_test_case_ids,
+        filter_failed_results,
+        format_configuration_error,
+        load_settings,
+    )
     from alla.clients.auth import AllureAuthManager
     from alla.clients.base import CommentManager
     from alla.clients.testops_client import AllureTestOpsClient
-    from alla.config import Settings
     from alla.exceptions import AllaError, ConfigurationError
     from alla.logging_config import setup_logging
     from alla.services.comment_delete_service import CommentDeleteService
 
     # 1. Загрузка настроек
     try:
-        settings = Settings()
-        settings.resolve_secrets()
-        settings.validate_required()
+        settings = load_settings()
     except (ConfigurationError, Exception) as exc:
-        print(
-            f"Ошибка конфигурации: {exc}\n\n"
-            f"Обязательные переменные окружения: "
-            f"ALLURE_ENDPOINT, ALLURE_TOKEN\n"
-            f"Секреты можно получить из Vault Proxy (ALLURE_VAULT_URL).\n"
-            f"Подробности см. в .env.example.",
-            file=sys.stderr,
-        )
+        print(format_configuration_error(exc), file=sys.stderr)
         return 2
 
     # 2. Настройка логирования
@@ -658,21 +320,8 @@ async def async_delete(args: argparse.Namespace) -> int:
             # Получить все результаты тестов для запуска
             all_results = await client.get_all_test_results_for_launch(launch_id)
 
-            # Фильтр: только failed/broken
-            failure_statuses = {"failed", "broken"}
-            failed_results = [
-                r for r in all_results
-                if r.status and r.status.lower() in failure_statuses
-            ]
-
-            # Собрать уникальные test_case_id
-            test_case_ids: set[int] = set()
-            skipped = 0
-            for r in failed_results:
-                if r.test_case_id is not None:
-                    test_case_ids.add(r.test_case_id)
-                else:
-                    skipped += 1
+            failed_results = filter_failed_results(all_results)
+            test_case_ids, skipped = collect_test_case_ids(failed_results)
 
             # Вывести заголовок
             mode_label = " (DRY RUN)" if dry_run else ""

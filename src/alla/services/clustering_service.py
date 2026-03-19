@@ -345,7 +345,9 @@ class ClusteringService:
                     elif log_overrides_gate and message_sim[i, j] < self._config.similarity_threshold:
                         # Log override: message различаются, но лог одинаковый.
                         # Лог становится доминирующим каналом (0.6 log + 0.2 msg + 0.2 trace).
-                        pair_sim = 0.6 * log_sim[i, j] + 0.2 * message_sim[i, j]  # type: ignore[index]
+                        assert log_sim is not None
+                        log_pair_sim = float(log_sim[i, j])
+                        pair_sim = 0.6 * log_pair_sim + 0.2 * message_sim[i, j]
                         if has_trace[i] and has_trace[j]:
                             pair_sim += 0.2 * trace_sim[i, j]
                         else:
@@ -410,7 +412,7 @@ class ClusteringService:
             criterion="distance",
         )
 
-        return labels.tolist()
+        return [int(label) for label in labels.tolist()]
 
     def _pairwise_similarity(self, documents: list[str]) -> np.ndarray:
         """Cosine similarity matrix по списку документов.
