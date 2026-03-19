@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from alla.models.common import TestStatus
+
+StatusDetails = dict[str, Any]
+ExecutionParameter = dict[str, Any]
 
 
 class TestResultResponse(BaseModel):
@@ -25,7 +30,7 @@ class TestResultResponse(BaseModel):
     name: str | None = None
     full_name: str | None = Field(None, alias="fullName")
     status: str | None = None
-    status_details: dict | None = Field(None, alias="statusDetails")
+    status_details: StatusDetails | None = Field(None, alias="statusDetails")
     trace: str | None = None
     duration: int | None = None
     test_case_id: int | None = Field(None, alias="testCaseId")
@@ -103,12 +108,12 @@ class ExecutionStep(BaseModel):
 
     name: str | None = None
     status: str | None = None
-    status_details: dict | None = Field(None, alias="statusDetails")
+    status_details: StatusDetails | None = Field(None, alias="statusDetails")
     message: str | None = None
     trace: str | None = None
     steps: list[ExecutionStep] | None = None
     duration: int | None = None
-    parameters: list[dict] | None = None
+    parameters: list[ExecutionParameter] | None = None
     attachments: list[AttachmentMeta] | None = None
 
 

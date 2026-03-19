@@ -74,7 +74,11 @@ class PostgresKnowledgeBase:
                     id,
                     project_id
             """
-            params: tuple = (self._project_id, self._project_id, self._project_id)
+            params: tuple[int, ...] = (
+                self._project_id,
+                self._project_id,
+                self._project_id,
+            )
         else:
             query = """
                 SELECT entry_id, id, title, description, error_example,

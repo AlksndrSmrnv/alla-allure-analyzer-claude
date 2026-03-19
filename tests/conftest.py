@@ -8,7 +8,7 @@ from alla.knowledge.models import (
     RootCauseCategory,
 )
 from alla.models.clustering import ClusterSignature, ClusteringReport, FailureCluster
-from alla.models.common import TestStatus
+from alla.models.common import TestStatus as StatusEnum
 from alla.models.testops import CommentResponse, ExecutionStep, FailedTestSummary, TriageReport
 
 
@@ -77,7 +77,7 @@ def make_failed_test_summary(**overrides) -> FailedTestSummary:
     defaults: dict = {
         "test_result_id": 1,
         "name": "test_example",
-        "status": TestStatus.FAILED,
+        "status": StatusEnum.FAILED,
     }
     defaults.update(overrides)
     return FailedTestSummary.model_validate(defaults)

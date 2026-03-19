@@ -6,7 +6,7 @@ import pytest
 
 from alla.knowledge.models import RootCauseCategory
 from alla.models.clustering import ClusteringReport
-from alla.models.common import TestStatus
+from alla.models.common import TestStatus as StatusEnum
 from alla.models.testops import FailedTestSummary, TriageReport
 from alla.services.kb_push_service import KBPushService, format_kb_description
 from conftest import make_failure_cluster, make_kb_entry, make_kb_match_result
@@ -80,7 +80,7 @@ def _make_push_data(
             failed_tests.append(FailedTestSummary(
                 test_result_id=test_id,
                 name=f"test-{test_id}",
-                status=TestStatus.FAILED,
+                status=StatusEnum.FAILED,
                 test_case_id=tc_id,
             ))
 
@@ -159,7 +159,7 @@ async def test_push_skips_cluster_without_kb_matches() -> None:
     )
     service = KBPushService(_Updater())  # type: ignore[arg-type]
 
-    result = await service.push_kb_results(report, kb_results, triage)
+    await service.push_kb_results(report, kb_results, triage)
 
     assert len(posted) == 1
     assert posted[0] == 100
@@ -181,8 +181,8 @@ async def test_push_first_cluster_wins_for_same_tc_id() -> None:
         launch_id=1,
         total_results=10,
         failed_tests=[
-            FailedTestSummary(test_result_id=1, name="t1", status=TestStatus.FAILED, test_case_id=100),
-            FailedTestSummary(test_result_id=2, name="t2", status=TestStatus.FAILED, test_case_id=100),
+            FailedTestSummary(test_result_id=1, name="t1", status=StatusEnum.FAILED, test_case_id=100),
+            FailedTestSummary(test_result_id=2, name="t2", status=StatusEnum.FAILED, test_case_id=100),
         ],
     )
     report = ClusteringReport(

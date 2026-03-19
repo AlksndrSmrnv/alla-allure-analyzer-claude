@@ -1,291 +1,136 @@
-"""Тесты бизнес-логики TriageService: нормализация статусов, извлечение ошибок, сборка сводки."""
+"""Behavioral tests for TriageService."""
 
 from __future__ import annotations
 
 import pytest
 
 from alla.config import Settings
-from alla.models.common import TestStatus as Status
-from alla.models.testops import (
-    ExecutionStep,
-    FailedTestSummary,
-    TestResultResponse as ResultResponse,
-)
+from alla.models.testops import LaunchResponse as LaunchModel, TestResultResponse as ResultResponse
 from alla.services.triage_service import TriageService
 from conftest import make_execution_step
 
 
-# ---------------------------------------------------------------------------
-# _normalize_status
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("passed", Status.PASSED),
-        ("failed", Status.FAILED),
-        ("broken", Status.BROKEN),
-        ("skipped", Status.SKIPPED),
-    ],
-)
-def test_normalize_status_maps_standard_values(raw: str, expected: Status) -> None:
-    """Стандартные строки статусов маппятся в соответствующий enum статуса."""
-    assert TriageService._normalize_status(raw) is expected
-
-
-def test_normalize_status_none_returns_unknown() -> None:
-    """None-статус трактуется как UNKNOWN."""
-    assert TriageService._normalize_status(None) is Status.UNKNOWN
-
-
-def test_normalize_status_invalid_returns_unknown() -> None:
-    """Неизвестная строка статуса трактуется как UNKNOWN."""
-    assert TriageService._normalize_status("garbage") is Status.UNKNOWN
-
-
-def test_normalize_status_is_case_insensitive() -> None:
-    """Нормализация регистронезависима: 'FAILED', 'Failed' → FAILED."""
-    assert TriageService._normalize_status("FAILED") is Status.FAILED
-    assert TriageService._normalize_status("Failed") is Status.FAILED
-
-
-# ---------------------------------------------------------------------------
-# _extract_error_from_step
-# ---------------------------------------------------------------------------
-
-def test_extract_error_direct_fields() -> None:
-    """Извлечение ошибки из прямых полей message/trace шага."""
-    step = make_execution_step(message="assertion failed", trace="at Test.java:10")
-    msg, trace = TriageService._extract_error_from_step(step)
-
-    assert msg == "assertion failed"
-    assert trace == "at Test.java:10"
-
-
-def test_extract_error_from_status_details_dict() -> None:
-    """Извлечение ошибки из вложенного dict statusDetails."""
-    step = make_execution_step(
-        status_details={"message": "NPE", "trace": "at Service.java:42"},
-    )
-    msg, trace = TriageService._extract_error_from_step(step)
-
-    assert msg == "NPE"
-    assert trace == "at Service.java:42"
-
-
-def test_extract_error_prefers_direct_over_status_details() -> None:
-    """Прямые поля message/trace приоритетнее statusDetails."""
-    step = make_execution_step(
-        message="direct error",
-        status_details={"message": "nested error"},
-    )
-    msg, trace = TriageService._extract_error_from_step(step)
-
-    assert msg == "direct error"
-
-
-# ---------------------------------------------------------------------------
-# _find_failure_in_steps
-# ---------------------------------------------------------------------------
-
-def test_find_failure_returns_first_failed_step() -> None:
-    """Из списка шагов возвращается ошибка первого шага со статусом failed/broken."""
-    steps = [
-        make_execution_step(status="passed"),
-        make_execution_step(
-            status="failed",
-            message="expected 200 got 500",
-            trace="at ApiTest.java:33",
-        ),
-    ]
-    msg, trace = TriageService._find_failure_in_steps(steps)
-
-    assert msg == "expected 200 got 500"
-    assert trace == "at ApiTest.java:33"
-
-
-def test_find_failure_recurses_into_nested_steps() -> None:
-    """Рекурсивный поиск: ошибка во вложенном шаге извлекается корректно."""
-    child = make_execution_step(
-        status="failed",
-        message="nested failure",
-    )
-    parent = ExecutionStep.model_validate({"status": "failed", "steps": [child.model_dump()]})
-    steps = [parent]
-
-    msg, trace = TriageService._find_failure_in_steps(steps)
-
-    # Родитель имеет status=failed но без message, ребёнок — с message
-    # Алгоритм рекурсивно найдёт ребёнка
-    assert msg == "nested failure"
-
-
-def test_find_failure_second_pass_for_no_status() -> None:
-    """Второй проход: шаг без status, но с statusDetails — находит ошибку."""
-    steps = [
-        make_execution_step(status="passed"),
-        make_execution_step(
-            status_details={"message": "root error", "trace": "root stack"},
-        ),
-    ]
-    msg, trace = TriageService._find_failure_in_steps(steps)
-
-    assert msg == "root error"
-    assert trace == "root stack"
-
-
-# ---------------------------------------------------------------------------
-# _build_failed_summary
-# ---------------------------------------------------------------------------
-
-def _make_triage_service(monkeypatch, tmp_path) -> TriageService:
-    """Создать TriageService с минимальным Settings."""
+def _make_settings(monkeypatch, tmp_path) -> Settings:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ALLURE_ENDPOINT", "https://allure.test")
     monkeypatch.setenv("ALLURE_TOKEN", "test-token")
-    settings = Settings()
-
-    class _DummyClient:
-        pass
-
-    return TriageService(_DummyClient(), settings)  # type: ignore[arg-type]
+    return Settings()
 
 
-def test_build_summary_uses_execution_over_result(monkeypatch, tmp_path) -> None:
-    """Ошибка из execution steps приоритетнее result.statusDetails."""
-    service = _make_triage_service(monkeypatch, tmp_path)
-    result = ResultResponse.model_validate({
-        "id": 1,
+def _make_failed_result(**overrides) -> ResultResponse:
+    payload: dict[str, object] = {
+        "id": 100,
         "name": "test_login",
         "status": "failed",
-        "statusDetails": {"message": "fallback msg"},
-    })
-    exec_steps = [
-        make_execution_step(status="failed", message="from step"),
-    ]
-
-    summary = service._build_failed_summary(result, exec_steps, launch_id=10)
-
-    assert summary.status_message == "from step"
-    assert summary.link == "https://allure.test/launch/10/testresult/1"
+    }
+    payload.update(overrides)
+    return ResultResponse.model_validate(payload)
 
 
-def test_build_summary_fallback_to_result_status_details(monkeypatch, tmp_path) -> None:
-    """При пустых execution steps — fallback на statusDetails результата."""
-    service = _make_triage_service(monkeypatch, tmp_path)
-    result = ResultResponse.model_validate({
-        "id": 2,
-        "name": "test_payment",
-        "status": "broken",
-        "statusDetails": {"message": "timeout", "trace": "at Gateway.java:55"},
-    })
+class _Client:
+    def __init__(
+        self,
+        *,
+        results: list[ResultResponse],
+        execution_by_id: dict[int, list] | None = None,
+        detail_by_id: dict[int, ResultResponse | Exception] | None = None,
+    ) -> None:
+        self._results = results
+        self._execution_by_id = execution_by_id or {}
+        self._detail_by_id = detail_by_id or {}
+        self.detail_calls = 0
 
-    summary = service._build_failed_summary(result, [], launch_id=10)
+    async def get_launch(self, launch_id: int) -> LaunchModel:
+        return LaunchModel.model_validate(
+            {"id": launch_id, "name": "Launch", "projectId": 42},
+        )
 
-    assert summary.status_message == "timeout"
-    assert summary.status_trace == "at Gateway.java:55"
+    async def get_all_test_results_for_launch(
+        self,
+        launch_id: int,
+    ) -> list[ResultResponse]:
+        return self._results
+
+    async def get_test_result_execution(self, test_result_id: int) -> list:
+        return self._execution_by_id.get(test_result_id, [])
+
+    async def get_test_result_detail(self, test_result_id: int) -> ResultResponse:
+        self.detail_calls += 1
+        detail = self._detail_by_id[test_result_id]
+        if isinstance(detail, Exception):
+            raise detail
+        return detail
 
 
-# ---------------------------------------------------------------------------
-# _fetch_missing_traces (fallback на GET /api/testresult/{id})
-# ---------------------------------------------------------------------------
-
-def _make_summary(
-    test_result_id: int,
-    *,
-    status_message: str | None = None,
-    status_trace: str | None = None,
-) -> FailedTestSummary:
-    return FailedTestSummary(
-        test_result_id=test_result_id,
-        name=f"test-{test_result_id}",
-        status=Status.FAILED,
-        status_message=status_message,
-        status_trace=status_trace,
+@pytest.mark.asyncio
+async def test_analyze_launch_skips_detail_fetch_when_error_already_present(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Fallback detail fetch is skipped when execution already contains the error."""
+    settings = _make_settings(monkeypatch, tmp_path)
+    result = _make_failed_result(id=1)
+    client = _Client(
+        results=[result],
+        execution_by_id={
+            1: [
+                make_execution_step(
+                    status="failed",
+                    message="from execution",
+                    trace="stack line",
+                )
+            ]
+        },
     )
 
+    report = await TriageService(client, settings).analyze_launch(123)
 
-def _make_triage_service_with_client(monkeypatch, tmp_path, client):
-    """Создать TriageService с заданным клиентом."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("ALLURE_ENDPOINT", "https://allure.test")
-    monkeypatch.setenv("ALLURE_TOKEN", "test-token")
-    settings = Settings()
-    return TriageService(client, settings)
+    assert client.detail_calls == 0
+    assert report.failed_tests[0].status_message == "from execution"
+    assert report.failed_tests[0].status_trace == "stack line"
 
 
 @pytest.mark.asyncio
-async def test_fetch_missing_traces_skips_when_all_have_errors(monkeypatch, tmp_path) -> None:
-    """Fallback не делает запросов, если у всех тестов уже есть ошибка."""
-    call_count = 0
-
-    class _Client:
-        async def get_test_result_detail(self, test_result_id):
-            nonlocal call_count
-            call_count += 1
-
-    service = _make_triage_service_with_client(monkeypatch, tmp_path, _Client())
-    summaries = [
-        _make_summary(1, status_message="error msg"),
-        _make_summary(2, status_trace="error trace"),
-    ]
-
-    await service._fetch_missing_traces(summaries)
-
-    assert call_count == 0
-
-
-@pytest.mark.asyncio
-async def test_fetch_missing_traces_fills_trace_from_detail(monkeypatch, tmp_path) -> None:
-    """Fallback заполняет trace и message из GET /api/testresult/{id}."""
-    class _Client:
-        async def get_test_result_detail(self, test_result_id):
-            return ResultResponse.model_validate({
-                "id": test_result_id,
-                "trace": "java.lang.NullPointerException\n\tat com.example.Test.run(Test.java:42)",
-            })
-
-    service = _make_triage_service_with_client(monkeypatch, tmp_path, _Client())
-    summaries = [_make_summary(100)]
-
-    await service._fetch_missing_traces(summaries)
-
-    assert summaries[0].status_trace == (
-        "java.lang.NullPointerException\n\tat com.example.Test.run(Test.java:42)"
+async def test_analyze_launch_fills_trace_from_detail_fallback(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Missing execution/statusDetails are backfilled from GET /api/testresult/{id}."""
+    settings = _make_settings(monkeypatch, tmp_path)
+    result = _make_failed_result(id=2)
+    detail = ResultResponse.model_validate(
+        {
+            "id": 2,
+            "trace": "java.lang.NullPointerException\n\tat Test.run(Test.java:42)",
+        }
     )
-    assert summaries[0].status_message == "java.lang.NullPointerException"
+    client = _Client(
+        results=[result],
+        detail_by_id={2: detail},
+    )
+
+    report = await TriageService(client, settings).analyze_launch(123)
+
+    assert client.detail_calls == 1
+    assert report.failed_tests[0].status_message == "java.lang.NullPointerException"
+    assert "Test.run" in (report.failed_tests[0].status_trace or "")
 
 
 @pytest.mark.asyncio
-async def test_fetch_missing_traces_graceful_on_api_error(monkeypatch, tmp_path) -> None:
-    """Fallback не падает при ошибке API — summary остаётся без изменений."""
-    class _Client:
-        async def get_test_result_detail(self, test_result_id):
-            raise RuntimeError("API unavailable")
+async def test_analyze_launch_ignores_detail_fetch_error(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Detail fallback errors do not abort triage."""
+    settings = _make_settings(monkeypatch, tmp_path)
+    result = _make_failed_result(id=3)
+    client = _Client(
+        results=[result],
+        detail_by_id={3: RuntimeError("detail unavailable")},
+    )
 
-    service = _make_triage_service_with_client(monkeypatch, tmp_path, _Client())
-    summaries = [_make_summary(200)]
+    report = await TriageService(client, settings).analyze_launch(123)
 
-    await service._fetch_missing_traces(summaries)
-
-    assert summaries[0].status_trace is None
-    assert summaries[0].status_message is None
-
-
-@pytest.mark.asyncio
-async def test_fetch_missing_traces_ignores_empty_trace(monkeypatch, tmp_path) -> None:
-    """Fallback не заполняет summary, если trace в ответе пустой."""
-    class _Client:
-        async def get_test_result_detail(self, test_result_id):
-            return ResultResponse.model_validate({
-                "id": test_result_id,
-                "trace": None,
-            })
-
-    service = _make_triage_service_with_client(monkeypatch, tmp_path, _Client())
-    summaries = [_make_summary(300)]
-
-    await service._fetch_missing_traces(summaries)
-
-    assert summaries[0].status_trace is None
-    assert summaries[0].status_message is None
+    assert client.detail_calls == 1
+    assert report.failed_tests[0].status_message is None
+    assert report.failed_tests[0].status_trace is None

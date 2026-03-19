@@ -160,22 +160,32 @@ class TriageService:
                 return await self._client.get_test_result_execution(test_result_id)
 
         tasks = [fetch_one(r.id) for r in failed_results]
-        execution_results = await asyncio.gather(*tasks, return_exceptions=True)
+        gathered_results = await asyncio.gather(*tasks, return_exceptions=True)
+        execution_results: list[list[ExecutionStep] | BaseException] = [
+            item if isinstance(item, BaseException) else list(item)
+            for item in gathered_results
+        ]
 
-        final: list[tuple[TestResultResponse, list[ExecutionStep]]] = []
-        for original, exec_or_exc in zip(failed_results, execution_results):
-            if isinstance(exec_or_exc, Exception):
-                logger.warning(
-                    "Не удалось получить execution для результата теста %d: %s. "
-                    "Ошибка может быть получена через fallback (GET /api/testresult/{id}).",
-                    original.id,
-                    exec_or_exc,
-                )
-                final.append((original, []))
-            else:
-                final.append((original, exec_or_exc))
+        return [
+            self._collect_execution_result(original, exec_or_exc)
+            for original, exec_or_exc in zip(failed_results, execution_results)
+        ]
 
-        return final
+    @staticmethod
+    def _collect_execution_result(
+        result: TestResultResponse,
+        execution_result: list[ExecutionStep] | BaseException,
+    ) -> tuple[TestResultResponse, list[ExecutionStep]]:
+        """Нормализовать результат fetch execution в пару (result, steps)."""
+        if isinstance(execution_result, BaseException):
+            logger.warning(
+                "Не удалось получить execution для результата теста %d: %s. "
+                "Ошибка может быть получена через fallback (GET /api/testresult/{id}).",
+                result.id,
+                execution_result,
+            )
+            return result, []
+        return result, execution_result
 
     async def _fetch_missing_traces(
         self,
@@ -256,7 +266,7 @@ class TriageService:
         return None, None
 
     @staticmethod
-    def _find_failure_in_steps(
+    def _find_failure_details_in_steps(
         steps: list[ExecutionStep],
         _ancestors: list[str] | None = None,
     ) -> tuple[str | None, str | None, str | None]:
@@ -284,7 +294,7 @@ class TriageService:
                     return message, trace, breadcrumb
             # Рекурсия во вложенные шаги
             if step.steps:
-                message, trace, breadcrumb = TriageService._find_failure_in_steps(
+                message, trace, breadcrumb = TriageService._find_failure_details_in_steps(
                     step.steps, current_path,
                 )
                 if message or trace:
@@ -303,6 +313,16 @@ class TriageService:
 
         return None, None, None
 
+    @staticmethod
+    def _find_failure_in_steps(
+        steps: list[ExecutionStep],
+    ) -> tuple[str | None, str | None]:
+        """Backward-compatible wrapper that returns only message/trace."""
+        message, trace, _failed_step_path = TriageService._find_failure_details_in_steps(
+            steps,
+        )
+        return message, trace
+
     def _build_failed_summary(
         self,
         result: TestResultResponse,
@@ -318,7 +338,7 @@ class TriageService:
             3. (позже) Из ``trace`` индивидуального результата (``GET /api/testresult/{id}``).
         """
         # Попытка 1: извлечь ошибку из execution-шагов
-        status_message, status_trace, failed_step_path = self._find_failure_in_steps(
+        status_message, status_trace, failed_step_path = self._find_failure_details_in_steps(
             execution_steps,
         )
 

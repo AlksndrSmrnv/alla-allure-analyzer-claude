@@ -6,7 +6,7 @@ import html as _html
 import json as _json
 import re
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from alla.models.onboarding import OnboardingMode, OnboardingState
 from alla.utils.text_normalization import canonicalize_kb_error_example
@@ -17,6 +17,15 @@ if TYPE_CHECKING:
     from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary
     from alla.models.testops import FailedTestSummary, TriageReport
     from alla.orchestrator import AnalysisResult
+
+
+class _KBPrefill(TypedDict):
+    title: str
+    category: str
+    error_example: str
+    step_path: str
+    description: str
+    resolution_steps: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -378,8 +387,12 @@ def _render_cluster(
     project_matches, starter_pack_matches = _split_kb_matches(kb_matches)
 
     # Pre-compute cluster error example for edit-KB forms
-    prefill = _build_kb_prefill(cluster, llm_text, rep_log_snippet) if feedback_api_url else {}
-    cluster_error_example = str(prefill.get("error_example", ""))
+    prefill: _KBPrefill | None = (
+        _build_kb_prefill(cluster, llm_text, rep_log_snippet)
+        if feedback_api_url
+        else None
+    )
+    cluster_error_example = prefill["error_example"] if prefill is not None else ""
 
     # --- matches from knowledge base ---
     kb_html = ""
@@ -479,20 +492,20 @@ def _render_cluster(
             else "create-kb-form hidden"
         )
         resolution_control = (
-            f'<textarea name="resolution_steps" rows="4" '
+            '<textarea name="resolution_steps" rows="4" '
             'placeholder="Шаг 1&#10;Шаг 2&#10;Шаг 3" autofocus></textarea>'
         )
         title_control = (
             f'<input name="title" placeholder="Описание проблемы" '
-            f'value="{_e(prefill["title"])}">'
+            f'value="{_e(prefill["title"] if prefill is not None else "")}">'
         )
         category_control = (
-            f'<select name="category">{_render_category_options(prefill["category"])}</select>'
+            f'<select name="category">{_render_category_options(prefill["category"] if prefill is not None else "service")}</select>'
         )
         error_example_control = (
-            f'<textarea name="error_example" rows="4">{_e(prefill["error_example"])}</textarea>'
+            f'<textarea name="error_example" rows="4">{_e(prefill["error_example"] if prefill is not None else "")}</textarea>'
         )
-        step_path_value = str(prefill.get("step_path", ""))
+        step_path_value = prefill["step_path"] if prefill is not None else ""
         step_path_checkbox = ""
         if step_path_value:
             step_path_checkbox = (
@@ -504,7 +517,7 @@ def _render_cluster(
             )
         description_control = (
             f'<textarea name="description" rows="3" placeholder="Подробное описание">'
-            f'{_e(prefill["description"])}</textarea>'
+            f'{_e(prefill["description"] if prefill is not None else "")}</textarea>'
         )
         create_kb_html = (
             '<div class="block create-kb-action">'
@@ -777,7 +790,7 @@ def _build_kb_prefill(
     cluster: "FailureCluster",
     llm_text: str | None,
     rep_log_snippet: str | None,
-) -> dict[str, object]:
+) -> _KBPrefill:
     """Подготовить prefill для формы project knowledge."""
     parsed_llm = _extract_llm_prefill(llm_text or "")
     prefill_parts: list[str] = []
@@ -800,7 +813,7 @@ def _build_kb_prefill(
     }
 
 
-def _extract_llm_prefill(analysis_text: str) -> dict[str, object]:
+def _extract_llm_prefill(analysis_text: str) -> _KBPrefill:
     """Вытащить title/description/category/steps из LLM-анализа."""
     what_broke = ""
     category = ""
@@ -839,6 +852,8 @@ def _extract_llm_prefill(analysis_text: str) -> dict[str, object]:
     title = what_broke.split(".")[0].strip() if what_broke else ""
     return {
         "title": title,
+        "error_example": "",
+        "step_path": "",
         "description": what_broke,
         "category": category,
         "resolution_steps": steps[:3],
@@ -888,7 +903,7 @@ def _e(s: object) -> str:
 def _linkify(text: str) -> str:
     """Turn plain-text URLs into clickable <a> links (text must be HTML-escaped already)."""
 
-    def _replace(m: re.Match) -> str:
+    def _replace(m: re.Match[str]) -> str:
         url = m.group(1)
         # Strip trailing sentence punctuation that's unlikely to be part of the URL
         stripped = url.rstrip(".,)!?:;")

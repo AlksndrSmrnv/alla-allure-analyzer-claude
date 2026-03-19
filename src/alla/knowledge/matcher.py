@@ -12,6 +12,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from alla.knowledge.models import KBEntry, KBMatchResult
 from alla.utils.step_paths import are_step_paths_compatible, normalize_step_path
+from alla.utils.text_preview import preview_head, preview_tail
 from alla.utils.text_normalization import normalize_text
 
 if TYPE_CHECKING:
@@ -38,18 +39,6 @@ def _collapse_whitespace(text: str) -> str:
 def _make_number_agnostic(text: str) -> str:
     """Заменить все числа и <NUM> плейсхолдеры на <#> для number-agnostic сравнения."""
     return _NUM_AGNOSTIC_RE.sub("<#>", text)
-
-
-def _preview_head(text: str, max_chars: int) -> str:
-    """Сжать head-preview для DEBUG-логов одной строкой."""
-    return text[:max_chars].replace("\n", " ")
-
-
-def _preview_tail(text: str, max_chars: int) -> str:
-    """Сжать tail-preview для DEBUG-логов одной строкой."""
-    if len(text) <= max_chars:
-        return text.replace("\n", " ")
-    return text[-max_chars:].replace("\n", " ")
 
 
 # ---------------------------------------------------------------------------
@@ -279,8 +268,8 @@ class TextMatcher:
                 "KB: нет совпадений%s (query_len=%d, head='%s', tail='%s')",
                 f" [{query_label}]" if query_label else "",
                 len(error_text),
-                _preview_head(error_text, 220),
-                _preview_tail(error_text, 220),
+                preview_head(error_text, 220),
+                preview_tail(error_text, 220),
             )
 
         return results

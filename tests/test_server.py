@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -18,16 +17,13 @@ from alla.exceptions import (
     KnowledgeBaseError,
     PaginationLimitError,
 )
-from alla.models.common import TestStatus
 from alla.models.testops import (
     CommentResponse,
-    FailedTestSummary,
-    TestResultResponse,
+    TestResultResponse as ResultResponse,
     TriageReport,
 )
 from alla.orchestrator import AnalysisResult
-from alla.server import _AppState, _make_slug, app
-from alla.services.comment_delete_service import DeleteCommentsResult
+from alla.server import _make_slug, app
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +60,7 @@ class _MockClient:
     def __init__(
         self,
         *,
-        test_results: list[TestResultResponse] | None = None,
+        test_results: list[ResultResponse] | None = None,
         comments_by_tc: dict[int, list[CommentResponse]] | None = None,
         raise_on_get_all: Exception | None = None,
     ) -> None:
@@ -73,7 +69,7 @@ class _MockClient:
         self._raise_on_get_all = raise_on_get_all
         self.delete_calls: list[int] = []
 
-    async def get_all_test_results_for_launch(self, launch_id: int) -> list[TestResultResponse]:
+    async def get_all_test_results_for_launch(self, launch_id: int) -> list[ResultResponse]:
         if self._raise_on_get_all:
             raise self._raise_on_get_all
         return self._test_results
@@ -91,7 +87,7 @@ class _MockClient:
 class _NonCommentClient:
     """Клиент, не реализующий CommentManager."""
 
-    async def get_all_test_results_for_launch(self, launch_id: int) -> list[TestResultResponse]:
+    async def get_all_test_results_for_launch(self, launch_id: int) -> list[ResultResponse]:
         return []
 
 
@@ -229,9 +225,9 @@ async def test_delete_comments_success(monkeypatch, _http_client) -> None:
     """DELETE /api/v1/comments/123 → 200, корректные counts."""
     mock_client = _MockClient(
         test_results=[
-            TestResultResponse(id=1, status="failed", test_case_id=100),
-            TestResultResponse(id=2, status="broken", test_case_id=200),
-            TestResultResponse(id=3, status="passed"),
+            ResultResponse(id=1, status="failed", test_case_id=100),
+            ResultResponse(id=2, status="broken", test_case_id=200),
+            ResultResponse(id=3, status="passed"),
         ],
         comments_by_tc={
             100: [CommentResponse(id=10, body="[alla] text", test_case_id=100)],
@@ -256,7 +252,7 @@ async def test_delete_comments_dry_run(monkeypatch, _http_client) -> None:
     """?dry_run=true → комментарии найдены, но не удалены."""
     mock_client = _MockClient(
         test_results=[
-            TestResultResponse(id=1, status="failed", test_case_id=100),
+            ResultResponse(id=1, status="failed", test_case_id=100),
         ],
         comments_by_tc={
             100: [CommentResponse(id=10, body="[alla] text", test_case_id=100)],
@@ -324,8 +320,8 @@ async def test_delete_comments_skips_tests_without_tc_id(_http_client) -> None:
     """Тесты без test_case_id → skipped_test_cases > 0."""
     mock_client = _MockClient(
         test_results=[
-            TestResultResponse(id=1, status="failed", test_case_id=100),
-            TestResultResponse(id=2, status="failed", test_case_id=None),
+            ResultResponse(id=1, status="failed", test_case_id=100),
+            ResultResponse(id=2, status="failed", test_case_id=None),
         ],
         comments_by_tc={100: []},
     )

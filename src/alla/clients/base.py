@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from alla.models.common import PageResponse
-from alla.models.testops import CommentResponse, ExecutionStep, LaunchResponse, TestResultResponse
+from alla.models.testops import (
+    AttachmentMeta,
+    CommentResponse,
+    ExecutionStep,
+    LaunchResponse,
+    TestResultResponse,
+)
 
 
 @runtime_checkable
@@ -66,7 +72,7 @@ class AttachmentProvider(Protocol):
     async def get_attachments_for_test_result(
         self,
         test_result_id: int,
-    ) -> list:
+    ) -> list[AttachmentMeta]:
         """Получить список аттачментов для результата теста.
 
         Args:
@@ -146,6 +152,26 @@ class CommentManager(Protocol):
         Args:
             comment_id: ID комментария.
         """
+        ...
+
+
+@runtime_checkable
+class CommentCleanupProvider(Protocol):
+    """Полный контракт для удаления комментариев в рамках запуска."""
+
+    async def get_all_test_results_for_launch(
+        self,
+        launch_id: int,
+    ) -> list[TestResultResponse]:
+        """Получить все результаты тестов запуска."""
+        ...
+
+    async def get_comments(self, test_case_id: int) -> list[CommentResponse]:
+        """Получить все комментарии для тест-кейса."""
+        ...
+
+    async def delete_comment(self, comment_id: int) -> None:
+        """Удалить комментарий по ID."""
         ...
 
 

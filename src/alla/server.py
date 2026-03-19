@@ -4,18 +4,35 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, TypeVar, cast
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from alla import __version__
+from alla.app_support import (
+    attach_report_link,
+    build_analysis_response,
+    build_html_report_content,
+    collect_test_case_ids,
+    filter_failed_results,
+    format_configuration_error,
+    load_settings,
+    persist_generated_report,
+    resolve_report_url,
+)
 from alla.utils.step_paths import normalize_step_path
 from alla.utils.text_normalization import canonicalize_kb_error_example
 
+if TYPE_CHECKING:
+    from alla.config import Settings
+    from alla.knowledge.postgres_feedback import PostgresFeedbackStore
+    from alla.orchestrator import AnalysisResult
+
 logger = logging.getLogger(__name__)
+ModelT = TypeVar("ModelT", bound=BaseModel)
+ResultT = TypeVar("ResultT")
 
 
 # --- Модели ответов ---
@@ -69,6 +86,7 @@ class _AppState:
         self.client: Any = None
         self.auth: Any = None
         self.report_store: Any = None
+        self.feedback_store: Any = None
 
 
 _state = _AppState()
@@ -78,16 +96,13 @@ _state = _AppState()
 
 
 @asynccontextmanager
-async def _lifespan(app: FastAPI):  # noqa: ARG001
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     """Инициализация при старте, очистка при остановке."""
     from alla.clients.auth import AllureAuthManager
     from alla.clients.testops_client import AllureTestOpsClient
-    from alla.config import Settings
     from alla.logging_config import setup_logging
 
-    settings = Settings()
-    settings.resolve_secrets()
-    settings.validate_required()
+    settings = load_settings()
     setup_logging(settings.log_level)
 
     logger.info("alla server v%s запускается", __version__)
@@ -103,6 +118,8 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
     _state.settings = settings
     _state.client = client
     _state.auth = auth
+    _state.report_store = None
+    _state.feedback_store = None
 
     if settings.reports_dir:
         from pathlib import Path
@@ -162,6 +179,55 @@ def _build_csp_headers() -> dict[str, str]:
     }
 
 
+def _settings() -> "Settings":
+    """Return initialized server settings."""
+    return cast("Settings", _state.settings)
+
+
+def _effective_settings(push_to_testops: bool | None = None) -> "Settings":
+    """Return settings, optionally overriding push_to_testops per request."""
+    settings = _settings()
+    if push_to_testops is None:
+        return settings
+    return settings.model_copy(update={"push_to_testops": push_to_testops})
+
+
+async def _run_analysis_or_raise(
+    launch_id: int,
+    *,
+    push_to_testops: bool | None = None,
+) -> "AnalysisResult":
+    """Run orchestrator analysis and map domain errors to HTTP errors."""
+    from alla.exceptions import (
+        AllureApiError,
+        AuthenticationError,
+        ConfigurationError,
+        KnowledgeBaseError,
+        PaginationLimitError,
+    )
+    from alla.orchestrator import analyze_launch as run_analysis
+
+    try:
+        return await run_analysis(
+            launch_id=launch_id,
+            client=_state.client,
+            settings=_effective_settings(push_to_testops),
+            updater=_state.client,
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except AllureApiError as exc:
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc))
+    except ConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except KnowledgeBaseError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except PaginationLimitError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 # --- Маршруты ---
 
 
@@ -191,81 +257,11 @@ async def analyze_launch(
 
     Query parameter ``push_to_testops`` переопределяет ``ALLURE_PUSH_TO_TESTOPS``.
     """
-    from alla.exceptions import (
-        AllureApiError,
-        AuthenticationError,
-        ConfigurationError,
-        KnowledgeBaseError,
-        PaginationLimitError,
+    result = await _run_analysis_or_raise(
+        launch_id,
+        push_to_testops=push_to_testops,
     )
-    from alla.orchestrator import analyze_launch as run_analysis
-
-    effective_settings = _state.settings
-    if push_to_testops is not None:
-        effective_settings = _state.settings.model_copy(
-            update={"push_to_testops": push_to_testops},
-        )
-
-    try:
-        result = await run_analysis(
-            launch_id=launch_id,
-            client=_state.client,
-            settings=effective_settings,
-            updater=_state.client,
-        )
-    except AuthenticationError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
-    except AllureApiError as exc:
-        if exc.status_code == 404:
-            raise HTTPException(status_code=404, detail=str(exc))
-        raise HTTPException(status_code=502, detail=str(exc))
-    except ConfigurationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except KnowledgeBaseError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    except PaginationLimitError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-
-    response: dict[str, Any] = {
-        "triage_report": result.triage_report.model_dump(),
-        "onboarding": result.onboarding.model_dump(),
-    }
-
-    if result.clustering_report is not None:
-        response["clustering_report"] = result.clustering_report.model_dump()
-
-    if result.kb_results:
-        response["kb_matches"] = {
-            cid: [m.model_dump() for m in matches]
-            for cid, matches in result.kb_results.items()
-        }
-
-    if result.kb_push_result is not None:
-        response["kb_push_result"] = asdict(result.kb_push_result)
-
-    if result.llm_result is not None:
-        response["llm_result"] = {
-            "total_clusters": result.llm_result.total_clusters,
-            "analyzed_count": result.llm_result.analyzed_count,
-            "failed_count": result.llm_result.failed_count,
-            "skipped_count": result.llm_result.skipped_count,
-            "kb_bypass_count": result.llm_result.kb_bypass_count,
-            "cluster_analyses": {
-                cid: a.model_dump()
-                for cid, a in result.llm_result.cluster_analyses.items()
-            },
-        }
-
-    if result.llm_push_result is not None:
-        response["llm_push_result"] = asdict(result.llm_push_result)
-
-    if result.llm_launch_summary is not None:
-        response["llm_launch_summary"] = {
-            "summary_text": result.llm_launch_summary.summary_text,
-            "error": result.llm_launch_summary.error,
-        }
-
-    return response
+    return build_analysis_response(result)
 
 
 @app.get(
@@ -324,46 +320,10 @@ async def analyze_launch_html(
     (секция Links), чтобы ссылка на HTML-отчёт была видна прямо в TestOps UI.
     Переопределяет ``ALLURE_REPORT_URL`` из конфига.
     """
-    from alla.clients.base import LaunchLinksUpdater
-    from alla.exceptions import (
-        AllureApiError,
-        AuthenticationError,
-        ConfigurationError,
-        KnowledgeBaseError,
-        PaginationLimitError,
+    result = await _run_analysis_or_raise(
+        launch_id,
+        push_to_testops=push_to_testops,
     )
-    from alla.orchestrator import analyze_launch as run_analysis
-    from alla.report.html_report import generate_html_report
-
-    effective_settings = _state.settings
-    if push_to_testops is not None:
-        effective_settings = _state.settings.model_copy(
-            update={"push_to_testops": push_to_testops},
-        )
-
-    try:
-        result = await run_analysis(
-            launch_id=launch_id,
-            client=_state.client,
-            settings=effective_settings,
-            updater=_state.client,
-        )
-    except AuthenticationError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
-    except AllureApiError as exc:
-        if exc.status_code == 404:
-            raise HTTPException(status_code=404, detail=str(exc))
-        raise HTTPException(status_code=502, detail=str(exc))
-    except ConfigurationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except KnowledgeBaseError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    except PaginationLimitError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-
-    feedback_api_url = ""
-    if _state.settings.kb_active:
-        feedback_api_url = _state.settings.feedback_server_url
 
     from datetime import datetime
 
@@ -373,60 +333,37 @@ async def analyze_launch_html(
     if need_filename:
         report_filename = f"{launch_id}_{timestamp}.html"
 
-    html = generate_html_report(
+    html = build_html_report_content(
         result,
-        endpoint=_state.settings.endpoint,
-        feedback_api_url=feedback_api_url,
+        settings=_state.settings,
+    )
+    persist_generated_report(
+        html_content=html,
+        launch_id=launch_id,
+        report_filename=report_filename,
+        settings=_state.settings,
+        report_store=_state.report_store,
     )
 
-    if _state.settings.reports_dir and report_filename:
-        from pathlib import Path
+    effective_report_url = resolve_report_url(
+        _state.settings,
+        report_url_override=report_url or None,
+        report_filename=report_filename,
+    )
+    if not effective_report_url:
+        logger.warning(
+            "Ссылка на отчёт не будет прикреплена к запуску #%d: "
+            "задайте ALLURE_SERVER_EXTERNAL_URL + ALLURE_REPORTS_DIR "
+            "или ALLURE_REPORT_URL",
+            launch_id,
+        )
 
-        report_path = Path(_state.settings.reports_dir) / report_filename
-        report_path.write_text(html, encoding="utf-8")
-        logger.info("HTML-отчёт сохранён: %s", report_path)
-
-    if _state.report_store and report_filename:
-        _state.report_store.save(report_filename, launch_id, html)
-        logger.info("HTML-отчёт сохранён в PostgreSQL: %s", report_filename)
-
-    # Прикрепить ссылку на HTML-отчёт к прогону в TestOps.
-    # Приоритет: query param → auto из server_external_url (только если reports_dir задан) → config fallback.
-    if report_url:
-        effective_report_url = report_url
-        logger.info("URL отчёта (query param): %s", effective_report_url)
-    elif _state.settings.server_external_url and report_filename:
-        ext = _state.settings.server_external_url.rstrip("/")
-        effective_report_url = f"{ext}/reports/{report_filename}"
-        logger.info("URL отчёта (auto): %s", effective_report_url)
-    else:
-        effective_report_url = _state.settings.report_url
-        if not effective_report_url:
-            logger.warning(
-                "Ссылка на отчёт не будет прикреплена к запуску #%d: "
-                "задайте ALLURE_SERVER_EXTERNAL_URL + ALLURE_REPORTS_DIR "
-                "или ALLURE_REPORT_URL",
-                launch_id,
-            )
-
-    if effective_report_url and isinstance(_state.client, LaunchLinksUpdater):
-        try:
-            await _state.client.patch_launch_links(
-                launch_id=launch_id,
-                name=_state.settings.report_link_name,
-                url=effective_report_url,
-            )
-            logger.info(
-                "Ссылка на отчёт прикреплена к запуску #%d: %s",
-                launch_id,
-                effective_report_url,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Не удалось прикрепить ссылку на HTML-отчёт к запуску #%d: %s",
-                launch_id,
-                exc,
-            )
+    await attach_report_link(
+        _state.client,
+        launch_id=launch_id,
+        settings=_state.settings,
+        report_url=effective_report_url,
+    )
 
     headers = _build_csp_headers()
     if effective_report_url:
@@ -481,12 +418,12 @@ async def delete_comments(launch_id: int, dry_run: bool = False) -> dict[str, An
     ``[alla]`` и удаляет их. Query parameter ``?dry_run=true`` для
     предварительного просмотра без фактического удаления.
     """
-    from alla.clients.base import CommentManager
+    from alla.clients.base import CommentCleanupProvider
     from alla.exceptions import AllureApiError, AuthenticationError, PaginationLimitError
     from alla.services.comment_delete_service import CommentDeleteService
 
     client = _state.client
-    if not isinstance(client, CommentManager):
+    if not isinstance(client, CommentCleanupProvider):
         raise HTTPException(
             status_code=500,
             detail="Клиент не поддерживает управление комментариями",
@@ -503,19 +440,8 @@ async def delete_comments(launch_id: int, dry_run: bool = False) -> dict[str, An
     except PaginationLimitError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
-    failure_statuses = {"failed", "broken"}
-    failed_results = [
-        r for r in all_results
-        if r.status and r.status.lower() in failure_statuses
-    ]
-
-    test_case_ids: set[int] = set()
-    skipped = 0
-    for r in failed_results:
-        if r.test_case_id is not None:
-            test_case_ids.add(r.test_case_id)
-        else:
-            skipped += 1
+    failed_results = filter_failed_results(all_results)
+    test_case_ids, skipped = collect_test_case_ids(failed_results)
 
     service = CommentDeleteService(
         client,
@@ -543,17 +469,43 @@ async def delete_comments(launch_id: int, dry_run: bool = False) -> dict[str, An
 # --- KB Feedback endpoints ---
 
 
-def _get_feedback_store():
+def _get_feedback_store() -> "PostgresFeedbackStore | None":
     """Вернуть PostgresFeedbackStore или None (ленивая инициализация)."""
     settings = _state.settings
     if settings is None or not settings.kb_active:
         return None
 
-    if not hasattr(_state, "_feedback_store"):
+    if _state.feedback_store is None:
         from alla.knowledge.postgres_feedback import PostgresFeedbackStore
 
-        _state._feedback_store = PostgresFeedbackStore(dsn=settings.kb_postgres_dsn)
-    return _state._feedback_store
+        _state.feedback_store = PostgresFeedbackStore(dsn=settings.kb_postgres_dsn)
+    return cast("PostgresFeedbackStore", _state.feedback_store)
+
+
+def _require_feedback_store(detail: str) -> "PostgresFeedbackStore":
+    """Вернуть feedback store или поднять 501 с осмысленным сообщением."""
+    store = _get_feedback_store()
+    if store is None:
+        raise HTTPException(status_code=501, detail=detail)
+    return store
+
+
+def _parse_request(model_cls: type[ModelT], request: dict[str, Any]) -> ModelT:
+    """Преобразовать сырой JSON body в pydantic-модель или поднять 422."""
+    try:
+        return model_cls(**request)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+def _run_kb_action(action: Callable[[], ResultT]) -> ResultT:
+    """Выполнить KB/storage action и отобразить domain error в HTTP 500."""
+    from alla.exceptions import KnowledgeBaseError
+
+    try:
+        return action()
+    except KnowledgeBaseError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/v1/kb/feedback")
@@ -563,26 +515,14 @@ def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
     Привязка выполняется по stable issue signature, а audit_text хранится
     только для последующего разбора человеком.
     """
-    store = _get_feedback_store()
-    if store is None:
-        raise HTTPException(
-            status_code=501,
-            detail="Feedback requires ALLURE_KB_POSTGRES_DSN to be set",
-        )
+    store = _require_feedback_store(
+        "Feedback requires ALLURE_KB_POSTGRES_DSN to be set",
+    )
 
     from alla.knowledge.feedback_models import FeedbackRequest
 
-    try:
-        fb_request = FeedbackRequest(**request)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    from alla.exceptions import KnowledgeBaseError
-
-    try:
-        response = store.record_vote(fb_request)
-    except KnowledgeBaseError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    fb_request = _parse_request(FeedbackRequest, request)
+    response = _run_kb_action(lambda: store.record_vote(fb_request))
 
     return response.model_dump()
 
@@ -608,20 +548,12 @@ def _make_slug(title: str, error_example: str, step_path: str | None = None) -> 
 @app.post("/api/v1/kb/entries", status_code=201)
 def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
     """Создать новую запись KB из HTML-отчёта."""
-    store = _get_feedback_store()
-    if store is None:
-        raise HTTPException(
-            status_code=501,
-            detail="KB entry creation requires postgres backend",
-        )
+    store = _require_feedback_store("KB entry creation requires postgres backend")
 
     from alla.knowledge.feedback_models import CreateKBEntryRequest, CreateKBEntryResponse
     from alla.knowledge.models import KBEntry
 
-    try:
-        req = CreateKBEntryRequest(**request)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+    req = _parse_request(CreateKBEntryRequest, request)
 
     req.error_example = canonicalize_kb_error_example(req.error_example or "")
     req.step_path = req.step_path.strip() if req.step_path else None
@@ -645,12 +577,7 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
         resolution_steps=req.resolution_steps,
     )
 
-    from alla.exceptions import KnowledgeBaseError
-
-    try:
-        entry_id = store.create_kb_entry(entry, req.project_id)
-    except KnowledgeBaseError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    entry_id = _run_kb_action(lambda: store.create_kb_entry(entry, req.project_id))
 
     if entry_id is None:
         raise HTTPException(
@@ -672,12 +599,7 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
 @app.put("/api/v1/kb/entries/{entry_id}")
 def update_kb_entry(entry_id: int, request: dict[str, Any]) -> dict[str, Any]:
     """Обновить существующую запись базы знаний по entry_id."""
-    store = _get_feedback_store()
-    if store is None:
-        raise HTTPException(
-            status_code=501,
-            detail="KB entry update requires postgres backend",
-        )
+    store = _require_feedback_store("KB entry update requires postgres backend")
 
     allowed = {
         "title",
@@ -711,12 +633,7 @@ def update_kb_entry(entry_id: int, request: dict[str, Any]) -> dict[str, Any]:
         else:
             fields["step_path"] = str(raw_step_path).strip() or None
 
-    from alla.exceptions import KnowledgeBaseError
-
-    try:
-        updated = store.update_kb_entry(entry_id, fields)
-    except KnowledgeBaseError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    updated = _run_kb_action(lambda: store.update_kb_entry(entry_id, fields))
 
     if not updated:
         raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
@@ -735,16 +652,11 @@ def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
     Body: {"items": [{"kb_entry_id": 123, "issue_signature_hash": "..."}]}
     Response: {"votes": {"123": {"vote": "like"}}}
     """
-    store = _get_feedback_store()
-    if store is None:
-        raise HTTPException(status_code=501, detail="Requires postgres backend")
+    store = _require_feedback_store("Requires postgres backend")
 
     from alla.knowledge.feedback_models import FeedbackResolveRequest
 
-    try:
-        req = FeedbackResolveRequest(**request)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+    req = _parse_request(FeedbackResolveRequest, request)
 
     items = [
         (
@@ -770,21 +682,10 @@ def main() -> None:
     """Точка входа консольного скрипта alla-server."""
     import sys
 
-    from alla.config import Settings
-
     try:
-        settings = Settings()
-        settings.resolve_secrets()
-        settings.validate_required()
+        settings = load_settings()
     except Exception as exc:
-        print(
-            f"Ошибка конфигурации: {exc}\n\n"
-            f"Обязательные переменные окружения: "
-            f"ALLURE_ENDPOINT, ALLURE_TOKEN\n"
-            f"Секреты можно получить из Vault Proxy (ALLURE_VAULT_URL).\n"
-            f"Подробности см. в .env.example.",
-            file=sys.stderr,
-        )
+        print(format_configuration_error(exc), file=sys.stderr)
         sys.exit(2)
 
     import uvicorn
