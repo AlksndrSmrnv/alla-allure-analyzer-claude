@@ -54,7 +54,7 @@ class PostgresKnowledgeBase:
         if self._project_id is not None:
             query = """
                 SELECT entry_id, id, title, description, error_example,
-                       category, resolution_steps, project_id
+                       step_path, category, resolution_steps, project_id
                 FROM alla.kb_entry
                 WHERE project_id IS NULL
                    OR project_id = %s
@@ -78,7 +78,7 @@ class PostgresKnowledgeBase:
         else:
             query = """
                 SELECT entry_id, id, title, description, error_example,
-                       category, resolution_steps, project_id
+                       step_path, category, resolution_steps, project_id
                 FROM alla.kb_entry
                 WHERE project_id IS NULL
                 ORDER BY id
@@ -102,6 +102,7 @@ class PostgresKnowledgeBase:
                 title,
                 description,
                 error_example,
+                step_path,
                 category_raw,
                 resolution_steps,
                 project_id,
@@ -112,6 +113,7 @@ class PostgresKnowledgeBase:
                     title=title,
                     description=description or "",
                     error_example=error_example,
+                    step_path=step_path,
                     category=RootCauseCategory(category_raw),
                     resolution_steps=list(resolution_steps or []),
                     entry_id=pg_entry_id,
@@ -154,20 +156,20 @@ class PostgresKnowledgeBase:
         error_text: str,
         *,
         query_label: str | None = None,
-        step_path: str | None = None,
+        query_step_path: str | None = None,
     ) -> list[KBMatchResult]:
         """Найти записи KB, релевантные тексту ошибки.
 
         Args:
             error_text: Текст ошибки для поиска (message + trace/log).
             query_label: Метка для логирования.
-            step_path: Путь шага теста (опциональный бустер score).
+            query_step_path: Путь шага текущего кластера.
         """
         return self._matcher.match(
             error_text,
             self._entries,
             query_label=query_label,
-            step_path=step_path,
+            query_step_path=query_step_path,
         )
 
     def get_all_entries(self) -> list[KBEntry]:

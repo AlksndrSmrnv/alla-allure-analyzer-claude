@@ -403,6 +403,7 @@ def _render_cluster(
                 feedback_api_url=feedback_api_url,
                 launch_id=launch_id,
                 cluster_id=cluster_id,
+                cluster_step_path=cluster.example_step_path or "",
                 cluster_error_example=cluster_error_example,
             )
             for m in kb_matches
@@ -423,6 +424,7 @@ def _render_cluster(
                     feedback_api_url=feedback_api_url,
                     launch_id=launch_id,
                     cluster_id=cluster_id,
+                    cluster_step_path=cluster.example_step_path or "",
                     cluster_error_example=cluster_error_example,
                 )
                 for m in project_matches
@@ -453,6 +455,7 @@ def _render_cluster(
                 feedback_api_url=feedback_api_url,
                 launch_id=launch_id,
                 cluster_id=cluster_id,
+                cluster_step_path=cluster.example_step_path or "",
                 copy_payload=_build_starter_pack_payload(m, project_id),
                 copy_api_url=feedback_api_url,
                 cluster_error_example=cluster_error_example,
@@ -589,6 +592,7 @@ def _render_kb_entry(
     feedback_api_url: str = "",
     launch_id: int = 0,
     cluster_id: str = "",
+    cluster_step_path: str = "",
     copy_payload: dict[str, object] | None = None,
     copy_api_url: str = "",
     cluster_error_example: str = "",
@@ -605,6 +609,12 @@ def _render_kb_entry(
             "onclick=\"this.nextElementSibling.classList.toggle('hidden')\">"
             "Посмотреть пример ошибки</button>"
             f'<pre class="kb-example hidden">{_e(m.entry.error_example)}</pre>'
+        )
+
+    step_path_html = ""
+    if m.entry.step_path:
+        step_path_html = (
+            f'<div class="step-path kb-entry-step-path">{_e(m.entry.step_path)}</div>'
         )
 
     copy_html = ""
@@ -632,7 +642,8 @@ def _render_kb_entry(
             f'<div class="kb-feedback" '
             f'data-entry-id="{entry_id}" '
             f'data-launch-id="{_e(str(launch_id))}" '
-            f'data-cluster-id="{_e(cluster_id)}">'
+            f'data-cluster-id="{_e(cluster_id)}" '
+            f'data-step-aware="{"1" if m.entry.step_path else "0"}">'
             f'<button class="{like_cls}" title="Полезное совпадение">👍</button>'
             f'<button class="{dislike_cls}" title="Неверное совпадение">👎</button>'
             '<span class="fb-status"></span>'
@@ -648,6 +659,17 @@ def _render_kb_entry(
         desc_ctrl = f'<textarea name="description" rows="3">{_e(m.entry.description)}</textarea>'
         cat_ctrl = f'<select name="category">{_render_category_options(m.entry.category.value)}</select>'
         example_ctrl = f'<textarea name="error_example" rows="4">{_e(m.entry.error_example)}</textarea>'
+        effective_step_path = m.entry.step_path or cluster_step_path
+        step_toggle_html = ""
+        if effective_step_path:
+            checked_attr = ' checked="checked"' if m.entry.step_path else ""
+            step_toggle_html = (
+                '<label class="step-path-toggle">'
+                f'<input type="checkbox" name="include_step_path" '
+                f'data-step-path="{_e(effective_step_path)}"{checked_attr}>'
+                f' Добавить шаг теста: <span class="step-path-preview">{_e(effective_step_path)}</span>'
+                '</label>'
+            )
         refresh_btn = ""
         if cluster_error_example:
             refresh_btn = (
@@ -668,6 +690,7 @@ def _render_kb_entry(
             f'{_render_form_field("Описание", "необязательно", desc_ctrl)}'
             f'{_render_form_field("Категория", "", cat_ctrl)}'
             f'{_render_form_field("Пример ошибки", "необязательно", example_ctrl_with_btn)}'
+            f'{step_toggle_html}'
             f'{_render_form_field("Шаги по устранению", "необязательно", steps_ctrl)}'
             '<div class="edit-kb-actions">'
             '<button type="submit" class="edit-kb-save">Сохранить</button>'
@@ -704,6 +727,7 @@ def _render_kb_entry(
         f'<span class="kb-category">{_e(m.entry.category.value)}</span>'
         "</div>"
         f"{steps_html}"
+        f"{step_path_html}"
         f"{error_example_html}"
         f"{copy_html}"
         f"{feedback_html}"
@@ -858,6 +882,7 @@ def _build_starter_pack_payload(
         "title": match.entry.title,
         "description": match.entry.description,
         "error_example": match.entry.error_example,
+        "step_path": match.entry.step_path,
         "category": match.entry.category.value,
         "resolution_steps": list(match.entry.resolution_steps),
         "project_id": project_id,
@@ -1710,6 +1735,54 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    });\n"
         "  }\n"
         "\n"
+        "  function getFeedbackSignature(context, wrap) {\n"
+        "    if (!context) return null;\n"
+        "    var stepAware = wrap && wrap.dataset.stepAware === '1';\n"
+        "    if (stepAware && context.step_issue_signature) return context.step_issue_signature;\n"
+        "    return context.base_issue_signature || context.issue_signature || null;\n"
+        "  }\n"
+        "\n"
+        "  function syncKbEntrySteps(entry, steps) {\n"
+        "    if (!entry) return;\n"
+        "    var stepsEl = entry.querySelector('.kb-steps');\n"
+        "    if (!steps || !steps.length) {\n"
+        "      if (stepsEl) stepsEl.remove();\n"
+        "      return;\n"
+        "    }\n"
+        "    if (!stepsEl) {\n"
+        "      stepsEl = document.createElement('ul');\n"
+        "      stepsEl.className = 'kb-steps';\n"
+        "      var stepsAnchor = entry.querySelector('.kb-entry-step-path, .kb-example-toggle, .starter-pack-actions, .kb-feedback, .edit-kb-action');\n"
+        "      if (stepsAnchor) entry.insertBefore(stepsEl, stepsAnchor);\n"
+        "      else entry.appendChild(stepsEl);\n"
+        "    }\n"
+        "    stepsEl.textContent = '';\n"
+        "    steps.forEach(function(step) {\n"
+        "      var li = document.createElement('li');\n"
+        "      li.textContent = step;\n"
+        "      stepsEl.appendChild(li);\n"
+        "    });\n"
+        "  }\n"
+        "\n"
+        "  function syncKbEntryStepState(entry, stepPath) {\n"
+        "    if (!entry) return;\n"
+        "    var feedbackWrap = entry.querySelector('.kb-feedback');\n"
+        "    if (feedbackWrap) feedbackWrap.dataset.stepAware = stepPath ? '1' : '0';\n"
+        "    var stepPathEl = entry.querySelector('.kb-entry-step-path');\n"
+        "    if (!stepPath) {\n"
+        "      if (stepPathEl) stepPathEl.remove();\n"
+        "      return;\n"
+        "    }\n"
+        "    if (!stepPathEl) {\n"
+        "      stepPathEl = document.createElement('div');\n"
+        "      stepPathEl.className = 'step-path kb-entry-step-path';\n"
+        "      var stepAnchor = entry.querySelector('.kb-example-toggle, .starter-pack-actions, .kb-feedback, .edit-kb-action');\n"
+        "      if (stepAnchor) entry.insertBefore(stepPathEl, stepAnchor);\n"
+        "      else entry.appendChild(stepPathEl);\n"
+        "    }\n"
+        "    stepPathEl.textContent = stepPath;\n"
+        "  }\n"
+        "\n"
         "  // --- Like / Dislike ---\n"
         "  function sendFeedback(el, isLike) {\n"
         "    var wrap = el.closest('.kb-feedback');\n"
@@ -1717,7 +1790,8 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    var clusterId = wrap.dataset.clusterId;\n"
         "    var context = (typeof CLUSTER_FEEDBACK_CONTEXTS !== 'undefined')\n"
         "      ? CLUSTER_FEEDBACK_CONTEXTS[clusterId] : null;\n"
-        "    if (!context || !context.audit_text || !context.issue_signature) {\n"
+        "    var signature = getFeedbackSignature(context, wrap);\n"
+        "    if (!context || !context.audit_text || !signature) {\n"
         "      status.textContent = 'No feedback context';\n"
         "      status.className = 'fb-status fb-status-error';\n"
         "      return;\n"
@@ -1725,9 +1799,9 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    var body = JSON.stringify({\n"
         "      kb_entry_id: parseInt(wrap.dataset.entryId, 10),\n"
         "      audit_text: context.audit_text,\n"
-        "      issue_signature_hash: context.issue_signature.signature_hash,\n"
-        "      issue_signature_version: context.issue_signature.version,\n"
-        "      issue_signature_payload: context.issue_signature,\n"
+        "      issue_signature_hash: signature.signature_hash,\n"
+        "      issue_signature_version: signature.version,\n"
+        "      issue_signature_payload: signature,\n"
         "      launch_id: parseInt(wrap.dataset.launchId, 10) || null,\n"
         "      cluster_id: clusterId || null,\n"
         "      vote: isLike ? 'like' : 'dislike'\n"
@@ -1794,13 +1868,12 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    var titleVal = form.elements.title.value.trim() || null;\n"
         "    var errorExample = form.elements.error_example.value;\n"
         "    var stepPathCb = form.querySelector('input[name=\"include_step_path\"]');\n"
-        "    if (stepPathCb && stepPathCb.checked && stepPathCb.dataset.stepPath) {\n"
-        "      errorExample = stepPathCb.dataset.stepPath + '\\n' + errorExample;\n"
-        "    }\n"
+        "    var stepPath = (stepPathCb && stepPathCb.checked && stepPathCb.dataset.stepPath) ? stepPathCb.dataset.stepPath : null;\n"
         "    var payload = {\n"
         "      title: titleVal,\n"
         "      category: form.elements.category.value,\n"
         "      error_example: errorExample,\n"
+        "      step_path: stepPath,\n"
         "      description: form.elements.description.value,\n"
         "      resolution_steps: steps,\n"
         "      project_id: parseInt(form.elements.project_id.value, 10) || null\n"
@@ -1830,11 +1903,14 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    status.textContent = '...';\n"
         "    status.className = 'edit-kb-status';\n"
         "    var steps = (form.elements.resolution_steps.value || '').split('\\n').filter(function(s) { return s.trim(); });\n"
+        "    var stepPathCb = form.querySelector('input[name=\"include_step_path\"]');\n"
+        "    var stepPath = (stepPathCb && stepPathCb.checked && stepPathCb.dataset.stepPath) ? stepPathCb.dataset.stepPath : null;\n"
         "    var payload = {\n"
         "      title: form.elements.title.value,\n"
         "      description: form.elements.description.value,\n"
         "      category: form.elements.category.value,\n"
         "      error_example: form.elements.error_example.value,\n"
+        "      step_path: stepPath,\n"
         "      resolution_steps: steps\n"
         "    };\n"
         "    fetch(FEEDBACK_API_URL + '/api/v1/kb/entries/' + entryId, {\n"
@@ -1855,10 +1931,9 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "        if (titleEl) titleEl.textContent = payload.title;\n"
         "        var catEl = entry.querySelector('.kb-category');\n"
         "        if (catEl) catEl.textContent = payload.category;\n"
-        "        var stepsEl = entry.querySelector('.kb-steps');\n"
-        "        if (stepsEl && steps.length) {\n"
-        "          stepsEl.innerHTML = steps.map(function(s) { return '<li>' + s.replace(/</g,'&lt;') + '</li>'; }).join('');\n"
-        "        }\n"
+        "        syncKbEntrySteps(entry, steps);\n"
+        "        syncKbEntryStepState(entry, payload.step_path);\n"
+        "        if (stepPathCb) stepPathCb.checked = !!payload.step_path;\n"
         "      }\n"
         "    }).catch(function(err) {\n"
         "      status.textContent = 'Ошибка: ' + err.message;\n"
@@ -1901,14 +1976,15 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "      var entryId = parseInt(el.dataset.entryId, 10);\n"
         "      var clusterId = el.dataset.clusterId;\n"
         "      var context = CLUSTER_FEEDBACK_CONTEXTS[clusterId];\n"
-        "      if (!context || !context.issue_signature) return;\n"
+        "      var signature = getFeedbackSignature(context, el);\n"
+        "      if (!signature) return;\n"
         "      var key = entryId + ':' + clusterId;\n"
         "      if (seen[key]) return;\n"
         "      seen[key] = true;\n"
         "      items.push({\n"
         "        kb_entry_id: entryId,\n"
-        "        issue_signature_hash: context.issue_signature.signature_hash,\n"
-        "        issue_signature_version: context.issue_signature.version,\n"
+        "        issue_signature_hash: signature.signature_hash,\n"
+        "        issue_signature_version: signature.version,\n"
         "        cluster_id: clusterId || ''\n"
         "      });\n"
         "    });\n"

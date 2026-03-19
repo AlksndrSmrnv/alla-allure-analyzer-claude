@@ -36,9 +36,12 @@ from alla.models.clustering import (
     FailureCluster,
 )
 from alla.models.testops import FailedTestSummary
+from alla.utils.step_paths import normalize_step_path
 from alla.utils.text_normalization import normalize_text
 
 logger = logging.getLogger(__name__)
+_STEP_PATH_MISMATCH_PENALTY = 0.45
+_STEP_PATH_LOG_REDUCTION = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -78,11 +81,8 @@ _normalize_text = normalize_text
 
 
 def _build_message_document(failure: FailedTestSummary) -> str:
-    """Собрать message-документ (step_path + message + category)."""
+    """Собрать message-документ (message + category)."""
     parts: list[str] = []
-
-    if failure.failed_step_path:
-        parts.append(failure.failed_step_path)
 
     if failure.status_message:
         parts.append(failure.status_message)
@@ -92,6 +92,11 @@ def _build_message_document(failure: FailedTestSummary) -> str:
 
     raw = "\n".join(parts)
     return _normalize_text(raw) if raw else ""
+
+
+def _build_step_document(failure: FailedTestSummary) -> str:
+    """Собрать step-документ из breadcrumb упавшего шага."""
+    return normalize_step_path(failure.failed_step_path)
 
 
 def _compact_trace(trace: str, head_lines: int, tail_lines: int) -> str:
@@ -176,7 +181,7 @@ class ClusteringService:
                 cluster_count=0,
             )
 
-        # 1. Собрать документы по двум (+опционально трём) каналам
+        # 1. Собрать документы по отдельным каналам
         message_documents: list[str] = [_build_message_document(f) for f in failures]
         trace_documents: list[str] = [
             _build_trace_document(
@@ -195,6 +200,7 @@ class ClusteringService:
             )
             for f in failures
         ]
+        step_documents: list[str] = [_build_step_document(f) for f in failures]
 
         # 2. Разделить на тесты с текстом и без (в любом канале)
         # Лог считается «текстом» только когда log_weight > 0: при явном opt-out
@@ -222,7 +228,8 @@ class ClusteringService:
             message_docs = [message_documents[i] for i in has_text_indices]
             trace_docs = [trace_documents[i] for i in has_text_indices]
             log_docs = [log_documents[i] for i in has_text_indices]
-            labels = self._cluster_texts(message_docs, trace_docs, log_docs)
+            step_docs = [step_documents[i] for i in has_text_indices]
+            labels = self._cluster_texts(message_docs, trace_docs, log_docs, step_docs)
 
             for idx, label in zip(has_text_indices, labels):
                 cluster_groups.setdefault(label, []).append(idx)
@@ -266,6 +273,7 @@ class ClusteringService:
         message_documents: list[str],
         trace_documents: list[str],
         log_documents: list[str] | None = None,
+        step_documents: list[str] | None = None,
     ) -> list[int]:
         """Message-first TF-IDF + agglomerative clustering.
 
@@ -278,6 +286,9 @@ class ClusteringService:
         log_sim: np.ndarray | None = None
         if log_documents:
             log_sim = self._pairwise_similarity(log_documents)
+        step_sim: np.ndarray | None = None
+        if step_documents:
+            step_sim = self._pairwise_similarity(step_documents)
 
         message_weight = self._config.message_similarity_weight
         trace_weight = self._config.trace_similarity_weight
@@ -300,6 +311,11 @@ class ClusteringService:
         has_log = (
             [bool(doc.strip()) for doc in log_documents]
             if log_documents
+            else [False] * n
+        )
+        has_step = (
+            [bool(doc.strip()) for doc in step_documents]
+            if step_documents
             else [False] * n
         )
 
@@ -360,6 +376,15 @@ class ClusteringService:
                             pair_sim = tw * trace_sim[i, j] + lw * log_sim[i, j]
                         else:
                             pair_sim = log_sim[i, j]
+
+                if step_sim is not None and has_step[i] and has_step[j]:
+                    step_penalty = _STEP_PATH_MISMATCH_PENALTY
+                    if has_log[i] and has_log[j]:
+                        step_penalty *= _STEP_PATH_LOG_REDUCTION
+                    pair_sim = max(
+                        0.0,
+                        pair_sim - step_penalty * (1.0 - float(step_sim[i, j])),
+                    )
 
                 final_sim[i, j] = pair_sim
                 final_sim[j, i] = pair_sim

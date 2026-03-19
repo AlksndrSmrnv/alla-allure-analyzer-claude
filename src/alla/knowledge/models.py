@@ -26,6 +26,13 @@ class KBEntry(BaseModel):
     error_example: str = Field(
         description="Пример ошибки из лога — используется для нечёткого сопоставления (TF-IDF)"
     )
+    step_path: str | None = Field(
+        default=None,
+        description=(
+            "Опциональный breadcrumb шага теста. Если задан, запись становится "
+            "step-aware: шаг участвует в KB-binding и exact feedback."
+        ),
+    )
     category: RootCauseCategory = Field(
         description="Категория причины: test / service / env / data"
     )

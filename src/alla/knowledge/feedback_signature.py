@@ -13,6 +13,7 @@ from alla.knowledge.feedback_models import (
 from alla.models.clustering import FailureCluster
 from alla.models.testops import FailedTestSummary
 from alla.utils.log_utils import parse_log_sections
+from alla.utils.step_paths import normalize_step_path
 from alla.utils.text_normalization import normalize_text, normalize_text_for_llm
 
 _SHORT_MESSAGE_WORDS = 10
@@ -427,6 +428,41 @@ def _is_short_message(message: str) -> bool:
     return len(words) <= _SHORT_MESSAGE_WORDS and len(message) <= _SHORT_MESSAGE_CHARS
 
 
+def _make_feedback_issue_signature(
+    signature_material: str,
+    basis: str,
+) -> FeedbackIssueSignature:
+    digest_source = f"v{FeedbackIssueSignature.DEFAULT_VERSION}\n{basis}\n{signature_material}"
+    signature_hash = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+    return FeedbackIssueSignature(
+        signature_hash=signature_hash,
+        version=FeedbackIssueSignature.DEFAULT_VERSION,
+        basis=basis,
+    )
+
+
+def build_feedback_signatures(
+    signature_material: str,
+    basis: str,
+    step_path: str | None,
+) -> tuple[FeedbackIssueSignature, FeedbackIssueSignature | None]:
+    """Построить base- и optional step-aware сигнатуры exact feedback."""
+    base_issue_signature = _make_feedback_issue_signature(signature_material, basis)
+
+    normalized_step_path = normalize_step_path(step_path)
+    if not normalized_step_path:
+        return base_issue_signature, None
+
+    step_signature_material = (
+        f"{signature_material}\n---\n[step_path]\n{normalized_step_path}"
+    )
+    step_issue_signature = _make_feedback_issue_signature(
+        step_signature_material,
+        f"{basis}_step_path",
+    )
+    return base_issue_signature, step_issue_signature
+
+
 def build_feedback_cluster_context(
     cluster: FailureCluster,
     test_by_id: dict[int, FailedTestSummary],
@@ -480,8 +516,11 @@ def build_feedback_cluster_context(
         return None
 
     signature_material = "\n---\n".join(signature_parts)
-    digest_source = f"v{FeedbackIssueSignature.DEFAULT_VERSION}\n{basis}\n{signature_material}"
-    signature_hash = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+    base_issue_signature, step_issue_signature = build_feedback_signatures(
+        signature_material,
+        basis,
+        step_path,
+    )
 
     audit_parts: list[str] = []
     if step_path:
@@ -496,9 +535,6 @@ def build_feedback_cluster_context(
 
     return FeedbackClusterContext(
         audit_text=audit_text,
-        issue_signature=FeedbackIssueSignature(
-            signature_hash=signature_hash,
-            version=FeedbackIssueSignature.DEFAULT_VERSION,
-            basis=basis,
-        ),
+        base_issue_signature=base_issue_signature,
+        step_issue_signature=step_issue_signature,
     )

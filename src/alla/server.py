@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from alla import __version__
+from alla.utils.step_paths import normalize_step_path
 from alla.utils.text_normalization import canonicalize_kb_error_example
 
 logger = logging.getLogger(__name__)
@@ -606,17 +607,21 @@ def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
     return response.model_dump()
 
 
-def _make_slug(title: str, error_example: str) -> str:
-    """Сгенерировать slug из заголовка + хэша error_example.
+def _make_slug(title: str, error_example: str, step_path: str | None = None) -> str:
+    """Сгенерировать slug из заголовка + хэша error_example (+ step_path при наличии).
 
-    Формат: <slugified_title>_<8 hex chars of sha256(error_example)>
+    Формат: <slugified_title>_<8 hex chars of sha256(signature_material)>
     """
     import hashlib
     import re
 
     base = re.sub(r"[^a-z0-9]+", "_", title.lower())
     base = base.strip("_")[:50] or "kb_entry"
-    suffix = hashlib.sha256(error_example.encode()).hexdigest()[:8]
+    signature_material = error_example
+    normalized_step_path = normalize_step_path(step_path)
+    if normalized_step_path:
+        signature_material = f"{error_example}\n---\n{normalized_step_path}"
+    suffix = hashlib.sha256(signature_material.encode()).hexdigest()[:8]
     return f"{base}_{suffix}"
 
 
@@ -639,19 +644,23 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc))
 
     req.error_example = canonicalize_kb_error_example(req.error_example or "")
+    req.step_path = req.step_path.strip() if req.step_path else None
+    if req.step_path == "":
+        req.step_path = None
 
     # Авто-генерация title и id если не указаны
     if not req.title:
         first_line = (req.error_example or "").splitlines()[0][:100] if req.error_example else ""
         req.title = first_line or "KB Entry"
     if not req.id:
-        req.id = _make_slug(req.title, req.error_example or "")
+        req.id = _make_slug(req.title, req.error_example or "", req.step_path)
 
     entry = KBEntry(
         id=req.id,
         title=req.title,
         description=req.description,
         error_example=req.error_example,
+        step_path=req.step_path,
         category=req.category,
         resolution_steps=req.resolution_steps,
     )
@@ -690,7 +699,14 @@ def update_kb_entry(entry_id: int, request: dict[str, Any]) -> dict[str, Any]:
             detail="KB entry update requires postgres backend",
         )
 
-    allowed = {"title", "description", "error_example", "category", "resolution_steps"}
+    allowed = {
+        "title",
+        "description",
+        "error_example",
+        "step_path",
+        "category",
+        "resolution_steps",
+    }
     fields = {k: v for k, v in request.items() if k in allowed}
     if not fields:
         raise HTTPException(status_code=422, detail="No valid fields to update")
@@ -708,6 +724,12 @@ def update_kb_entry(entry_id: int, request: dict[str, Any]) -> dict[str, Any]:
 
     if "error_example" in fields and fields["error_example"]:
         fields["error_example"] = canonicalize_kb_error_example(fields["error_example"])
+    if "step_path" in fields:
+        raw_step_path = fields["step_path"]
+        if raw_step_path is None:
+            fields["step_path"] = None
+        else:
+            fields["step_path"] = str(raw_step_path).strip() or None
 
     from alla.exceptions import KnowledgeBaseError
 

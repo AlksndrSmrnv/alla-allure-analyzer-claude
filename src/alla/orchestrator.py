@@ -23,6 +23,7 @@ from alla.models.clustering import ClusteringReport, FailureCluster
 from alla.models.onboarding import OnboardingMode, OnboardingState
 from alla.models.testops import FailedTestSummary, TriageReport
 from alla.services.kb_push_service import KBPushResult
+from alla.utils.step_paths import are_step_paths_compatible, normalize_step_path
 
 if TYPE_CHECKING:
     from alla.knowledge.models import KBEntry
@@ -198,20 +199,30 @@ async def analyze_launch(
                         kb.search_by_error(
                             query_text,
                             query_label=f"{cluster.cluster_id}:combined",
-                            step_path=cluster.example_step_path,
+                            query_step_path=cluster.example_step_path,
                         )
                         if query_text.strip()
                         else []
                     )
                     if feedback_context is not None:
-                        exact_feedback = feedback_store.get_feedback_for_signature(
-                            feedback_context.issue_signature.signature_hash,
-                            feedback_context.issue_signature.version,
+                        base_exact_feedback = feedback_store.get_feedback_for_signature(
+                            feedback_context.base_issue_signature.signature_hash,
+                            feedback_context.base_issue_signature.version,
+                        )
+                        step_exact_feedback = (
+                            feedback_store.get_feedback_for_signature(
+                                feedback_context.step_issue_signature.signature_hash,
+                                feedback_context.step_issue_signature.version,
+                            )
+                            if feedback_context.step_issue_signature is not None
+                            else []
                         )
                         matches = _apply_exact_feedback_memory(
                             matches,
-                            exact_feedback,
+                            base_exact_feedback,
                             entries_by_entry_id,
+                            step_exact_feedback=step_exact_feedback,
+                            query_step_path=cluster.example_step_path,
                             max_results=settings.kb_max_results,
                         )
                     if matches:
@@ -450,14 +461,17 @@ def _build_kb_query_text(
 
 def _apply_exact_feedback_memory(
     matches: list[KBMatchResult],
-    exact_feedback: list[FeedbackRecord],
+    base_exact_feedback: list[FeedbackRecord],
     entries_by_entry_id: dict[int, "KBEntry"],
     *,
+    step_exact_feedback: list[FeedbackRecord] | None = None,
+    query_step_path: str | None = None,
     max_results: int,
 ) -> list[KBMatchResult]:
     """Применить exact feedback memory поверх обычных KB text matches."""
     result_by_entry_id: dict[int, KBMatchResult] = {}
     passthrough_matches: list[KBMatchResult] = []
+    normalized_query_step_path = normalize_step_path(query_step_path)
 
     for match in matches:
         entry_id = match.entry.entry_id
@@ -466,7 +480,37 @@ def _apply_exact_feedback_memory(
             continue
         result_by_entry_id[entry_id] = match
 
-    for record in exact_feedback:
+    base_records_by_entry_id = {
+        record.kb_entry_id: record for record in base_exact_feedback
+    }
+    step_records_by_entry_id = {
+        record.kb_entry_id: record for record in (step_exact_feedback or [])
+    }
+    candidate_entry_ids = set(base_records_by_entry_id) | set(step_records_by_entry_id)
+
+    for entry_id in candidate_entry_ids:
+        entry = entries_by_entry_id.get(entry_id)
+        if entry is None:
+            match = result_by_entry_id.get(entry_id)
+            entry = match.entry if match is not None else None
+        if entry is None:
+            continue
+        if (
+            entry.step_path
+            and normalized_query_step_path
+            and not are_step_paths_compatible(entry.step_path, normalized_query_step_path)
+        ):
+            result_by_entry_id.pop(entry_id, None)
+            continue
+
+        record = (
+            step_records_by_entry_id.get(entry_id) or base_records_by_entry_id.get(entry_id)
+            if entry.step_path
+            else base_records_by_entry_id.get(entry_id)
+        )
+        if record is None:
+            continue
+
         entry_id = record.kb_entry_id
         if record.vote == FeedbackVote.DISLIKE:
             result_by_entry_id.pop(entry_id, None)
@@ -485,7 +529,11 @@ def _apply_exact_feedback_memory(
             )
             result_by_entry_id[entry_id] = match
 
-        reason = "Feedback memory: exact issue signature was confirmed previously"
+        reason = (
+            "Feedback memory: exact step-aware issue signature was confirmed previously"
+            if entry.step_path and entry_id in step_records_by_entry_id
+            else "Feedback memory: exact issue signature was confirmed previously"
+        )
         match.score = 1.0
         match.match_origin = "feedback_exact"
         match.feedback_vote = record.vote.value
