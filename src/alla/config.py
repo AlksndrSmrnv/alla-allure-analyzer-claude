@@ -146,18 +146,6 @@ class Settings(BaseSettings):
         "как комментарии к тест-кейсам (ALLURE_PUSH_TO_TESTOPS).",
     )
 
-    metrics_enabled: bool = Field(
-        default=False,
-        description="Включить сбор метрик использования HTML-отчётов (ALLURE_METRICS_ENABLED). "
-        "Требует ALLURE_KB_POSTGRES_DSN. Для встраивания JS-трекинга в HTML-отчёты "
-        "нужен также ALLURE_FEEDBACK_SERVER_URL или ALLURE_SERVER_EXTERNAL_URL.",
-    )
-
-    @property
-    def metrics_active(self) -> bool:
-        """Метрики активны если включены и есть PostgreSQL DSN."""
-        return self.metrics_enabled and bool(self.kb_postgres_dsn)
-
     @property
     def kb_active(self) -> bool:
         """KB включена автоматически если задан PostgreSQL DSN."""

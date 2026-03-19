@@ -27,8 +27,6 @@ def generate_html_report(
     result: "AnalysisResult",
     endpoint: str = "",
     feedback_api_url: str = "",
-    metrics_api_url: str = "",
-    report_filename: str | None = None,
 ) -> str:
     """Сгенерировать self-contained HTML-отчёт из AnalysisResult."""
     from alla import __version__
@@ -82,26 +80,15 @@ def generate_html_report(
             f"<script>var CLUSTER_FEEDBACK_CONTEXTS = {safe_data};</script>\n"
         )
 
-    metrics_js = ""
-    if metrics_api_url:
-        metrics_js = _build_metrics_js(
-            metrics_api_url,
-            launch_id=triage.launch_id,
-            project_id=triage.project_id,
-            report_filename=report_filename,
-        )
-
-    # CSP: allow connect-src for feedback and/or metrics API
-    connect_urls = {u for u in (feedback_api_url, metrics_api_url) if u}
     csp_meta = ""
-    if connect_urls:
-        safe_urls = " ".join(_e(u) for u in sorted(connect_urls))
+    if feedback_api_url:
+        safe_url = _e(feedback_api_url)
         csp_meta = (
             f'  <meta http-equiv="Content-Security-Policy" content="'
             f"default-src 'self'; "
             f"script-src 'self' 'unsafe-inline'; "
             f"style-src 'self' 'unsafe-inline'; "
-            f"connect-src 'self' {safe_urls}; "
+            f"connect-src 'self' {safe_url}; "
             f"img-src 'self' data:;"
             f'">\n'
         )
@@ -137,7 +124,7 @@ def generate_html_report(
 
   </div>
 
-{feedback_data_js}{feedback_js}{metrics_js}
+{feedback_data_js}{feedback_js}
 </body>
 </html>"""
 
@@ -2015,135 +2002,4 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "  });\n"
         "})();\n"
         "</script>"
-    )
-
-
-def _build_metrics_js(
-    metrics_api_url: str,
-    *,
-    launch_id: int = 0,
-    project_id: int | None = None,
-    report_filename: str | None = None,
-) -> str:
-    """Return a <script> block for lightweight usage tracking.
-
-    Only called when *metrics_api_url* is non-empty.  All events are
-    best-effort: if the server is unreachable the report works as usual.
-    """
-    import json as _json
-
-    js_url = _json.dumps(metrics_api_url)
-    js_lid = _json.dumps(launch_id)
-    js_pid = _json.dumps(project_id)
-    js_fn = _json.dumps(report_filename)
-    return (
-        "<script>\n"
-        "(function() {\n"
-        "  var API = " + js_url + ";\n"
-        "  if (!API) return;\n"
-        "  var LID = " + js_lid + ";\n"
-        "  var PID = " + js_pid + ";\n"
-        "  var FN = " + js_fn + ";\n"
-        "\n"
-        "  // Random session id (8 hex chars, no cookies/storage)\n"
-        "  var sid;\n"
-        "  try {\n"
-        "    var a = new Uint8Array(4); crypto.getRandomValues(a);\n"
-        "    sid = Array.from(a, function(b) { return b.toString(16).padStart(2,'0'); }).join('');\n"
-        "  } catch(e) { sid = Math.random().toString(16).substr(2,8); }\n"
-        "\n"
-        "  var buf = [];\n"
-        "  var once = {};\n"
-        "\n"
-        "  function evt(name, meta) {\n"
-        "    if (!meta && once[name]) return;\n"
-        "    buf.push({event: name, ts: Math.floor(Date.now()/1000), meta: meta || {}});\n"
-        "    if (!meta) once[name] = true;\n"
-        "  }\n"
-        "\n"
-        "  function flush() {\n"
-        "    if (!buf.length) return;\n"
-        "    var payload = JSON.stringify({\n"
-        "      session_id: sid, launch_id: LID, project_id: PID,\n"
-        "      report_filename: FN, events: buf\n"
-        "    });\n"
-        "    buf = [];\n"
-        "    if (navigator.sendBeacon) {\n"
-        "      navigator.sendBeacon(API + '/api/v1/metrics/events',\n"
-        "        new Blob([payload], {type: 'application/json'}));\n"
-        "    } else {\n"
-        "      fetch(API + '/api/v1/metrics/events', {\n"
-        "        method: 'POST', body: payload,\n"
-        "        headers: {'Content-Type': 'application/json'},\n"
-        "        keepalive: true\n"
-        "      }).catch(function(){});\n"
-        "    }\n"
-        "  }\n"
-        "\n"
-        "  // L1: report opened\n"
-        "  var ref = '';\n"
-        "  try { ref = document.referrer ? new URL(document.referrer).hostname : 'direct'; }\n"
-        "  catch(e) { ref = 'direct'; }\n"
-        "  evt('report_open', {referrer: ref});\n"
-        "\n"
-        "  // L2: report viewed (10s with visible tab)\n"
-        "  var vt = null;\n"
-        "  function startVT() {\n"
-        "    if (once['report_viewed'] || vt) return;\n"
-        "    vt = setTimeout(function() { evt('report_viewed'); vt = null; }, 10000);\n"
-        "  }\n"
-        "  function stopVT() { if (vt) { clearTimeout(vt); vt = null; } }\n"
-        "  if (document.visibilityState === 'visible') startVT();\n"
-        "  document.addEventListener('visibilitychange', function() {\n"
-        "    document.visibilityState === 'visible' ? startVT() : stopVT();\n"
-        "  });\n"
-        "\n"
-        "  // L3: scroll depth\n"
-        "  var scrollSent = {};\n"
-        "  window.addEventListener('scroll', function() {\n"
-        "    var pct = Math.round(100 * (window.scrollY + window.innerHeight) /\n"
-        "      document.documentElement.scrollHeight);\n"
-        "    [50, 90].forEach(function(t) {\n"
-        "      if (pct >= t && !scrollSent[t]) {\n"
-        "        scrollSent[t] = true;\n"
-        "        evt('scroll_depth', {depth_pct: t});\n"
-        "      }\n"
-        "    });\n"
-        "  }, {passive: true});\n"
-        "\n"
-        "  // L3: cluster expand + link click + L4: feedback interaction\n"
-        "  var expandedClusters = {};\n"
-        "  document.addEventListener('click', function(e) {\n"
-        "    var cl = e.target.closest('.cluster');\n"
-        "    if (cl) {\n"
-        "      var num = cl.querySelector('.cluster-num');\n"
-        "      var cid = num ? num.textContent : '';\n"
-        "      if (cid && !expandedClusters[cid]) {\n"
-        "        expandedClusters[cid] = true;\n"
-        "        evt('cluster_expand', {cluster_id: cid});\n"
-        "      }\n"
-        "    }\n"
-        "    var link = e.target.closest('a.test-id');\n"
-        "    if (link) {\n"
-        "      var href = link.getAttribute('href') || '';\n"
-        "      var m = href.match(/errors\\/(\\d+)/);\n"
-        "      evt('link_click', {test_result_id: m ? parseInt(m[1],10) : 0});\n"
-        "    }\n"
-        "    var fb = e.target.closest('.fb-like,.fb-dislike');\n"
-        "    if (fb) {\n"
-        "      evt('feedback_interaction', {\n"
-        "        action_type: fb.classList.contains('fb-like') ? 'like' : 'dislike'\n"
-        "      });\n"
-        "    }\n"
-        "    if (e.target.closest('.create-kb-toggle')) {\n"
-        "      evt('feedback_interaction', {action_type: 'create_kb_open'});\n"
-        "    }\n"
-        "  });\n"
-        "\n"
-        "  // Flush: periodic + beforeunload + early\n"
-        "  setInterval(flush, 15000);\n"
-        "  window.addEventListener('beforeunload', flush);\n"
-        "  setTimeout(flush, 5000);\n"
-        "})();\n"
-        "</script>\n"
     )
