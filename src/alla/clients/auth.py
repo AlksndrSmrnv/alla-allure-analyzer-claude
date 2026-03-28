@@ -1,7 +1,5 @@
 """Менеджер JWT-аутентификации Allure TestOps."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import time
@@ -121,12 +119,10 @@ class AllureAuthManager:
     def invalidate(self, failed_token: str | None = None) -> None:
         """Принудительная повторная аутентификация при следующем запросе.
 
-        Args:
-            failed_token: access_token, вызвавший 401. Если передан,
-                токен сбрасывается только если текущий кэшированный токен
-                совпадает — это предотвращает ситуацию, когда корутин A
-                уже обновил токен, а корутин B сбрасывает свежий токен
-                по устаревшей 401-ошибке.
+        Если ``failed_token`` передан, токен сбрасывается только если текущий
+        кэшированный токен совпадает — это предотвращает ситуацию, когда
+        корутин A уже обновил токен, а корутин B сбрасывает свежий токен
+        по устаревшей 401-ошибке.
         """
         if failed_token is not None and self._token_info is not None:
             if self._token_info.access_token != failed_token:

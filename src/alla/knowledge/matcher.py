@@ -1,7 +1,5 @@
 """Трёхуровневый алгоритм сопоставления ошибок с записями базы знаний."""
 
-from __future__ import annotations
-
 import logging
 import re
 from dataclasses import dataclass
@@ -84,8 +82,8 @@ class TextMatcher:
         self._config = config or MatcherConfig()
         # Pre-trained TF-IDF (заполняется через fit())
         self._fitted_vectorizer: TfidfVectorizer | None = None
-        self._fitted_example_matrix: spmatrix | None = None
-        self._fitted_title_desc_matrix: spmatrix | None = None
+        self._fitted_example_matrix: "spmatrix | None" = None
+        self._fitted_title_desc_matrix: "spmatrix | None" = None
         self._entry_index: dict[str, int] = {}  # entry.id → строка в матрице
 
     # ------------------------------------------------------------------
@@ -98,9 +96,6 @@ class TextMatcher:
         После вызова Tier 3 использует стабильный IDF (не зависящий от query)
         и быстрый transform() вместо fit_transform() на каждый поиск.
         Если entries пустые — сбрасывает предобученное состояние.
-
-        Args:
-            entries: Список записей KB для предобучения.
         """
         if not entries:
             self._fitted_vectorizer = None
@@ -148,16 +143,7 @@ class TextMatcher:
         query_label: str | None = None,
         query_step_path: str | None = None,
     ) -> list[KBMatchResult]:
-        """Найти записи KB, релевантные тексту ошибки.
-
-        Args:
-            error_text: Объединённый текст ошибки (message + trace + logs).
-            entries: Записи KB для сопоставления.
-            query_label: Метка для отладочных логов (cluster_id).
-
-        Returns:
-            Список KBMatchResult, отсортированный по score desc.
-        """
+        """Найти записи KB, релевантные тексту ошибки."""
         if not error_text or not error_text.strip():
             return []
         if not entries:
@@ -286,9 +272,6 @@ class TextMatcher:
         """Проверить, содержится ли error_example целиком в query.
 
         Оба аргумента должны быть уже normalize_text() + _collapse_whitespace().
-
-        Returns:
-            tier1_score если подстрока найдена, иначе None.
         """
         if not example_collapsed:
             return None
@@ -312,13 +295,6 @@ class TextMatcher:
         Сначала пробует точное вхождение. Если не нашло — считает долю слов
         строки, присутствующих среди слов query (whole-word, case-insensitive).
         Строки короче 2 слов не получают fuzzy-совпадение.
-
-        Args:
-            line: Строка из KB error_example (whitespace collapsed, нормализована).
-            query_collapsed: Весь query (whitespace collapsed, нормализован).
-            query_words: Множество слов query (pre-computed, lower-case).
-                Передаётся снаружи, чтобы не пересоздавать на каждой строке.
-            word_threshold: Минимальная доля слов для fuzzy-совпадения.
         """
         if line in query_collapsed:
             return True
@@ -339,14 +315,6 @@ class TextMatcher:
         """Построчное сопоставление: доля строк error_example, найденных в query.
 
         Каждая строка проверяется точно или по word-overlap (fuzzy).
-
-        Args:
-            query_collapsed: normalize_text() + _collapse_whitespace() от query.
-            example_normalized: normalize_text() от error_example (не collapsed).
-
-        Returns:
-            Score ∈ [tier2_score_min, tier2_score_max] если порог пройден,
-            иначе None.
         """
         cfg = self._config
 
@@ -403,10 +371,6 @@ class TextMatcher:
         Если доступен предобученный векторайзер (после fit()), использует
         стабильный IDF корпуса KB и быстрый transform(). Иначе — fit_transform
         на лету (backwards-compatible fallback).
-
-        Returns:
-            Список (local_index, capped_score, example_sim, title_desc_sim)
-            для записей выше min_score.
         """
         cfg = self._config
 
@@ -470,10 +434,6 @@ class TextMatcher:
         Использует только transform(query), без повторного fit.
         Обрабатывает только записи, чьи id есть в _entry_index
         (то есть те, что были в KB при вызове fit()).
-
-        Returns:
-            Список hits при успехе (может быть пустым — нет совпадений),
-            или None при ошибке transform (сигнал для fallback на fit_transform).
         """
         cfg = self._config
         assert self._fitted_vectorizer is not None

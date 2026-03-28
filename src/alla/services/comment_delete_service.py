@@ -1,7 +1,5 @@
 """Сервис удаления комментариев alla из Allure TestOps."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from dataclasses import dataclass
@@ -47,15 +45,7 @@ class CommentDeleteService:
         *,
         dry_run: bool = False,
     ) -> DeleteCommentsResult:
-        """Найти и удалить все комментарии alla для указанных тест-кейсов.
-
-        Args:
-            test_case_ids: Множество ID тест-кейсов для сканирования.
-            dry_run: Если True — только подсчитать, не удалять.
-
-        Returns:
-            DeleteCommentsResult со статистикой.
-        """
+        """Найти и удалить все комментарии alla для указанных тест-кейсов."""
         if not test_case_ids:
             return DeleteCommentsResult(
                 total_test_cases=0,

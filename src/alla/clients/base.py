@@ -1,7 +1,5 @@
 """Абстрактный интерфейс для источников данных о результатах тестов."""
 
-from __future__ import annotations
-
 from typing import Protocol, runtime_checkable
 
 from alla.models.common import PageResponse
@@ -73,28 +71,14 @@ class AttachmentProvider(Protocol):
         self,
         test_result_id: int,
     ) -> list[AttachmentMeta]:
-        """Получить список аттачментов для результата теста.
-
-        Args:
-            test_result_id: ID результата теста.
-
-        Returns:
-            Список AttachmentMeta с метаданными аттачментов.
-        """
+        """Получить список аттачментов для результата теста."""
         ...
 
     async def get_attachment_content(
         self,
         attachment_id: int,
     ) -> bytes:
-        """Скачать бинарное содержимое аттачмента.
-
-        Args:
-            attachment_id: ID аттачмента (поле ``id`` из AttachmentMeta).
-
-        Returns:
-            Бинарное содержимое файла аттачмента.
-        """
+        """Скачать бинарное содержимое аттачмента."""
         ...
 
 
@@ -113,12 +97,7 @@ class TestResultsUpdater(Protocol):
         test_case_id: int,
         body: str,
     ) -> None:
-        """Добавить комментарий к тест-кейсу.
-
-        Args:
-            test_case_id: ID тест-кейса (не test_result_id).
-            body: Текст комментария.
-        """
+        """Добавить комментарий к тест-кейсу."""
         ...
 
 
@@ -136,22 +115,11 @@ class CommentManager(Protocol):
     """
 
     async def get_comments(self, test_case_id: int) -> list[CommentResponse]:
-        """Получить все комментарии для тест-кейса.
-
-        Args:
-            test_case_id: ID тест-кейса.
-
-        Returns:
-            Список комментариев.
-        """
+        """Получить все комментарии для тест-кейса."""
         ...
 
     async def delete_comment(self, comment_id: int) -> None:
-        """Удалить комментарий по ID.
-
-        Args:
-            comment_id: ID комментария.
-        """
+        """Удалить комментарий по ID."""
         ...
 
 
@@ -191,10 +159,5 @@ class LaunchLinksUpdater(Protocol):
         """Добавить ссылку к массиву links запуска.
 
         Алгоритм: GET текущий JSON запуска → добавить ссылку → PATCH.
-
-        Args:
-            launch_id: ID запуска в Allure TestOps.
-            name: Отображаемое имя ссылки.
-            url: URL ссылки.
         """
         ...

@@ -1,7 +1,5 @@
 """HTTP-сервер alla — REST API для анализа запусков Allure TestOps."""
 
-from __future__ import annotations
-
 import logging
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, TypeVar, cast

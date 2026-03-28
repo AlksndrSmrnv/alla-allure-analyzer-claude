@@ -1,7 +1,5 @@
 """Сервис записи рекомендаций KB обратно в Allure TestOps через комментарии."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from dataclasses import dataclass
@@ -32,15 +30,7 @@ def format_kb_description(
     *,
     step_path: str | None = None,
 ) -> str:
-    """Отформатировать KB-совпадения в текст комментария.
-
-    Args:
-        matches: Список KB-совпадений для одного кластера.
-        step_path: Breadcrumb-путь до упавшего шага (опционально).
-
-    Returns:
-        Отформатированный текст комментария.
-    """
+    """Отформатировать KB-совпадения в текст комментария."""
     if not matches:
         return ""
 
@@ -94,16 +84,7 @@ class KBPushService:
         kb_results: dict[str, list[KBMatchResult]],
         triage_report: TriageReport,
     ) -> KBPushResult:
-        """Добавить комментарии для всех тест-кейсов в кластерах с KB-совпадениями.
-
-        Args:
-            clustering_report: Отчёт кластеризации.
-            kb_results: cluster_id → list[KBMatchResult].
-            triage_report: Отчёт триажа (для получения test_case_id).
-
-        Returns:
-            KBPushResult со статистикой обновлений.
-        """
+        """Добавить комментарии для всех тест-кейсов в кластерах с KB-совпадениями."""
         # Маппинг test_result_id → test_case_id
         test_case_ids: dict[int, int | None] = {
             t.test_result_id: t.test_case_id for t in triage_report.failed_tests

@@ -1,7 +1,5 @@
 """HTTP-клиент для Langflow REST API."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from typing import Any
@@ -50,12 +48,6 @@ class LangflowClient:
 
         Retry: при 429 / 502-504 / сетевых ошибках — exponential backoff
         (delay = base * 2^attempt), до ``max_retries`` повторов.
-
-        Returns:
-            Текстовый ответ LLM.
-
-        Raises:
-            LangflowApiError: При HTTP-ошибках или неожиданном формате ответа.
         """
         url = f"{self._base_url}/langflow/api/v1/run/{self._flow_id}"
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -152,7 +144,7 @@ class LangflowClient:
         """Освободить ресурсы HTTP-клиента."""
         await self._http.aclose()
 
-    async def __aenter__(self) -> LangflowClient:
+    async def __aenter__(self) -> "LangflowClient":
         return self
 
     async def __aexit__(self, *args: object) -> None:

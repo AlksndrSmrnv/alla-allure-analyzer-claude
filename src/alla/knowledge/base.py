@@ -1,7 +1,5 @@
 """Абстрактный интерфейс для провайдеров базы знаний."""
 
-from __future__ import annotations
-
 from typing import Protocol, runtime_checkable
 
 from alla.knowledge.models import KBEntry, KBMatchResult
@@ -23,13 +21,7 @@ class KnowledgeBaseProvider(Protocol):
         query_label: str | None = None,
         query_step_path: str | None = None,
     ) -> list[KBMatchResult]:
-        """Найти записи KB, релевантные тексту ошибки.
-
-        Args:
-            error_text: Текст ошибки для поиска (message + trace/log).
-            query_label: Метка для логирования.
-            query_step_path: Путь шага текущего кластера.
-        """
+        """Найти записи KB, релевантные тексту ошибки."""
         ...
 
     def get_all_entries(self) -> list[KBEntry]:

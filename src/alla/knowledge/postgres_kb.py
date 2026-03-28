@@ -1,7 +1,5 @@
 """PostgreSQL-реализация базы знаний."""
 
-from __future__ import annotations
-
 import logging
 
 import psycopg  # psycopg[binary] — обязательная зависимость (см. pyproject.toml)
@@ -29,15 +27,6 @@ class PostgresKnowledgeBase:
         matcher_config: MatcherConfig | None = None,
         project_id: int | None = None,
     ) -> None:
-        """
-        Args:
-            dsn: Строка подключения PostgreSQL в формате libpq / URI.
-                 Пример: "postgresql://user:pass@host:5432/dbname"
-            matcher_config: Конфигурация TextMatcher. None → defaults.
-            project_id: ID проекта Allure TestOps. Если задан, загружаются
-                        глобальные записи (project_id IS NULL) + записи этого
-                        проекта (project_id = N). Если None — только глобальные.
-        """
         self._dsn = dsn
         self._project_id = project_id
         self._matcher = TextMatcher(config=matcher_config)
@@ -46,11 +35,7 @@ class PostgresKnowledgeBase:
         self._load()
 
     def _load(self) -> None:
-        """Загрузить записи из PostgreSQL в память.
-
-        Raises:
-            KnowledgeBaseError: При ошибке подключения или ошибке запроса.
-        """
+        """Загрузить записи из PostgreSQL в память."""
         if self._project_id is not None:
             query = """
                 SELECT entry_id, id, title, description, error_example,
@@ -162,13 +147,7 @@ class PostgresKnowledgeBase:
         query_label: str | None = None,
         query_step_path: str | None = None,
     ) -> list[KBMatchResult]:
-        """Найти записи KB, релевантные тексту ошибки.
-
-        Args:
-            error_text: Текст ошибки для поиска (message + trace/log).
-            query_label: Метка для логирования.
-            query_step_path: Путь шага текущего кластера.
-        """
+        """Найти записи KB, релевантные тексту ошибки."""
         return self._matcher.match(
             error_text,
             self._entries,

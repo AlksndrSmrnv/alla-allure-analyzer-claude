@@ -1,7 +1,5 @@
 """Сервис LLM-анализа кластеров ошибок через Langflow."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from alla.clients.base import TestResultsUpdater
@@ -98,10 +96,6 @@ def build_cluster_prompt(
 
     Включает: label, member_count, example_message, full_trace (или snippet),
     опционально log_snippet и совпадения с базой знаний для контекста.
-
-    Args:
-        kb_query_provenance: (message_len, trace_len, log_len) — длины сегментов
-            запроса к базе знаний для указания LLM, по каким данным было найдено совпадение.
     """
     parts: list[str] = [
         "Ты — инженер по анализу сбоев автотестов.",
@@ -417,17 +411,7 @@ class LLMService:
         failed_tests: list[FailedTestSummary] | None = None,
         kb_provenance: dict[str, tuple[int, int, int]] | None = None,
     ) -> LLMAnalysisResult:
-        """Проанализировать все кластеры через LLM.
-
-        Args:
-            clustering_report: Отчёт кластеризации.
-            kb_results: Опционально — совпадения с базой знаний для обогащения промпта.
-            failed_tests: Опционально — список тестов для извлечения log_snippet.
-            kb_provenance: Опционально — (msg_len, trace_len, log_len) per cluster.
-
-        Returns:
-            LLMAnalysisResult со всеми анализами.
-        """
+        """Проанализировать все кластеры через LLM."""
         if not clustering_report.clusters:
             return LLMAnalysisResult(
                 total_clusters=0,
@@ -560,14 +544,6 @@ class LLMService:
 
         Строит промпт из данных всех кластеров (и per-cluster анализов, если
         они доступны) и делает один LLM-вызов для получения единой сводки.
-
-        Args:
-            clustering_report: Отчёт кластеризации.
-            triage_report: Отчёт триажа (метаданные запуска).
-            llm_result: Опционально — per-cluster анализы для обогащения промпта.
-
-        Returns:
-            LLMLaunchSummary с текстом итогового отчёта.
         """
         prompt = build_launch_summary_prompt(clustering_report, triage_report, llm_result)
         logger.info(
@@ -595,16 +571,6 @@ async def push_llm_results(
 
     Паттерн повторяет KBPushService.push_kb_results():
     дедупликация по test_case_id, semaphore+gather, per-test error resilience.
-
-    Args:
-        clustering_report: Отчёт кластеризации.
-        llm_result: Результаты LLM-анализа.
-        triage_report: Отчёт триажа (для получения test_case_id).
-        updater: Провайдер для записи комментариев.
-        concurrency: Макс. параллельных запросов.
-
-    Returns:
-        LLMPushResult со статистикой обновлений.
     """
     test_case_ids: dict[int, int | None] = {
         t.test_result_id: t.test_case_id for t in triage_report.failed_tests

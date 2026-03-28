@@ -1,7 +1,5 @@
 """Pydantic-модели для результатов кластеризации ошибок тестов."""
 
-from __future__ import annotations
-
 from pydantic import BaseModel, Field
 
 

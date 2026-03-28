@@ -1,7 +1,5 @@
 """Pydantic-модели для базы знаний (KB) об известных ошибках."""
 
-from __future__ import annotations
-
 from enum import Enum
 from typing import Literal
 

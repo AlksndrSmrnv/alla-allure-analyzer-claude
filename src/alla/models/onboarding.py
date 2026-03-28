@@ -1,7 +1,5 @@
 """Модели данных для onboarding состояния проекта."""
 
-from __future__ import annotations
-
 from enum import Enum
 
 from pydantic import BaseModel, Field
