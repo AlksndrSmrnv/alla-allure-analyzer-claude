@@ -1,7 +1,5 @@
 """Реализация HTTP-клиента Allure TestOps."""
 
-from __future__ import annotations
-
 import logging
 from typing import Any
 
@@ -213,13 +211,6 @@ class AllureTestOpsClient:
         """Добавить комментарий к тест-кейсу.
 
         ``POST /api/comment``
-
-        Args:
-            test_case_id: ID тест-кейса (не test_result_id).
-            body: Текст комментария.
-
-        Raises:
-            AllureApiError: При HTTP-ошибках.
         """
         payload = {"testCaseId": test_case_id, "body": body}
         logger.debug(
@@ -246,14 +237,6 @@ class AllureTestOpsClient:
         1. ``GET /api/launch/{id}`` — получить текущий JSON запуска.
         2. Добавить новую ссылку к существующему массиву ``links``.
         3. ``PATCH /api/launch/{id}`` — отправить обновлённый JSON.
-
-        Args:
-            launch_id: ID запуска в Allure TestOps.
-            name: Отображаемое имя ссылки.
-            url: URL ссылки.
-
-        Raises:
-            AllureApiError: При HTTP-ошибках или неожиданном формате ответа.
         """
         data = await self._request("GET", f"{self.LAUNCH_ENDPOINT}/{launch_id}")
         if not isinstance(data, dict):
@@ -288,15 +271,6 @@ class AllureTestOpsClient:
         """Получить все комментарии для тест-кейса.
 
         ``GET /api/comment?testCaseId={id}&size=1000``
-
-        Args:
-            test_case_id: ID тест-кейса.
-
-        Returns:
-            Список CommentResponse.
-
-        Raises:
-            AllureApiError: При HTTP-ошибках.
         """
         params = {
             "testCaseId": test_case_id,
@@ -319,12 +293,6 @@ class AllureTestOpsClient:
         """Удалить комментарий по ID.
 
         ``DELETE /api/comment/{id}``
-
-        Args:
-            comment_id: ID комментария.
-
-        Raises:
-            AllureApiError: При HTTP-ошибках.
         """
         logger.debug("Удаление комментария %d", comment_id)
         await self._request(
@@ -343,15 +311,6 @@ class AllureTestOpsClient:
         """Получить список аттачментов для результата теста.
 
         ``GET /api/testresult/attachment?testResultId={id}&size=1000``
-
-        Args:
-            test_result_id: ID результата теста.
-
-        Returns:
-            Список AttachmentMeta с метаданными аттачментов.
-
-        Raises:
-            AllureApiError: При HTTP-ошибках.
         """
         params = {
             "testResultId": test_result_id,
@@ -380,15 +339,6 @@ class AllureTestOpsClient:
         """Скачать бинарное содержимое аттачмента.
 
         ``GET /api/testresult/attachment/{id}/content``
-
-        Args:
-            attachment_id: ID аттачмента (поле ``id`` из AttachmentMeta).
-
-        Returns:
-            Сырые байты содержимого аттачмента.
-
-        Raises:
-            AllureApiError: При HTTP-ошибках.
         """
         logger.debug("Скачивание аттачмента %d", attachment_id)
         return await self._request_raw(
@@ -409,9 +359,6 @@ class AllureTestOpsClient:
 
         Используется для скачивания аттачментов (бинарные файлы, текстовые логи).
         Содержит тот же retry-на-401 механизм, что и ``_request()``.
-
-        Raises:
-            AllureApiError: При HTTP-ошибках.
         """
         url = f"{self._endpoint}{path}"
         auth_header = await self._auth.get_auth_header()
@@ -464,10 +411,6 @@ class AllureTestOpsClient:
         Возвращает десериализованный JSON (dict или list в зависимости от эндпоинта).
         Если ``expect_json=False``, пустое тело ответа возвращается как ``None``
         (для write-операций, которые могут вернуть 204 No Content).
-
-        Raises:
-            AllureApiError: При HTTP-ошибках в ответе.
-            AuthenticationError: Если повторная аутентификация тоже не удалась.
         """
         url = f"{self._endpoint}{path}"
         auth_header = await self._auth.get_auth_header()
