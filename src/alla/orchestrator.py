@@ -1,7 +1,5 @@
 """Общая логика анализа запуска — используется и CLI, и HTTP-сервером."""
 
-from __future__ import annotations
-
 import logging
 from dataclasses import dataclass, field
 
@@ -82,20 +80,6 @@ async def analyze_launch(
     """Запустить полный pipeline анализа для одного запуска.
 
     Цепочка: триаж → логи → кластеризация → KB-поиск → LLM-анализ → LLM-push → KB-push (fallback).
-
-    Args:
-        launch_id: ID запуска в Allure TestOps.
-        client: Провайдер для чтения результатов тестов.
-        settings: Настройки приложения.
-        updater: Провайдер для записи (комментарии). Если None — KB push
-            не выполняется вне зависимости от настроек.
-
-    Returns:
-        AnalysisResult с результатами всех этапов.
-
-    Raises:
-        AllaError: При ошибках API, аутентификации, пагинации.
-        KnowledgeBaseError: При ошибке инициализации базы знаний.
     """
     from alla.services.triage_service import TriageService
 
@@ -554,14 +538,6 @@ def _build_kb_query_text(
     Trace используется только fallback'ом, когда лог отсутствует. Лог и trace
     взаимоисключающие в KB query, чтобы сохранить exact substring match (Tier 1)
     с KB-записями, созданными из report form (error_example = message + log).
-
-    Args:
-        cluster: Кластер падений.
-        test_by_id: Словарь test_result_id → FailedTestSummary.
-        include_trace: Разрешать ли fallback на Allure-trace при отсутствии лога.
-
-    Returns:
-        (combined_text, message_len, trace_len, log_len)
     """
     message, trace, log_snippet = get_cluster_feedback_sources(cluster, test_by_id)
     if not include_trace:

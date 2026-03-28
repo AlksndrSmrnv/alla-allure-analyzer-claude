@@ -1,7 +1,5 @@
 """Точка входа CLI для агента триажа alla."""
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import logging

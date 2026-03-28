@@ -5,11 +5,7 @@ import sys
 
 
 def setup_logging(level: str = "INFO") -> None:
-    """Настроить корневой логгер со структурированным форматом.
-
-    Args:
-        level: Имя уровня логирования (DEBUG, INFO, WARNING, ERROR).
-    """
+    """Настроить корневой логгер со структурированным форматом."""
     numeric_level = getattr(logging, level.upper(), logging.INFO)
 
     handler = logging.StreamHandler(sys.stderr)

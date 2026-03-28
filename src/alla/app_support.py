@@ -1,7 +1,5 @@
 """Shared helpers for CLI and HTTP entrypoints."""
 
-from __future__ import annotations
-
 import logging
 from dataclasses import asdict
 from pathlib import Path
