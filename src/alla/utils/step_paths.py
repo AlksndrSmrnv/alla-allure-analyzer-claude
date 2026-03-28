@@ -1,7 +1,5 @@
 """Вспомогательные функции для нормализации и сравнения путей шагов."""
 
-from __future__ import annotations
-
 import re
 
 from alla.utils.text_normalization import normalize_text
