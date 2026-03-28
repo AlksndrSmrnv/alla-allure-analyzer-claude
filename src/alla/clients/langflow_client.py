@@ -144,7 +144,7 @@ class LangflowClient:
         """Освободить ресурсы HTTP-клиента."""
         await self._http.aclose()
 
-    async def __aenter__(self) -> LangflowClient:
+    async def __aenter__(self) -> "LangflowClient":
         return self
 
     async def __aexit__(self, *args: object) -> None:

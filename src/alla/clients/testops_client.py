@@ -479,7 +479,7 @@ class AllureTestOpsClient:
         await self._http.aclose()
         await self._auth.close()
 
-    async def __aenter__(self) -> AllureTestOpsClient:
+    async def __aenter__(self) -> "AllureTestOpsClient":
         return self
 
     async def __aexit__(self, *args: object) -> None:
