@@ -72,24 +72,19 @@ src/alla/
 | `ALLURE_REQUEST_TIMEOUT` | нет | `30` | Таймаут HTTP-запросов (сек) |
 | `ALLURE_PAGE_SIZE` | нет | `100` | Результатов на страницу |
 | `ALLURE_MAX_PAGES` | нет | `50` | Защита от бесконечной пагинации |
-| `ALLURE_CLUSTERING_ENABLED` | нет | `true` | Включить кластеризацию |
 | `ALLURE_CLUSTERING_THRESHOLD` | нет | `0.60` | Порог схожести (0–1). Ниже = агрессивнее |
-| `ALLURE_KB_ENABLED` | нет | `false` | Включить базу знаний |
-| `ALLURE_KB_POSTGRES_DSN` | нет | `""` | DSN PostgreSQL для KB |
+| `ALLURE_KB_POSTGRES_DSN` | нет | `""` | DSN PostgreSQL для базы знаний. **KB включается автоматически когда задан.** |
 | `ALLURE_KB_MIN_SCORE` | нет | `0.15` | Мин. score KB-совпадения |
 | `ALLURE_KB_MAX_RESULTS` | нет | `5` | Макс. KB-совпадений на кластер |
-| `ALLURE_KB_FEEDBACK_ENABLED` | нет | `false` | Система обратной связи (like/dislike) |
 | `ALLURE_PUSH_TO_TESTOPS` | нет | `true` | Записывать результаты в TestOps |
-| `ALLURE_LLM_ENABLED` | нет | `false` | Включить LLM-анализ через Langflow |
-| `ALLURE_LANGFLOW_BASE_URL` | нет | `""` | Базовый URL Langflow |
+| `ALLURE_LANGFLOW_BASE_URL` | нет | `""` | Базовый URL Langflow. **LLM включается автоматически когда заданы `BASE_URL` + `FLOW_ID`.** |
 | `ALLURE_LANGFLOW_FLOW_ID` | нет | `""` | ID flow в Langflow |
 | `ALLURE_LANGFLOW_API_KEY` | нет | `""` | API-ключ Langflow |
 | `ALLURE_LLM_TIMEOUT` | нет | `120` | Таймаут LLM-запроса (сек) |
 | `ALLURE_LLM_CONCURRENCY` | нет | `3` | Параллельных запросов к Langflow |
 | `ALLURE_LLM_MAX_RETRIES` | нет | `3` | Retry при 429/503 |
 | `ALLURE_LLM_RETRY_BASE_DELAY` | нет | `1.0` | Базовая задержка backoff (сек) |
-| `ALLURE_LOGS_ENABLED` | нет | `false` | Скачивать логи из вложений тестов |
-| `ALLURE_LOGS_CLUSTERING_WEIGHT` | нет | `0` | Вес логов при кластеризации |
+| `ALLURE_LOGS_CLUSTERING_WEIGHT` | нет | `0.15` | Вес лог-канала в кластеризации. Логи скачиваются автоматически если есть вложения `text/plain`. |
 | `ALLURE_REPORTS_DIR` | нет | `""` | Директория для HTML-отчётов |
 | `ALLURE_REPORTS_POSTGRES` | нет | `false` | Хранить отчёты в PostgreSQL |
 | `ALLURE_SERVER_HOST` | нет | `0.0.0.0` | Хост HTTP-сервера |
