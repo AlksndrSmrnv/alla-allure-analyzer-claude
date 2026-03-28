@@ -16,8 +16,6 @@
     CREATE INDEX IF NOT EXISTS idx_report_launch_id ON alla.report(launch_id);
 """
 
-from __future__ import annotations
-
 import logging
 
 import psycopg
