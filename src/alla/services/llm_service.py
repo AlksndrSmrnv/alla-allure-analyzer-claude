@@ -96,10 +96,6 @@ def build_cluster_prompt(
 
     Включает: label, member_count, example_message, full_trace (или snippet),
     опционально log_snippet и совпадения с базой знаний для контекста.
-
-    Args:
-        kb_query_provenance: (message_len, trace_len, log_len) — длины сегментов
-            запроса к базе знаний для указания LLM, по каким данным было найдено совпадение.
     """
     parts: list[str] = [
         "Ты — инженер по анализу сбоев автотестов.",
