@@ -19,8 +19,6 @@
 5. Agglomerative clustering (complete linkage) по итоговой distance.
 """
 
-from __future__ import annotations
-
 import hashlib
 import logging
 from dataclasses import dataclass

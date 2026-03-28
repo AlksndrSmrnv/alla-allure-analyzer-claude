@@ -5,8 +5,6 @@
 и сохраняет результат в ``FailedTestSummary.log_snippet``.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import re
@@ -48,9 +46,6 @@ def _extract_error_blocks(log_text: str) -> str:
        нового лог-сообщения.
     3. Если следующая строка начинается с timestamp, но тоже содержит
        ``[ERROR]``, она становится началом нового ERROR-блока.
-
-    Returns:
-        Объединённые ERROR-блоки. Пустая строка, если ни одного не найдено.
     """
     lines = log_text.splitlines()
     blocks: list[str] = []

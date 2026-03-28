@@ -1,7 +1,5 @@
 """Сервис триажа: получение результатов тестов, фильтрация падений, формирование сводки."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from collections import Counter
