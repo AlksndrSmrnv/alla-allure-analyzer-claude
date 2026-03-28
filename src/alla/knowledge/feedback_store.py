@@ -1,10 +1,6 @@
 """Абстрактный интерфейс для хранилища обратной связи KB."""
 
-from __future__ import annotations
-
-from typing import Protocol, runtime_checkable
-
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from alla.knowledge.feedback_models import (
     FeedbackRecord,
@@ -34,16 +30,7 @@ class FeedbackStore(Protocol):
         self,
         items: list[tuple[int, str, int, str]],
     ) -> dict[str, tuple[FeedbackVote, int | None]]:
-        """Найти exact-memory голос для каждой четверки (entry_id, hash, version, key).
-
-        Args:
-            items: Список ``(kb_entry_id, issue_signature_hash, version, resolve_key)``.
-                resolve_key — произвольный ключ для идентификации элемента
-                в ответе (например ``"entry_id:cluster_id"``).
-
-        Returns:
-            ``{resolve_key: (vote, feedback_id)}`` для exact feedback hits.
-        """
+        """Найти exact-memory голос для каждой четверки (entry_id, hash, version, key)."""
         ...
 
     def get_feedback_for_signature(
@@ -55,22 +42,9 @@ class FeedbackStore(Protocol):
         ...
 
     def create_kb_entry(self, entry: KBEntry, project_id: int | None) -> int | None:
-        """Создать новую запись KB в PostgreSQL.
-
-        Returns:
-            entry_id созданной записи, или None при конфликте slug.
-        """
+        """Создать новую запись KB в PostgreSQL."""
         ...
 
     def update_kb_entry(self, entry_id: int, fields: dict[str, Any]) -> bool:
-        """Обновить существующую запись базы знаний.
-
-        Args:
-            entry_id: Surrogate PK записи (alla.kb_entry.entry_id).
-            fields: Словарь полей для обновления. Допустимые ключи:
-                title, description, error_example, category, resolution_steps.
-
-        Returns:
-            True если запись найдена и обновлена, False если entry_id не существует.
-        """
+        """Обновить существующую запись базы знаний."""
         ...

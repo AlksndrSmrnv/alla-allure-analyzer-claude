@@ -1,7 +1,5 @@
 """Построение стабильной сигнатуры проблемы для exact feedback memory."""
 
-from __future__ import annotations
-
 import hashlib
 import re
 from dataclasses import dataclass

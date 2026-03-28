@@ -1,7 +1,5 @@
 """PostgreSQL-реализация хранилища exact feedback memory."""
 
-from __future__ import annotations
-
 import logging
 from typing import Any
 
