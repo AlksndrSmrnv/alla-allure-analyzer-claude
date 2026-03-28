@@ -44,9 +44,9 @@ class AnalysisResult:
     kb_results: dict[str, list[KBMatchResult]] = field(default_factory=dict)
     kb_push_result: KBPushResult | None = None
     kb_provenance: dict[str, tuple[int, int, int]] = field(default_factory=dict)
-    llm_result: LLMAnalysisResult | None = None
-    llm_push_result: LLMPushResult | None = None
-    llm_launch_summary: LLMLaunchSummary | None = None
+    llm_result: "LLMAnalysisResult | None" = None
+    llm_push_result: "LLMPushResult | None" = None
+    llm_launch_summary: "LLMLaunchSummary | None" = None
     feedback_contexts: dict[str, FeedbackClusterContext] = field(default_factory=dict)
     onboarding: OnboardingState = field(default_factory=OnboardingState)
 
@@ -248,8 +248,8 @@ def _run_kb_stage(
 
 def _lookup_cluster_kb(
     cluster: FailureCluster,
-    kb: KnowledgeBaseProvider,
-    feedback_store: FeedbackStore,
+    kb: "KnowledgeBaseProvider",
+    feedback_store: "FeedbackStore",
     entries_by_entry_id: dict[int, "KBEntry"],
     test_by_id: dict[int, FailedTestSummary],
     settings: Settings,
@@ -653,7 +653,7 @@ def _get_or_create_kb(
     project_id: int | None = None,
     *,
     kb_postgres_dsn: str = "",
-) -> KnowledgeBaseProvider:
+) -> "KnowledgeBaseProvider":
     """Создать новый экземпляр KB (PostgreSQL бэкенд).
 
     Каждый вызов создаёт свежий экземпляр, чтобы подхватывать
@@ -671,7 +671,7 @@ def _get_or_create_kb(
     return kb
 
 
-def _get_feedback_store(*, kb_postgres_dsn: str) -> FeedbackStore:
+def _get_feedback_store(*, kb_postgres_dsn: str) -> "FeedbackStore":
     """Создать exact feedback store для текущего запуска анализа."""
     from alla.knowledge.postgres_feedback import PostgresFeedbackStore
 
