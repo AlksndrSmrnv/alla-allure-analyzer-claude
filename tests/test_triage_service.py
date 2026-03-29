@@ -134,3 +134,51 @@ async def test_analyze_launch_ignores_detail_fetch_error(
     assert client.detail_calls == 1
     assert report.failed_tests[0].status_message is None
     assert report.failed_tests[0].status_trace is None
+
+
+# ---------------------------------------------------------------------------
+# AllureTestOpsClient.find_launch_by_name — page_size
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_find_launch_by_name_uses_configured_page_size(monkeypatch, tmp_path) -> None:
+    """find_launch_by_name использует self._page_size, а не хардкод 50."""
+    import httpx
+    from unittest.mock import AsyncMock, MagicMock
+    from alla.clients.auth import AllureAuthManager
+    from alla.clients.testops_client import AllureTestOpsClient
+
+    settings = _make_settings(monkeypatch, tmp_path)
+    # Pydantic-settings — используем model_copy чтобы задать кастомный page_size
+    settings = settings.model_copy(update={"page_size": 25})
+
+    auth = MagicMock(spec=AllureAuthManager)
+    auth.get_auth_header = AsyncMock(return_value={"Authorization": "Bearer tok"})
+
+    client = AllureTestOpsClient(settings, auth)
+
+    last_params: dict = {}
+
+    class _FakeHttp:
+        async def request(self, method, url, *, params=None, json=None, headers=None):
+            nonlocal last_params
+            last_params = dict(params or {})
+            resp = MagicMock(spec=httpx.Response)
+            resp.status_code = 200
+            resp.content = b'{"content": [{"id": 42, "name": "my-launch"}]}'
+            resp.json.return_value = {"content": [{"id": 42, "name": "my-launch"}]}
+            return resp
+
+        async def aclose(self) -> None:
+            pass
+
+    client._http = _FakeHttp()
+
+    result = await client.find_launch_by_name("my-launch")
+
+    assert result == 42
+    assert last_params.get("size") == 25, (
+        f"Ожидался size=25 (page_size из settings), получен size={last_params.get('size')}"
+    )
+    await client.close()
