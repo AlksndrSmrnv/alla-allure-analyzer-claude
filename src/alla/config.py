@@ -57,7 +57,11 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="Уровень логирования")
     ssl_verify: bool = Field(default=True, description="Проверка SSL-сертификатов (отключить для корпоративных прокси)")
 
-    clustering_threshold: float = Field(default=0.60, description="Порог схожести для группировки ошибок в кластеры (0.0-1.0)")
+    clustering_threshold: float = Field(
+        default=0.60,
+        ge=0.0, le=1.0,
+        description="Порог схожести для группировки ошибок в кластеры (0.0-1.0)",
+    )
 
     kb_min_score: float = Field(
         default=0.15,
@@ -95,6 +99,7 @@ class Settings(BaseSettings):
     )
     logs_clustering_weight: float = Field(
         default=0.15,
+        ge=0.0, le=1.0,
         description="Вес лог-канала в кластеризации. Лог участвует в сравнении когда доступен; при отсутствии лога вес перераспределяется на message",
     )
 
