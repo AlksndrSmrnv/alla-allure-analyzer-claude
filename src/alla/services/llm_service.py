@@ -541,8 +541,6 @@ class LLMService:
             analyzed_count=analyzed,
             failed_count=failed,
             skipped_count=skipped,
-            # Поле оставлено в API/CLI ответах для обратной совместимости.
-            kb_bypass_count=0,
             cluster_analyses=analyses,
         )
 
