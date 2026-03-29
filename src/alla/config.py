@@ -119,6 +119,21 @@ class Settings(BaseSettings):
         default=1.0, ge=0.1,
         description="Базовая задержка в секундах для exponential backoff (delay = base * 2^attempt)",
     )
+    llm_prompt_message_max_chars: int = Field(
+        default=2000,
+        ge=100,
+        description="Макс. символов сообщения об ошибке в LLM-промпте (ALLURE_LLM_PROMPT_MESSAGE_MAX_CHARS)",
+    )
+    llm_prompt_trace_max_chars: int = Field(
+        default=400,
+        ge=50,
+        description="Макс. символов стек-трейса в LLM-промпте (ALLURE_LLM_PROMPT_TRACE_MAX_CHARS)",
+    )
+    llm_prompt_log_max_chars: int = Field(
+        default=8000,
+        ge=100,
+        description="Макс. символов лога в LLM-промпте (ALLURE_LLM_PROMPT_LOG_MAX_CHARS)",
+    )
 
     report_url: str = Field(
         default="",
