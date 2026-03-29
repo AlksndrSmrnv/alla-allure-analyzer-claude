@@ -38,8 +38,6 @@ from alla.utils.step_paths import normalize_step_path
 from alla.utils.text_normalization import normalize_text
 
 logger = logging.getLogger(__name__)
-_STEP_PATH_MISMATCH_PENALTY = 0.45
-_STEP_PATH_LOG_REDUCTION = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +62,9 @@ class ClusteringConfig:
 
     max_label_length: int = 120
     trace_snippet_lines: int = 5
+
+    step_path_mismatch_penalty: float = 0.45
+    step_path_log_reduction: float = 0.5
 
     @property
     def distance_threshold(self) -> float:
@@ -378,9 +379,9 @@ class ClusteringService:
                             pair_sim = log_sim[i, j]
 
                 if step_sim is not None and has_step[i] and has_step[j]:
-                    step_penalty = _STEP_PATH_MISMATCH_PENALTY
+                    step_penalty = self._config.step_path_mismatch_penalty
                     if has_log[i] and has_log[j]:
-                        step_penalty *= _STEP_PATH_LOG_REDUCTION
+                        step_penalty *= self._config.step_path_log_reduction
                     pair_sim = max(
                         0.0,
                         pair_sim - step_penalty * (1.0 - float(step_sim[i, j])),
