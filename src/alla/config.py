@@ -57,7 +57,11 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="Уровень логирования")
     ssl_verify: bool = Field(default=True, description="Проверка SSL-сертификатов (отключить для корпоративных прокси)")
 
-    clustering_threshold: float = Field(default=0.60, description="Порог схожести для группировки ошибок в кластеры (0.0-1.0)")
+    clustering_threshold: float = Field(
+        default=0.60,
+        ge=0.0, le=1.0,
+        description="Порог схожести для группировки ошибок в кластеры (0.0-1.0)",
+    )
 
     kb_min_score: float = Field(
         default=0.15,
@@ -95,6 +99,7 @@ class Settings(BaseSettings):
     )
     logs_clustering_weight: float = Field(
         default=0.15,
+        ge=0.0, le=1.0,
         description="Вес лог-канала в кластеризации. Лог участвует в сравнении когда доступен; при отсутствии лога вес перераспределяется на message",
     )
 
@@ -113,6 +118,21 @@ class Settings(BaseSettings):
     llm_retry_base_delay: float = Field(
         default=1.0, ge=0.1,
         description="Базовая задержка в секундах для exponential backoff (delay = base * 2^attempt)",
+    )
+    llm_prompt_message_max_chars: int = Field(
+        default=2000,
+        ge=100,
+        description="Макс. символов сообщения об ошибке в LLM-промпте (ALLURE_LLM_PROMPT_MESSAGE_MAX_CHARS)",
+    )
+    llm_prompt_trace_max_chars: int = Field(
+        default=400,
+        ge=50,
+        description="Макс. символов стек-трейса в LLM-промпте (ALLURE_LLM_PROMPT_TRACE_MAX_CHARS)",
+    )
+    llm_prompt_log_max_chars: int = Field(
+        default=8000,
+        ge=100,
+        description="Макс. символов лога в LLM-промпте (ALLURE_LLM_PROMPT_LOG_MAX_CHARS)",
     )
 
     report_url: str = Field(

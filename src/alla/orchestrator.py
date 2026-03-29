@@ -352,6 +352,9 @@ async def _run_llm_stage(
         llm_service = LLMService(
             langflow,
             concurrency=settings.llm_concurrency,
+            message_max_chars=settings.llm_prompt_message_max_chars,
+            trace_max_chars=settings.llm_prompt_trace_max_chars,
+            log_max_chars=settings.llm_prompt_log_max_chars,
         )
         try:
             llm_result = await llm_service.analyze_clusters(

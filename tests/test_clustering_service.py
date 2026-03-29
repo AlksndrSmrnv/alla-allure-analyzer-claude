@@ -357,3 +357,14 @@ def test_same_message_with_various_date_formats_is_grouped() -> None:
 
     assert report.cluster_count == 1
     assert sorted(report.clusters[0].member_test_ids) == [50, 51, 52]
+
+
+def test_clustering_config_exposes_step_path_penalty_fields() -> None:
+    """ClusteringConfig содержит поля step_path_mismatch_penalty и step_path_log_reduction."""
+    config = ClusteringConfig()
+    assert config.step_path_mismatch_penalty == 0.45
+    assert config.step_path_log_reduction == 0.5
+
+    custom = ClusteringConfig(step_path_mismatch_penalty=0.3, step_path_log_reduction=0.4)
+    assert custom.step_path_mismatch_penalty == 0.3
+    assert custom.step_path_log_reduction == 0.4

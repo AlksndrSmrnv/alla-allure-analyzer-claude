@@ -91,6 +91,9 @@ def build_cluster_prompt(
     full_trace: str | None = None,
     *,
     kb_query_provenance: tuple[int, int, int] | None = None,
+    message_max_chars: int = _PROMPT_MESSAGE_MAX_CHARS,
+    trace_max_chars: int = _PROMPT_TRACE_MAX_CHARS,
+    log_max_chars: int = _PROMPT_LOG_MAX_CHARS,
 ) -> str:
     """Собрать промпт для LLM-анализа одного кластера.
 
@@ -200,7 +203,7 @@ def build_cluster_prompt(
     if cluster.example_message:
         msg = _truncate_prompt_text(
             cluster.example_message,
-            _PROMPT_MESSAGE_MAX_CHARS,
+            message_max_chars,
         )
         parts.append(f"\n--- Сообщение об ошибке ---\n{msg}")
 
@@ -209,7 +212,7 @@ def build_cluster_prompt(
         trace_text = normalize_text_for_llm(trace_text)
         trace_text = _truncate_prompt_text(
             trace_text,
-            _PROMPT_TRACE_MAX_CHARS,
+            trace_max_chars,
         )
         parts.append(f"\n--- Стек-трейс ---\n{trace_text}")
 
@@ -217,7 +220,7 @@ def build_cluster_prompt(
         log_text = normalize_text_for_llm(log_snippet)
         log_text = _truncate_prompt_text(
             log_text,
-            _PROMPT_LOG_MAX_CHARS,
+            log_max_chars,
         )
         parts.append(f"\n--- Фрагмент лога ---\n{log_text}")
 
@@ -400,9 +403,15 @@ class LLMService:
         langflow_client: LangflowClient,
         *,
         concurrency: int = 3,
+        message_max_chars: int = _PROMPT_MESSAGE_MAX_CHARS,
+        trace_max_chars: int = _PROMPT_TRACE_MAX_CHARS,
+        log_max_chars: int = _PROMPT_LOG_MAX_CHARS,
     ) -> None:
         self._client = langflow_client
         self._concurrency = concurrency
+        self._message_max_chars = message_max_chars
+        self._trace_max_chars = trace_max_chars
+        self._log_max_chars = log_max_chars
 
     async def analyze_clusters(
         self,
@@ -487,6 +496,9 @@ class LLMService:
             prompt = build_cluster_prompt(
                 cluster, kb_matches, log_snippet, full_trace,
                 kb_query_provenance=provenance,
+                message_max_chars=self._message_max_chars,
+                trace_max_chars=self._trace_max_chars,
+                log_max_chars=self._log_max_chars,
             )
 
             async with semaphore:
@@ -529,8 +541,6 @@ class LLMService:
             analyzed_count=analyzed,
             failed_count=failed,
             skipped_count=skipped,
-            # Поле оставлено в API/CLI ответах для обратной совместимости.
-            kb_bypass_count=0,
             cluster_analyses=analyses,
         )
 

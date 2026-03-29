@@ -233,3 +233,19 @@ async def test_push_llm_results_is_error_resilient() -> None:
 
     assert result.failed_count == 1
     assert result.updated_count == 2
+
+
+def test_build_cluster_prompt_respects_custom_limits() -> None:
+    """build_cluster_prompt использует переданные message_max_chars/trace_max_chars."""
+    cluster = make_failure_cluster(
+        label="Timeout",
+        example_message="A" * 100,
+    )
+
+    prompt_default = build_cluster_prompt(cluster)
+    prompt_tight = build_cluster_prompt(cluster, message_max_chars=50)
+
+    # При жёстком лимите 100 символов обрезаются до 50
+    assert "...[обрезано]" in prompt_tight
+    # При дефолтном лимите 2000 символов 100 символов не обрезаются
+    assert "...[обрезано]" not in prompt_default
