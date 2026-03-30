@@ -1,4 +1,4 @@
-"""Shared helpers for CLI and HTTP entrypoints."""
+"""Вспомогательные функции для CLI и HTTP точек входа."""
 
 import logging
 from dataclasses import asdict
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def format_configuration_error(exc: Exception) -> str:
-    """Build a consistent configuration error message for CLI/server."""
+    """Формирует единообразное сообщение об ошибке конфигурации для CLI/сервера."""
     return (
         f"Ошибка конфигурации: {exc}\n\n"
         f"Обязательные переменные окружения: "
@@ -29,7 +29,7 @@ def format_configuration_error(exc: Exception) -> str:
 
 
 def load_settings(*, page_size: int | None = None) -> "Settings":
-    """Load settings, resolve secrets and validate required values."""
+    """Загружает настройки, разрешает секреты и проверяет обязательные значения."""
     from alla.config import Settings
 
     settings_cls = cast(Any, Settings)
@@ -43,7 +43,7 @@ def load_settings(*, page_size: int | None = None) -> "Settings":
 
 
 def build_analysis_response(result: "AnalysisResult") -> dict[str, Any]:
-    """Convert AnalysisResult into the shared CLI/server JSON shape."""
+    """Преобразует AnalysisResult в общую JSON-структуру для CLI/сервера."""
     payload: dict[str, Any] = {
         "triage_report": result.triage_report.model_dump(),
         "onboarding": result.onboarding.model_dump(),
@@ -87,7 +87,7 @@ def build_analysis_response(result: "AnalysisResult") -> dict[str, Any]:
 
 
 def get_feedback_api_url(settings: "Settings") -> str:
-    """Return feedback API URL only when KB is enabled."""
+    """Возвращает URL API обратной связи только когда база знаний активна."""
     return settings.feedback_server_url if settings.kb_active else ""
 
 
@@ -96,7 +96,7 @@ def build_html_report_content(
     *,
     settings: "Settings",
 ) -> str:
-    """Generate the self-contained HTML report for an analysis result."""
+    """Генерирует самодостаточный HTML-отчёт для результата анализа."""
     return generate_html_report(
         result,
         endpoint=settings.endpoint,
@@ -105,7 +105,7 @@ def build_html_report_content(
 
 
 def save_html_report(path: str | Path, html_content: str) -> None:
-    """Write HTML report content to a file path."""
+    """Записывает содержимое HTML-отчёта в файл."""
     report_path = Path(path)
     report_path.write_text(html_content, encoding="utf-8")
     logger.info("HTML-отчёт сохранён: %s", report_path)
@@ -119,7 +119,7 @@ def persist_generated_report(
     settings: "Settings",
     report_store: Any = None,
 ) -> None:
-    """Persist a generated report to filesystem/PostgreSQL when configured."""
+    """Сохраняет сгенерированный отчёт в файловую систему/PostgreSQL при наличии настроек."""
     if settings.reports_dir and report_filename:
         report_path = Path(settings.reports_dir) / report_filename
         report_path.write_text(html_content, encoding="utf-8")
@@ -136,7 +136,7 @@ def resolve_report_url(
     report_url_override: str | None = None,
     report_filename: str | None = None,
 ) -> str:
-    """Resolve the effective public report URL for CLI/server flows."""
+    """Определяет публичный URL отчёта для CLI/сервера."""
     if report_url_override:
         logger.info("URL отчёта (override): %s", report_url_override)
         return report_url_override
@@ -159,7 +159,7 @@ async def attach_report_link(
     settings: "Settings",
     report_url: str,
 ) -> None:
-    """Attach the report link to a launch when the client supports it."""
+    """Прикрепляет ссылку на отчёт к запуску, если клиент это поддерживает."""
     if not report_url:
         return
     if not isinstance(client, LaunchLinksUpdater):
@@ -187,7 +187,7 @@ async def attach_report_link(
 def filter_failed_results(
     results: Iterable[TestResultResponse],
 ) -> list[TestResultResponse]:
-    """Select failed/broken test results for comment cleanup."""
+    """Выбирает упавшие/сломанные результаты тестов для очистки комментариев."""
     failure_statuses = {status.value for status in TestStatus.failure_statuses()}
     return [
         result
@@ -199,7 +199,7 @@ def filter_failed_results(
 def collect_test_case_ids(
     results: Iterable[TestResultResponse],
 ) -> tuple[set[int], int]:
-    """Collect unique test_case_id values and count skipped results."""
+    """Собирает уникальные test_case_id и считает результаты без test_case_id."""
     test_case_ids: set[int] = set()
     skipped = 0
 

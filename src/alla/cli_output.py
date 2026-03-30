@@ -1,4 +1,4 @@
-"""Text output helpers for the alla CLI."""
+"""Вспомогательные функции текстового вывода для alla CLI."""
 
 from typing import TYPE_CHECKING, Any
 
