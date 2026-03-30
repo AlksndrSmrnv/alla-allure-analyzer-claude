@@ -18,7 +18,7 @@ class TestStatus(str, Enum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def failure_statuses(cls) -> set[TestStatus]:
+    def failure_statuses(cls) -> "set[TestStatus]":
         """Статусы, считающиеся падениями для целей триажа."""
         return {cls.FAILED, cls.BROKEN}
 
