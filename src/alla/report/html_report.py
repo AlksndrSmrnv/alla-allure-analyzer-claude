@@ -493,7 +493,7 @@ def _render_cluster(
         )
         resolution_control = (
             '<textarea name="resolution_steps" rows="4" '
-            'placeholder="Шаг 1&#10;Шаг 2&#10;Шаг 3" autofocus></textarea>'
+            'placeholder="Опишите причину ошибки&#10;&#10;Шаг 1: ...&#10;Шаг 2: ...&#10;Шаг 3: ..." autofocus></textarea>'
         )
         title_control = (
             f'<input name="title" placeholder="Описание проблемы" '
@@ -525,6 +525,10 @@ def _render_cluster(
             'onclick="this.nextElementSibling.classList.toggle(\'hidden\')">'
             f'{_e(cta_label)}</button>'
             f'<form class="{form_cls}" data-api-url="{_e(feedback_api_url)}">'
+            '<div class="form-intro">'
+            'Опишите <strong>причину</strong> возникновения ошибки и шаги по её устранению. '
+            'Просто перечислить шаги недостаточно&nbsp;— объясните, <em>почему</em> эта проблема возникает.'
+            '</div>'
             f'{_render_form_field("Шаги по устранению", "основное поле", resolution_control, required=True)}'
             f'{_render_form_field("Заголовок", "необязательно", title_control)}'
             f'{_render_form_field("Категория", "", category_control)}'
@@ -1657,6 +1661,7 @@ _FEEDBACK_CSS = """
     .create-kb-toggle-primary{background:linear-gradient(135deg,#f97316 0%,#ea580c 100%);border:none;color:#fff;font-size:1rem;font-weight:700;padding:1rem 1.25rem;border-radius:14px;text-align:center;box-shadow:0 14px 30px rgba(234,88,12,.28)}
     .create-kb-toggle-primary:hover{color:#fff;opacity:.96;transform:translateY(-1px)}
     .create-kb-form{display:flex;flex-direction:column;gap:.9rem;padding:1rem;border:1px solid var(--border);border-radius:var(--radius-sm);margin-top:.25rem;background:#fff}
+    .form-intro{font-size:.82rem;color:#555;background:#fffbe6;border-left:3px solid #f0a500;padding:7px 10px;margin-bottom:0;border-radius:3px;line-height:1.5}
     .create-kb-form.hidden{display:none}
     .create-kb-form-primary{border:1px solid #fdba74;background:linear-gradient(180deg,#fffaf5 0%,#ffffff 100%);box-shadow:0 10px 24px rgba(249,115,22,.08)}
     .create-kb-field{display:flex;flex-direction:column;gap:.55rem;padding:.9rem 1rem;border:1px solid #e5e7eb;border-radius:12px;background:#f8fafc}
