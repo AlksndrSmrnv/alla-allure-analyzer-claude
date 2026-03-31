@@ -8,7 +8,10 @@
 import asyncio
 import logging
 import re
+from io import BytesIO
 from typing import Any
+
+import ijson
 
 from alla.clients.base import AttachmentProvider
 from alla.models.testops import AttachmentMeta, FailedTestSummary
@@ -257,6 +260,47 @@ def _scan_json_for_http_info(obj: Any) -> str:
             lines.append(f"{key}: {value}")
 
     return "\n".join(lines)
+
+
+def _try_parse_json(content: bytes) -> str | None:
+    """Потоково распарсить JSON через ijson и извлечь HTTP-сигналы.
+
+    Поддерживает одиночный объект и NDJSON (multiple_values=True).
+    Возвращает None при ошибке парсинга (сигнал для regex fallback).
+    """
+    try:
+        sections: list[str] = []
+        for obj in ijson.items(BytesIO(content), "", multiple_values=True):
+            section = _scan_json_for_http_info(obj)
+            if section:
+                sections.append(section)
+        return "\n\n".join(sections)
+    except Exception:
+        return None
+
+
+def _detect_and_extract_http(
+    content: bytes,
+    content_type: str,
+    *,
+    text: str | None = None,
+) -> str:
+    """Извлечь HTTP-контекст из аттачмента.
+
+    Для JSON: потоковый парсинг через ijson, при ошибке — regex.
+    Для XML/text: regex по декодированному тексту.
+    text — уже декодированный текст (передаётся чтобы избежать повторного декодирования).
+    """
+    if content_type == "json":
+        parsed = _try_parse_json(content)
+        if parsed is not None:
+            return parsed
+
+    if text is None:
+        text = _decode_text(content)
+    if text is None:
+        return ""
+    return _extract_text_http_info(text)
 
 
 class LogExtractionConfig:

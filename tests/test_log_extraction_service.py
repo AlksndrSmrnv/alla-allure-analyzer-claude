@@ -241,7 +241,53 @@ class TestExtractTextHttpInfo:
         assert "SVC0001" in result
 
 
-from alla.services.log_extraction_service import _scan_json_for_http_info
+from alla.services.log_extraction_service import _detect_and_extract_http, _scan_json_for_http_info
+
+
+class TestDetectAndExtractHttp:
+    def test_valid_json_uses_scanner(self):
+        content = b'{"RqUID": "req-001", "statusCode": 503, "error": "Timeout"}'
+        result = _detect_and_extract_http(content, "json")
+        assert "req-001" in result
+        assert "503" in result
+        assert "Timeout" in result
+
+    def test_ndjson_multiple_objects(self):
+        content = (
+            b'{"RqUID": "r1", "error": "first"}\n'
+            b'{"RqUID": "r2", "statusCode": 500}\n'
+        )
+        result = _detect_and_extract_http(content, "json")
+        assert "r1" in result
+        assert "r2" in result
+
+    def test_invalid_json_falls_back_to_regex(self):
+        content = b'RqUID=fallback-id\nHTTP/1.1 500 Internal Server Error'
+        result = _detect_and_extract_http(content, "json")
+        assert "fallback-id" in result
+        assert "500" in result
+
+    def test_xml_content_uses_regex(self):
+        content = b"<RqUID>xml-id</RqUID><faultCode>XML_ERR</faultCode>"
+        result = _detect_and_extract_http(content, "xml")
+        assert "xml-id" in result
+        assert "XML_ERR" in result
+
+    def test_text_content_uses_regex(self):
+        content = b'"error": "connection refused"\nRqUID=txt-id'
+        result = _detect_and_extract_http(content, "text")
+        assert "txt-id" in result
+        assert "connection refused" in result
+
+    def test_no_signals_returns_empty(self):
+        content = b'{"name": "Alice", "role": "admin"}'
+        result = _detect_and_extract_http(content, "json")
+        assert result == ""
+
+    def test_json_with_no_http_info_returns_empty(self):
+        content = b'{"count": 42, "items": ["a", "b"]}'
+        result = _detect_and_extract_http(content, "json")
+        assert result == ""
 
 
 class TestScanJsonForHttpInfo:
