@@ -310,6 +310,15 @@ class LogExtractionConfig:
         self.concurrency = concurrency
 
 
+_PROCESSABLE_MIME_EXACT = frozenset({
+    "application/json",
+    "text/json",
+    "application/xml",
+    "text/xml",
+    "application/x-ndjson",
+})
+
+
 # ---------------------------------------------------------------------------
 # ERROR-block extraction
 # ---------------------------------------------------------------------------
@@ -373,7 +382,7 @@ def _extract_error_blocks(log_text: str) -> str:
 # ---------------------------------------------------------------------------
 
 class LogExtractionService:
-    """Извлекает ERROR-блоки из текстовых аттачментов."""
+    """Извлекает ERROR-блоки из текстовых аттачментов и HTTP-контекст из JSON/XML."""
 
     def __init__(
         self,
@@ -387,13 +396,14 @@ class LogExtractionService:
         self,
         summaries: list[FailedTestSummary],
     ) -> None:
-        """Скачать логи для каждого теста и заполнить ``log_snippet`` in-place.
+        """Скачать аттачменты для каждого теста и заполнить ``log_snippet`` in-place.
 
-        Для каждого теста:
-        1. GET /api/testresult/attachment?testResultId={id} — список аттачментов
-        2. GET /api/testresult/attachment/{id}/content — скачивание содержимого
-        3. Извлечение ERROR-блоков из каждого аттачмента
-        4. Склейка блоков с пометкой источника
+        Для каждого аттачмента:
+        1. Определить тип содержимого через python-magic.
+        2. text/plain: извлечь [ERROR]-блоки + HTTP-контекст через regex.
+        3. JSON: потоковый парсинг через ijson, fallback на regex.
+        4. XML: regex по тексту.
+        5. binary: пропустить.
         """
         if not summaries:
             return
@@ -407,7 +417,6 @@ class LogExtractionService:
         semaphore = asyncio.Semaphore(self._config.concurrency)
 
         async def fetch_and_extract(summary: FailedTestSummary) -> None:
-            # Шаг 1: получить список аттачментов для теста
             async with semaphore:
                 try:
                     all_attachments = await self._provider.get_attachments_for_test_result(
@@ -421,31 +430,24 @@ class LogExtractionService:
                     )
                     return
 
-            # Фильтрация по text/plain
-            text_attachments = [
+            processable = [
                 att for att in all_attachments
-                if self._is_text_attachment(att)
+                if self._is_processable_attachment(att)
             ]
-
-            if not text_attachments:
+            if not processable:
                 return
 
-            # Шаг 2: скачать содержимое и извлечь ERROR-блоки
-            all_error_sections: list[str] = []
+            all_sections: list[str] = []
 
-            for att in text_attachments:
+            for att in processable:
                 if att.id is None:
                     continue
                 async with semaphore:
                     try:
-                        content_bytes = await self._provider.get_attachment_content(
-                            att.id,
-                        )
-                        text = content_bytes.decode("utf-8", errors="replace")
+                        content_bytes = await self._provider.get_attachment_content(att.id)
                     except Exception as exc:
                         logger.warning(
-                            "Логи: не удалось скачать аттачмент %d (%s) "
-                            "для теста %d: %s",
+                            "Логи: не удалось скачать аттачмент %d (%s) для теста %d: %s",
                             att.id,
                             att.name,
                             summary.test_result_id,
@@ -453,24 +455,43 @@ class LogExtractionService:
                         )
                         continue
 
-                error_blocks = _extract_error_blocks(text)
-                if error_blocks.strip():
-                    att_name = att.name or f"attachment-{att.id}"
-                    header = f"--- [файл: {att_name}] ---"
-                    all_error_sections.append(f"{header}\n{error_blocks}")
+                att_name = att.name or f"attachment-{att.id}"
+                fallback_mime = (att.type or att.content_type or "").lower()
+                detected_type = _detect_content_type(content_bytes, fallback_mime=fallback_mime)
 
-            if not all_error_sections:
+                if detected_type == "binary":
+                    continue
+
+                decoded_text: str | None = None
+
+                # Канал 1: лог-экстрактор (только text)
+                if detected_type == "text":
+                    decoded_text = _decode_text(content_bytes)
+                    if decoded_text:
+                        log_blocks = _extract_error_blocks(decoded_text)
+                        if log_blocks.strip():
+                            all_sections.append(
+                                f"--- [файл: {att_name}] ---\n{log_blocks}"
+                            )
+
+                # Канал 2: HTTP-экстрактор (все не-binary типы)
+                http_info = _detect_and_extract_http(
+                    content_bytes, detected_type, text=decoded_text
+                )
+                if http_info.strip():
+                    all_sections.append(f"--- [HTTP: {att_name}] ---\n{http_info}")
+
+            if not all_sections:
                 return
 
-            combined = "\n\n".join(all_error_sections)
+            combined = "\n\n".join(all_sections)
             summary.log_snippet = combined
 
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
-                    "Логи: тест %d — извлечено ERROR-блоков из %d файлов, "
-                    "общий размер: %d символов",
+                    "Логи: тест %d — секций: %d, общий размер: %d символов",
                     summary.test_result_id,
-                    len(all_error_sections),
+                    len(all_sections),
                     len(combined),
                 )
 
@@ -481,7 +502,17 @@ class LogExtractionService:
         logger.info("Логи: обогащено %d/%d тестов", enriched, len(summaries))
 
     @staticmethod
-    def _is_text_attachment(att: AttachmentMeta) -> bool:
-        """Проверить, является ли аттачмент текстовым (text/plain)."""
-        mime = (att.type or att.content_type or "").lower()
-        return mime.startswith("text/plain")
+    def _is_processable_attachment(att: AttachmentMeta) -> bool:
+        """Проверить, может ли аттачмент содержать обрабатываемый контент.
+
+        Первичный MIME-фильтр до скачивания: отсекает очевидные бинарные файлы.
+        Точный тип определяется после скачивания через _detect_content_type.
+        """
+        mime = (att.type or att.content_type or "").lower().split(";")[0].strip()
+        if mime in _PROCESSABLE_MIME_EXACT:
+            return True
+        if mime.startswith("text/"):
+            return True
+        if not mime:
+            return True
+        return False

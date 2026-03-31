@@ -362,3 +362,119 @@ class TestScanJsonForHttpInfo:
         ]
         result = _scan_json_for_http_info(obj)
         assert "id-1" in result or "id-2" in result
+
+
+import pytest
+from unittest.mock import patch
+
+from alla.models.testops import AttachmentMeta, FailedTestSummary
+from alla.models.common import TestStatus
+from alla.services.log_extraction_service import LogExtractionConfig, LogExtractionService
+
+
+class FakeAttachmentProvider:
+    def __init__(self, attachments: list[AttachmentMeta], content_map: dict[int, bytes]):
+        self._attachments = attachments
+        self._content_map = content_map
+
+    async def get_attachments_for_test_result(self, test_result_id: int) -> list[AttachmentMeta]:
+        return self._attachments
+
+    async def get_attachment_content(self, attachment_id: int) -> bytes:
+        return self._content_map[attachment_id]
+
+
+def make_summary(test_result_id: int = 1) -> FailedTestSummary:
+    return FailedTestSummary(test_result_id=test_result_id, name="test_foo", status=TestStatus.FAILED)
+
+
+class TestLogExtractionServiceIntegration:
+    @pytest.mark.asyncio
+    async def test_json_attachment_extracts_corr_id_and_error(self):
+        content = b'{"RqUID": "req-abc", "statusCode": 503, "error": "Backend unavailable"}'
+        att = AttachmentMeta(id=1, name="response.json", type="application/json")
+        provider = FakeAttachmentProvider([att], {1: content})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="application/json"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.log_snippet is not None
+        assert "req-abc" in summary.log_snippet
+        assert "503" in summary.log_snippet
+        assert "Backend unavailable" in summary.log_snippet
+
+    @pytest.mark.asyncio
+    async def test_text_attachment_extracts_both_log_and_http(self):
+        content = (
+            b"2026-01-01 10:00:00 [ERROR] Connection refused\n"
+            b'    at Service.java:42\n'
+            b'"RqUID": "mixed-id"\n'
+            b'"error": "upstream timeout"\n'
+        )
+        att = AttachmentMeta(id=2, name="test.log", type="text/plain")
+        provider = FakeAttachmentProvider([att], {2: content})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.log_snippet is not None
+        assert "Connection refused" in summary.log_snippet
+        assert "mixed-id" in summary.log_snippet
+
+    @pytest.mark.asyncio
+    async def test_binary_attachment_skipped(self):
+        content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+        att = AttachmentMeta(id=3, name="screenshot.png", type="image/png")
+        provider = FakeAttachmentProvider([att], {3: content})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="image/png"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.log_snippet is None
+
+    @pytest.mark.asyncio
+    async def test_no_processable_attachments_skips_download(self):
+        att = AttachmentMeta(id=4, name="data.bin", type="application/octet-stream")
+        download_called = []
+
+        class TrackingProvider(FakeAttachmentProvider):
+            async def get_attachment_content(self, attachment_id: int) -> bytes:
+                download_called.append(attachment_id)
+                return b""
+
+        provider = TrackingProvider([att], {})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+        await service.enrich_with_logs([summary])
+
+        assert len(download_called) == 0
+        assert summary.log_snippet is None
+
+    @pytest.mark.asyncio
+    async def test_multiple_json_attachments_combined(self):
+        content1 = b'{"RqUID": "first", "error": "step1 failed"}'
+        content2 = b'{"RqUID": "second", "statusCode": 500, "error": "step2 failed"}'
+        atts = [
+            AttachmentMeta(id=10, name="step1.json", type="application/json"),
+            AttachmentMeta(id=11, name="step2.json", type="application/json"),
+        ]
+        provider = FakeAttachmentProvider(atts, {10: content1, 11: content2})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=2))
+        summary = make_summary()
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="application/json"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.log_snippet is not None
+        assert "first" in summary.log_snippet
+        assert "second" in summary.log_snippet
