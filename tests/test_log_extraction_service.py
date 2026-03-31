@@ -131,28 +131,33 @@ from alla.services.log_extraction_service import _decode_text, _detect_content_t
 class TestDetectContentType:
     def test_json_bytes_detected_as_json(self):
         content = b'{"key": "value", "status": 500}'
-        with patch("magic.from_buffer", return_value="application/json"):
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="application/json"):
             assert _detect_content_type(content) == "json"
 
     def test_text_plain_detected_as_text(self):
         content = b"2026-01-01 [ERROR] something failed"
-        with patch("magic.from_buffer", return_value="text/plain"):
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
             assert _detect_content_type(content) == "text"
 
     def test_xml_bytes_detected_as_xml(self):
         content = b"<?xml version='1.0'?><root><error>fail</error></root>"
-        with patch("magic.from_buffer", return_value="application/xml"):
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="application/xml"):
             assert _detect_content_type(content) == "xml"
 
     def test_binary_image_returns_binary(self):
         content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-        with patch("magic.from_buffer", return_value="image/png"):
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="image/png"):
             assert _detect_content_type(content) == "binary"
 
     def test_json_heuristic_when_magic_says_text(self):
         """Если magic вернул text/plain, но контент начинается с {, считать json."""
         content = b'{"RqUID": "abc"}'
-        with patch("magic.from_buffer", return_value="text/plain"):
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
             assert _detect_content_type(content) == "json"
 
     def test_magic_unavailable_falls_back_to_fallback_mime(self):
@@ -182,4 +187,4 @@ class TestDecodeText:
     def test_binary_returns_none(self):
         content = bytes(range(256)) * 4
         result = _decode_text(content)
-        assert result is None or isinstance(result, str)
+        assert result is None
