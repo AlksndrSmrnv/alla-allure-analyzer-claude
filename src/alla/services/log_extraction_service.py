@@ -14,6 +14,64 @@ from alla.models.testops import AttachmentMeta, FailedTestSummary
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Content type detection and text decoding
+# ---------------------------------------------------------------------------
+
+try:
+    import magic as _magic
+    _MAGIC_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _MAGIC_AVAILABLE = False
+
+from charset_normalizer import from_bytes as _cn_from_bytes
+
+_MAGIC_JSON_MIMES = frozenset({"application/json", "text/json", "application/x-ndjson"})
+_MAGIC_XML_MIMES = frozenset({"application/xml", "text/xml"})
+
+
+def _detect_content_type(content: bytes, *, fallback_mime: str = "") -> str:
+    """Определить тип содержимого по байтам.
+
+    Использует python-magic если доступен, иначе fallback_mime.
+    Возвращает 'json', 'xml', 'text' или 'binary'.
+    """
+    if _MAGIC_AVAILABLE:
+        mime: str = _magic.from_buffer(content[:2048], mime=True) or ""
+    else:
+        mime = fallback_mime.lower().split(";")[0].strip()
+
+    if mime in _MAGIC_JSON_MIMES:
+        return "json"
+    if mime in _MAGIC_XML_MIMES:
+        return "xml"
+    if mime.startswith("text/"):
+        # Дополнительная эвристика: text/plain может быть JSON-дампом
+        stripped = content[:200].lstrip()
+        if stripped.startswith(b"{") or stripped.startswith(b"["):
+            return "json"
+        return "text"
+    if not mime:
+        # Неизвестный MIME — эвристика по первым байтам
+        stripped = content[:200].lstrip()
+        if stripped.startswith(b"{") or stripped.startswith(b"["):
+            return "json"
+        if stripped.startswith(b"<"):
+            return "xml"
+        return "text"
+    return "binary"
+
+
+def _decode_text(content: bytes) -> str | None:
+    """Декодировать байты в строку через charset-normalizer.
+
+    Возвращает None если содержимое нераспознано как текст.
+    """
+    best = _cn_from_bytes(content).best()
+    if best is None:
+        return None
+    return str(best)
+
 
 class LogExtractionConfig:
     """Параметры извлечения логов из аттачментов."""
