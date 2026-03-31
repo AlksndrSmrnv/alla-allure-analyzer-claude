@@ -12,6 +12,7 @@ from alla.models.onboarding import OnboardingMode, OnboardingState
 from alla.utils.text_normalization import canonicalize_kb_error_example
 
 if TYPE_CHECKING:
+    from alla.knowledge.feedback_models import FeedbackClusterContext
     from alla.knowledge.models import KBMatchResult
     from alla.models.clustering import ClusteringReport, FailureCluster
     from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary
@@ -68,6 +69,7 @@ def generate_html_report(
         triage.failed_tests,
         onboarding=onboarding,
         feedback_api_url=feedback_api_url,
+        feedback_contexts=feedback_contexts,
         launch_id=triage.launch_id,
         project_id=triage.project_id,
     )
@@ -250,6 +252,7 @@ def _render_clusters(
     *,
     onboarding: OnboardingState | None = None,
     feedback_api_url: str = "",
+    feedback_contexts: dict[str, "FeedbackClusterContext"] | None = None,
     launch_id: int = 0,
     project_id: int | None = None,
 ) -> str:
@@ -272,12 +275,23 @@ def _render_clusters(
         f"{'проблема' if clustering.cluster_count == 1 else 'проблем'} "
         f"из {clustering.total_failures} падений)"
     )
+    merge_contexts = feedback_contexts or {}
+    merge_enabled = bool(feedback_api_url and project_id is not None)
+    mergeable_count = sum(
+        1 for cluster in clustering.clusters if cluster.cluster_id in merge_contexts
+    )
+    merge_toolbar_html = _render_merge_toolbar(
+        feedback_api_url=feedback_api_url,
+        launch_id=launch_id,
+        project_id=project_id,
+    ) if merge_enabled and mergeable_count >= 2 else ""
 
     body = "".join(
         _render_cluster(
             i, cluster, kb_results, llm_result, test_by_id,
             onboarding=onboarding,
             feedback_api_url=feedback_api_url,
+            feedback_context=merge_contexts.get(cluster.cluster_id),
             cluster_id=cluster.cluster_id,
             launch_id=launch_id,
             project_id=project_id,
@@ -288,8 +302,38 @@ def _render_clusters(
     return (
         '<div class="section">'
         f'<div class="section-title">{_e(title)}</div>'
+        f"{merge_toolbar_html}"
         f'<div class="clusters-list">{body}</div>'
         "</div>"
+    )
+
+
+def _render_merge_toolbar(
+    *,
+    feedback_api_url: str,
+    launch_id: int,
+    project_id: int | None,
+) -> str:
+    """Плавающая панель для сохранения merge rules из HTML-отчёта."""
+    if not feedback_api_url or project_id is None:
+        return ""
+
+    return (
+        '<div class="cluster-merge-toolbar hidden" '
+        f'data-api-url="{_e(feedback_api_url)}" '
+        f'data-project-id="{_e(project_id)}" '
+        f'data-launch-id="{_e(launch_id)}">'
+        '<div class="cluster-merge-toolbar-copy">'
+        'Выбрано кластеров: <span class="cluster-merge-count" data-merge-count>0</span>'
+        '</div>'
+        '<div class="cluster-merge-actions">'
+        '<button type="button" class="cluster-merge-button" disabled>'
+        'Объединить выбранные'
+        '</button>'
+        '<button type="button" class="cluster-merge-clear">Сбросить</button>'
+        '</div>'
+        '<div class="cluster-merge-status"></div>'
+        '</div>'
     )
 
 
@@ -302,6 +346,7 @@ def _render_cluster(
     *,
     onboarding: OnboardingState | None = None,
     feedback_api_url: str = "",
+    feedback_context: "FeedbackClusterContext | None" = None,
     cluster_id: str = "",
     launch_id: int = 0,
     project_id: int | None = None,
@@ -576,9 +621,23 @@ def _render_cluster(
         body_parts.extend([llm_html, step_path_html, error_html, kb_html, create_kb_html, tests_html])
 
     cluster_cls = "cluster guided-cluster" if guided_mode else "cluster"
+    merge_checkbox_html = ""
+    if (
+        feedback_api_url
+        and project_id is not None
+        and feedback_context is not None
+    ):
+        merge_checkbox_html = (
+            '<label class="cluster-merge-toggle" title="Выбрать кластер для объединения">'
+            f'<input type="checkbox" class="cluster-merge-checkbox" '
+            f'data-cluster-id="{_e(cluster.cluster_id)}">'
+            '<span>Выбрать</span>'
+            '</label>'
+        )
     return (
-        f'<div class="{cluster_cls}">'
+        f'<div class="{cluster_cls}" data-cluster-card-id="{_e(cluster.cluster_id)}">'
         '<div class="cluster-header">'
+        f"{merge_checkbox_html}"
         f'<span class="cluster-num">#{idx}</span>'
         f'<span class="cluster-label">{_e(cluster.label)}</span>'
         f'<span class="cluster-count">{cluster.member_count} тест(ов)</span>'
@@ -1643,6 +1702,25 @@ _CSS = """
 # ---------------------------------------------------------------------------
 
 _FEEDBACK_CSS = """
+    /* ---- Cluster Merge Rules ---- */
+    .cluster-merge-toggle{display:inline-flex;align-items:center;gap:.5rem;padding:.45rem .7rem;border:1px solid var(--border);border-radius:9999px;background:#fff;font-size:.8rem;font-weight:600;color:var(--text-muted);cursor:pointer}
+    .cluster-merge-toggle input[type="checkbox"]{margin:0;inline-size:1rem;block-size:1rem;accent-color:var(--primary)}
+    .cluster.cluster-selected{border-color:#93c5fd;box-shadow:0 0 0 1px rgba(37,99,235,.18),0 12px 24px rgba(37,99,235,.08)}
+    .cluster.cluster-merge-saved{border-color:#10b981;box-shadow:0 0 0 1px rgba(16,185,129,.18),0 12px 24px rgba(16,185,129,.10)}
+    .cluster-merge-toolbar{position:fixed;right:24px;bottom:24px;z-index:40;display:flex;flex-direction:column;gap:.75rem;min-width:320px;max-width:min(420px,calc(100vw - 32px));padding:1rem 1.1rem;background:rgba(15,23,42,.96);color:#f8fafc;border:1px solid rgba(148,163,184,.28);border-radius:16px;box-shadow:0 18px 40px rgba(15,23,42,.28);backdrop-filter:blur(10px)}
+    .cluster-merge-toolbar.hidden{display:none}
+    .cluster-merge-toolbar-copy{font-size:.86rem;color:#cbd5e1}
+    .cluster-merge-count{font-weight:800;color:#fff}
+    .cluster-merge-actions{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+    .cluster-merge-button{padding:.75rem 1.1rem;background:#2563eb;color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:.9rem;font-weight:700;transition:background-color .2s,opacity .2s}
+    .cluster-merge-button:hover{background:#1d4ed8}
+    .cluster-merge-button:disabled{opacity:.55;cursor:not-allowed}
+    .cluster-merge-clear{padding:.75rem 1rem;background:transparent;color:#cbd5e1;border:1px solid rgba(203,213,225,.28);border-radius:10px;cursor:pointer;font-size:.86rem;font-weight:600}
+    .cluster-merge-clear:hover{border-color:rgba(255,255,255,.4);color:#fff}
+    .cluster-merge-status{font-size:.8rem;color:#cbd5e1;min-height:1.2rem}
+    .cluster-merge-status.cluster-merge-ok{color:#86efac}
+    .cluster-merge-status.cluster-merge-error{color:#fca5a5}
+
     /* ---- Knowledge Base Feedback Buttons ---- */
     .kb-feedback{display:flex;align-items:center;gap:.5rem;margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--border)}
     .fb-btn{display:inline-flex;align-items:center;gap:.25rem;padding:.375rem .75rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);cursor:pointer;font-size:.8125rem;color:var(--text-muted);transition:all .2s}
@@ -1702,6 +1780,13 @@ _FEEDBACK_CSS = """
     .edit-kb-error{color:var(--danger)}
     .edit-kb-refresh-example{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.35rem .75rem;cursor:pointer;color:var(--primary);font-size:.75rem;margin-top:.25rem;transition:all .2s;display:inline-block}
     .edit-kb-refresh-example:hover{border-color:var(--primary);background:var(--surface)}
+
+    @media (max-width: 768px) {
+      .cluster-merge-toolbar{right:16px;left:16px;bottom:16px;min-width:0;max-width:none}
+      .cluster-merge-actions{flex-direction:column;align-items:stretch}
+      .cluster-merge-button,.cluster-merge-clear{width:100%}
+      .cluster-merge-toggle{width:100%;justify-content:flex-start}
+    }
 """
 
 
@@ -1790,6 +1875,147 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    stepPathEl.textContent = stepPath;\n"
         "  }\n"
         "\n"
+        "  function getMergeToolbar() {\n"
+        "    return document.querySelector('.cluster-merge-toolbar');\n"
+        "  }\n"
+        "\n"
+        "  var mergeToolbarHideTimer = null;\n"
+        "\n"
+        "  function resetMergeToolbarStatus() {\n"
+        "    var toolbar = getMergeToolbar();\n"
+        "    if (!toolbar) return;\n"
+        "    if (mergeToolbarHideTimer) {\n"
+        "      window.clearTimeout(mergeToolbarHideTimer);\n"
+        "      mergeToolbarHideTimer = null;\n"
+        "    }\n"
+        "    toolbar.dataset.statusPinned = '';\n"
+        "    var status = toolbar.querySelector('.cluster-merge-status');\n"
+        "    if (!status) return;\n"
+        "    status.textContent = '';\n"
+        "    status.className = 'cluster-merge-status';\n"
+        "  }\n"
+        "\n"
+        "  function getSelectedMergeCheckboxes() {\n"
+        "    return Array.prototype.slice.call(document.querySelectorAll('.cluster-merge-checkbox:checked'));\n"
+        "  }\n"
+        "\n"
+        "  function flashMergedClusters(clusterIds) {\n"
+        "    clusterIds.forEach(function(clusterId) {\n"
+        "      var card = document.querySelector('[data-cluster-card-id=\"' + clusterId + '\"]');\n"
+        "      if (!card) return;\n"
+        "      card.classList.add('cluster-merge-saved');\n"
+        "      window.setTimeout(function() {\n"
+        "        card.classList.remove('cluster-merge-saved');\n"
+        "      }, 2200);\n"
+        "    });\n"
+        "  }\n"
+        "\n"
+        "  function updateMergeToolbar() {\n"
+        "    var toolbar = getMergeToolbar();\n"
+        "    if (!toolbar) return;\n"
+        "    var selected = getSelectedMergeCheckboxes();\n"
+        "    var countEl = toolbar.querySelector('[data-merge-count]');\n"
+        "    var mergeBtn = toolbar.querySelector('.cluster-merge-button');\n"
+        "    var statusPinned = toolbar.dataset.statusPinned === '1';\n"
+        "    if (countEl) countEl.textContent = String(selected.length);\n"
+        "    if (mergeBtn) mergeBtn.disabled = selected.length < 2;\n"
+        "    toolbar.classList.toggle('hidden', selected.length < 2 && !statusPinned);\n"
+        "    document.querySelectorAll('[data-cluster-card-id]').forEach(function(card) {\n"
+        "      card.classList.remove('cluster-selected');\n"
+        "    });\n"
+        "    selected.forEach(function(input) {\n"
+        "      var card = input.closest('[data-cluster-card-id]');\n"
+        "      if (card) card.classList.add('cluster-selected');\n"
+        "    });\n"
+        "  }\n"
+        "\n"
+        "  function clearMergeSelection() {\n"
+        "    document.querySelectorAll('.cluster-merge-checkbox:checked').forEach(function(input) {\n"
+        "      input.checked = false;\n"
+        "    });\n"
+        "    updateMergeToolbar();\n"
+        "  }\n"
+        "\n"
+        "  function buildMergePairs(selected) {\n"
+        "    var contexts = (typeof CLUSTER_FEEDBACK_CONTEXTS !== 'undefined') ? CLUSTER_FEEDBACK_CONTEXTS : {};\n"
+        "    var seen = {};\n"
+        "    var pairs = [];\n"
+        "    for (var i = 0; i < selected.length; i += 1) {\n"
+        "      for (var j = i + 1; j < selected.length; j += 1) {\n"
+        "        var leftId = selected[i].dataset.clusterId;\n"
+        "        var rightId = selected[j].dataset.clusterId;\n"
+        "        var leftContext = contexts[leftId];\n"
+        "        var rightContext = contexts[rightId];\n"
+        "        var leftSignature = leftContext && leftContext.base_issue_signature;\n"
+        "        var rightSignature = rightContext && rightContext.base_issue_signature;\n"
+        "        if (!leftSignature || !rightSignature) continue;\n"
+        "        if (!leftSignature.signature_hash || !rightSignature.signature_hash) continue;\n"
+        "        if (leftSignature.signature_hash === rightSignature.signature_hash) continue;\n"
+        "        var ordered = leftSignature.signature_hash < rightSignature.signature_hash\n"
+        "          ? [leftSignature.signature_hash, rightSignature.signature_hash, leftContext.audit_text || '', rightContext.audit_text || '']\n"
+        "          : [rightSignature.signature_hash, leftSignature.signature_hash, rightContext.audit_text || '', leftContext.audit_text || ''];\n"
+        "        var dedupeKey = ordered[0] + ':' + ordered[1];\n"
+        "        if (seen[dedupeKey]) continue;\n"
+        "        seen[dedupeKey] = true;\n"
+        "        pairs.push({\n"
+        "          signature_hash_a: ordered[0],\n"
+        "          signature_hash_b: ordered[1],\n"
+        "          audit_text_a: ordered[2],\n"
+        "          audit_text_b: ordered[3]\n"
+        "        });\n"
+        "      }\n"
+        "    }\n"
+        "    return pairs;\n"
+        "  }\n"
+        "\n"
+        "  function submitMergeRules() {\n"
+        "    var toolbar = getMergeToolbar();\n"
+        "    if (!toolbar) return;\n"
+        "    var status = toolbar.querySelector('.cluster-merge-status');\n"
+        "    var mergeBtn = toolbar.querySelector('.cluster-merge-button');\n"
+        "    var selected = getSelectedMergeCheckboxes();\n"
+        "    var pairs = buildMergePairs(selected);\n"
+        "    if (pairs.length === 0) {\n"
+        "      status.textContent = 'Не найдено ни одной пары с разными сигнатурами';\n"
+        "      status.className = 'cluster-merge-status cluster-merge-error';\n"
+        "      return;\n"
+        "    }\n"
+        "    resetMergeToolbarStatus();\n"
+        "    mergeBtn.disabled = true;\n"
+        "    status.textContent = 'Сохраняем правило...';\n"
+        "    status.className = 'cluster-merge-status';\n"
+        "    fetch(FEEDBACK_API_URL + '/api/v1/merge-rules', {\n"
+        "      method: 'POST',\n"
+        "      headers: {'Content-Type': 'application/json'},\n"
+        "      body: JSON.stringify({\n"
+        "        project_id: parseInt(toolbar.dataset.projectId, 10),\n"
+        "        launch_id: parseInt(toolbar.dataset.launchId, 10) || null,\n"
+        "        pairs: pairs\n"
+        "      })\n"
+        "    }).then(function(r) {\n"
+        "      if (!r.ok) throw new Error(r.status);\n"
+        "      return r.json();\n"
+        "    }).then(function(data) {\n"
+        "      var clusterIds = selected.map(function(input) { return input.dataset.clusterId; });\n"
+        "      var createdCount = data && typeof data.created_count === 'number' ? data.created_count : 0;\n"
+        "      var updatedCount = data && typeof data.updated_count === 'number' ? data.updated_count : 0;\n"
+        "      status.textContent = 'Сохранено правил: ' + (createdCount + updatedCount);\n"
+        "      status.className = 'cluster-merge-status cluster-merge-ok';\n"
+        "      toolbar.dataset.statusPinned = '1';\n"
+        "      flashMergedClusters(clusterIds);\n"
+        "      clearMergeSelection();\n"
+        "      mergeToolbarHideTimer = window.setTimeout(function() {\n"
+        "        resetMergeToolbarStatus();\n"
+        "        updateMergeToolbar();\n"
+        "      }, 2200);\n"
+        "    }).catch(function(err) {\n"
+        "      status.textContent = 'Ошибка: ' + err.message;\n"
+        "      status.className = 'cluster-merge-status cluster-merge-error';\n"
+        "      mergeBtn.disabled = false;\n"
+        "      updateMergeToolbar();\n"
+        "    });\n"
+        "  }\n"
+        "\n"
         "  // --- Like / Dislike ---\n"
         "  function sendFeedback(el, isLike) {\n"
         "    var wrap = el.closest('.kb-feedback');\n"
@@ -1859,6 +2085,23 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "      });\n"
         "      return;\n"
         "    }\n"
+        "    btn = e.target.closest('.cluster-merge-button');\n"
+        "    if (btn) {\n"
+        "      submitMergeRules();\n"
+        "      return;\n"
+        "    }\n"
+        "    btn = e.target.closest('.cluster-merge-clear');\n"
+        "    if (btn) {\n"
+        "      resetMergeToolbarStatus();\n"
+        "      clearMergeSelection();\n"
+        "      return;\n"
+        "    }\n"
+        "  });\n"
+        "\n"
+        "  document.addEventListener('change', function(e) {\n"
+        "    if (!e.target.matches('.cluster-merge-checkbox')) return;\n"
+        "    resetMergeToolbarStatus();\n"
+        "    updateMergeToolbar();\n"
         "  });\n"
         "\n"
         "  // --- Create Knowledge Base Entry ---\n"
@@ -1976,6 +2219,7 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "\n"
         "  // --- Load existing votes on page load (exact resolve) ---\n"
         "  document.addEventListener('DOMContentLoaded', function() {\n"
+        "    updateMergeToolbar();\n"
         "    if (typeof CLUSTER_FEEDBACK_CONTEXTS === 'undefined') return;\n"
         "    var items = [];\n"
         "    var seen = {};\n"

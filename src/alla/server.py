@@ -26,6 +26,7 @@ from alla.utils.text_normalization import canonicalize_kb_error_example
 if TYPE_CHECKING:
     from alla.config import Settings
     from alla.knowledge.postgres_feedback import PostgresFeedbackStore
+    from alla.knowledge.merge_rules_store import PostgresMergeRulesStore
     from alla.orchestrator import AnalysisResult
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,7 @@ class _AppState:
         self.auth: Any = None
         self.report_store: Any = None
         self.feedback_store: Any = None
+        self.merge_rules_store: Any = None
 
 
 _state = _AppState()
@@ -118,6 +120,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     _state.auth = auth
     _state.report_store = None
     _state.feedback_store = None
+    _state.merge_rules_store = None
 
     if settings.reports_dir:
         from pathlib import Path
@@ -488,6 +491,27 @@ def _require_feedback_store(detail: str) -> "PostgresFeedbackStore":
     return store
 
 
+def _get_merge_rules_store() -> "PostgresMergeRulesStore | None":
+    """Вернуть PostgresMergeRulesStore или None (ленивая инициализация)."""
+    settings = _state.settings
+    if settings is None or not settings.kb_active:
+        return None
+
+    if _state.merge_rules_store is None:
+        from alla.knowledge.merge_rules_store import PostgresMergeRulesStore
+
+        _state.merge_rules_store = PostgresMergeRulesStore(dsn=settings.kb_postgres_dsn)
+    return cast("PostgresMergeRulesStore", _state.merge_rules_store)
+
+
+def _require_merge_rules_store(detail: str) -> "PostgresMergeRulesStore":
+    """Вернуть merge rules store или поднять 501 с осмысленным сообщением."""
+    store = _get_merge_rules_store()
+    if store is None:
+        raise HTTPException(status_code=501, detail=detail)
+    return store
+
+
 def _parse_request(model_cls: type[ModelT], request: dict[str, Any]) -> ModelT:
     """Преобразовать сырой JSON body в pydantic-модель или поднять 422."""
     try:
@@ -504,6 +528,60 @@ def _run_kb_action(action: Callable[[], ResultT]) -> ResultT:
         return action()
     except KnowledgeBaseError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/v1/merge-rules")
+def create_merge_rules(request: dict[str, Any]) -> dict[str, Any]:
+    """Создать или обновить правила объединения кластеров для проекта."""
+    store = _require_merge_rules_store(
+        "Merge rules require ALLURE_KB_POSTGRES_DSN to be set",
+    )
+
+    from alla.knowledge.merge_rules_models import MergeRulesRequest, MergeRulesResponse
+
+    merge_request = _parse_request(MergeRulesRequest, request)
+    rules, created_count, updated_count = _run_kb_action(
+        lambda: store.save_rules(
+            project_id=merge_request.project_id,
+            pairs=merge_request.pairs,
+            launch_id=merge_request.launch_id,
+        )
+    )
+
+    return MergeRulesResponse(
+        rules=rules,
+        created_count=created_count,
+        updated_count=updated_count,
+    ).model_dump()
+
+
+@app.get("/api/v1/merge-rules")
+def list_merge_rules(project_id: int) -> dict[str, Any]:
+    """Вернуть все merge rules для указанного проекта."""
+    store = _require_merge_rules_store(
+        "Merge rules require ALLURE_KB_POSTGRES_DSN to be set",
+    )
+
+    from alla.knowledge.merge_rules_models import MergeRulesListResponse
+
+    rules = _run_kb_action(lambda: store.load_rules(project_id))
+    return MergeRulesListResponse(rules=rules).model_dump()
+
+
+@app.delete("/api/v1/merge-rules/{rule_id}")
+def delete_merge_rule(rule_id: int) -> dict[str, Any]:
+    """Удалить merge rule по rule_id."""
+    store = _require_merge_rules_store(
+        "Merge rules require ALLURE_KB_POSTGRES_DSN to be set",
+    )
+
+    from alla.knowledge.merge_rules_models import MergeRuleDeleteResponse
+
+    deleted = _run_kb_action(lambda: store.delete_rule(rule_id))
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Merge rule {rule_id} not found")
+
+    return MergeRuleDeleteResponse(rule_id=rule_id, deleted=True).model_dump()
 
 
 @app.post("/api/v1/kb/feedback")
