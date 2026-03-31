@@ -188,3 +188,54 @@ class TestDecodeText:
         content = bytes(range(256)) * 4
         result = _decode_text(content)
         assert result is None
+
+
+from alla.services.log_extraction_service import _extract_text_http_info
+
+
+class TestExtractTextHttpInfo:
+    def test_extracts_rquid_from_json_text(self):
+        text = '{"RqUID": "abc-123", "statusCode": 500, "error": "Service unavailable"}'
+        result = _extract_text_http_info(text)
+        assert "RqUID=abc-123" in result
+        assert "500" in result
+        assert "Service unavailable" in result
+
+    def test_extracts_operuid_from_kv_format(self):
+        text = "OperUID=xyz-456\nHTTP/1.1 503 Service Unavailable"
+        result = _extract_text_http_info(text)
+        assert "OperUID=xyz-456" in result
+        assert "503" in result
+
+    def test_http_status_line_extracted(self):
+        text = "HTTP/1.1 404 Not Found\n{\"message\": \"not found\"}"
+        result = _extract_text_http_info(text)
+        assert "404" in result
+
+    def test_xml_corr_id_extracted(self):
+        text = "<RqUID>req-789</RqUID><fault><faultCode>ERR</faultCode></fault>"
+        result = _extract_text_http_info(text)
+        assert "req-789" in result
+        assert "ERR" in result
+
+    def test_message_included_only_with_error_signal(self):
+        """message без признака ошибки не включается."""
+        text = '{"message": "All systems operational"}'
+        result = _extract_text_http_info(text)
+        assert result == ""
+
+    def test_message_included_when_error_present(self):
+        """message включается если рядом есть error-поле."""
+        text = '{"error": "timeout", "message": "Connection timed out after 30s"}'
+        result = _extract_text_http_info(text)
+        assert "Connection timed out" in result
+
+    def test_no_http_signals_returns_empty(self):
+        text = "Just a regular log line without any HTTP context"
+        result = _extract_text_http_info(text)
+        assert result == ""
+
+    def test_fault_code_extracted(self):
+        text = '{"faultCode": "SVC0001", "faultString": "Internal error"}'
+        result = _extract_text_http_info(text)
+        assert "SVC0001" in result

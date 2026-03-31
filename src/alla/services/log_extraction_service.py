@@ -73,6 +73,113 @@ def _decode_text(content: bytes) -> str | None:
     return str(best)
 
 
+# Regex-паттерны для HTTP-детекции в тексте
+_CORR_ID_JSON_RE = re.compile(
+    r"\"(?P<key>RqUID|OperUID|requestId|correlationId|traceId)\"\s*:\s*\"(?P<value>[A-Za-z0-9\-_.]{4,64})\"",
+    re.IGNORECASE,
+)
+_CORR_ID_KV_RE = re.compile(
+    r"(?P<key>RqUID|OperUID|requestId|correlationId|traceId)"
+    r"\s*[=:]\s*\"?(?P<value>[A-Za-z0-9\-_.]{4,64})",
+    re.IGNORECASE,
+)
+_CORR_ID_XML_RE = re.compile(
+    r"<(?P<key>RqUID|OperUID|requestId|correlationId|traceId)>"
+    r"(?P<value>[A-Za-z0-9\-_.]{4,64})"
+    r"</(?:RqUID|OperUID|requestId|correlationId|traceId)>",
+    re.IGNORECASE,
+)
+_HTTP_STATUS_RE = re.compile(r"HTTP/[12](?:\.\d)?\s+(4\d\d|5\d\d)\b")
+_STATUS_CODE_RE = re.compile(
+    r"\"(?P<key>statusCode|status|code)\"\s*:\s*(?P<value>[45]\d{2})",
+    re.IGNORECASE,
+)
+_ERROR_FIELD_RE = re.compile(
+    r"\"(?P<key>error(?:Code|Message)?|fault(?:Code|String)?|cause|reason)"
+    r"\"\s*:\s*\"(?P<value>[^\"]{1,300})\"",
+    re.IGNORECASE,
+)
+_CONTEXT_FIELD_RE = re.compile(
+    r"\"(?P<key>message|description|details)\"\s*:\s*\"(?P<value>[^\"]{1,300})\"",
+    re.IGNORECASE,
+)
+_XML_ERROR_RE = re.compile(
+    r"<(?P<key>fault(?:Code|String)?|error(?:Code)?|errorMessage)"
+    r">(?P<value>[^<]{1,300})</",
+    re.IGNORECASE,
+)
+
+_ERROR_FIELD_KEYS = frozenset({
+    "error", "errorcode", "errormessage",
+    "fault", "faultcode", "faultstring",
+    "cause", "reason",
+})
+
+
+def _extract_text_http_info(text: str) -> str:
+    """Извлечь HTTP-контекст из сырого текста через regex.
+
+    Возвращает форматированную строку или пустую строку если ничего не найдено.
+    """
+    corr_ids: dict[str, str] = {}
+    http_statuses: list[str] = []
+    error_fields: dict[str, str] = {}
+    context_fields: dict[str, str] = {}
+    has_error_signal = False
+
+    for m in _CORR_ID_JSON_RE.finditer(text):
+        corr_ids.setdefault(m.group("key"), m.group("value"))
+    for m in _CORR_ID_KV_RE.finditer(text):
+        corr_ids.setdefault(m.group("key"), m.group("value"))
+    for m in _CORR_ID_XML_RE.finditer(text):
+        corr_ids.setdefault(m.group("key"), m.group("value"))
+
+    for m in _HTTP_STATUS_RE.finditer(text):
+        status = m.group(1)
+        if status not in http_statuses:
+            http_statuses.append(status)
+        has_error_signal = True
+
+    for m in _STATUS_CODE_RE.finditer(text):
+        status = m.group("value")
+        if status not in http_statuses:
+            http_statuses.append(status)
+        has_error_signal = True
+
+    for m in _ERROR_FIELD_RE.finditer(text):
+        value = m.group("value").strip()
+        if value:
+            error_fields[m.group("key")] = value
+            has_error_signal = True
+
+    for m in _XML_ERROR_RE.finditer(text):
+        value = m.group("value").strip()
+        if value:
+            error_fields.setdefault(m.group("key"), value)
+            has_error_signal = True
+
+    for m in _CONTEXT_FIELD_RE.finditer(text):
+        value = m.group("value").strip()
+        if value:
+            context_fields[m.group("key")] = value
+
+    if not corr_ids and not has_error_signal:
+        return ""
+
+    lines: list[str] = []
+    if corr_ids:
+        lines.append("Корреляция: " + ", ".join(f"{k}={v}" for k, v in corr_ids.items()))
+    for status in http_statuses:
+        lines.append(f"HTTP статус: {status}")
+    for key, value in error_fields.items():
+        lines.append(f"{key}: {value}")
+    if has_error_signal:
+        for key, value in context_fields.items():
+            lines.append(f"{key}: {value}")
+
+    return "\n".join(lines)
+
+
 class LogExtractionConfig:
     """Параметры извлечения логов из аттачментов."""
 
