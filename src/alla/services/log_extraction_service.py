@@ -109,12 +109,6 @@ _XML_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
-_ERROR_FIELD_KEYS = frozenset({
-    "error", "errorcode", "errormessage",
-    "fault", "faultcode", "faultstring",
-    "cause", "reason",
-})
-
 
 def _extract_text_http_info(text: str) -> str:
     """Извлечь HTTP-контекст из сырого текста через regex.
