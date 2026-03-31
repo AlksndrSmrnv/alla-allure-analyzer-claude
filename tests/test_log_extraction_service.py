@@ -239,3 +239,80 @@ class TestExtractTextHttpInfo:
         text = '{"faultCode": "SVC0001", "faultString": "Internal error"}'
         result = _extract_text_http_info(text)
         assert "SVC0001" in result
+
+
+from alla.services.log_extraction_service import _scan_json_for_http_info
+
+
+class TestScanJsonForHttpInfo:
+    def test_flat_json_with_all_fields(self):
+        obj = {"RqUID": "abc-123", "statusCode": 500, "error": "Service unavailable"}
+        result = _scan_json_for_http_info(obj)
+        assert "RqUID=abc-123" in result
+        assert "500" in result
+        assert "Service unavailable" in result
+
+    def test_nested_corr_id(self):
+        obj = {"header": {"RqUID": "nested-id", "OperUID": "op-42"}, "body": {}}
+        result = _scan_json_for_http_info(obj)
+        assert "nested-id" in result
+        assert "op-42" in result
+
+    def test_http_status_not_included_if_2xx(self):
+        obj = {"statusCode": 200, "message": "OK"}
+        result = _scan_json_for_http_info(obj)
+        assert result == ""
+
+    def test_http_status_4xx_included(self):
+        obj = {"httpStatus": 401, "error": "Unauthorized"}
+        result = _scan_json_for_http_info(obj)
+        assert "401" in result
+
+    def test_message_not_included_without_error_signal(self):
+        obj = {"message": "Transaction completed successfully"}
+        result = _scan_json_for_http_info(obj)
+        assert result == ""
+
+    def test_message_included_when_error_present(self):
+        obj = {"statusCode": 500, "error": "Internal Error", "message": "DB timeout"}
+        result = _scan_json_for_http_info(obj)
+        assert "DB timeout" in result
+
+    def test_deeply_nested_error(self):
+        obj = {
+            "response": {
+                "header": {"RqUID": "deep-id"},
+                "body": {
+                    "errors": [
+                        {"errorCode": "E001", "errorMessage": "Service down"}
+                    ]
+                },
+            }
+        }
+        result = _scan_json_for_http_info(obj)
+        assert "deep-id" in result
+        assert "E001" in result
+        assert "Service down" in result
+
+    def test_no_signals_returns_empty(self):
+        obj = {"name": "John", "age": 30, "active": True}
+        result = _scan_json_for_http_info(obj)
+        assert result == ""
+
+    def test_depth_limit_respected(self):
+        obj: dict = {"level": 0}
+        current = obj
+        for i in range(1, 15):
+            current["child"] = {"level": i}
+            current = current["child"]
+        current["RqUID"] = "deep-corr"
+        result = _scan_json_for_http_info(obj)
+        assert isinstance(result, str)
+
+    def test_list_of_objects(self):
+        obj = [
+            {"RqUID": "id-1", "error": "first failure"},
+            {"RqUID": "id-2", "statusCode": 503},
+        ]
+        result = _scan_json_for_http_info(obj)
+        assert "id-1" in result or "id-2" in result

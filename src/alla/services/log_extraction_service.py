@@ -8,6 +8,7 @@
 import asyncio
 import logging
 import re
+from typing import Any
 
 from alla.clients.base import AttachmentProvider
 from alla.models.testops import AttachmentMeta, FailedTestSummary
@@ -156,6 +157,90 @@ def _extract_text_http_info(text: str) -> str:
         value = m.group("value").strip()
         if value:
             context_fields[m.group("key")] = value
+
+    if not corr_ids and not has_error_signal:
+        return ""
+
+    lines: list[str] = []
+    if corr_ids:
+        lines.append("Корреляция: " + ", ".join(f"{k}={v}" for k, v in corr_ids.items()))
+    for status in http_statuses:
+        lines.append(f"HTTP статус: {status}")
+    for key, value in error_fields.items():
+        lines.append(f"{key}: {value}")
+    if has_error_signal:
+        for key, value in context_fields.items():
+            lines.append(f"{key}: {value}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# JSON scanning for HTTP info
+# ---------------------------------------------------------------------------
+
+_JSON_CORR_KEYS = frozenset({"rquid", "operuid", "requestid", "correlationid", "traceid"})
+_JSON_STATUS_KEYS = frozenset({"status", "statuscode", "httpstatus", "responsestatus"})
+_JSON_ERROR_KEYS = frozenset({
+    "error", "errorcode", "errormessage",
+    "fault", "faultcode", "faultstring",
+    "cause", "reason",
+})
+_JSON_CONTEXT_KEYS = frozenset({"message", "description", "details"})
+_JSON_MAX_DEPTH = 10
+_JSON_VALUE_MAX_CHARS = 300
+
+
+def _collect_json_signals(
+    obj: Any,
+    corr_ids: dict[str, str],
+    http_statuses: list[int],
+    error_fields: dict[str, str],
+    context_fields: dict[str, str],
+    depth: int,
+) -> None:
+    """Рекурсивно собрать HTTP-сигналы из JSON-объекта."""
+    if depth > _JSON_MAX_DEPTH:
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            kl = str(k).lower()
+            if kl in _JSON_CORR_KEYS:
+                if isinstance(v, (str, int)) and str(v).strip():
+                    corr_ids.setdefault(str(k), str(v)[:64])
+            elif kl in _JSON_STATUS_KEYS:
+                if isinstance(v, int) and 400 <= v <= 599:
+                    if v not in http_statuses:
+                        http_statuses.append(v)
+            elif kl in _JSON_ERROR_KEYS:
+                if isinstance(v, str) and v.strip():
+                    error_fields.setdefault(str(k), v[:_JSON_VALUE_MAX_CHARS])
+                else:
+                    _collect_json_signals(v, corr_ids, http_statuses, error_fields, context_fields, depth + 1)
+            elif kl in _JSON_CONTEXT_KEYS:
+                if isinstance(v, str) and v.strip():
+                    context_fields.setdefault(str(k), v[:_JSON_VALUE_MAX_CHARS])
+            else:
+                _collect_json_signals(v, corr_ids, http_statuses, error_fields, context_fields, depth + 1)
+    elif isinstance(obj, list):
+        for item in obj:
+            _collect_json_signals(item, corr_ids, http_statuses, error_fields, context_fields, depth + 1)
+
+
+def _scan_json_for_http_info(obj: Any) -> str:
+    """Извлечь HTTP-контекст из распарсенного JSON-объекта.
+
+    Рекурсивно ищет correlation IDs, HTTP-статусы и поля ошибок.
+    Возвращает форматированную строку или пустую строку если ничего не найдено.
+    """
+    corr_ids: dict[str, str] = {}
+    http_statuses: list[int] = []
+    error_fields: dict[str, str] = {}
+    context_fields: dict[str, str] = {}
+
+    _collect_json_signals(obj, corr_ids, http_statuses, error_fields, context_fields, 0)
+
+    has_error_signal = bool(http_statuses) or bool(error_fields)
 
     if not corr_ids and not has_error_signal:
         return ""
