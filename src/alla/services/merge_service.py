@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections import defaultdict
 
 from alla.knowledge.feedback_signature import build_feedback_cluster_context
 from alla.knowledge.merge_rules_models import MergeRule
-from alla.models.clustering import ClusterSignature, ClusteringReport, FailureCluster
+from alla.models.clustering import ClusteringReport, FailureCluster
 from alla.models.testops import FailedTestSummary
+from alla.services.clustering_service import generate_cluster_id
 
 
 class _UnionFind:
@@ -127,7 +127,7 @@ def _merge_cluster_group(
     signature = representative.signature.model_copy(deep=True)
 
     return FailureCluster(
-        cluster_id=_generate_cluster_id(signature, member_test_ids),
+        cluster_id=generate_cluster_id(signature, member_test_ids),
         label=representative.label,
         signature=signature,
         member_test_ids=member_test_ids,
@@ -137,19 +137,3 @@ def _merge_cluster_group(
         example_trace_snippet=representative.example_trace_snippet,
         example_step_path=representative.example_step_path,
     )
-
-
-def _generate_cluster_id(
-    signature: ClusterSignature,
-    member_ids: list[int],
-) -> str:
-    """Построить детерминированный cluster_id по той же схеме, что clustering stage."""
-    components = [
-        signature.exception_type or "",
-        signature.category or "",
-        "|".join(signature.common_frames),
-        signature.message_pattern or "",
-        "|".join(str(test_id) for test_id in member_ids),
-    ]
-    raw = "\n".join(components)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
