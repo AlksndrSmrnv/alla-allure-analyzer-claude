@@ -10,8 +10,13 @@ _LOG_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Заголовок секции, создаваемый LogExtractionService: --- [файл: name] ---
-_LOG_SECTION_RE = re.compile(r"^--- \[файл: (.+?)\] ---$", re.MULTILINE)
+# Заголовок секции, создаваемый LogExtractionService:
+# --- [файл: name] ---
+# --- [HTTP: name] ---
+_LOG_SECTION_RE = re.compile(
+    r"^--- \[(?P<section_type>файл|HTTP): (?P<section_name>.+?)\] ---$",
+    re.MULTILINE,
+)
 
 
 def has_explicit_errors(log_snippet: str | None) -> bool:
@@ -21,22 +26,41 @@ def has_explicit_errors(log_snippet: str | None) -> bool:
     return bool(_LOG_ERROR_RE.search(log_snippet))
 
 
-def parse_log_sections(log_snippet: str) -> list[tuple[str, str]]:
-    """Разбить log_snippet на секции [(filename, content), ...].
+def parse_log_sections(
+    log_snippet: str,
+    *,
+    include_http: bool = True,
+) -> list[tuple[str, str]]:
+    """Разбить log_snippet на секции [(label, content), ...].
 
     LogExtractionService объединяет ERROR-блоки из нескольких файлов в одну
-    строку с разделителями вида ``--- [файл: name.log] ---``.
-    Эта функция разбивает строку обратно на именованные секции.
+    строку с разделителями вида ``--- [файл: name.log] ---`` или
+    ``--- [HTTP: response.json] ---``. Эта функция разбивает строку обратно
+    на именованные секции.
+
+    Для HTTP-секций label возвращается как ``HTTP: <name>``, чтобы downstream
+    consumers могли отобразить их отдельно от обычных лог-файлов.
 
     Если заголовков не найдено (например, старый формат или один файл без
     заголовка) — возвращает ``[("", log_snippet.strip())]``.
     """
-    parts = _LOG_SECTION_RE.split(log_snippet)
-    # re.split() с группой возвращает: [prefix, name1, body1, name2, body2, ...]
+    matches = list(_LOG_SECTION_RE.finditer(log_snippet))
+    if not matches:
+        return [("", log_snippet.strip())]
+
     sections: list[tuple[str, str]] = []
-    for i in range(1, len(parts), 2):
-        name = parts[i].strip()
-        body = parts[i + 1].strip() if i + 1 < len(parts) else ""
+    for index, match in enumerate(matches):
+        section_type = match.group("section_type")
+        if section_type == "HTTP" and not include_http:
+            continue
+
+        name = match.group("section_name").strip()
+        body_start = match.end()
+        body_end = (
+            matches[index + 1].start() if index + 1 < len(matches) else len(log_snippet)
+        )
+        body = log_snippet[body_start:body_end].strip()
         if body:
-            sections.append((name, body))
-    return sections or [("", log_snippet.strip())]
+            label = name if section_type == "файл" else f"HTTP: {name}"
+            sections.append((label, body))
+    return sections

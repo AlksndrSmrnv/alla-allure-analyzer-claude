@@ -176,6 +176,43 @@ def test_html_report_embeds_exact_feedback_payload() -> None:
     assert "CLUSTER_FEEDBACK_CONTEXTS" in html
     assert "issue_signature_hash" in html
 
+def test_html_report_renders_http_section_separately() -> None:
+    """HTTP-секция выводится как отдельный блок, а не как сырой заголовок в pre."""
+    cluster = make_failure_cluster(
+        cluster_id="c-http",
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+    )
+    result = AnalysisResult(
+        triage_report=make_triage_report(
+            failed_tests=[
+                make_failed_test_summary(
+                    test_result_id=1,
+                    log_snippet=(
+                        "--- [файл: app.log] ---\n"
+                        "retry budget exhausted while saving order\n"
+                        "\n"
+                        "--- [HTTP: response.json] ---\n"
+                        "HTTP статус: 503\n"
+                        "error: Service unavailable"
+                    ),
+                )
+            ]
+        ),
+        clustering_report=make_clustering_report(
+            clusters=[cluster],
+            cluster_count=1,
+            total_failures=1,
+        ),
+    )
+
+    html = generate_html_report(result)
+
+    assert "HTTP: response.json" in html
+    assert "Service unavailable" in html
+    assert "--- [HTTP: response.json] ---" not in html
+
 
 def test_html_report_renders_merge_controls_only_for_mergeable_clusters() -> None:
     """Merge checkbox рисуется только для кластеров с вычислимой сигнатурой."""
