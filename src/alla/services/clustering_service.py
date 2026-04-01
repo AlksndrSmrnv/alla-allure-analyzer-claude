@@ -556,26 +556,34 @@ class ClusteringService:
         signature: ClusterSignature,
         member_ids: list[int] | None = None,
     ) -> str:
-        """Детерминированный ID кластера на основе SHA-256 хеша сигнатуры.
-
-        member_ids всегда включаются в хеш для гарантии уникальности,
-        даже при совпадающих сигнатурах.
-        """
-        components = [
-            signature.exception_type or "",
-            signature.category or "",
-            "|".join(signature.common_frames),
-            signature.message_pattern or "",
-        ]
-        if member_ids:
-            components.append("|".join(str(tid) for tid in sorted(member_ids)))
-        raw = "\n".join(components)
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        return generate_cluster_id(signature, member_ids)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def generate_cluster_id(
+    signature: ClusterSignature,
+    member_ids: list[int] | None = None,
+) -> str:
+    """Детерминированный ID кластера на основе SHA-256 хеша сигнатуры.
+
+    member_ids всегда включаются в хеш для гарантии уникальности,
+    даже при совпадающих сигнатурах.
+    """
+    components = [
+        signature.exception_type or "",
+        signature.category or "",
+        "|".join(signature.common_frames),
+        signature.message_pattern or "",
+    ]
+    if member_ids:
+        components.append("|".join(str(tid) for tid in sorted(member_ids)))
+    raw = "\n".join(components)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
 
 def _first_n_lines(text: str | None, n: int) -> str | None:
     """Вернуть первые n строк текста или None."""
