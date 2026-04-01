@@ -10,6 +10,7 @@ import pytest
 
 import alla
 from alla.knowledge.feedback_models import FeedbackResponse, FeedbackVote
+from alla.knowledge.merge_rules_models import MergeRule
 from alla.exceptions import (
     AllureApiError,
     AuthenticationError,
@@ -469,3 +470,113 @@ async def test_resolve_feedback_uses_exact_signature_hash(monkeypatch, _http_cli
             }
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_create_merge_rules_returns_upsert_counts(monkeypatch, _http_client) -> None:
+    """POST /api/v1/merge-rules сохраняет пары и возвращает create/update counts."""
+    captured: dict[str, Any] = {}
+
+    class _Store:
+        def save_rules(self, project_id, pairs, launch_id=None):
+            captured["project_id"] = project_id
+            captured["pairs"] = pairs
+            captured["launch_id"] = launch_id
+            return (
+                [
+                    MergeRule(
+                        rule_id=15,
+                        project_id=project_id,
+                        signature_hash_a="a" * 64,
+                        signature_hash_b="b" * 64,
+                        audit_text_a="[message]\nA",
+                        audit_text_b="[message]\nB",
+                        launch_id=launch_id,
+                    )
+                ],
+                1,
+                0,
+            )
+
+    monkeypatch.setattr("alla.server._get_merge_rules_store", lambda: _Store())
+
+    payload = {
+        "project_id": 42,
+        "launch_id": 123,
+        "pairs": [
+            {
+                "signature_hash_a": "a" * 64,
+                "signature_hash_b": "b" * 64,
+                "audit_text_a": "[message]\nA",
+                "audit_text_b": "[message]\nB",
+            }
+        ],
+    }
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/merge-rules", json=payload)
+
+    assert resp.status_code == 200
+    assert captured["project_id"] == 42
+    assert captured["launch_id"] == 123
+    assert len(captured["pairs"]) == 1
+    assert resp.json()["created_count"] == 1
+    assert resp.json()["updated_count"] == 0
+    assert resp.json()["rules"][0]["rule_id"] == 15
+
+
+@pytest.mark.asyncio
+async def test_list_merge_rules_returns_rules_for_project(monkeypatch, _http_client) -> None:
+    """GET /api/v1/merge-rules?project_id=N отдаёт список правил проекта."""
+    captured: dict[str, Any] = {}
+
+    class _Store:
+        def load_rules(self, project_id):
+            captured["project_id"] = project_id
+            return [
+                MergeRule(
+                    rule_id=7,
+                    project_id=project_id,
+                    signature_hash_a="c" * 64,
+                    signature_hash_b="d" * 64,
+                )
+            ]
+
+    monkeypatch.setattr("alla.server._get_merge_rules_store", lambda: _Store())
+
+    async with _http_client as client:
+        resp = await client.get("/api/v1/merge-rules", params={"project_id": 77})
+
+    assert resp.status_code == 200
+    assert captured["project_id"] == 77
+    assert resp.json() == {
+        "rules": [
+            {
+                "rule_id": 7,
+                "project_id": 77,
+                "signature_hash_a": "c" * 64,
+                "signature_hash_b": "d" * 64,
+                "audit_text_a": "",
+                "audit_text_b": "",
+                "launch_id": None,
+                "created_at": None,
+            }
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_delete_merge_rule_returns_404_when_missing(monkeypatch, _http_client) -> None:
+    """DELETE /api/v1/merge-rules/{rule_id} → 404, если правило не найдено."""
+    class _Store:
+        def delete_rule(self, rule_id):
+            assert rule_id == 99
+            return False
+
+    monkeypatch.setattr("alla.server._get_merge_rules_store", lambda: _Store())
+
+    async with _http_client as client:
+        resp = await client.delete("/api/v1/merge-rules/99")
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Merge rule 99 not found"

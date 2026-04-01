@@ -27,6 +27,7 @@ from alla.utils.text_preview import preview_head
 if TYPE_CHECKING:
     from alla.knowledge.base import KnowledgeBaseProvider
     from alla.knowledge.feedback_store import FeedbackStore
+    from alla.knowledge.merge_rules_store import PostgresMergeRulesStore
     from alla.knowledge.matcher import MatcherConfig
     from alla.knowledge.models import KBEntry
     from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary, LLMPushResult
@@ -88,6 +89,11 @@ async def analyze_launch(
     await _enrich_with_logs(report, client, settings)
 
     clustering_report = _cluster_failures(launch_id, report, settings)
+    clustering_report = _apply_merge_rules_phase(
+        report,
+        clustering_report,
+        settings,
+    )
     kb_stage = _run_kb_stage(report, clustering_report, settings)
     onboarding = _build_onboarding_state(
         settings,
@@ -182,6 +188,58 @@ def _cluster_failures(
         )
     )
     return clustering_service.cluster_failures(launch_id, report.failed_tests)
+
+
+def _apply_merge_rules_phase(
+    report: TriageReport,
+    clustering_report: ClusteringReport | None,
+    settings: Settings,
+) -> ClusteringReport | None:
+    """Применить сохранённые merge rules к результату кластеризации."""
+    if (
+        clustering_report is None
+        or not clustering_report.clusters
+        or report.project_id is None
+        or not settings.kb_active
+    ):
+        return clustering_report
+
+    merge_rules_store = _get_merge_rules_store(
+        kb_postgres_dsn=settings.kb_postgres_dsn,
+    )
+    try:
+        rules = merge_rules_store.load_rules(report.project_id)
+    except Exception as exc:
+        logger.warning(
+            "Merge rules: не удалось загрузить правила для project_id=%s: %s",
+            report.project_id,
+            exc,
+        )
+        return clustering_report
+
+    if not rules:
+        return clustering_report
+
+    from alla.services.merge_service import apply_merge_rules
+
+    try:
+        merged_report = apply_merge_rules(
+            clustering_report,
+            report.failed_tests,
+            rules,
+        )
+    except Exception as exc:
+        logger.warning("Merge rules: ошибка применения: %s", exc)
+        return clustering_report
+
+    if merged_report.cluster_count != clustering_report.cluster_count:
+        logger.info(
+            "Merge rules: project_id=%s, кластеров %d -> %d",
+            report.project_id,
+            clustering_report.cluster_count,
+            merged_report.cluster_count,
+        )
+    return merged_report
 
 
 def _run_kb_stage(
@@ -651,6 +709,8 @@ def _apply_exact_feedback_memory(
         ),
     )
     return merged[:max_results]
+
+
 def _get_or_create_kb(
     matcher_config: "MatcherConfig",
     project_id: int | None = None,
@@ -679,3 +739,10 @@ def _get_feedback_store(*, kb_postgres_dsn: str) -> "FeedbackStore":
     from alla.knowledge.postgres_feedback import PostgresFeedbackStore
 
     return PostgresFeedbackStore(dsn=kb_postgres_dsn)
+
+
+def _get_merge_rules_store(*, kb_postgres_dsn: str) -> "PostgresMergeRulesStore":
+    """Создать merge rules store для текущего запуска анализа."""
+    from alla.knowledge.merge_rules_store import PostgresMergeRulesStore
+
+    return PostgresMergeRulesStore(dsn=kb_postgres_dsn)

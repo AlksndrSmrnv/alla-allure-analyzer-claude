@@ -176,7 +176,6 @@ def test_html_report_embeds_exact_feedback_payload() -> None:
     assert "CLUSTER_FEEDBACK_CONTEXTS" in html
     assert "issue_signature_hash" in html
 
-
 def test_html_report_renders_http_section_separately() -> None:
     """HTTP-секция выводится как отдельный блок, а не как сырой заголовок в pre."""
     cluster = make_failure_cluster(
@@ -213,3 +212,48 @@ def test_html_report_renders_http_section_separately() -> None:
     assert "HTTP: response.json" in html
     assert "Service unavailable" in html
     assert "--- [HTTP: response.json] ---" not in html
+
+
+def test_html_report_renders_merge_controls_only_for_mergeable_clusters() -> None:
+    """Merge checkbox рисуется только для кластеров с вычислимой сигнатурой."""
+    cluster_a = make_failure_cluster(cluster_id="c-merge-a", member_count=2)
+    cluster_b = make_failure_cluster(cluster_id="c-merge-b", member_count=1)
+    cluster_empty = make_failure_cluster(
+        cluster_id="c-no-signal",
+        member_count=1,
+        example_message=None,
+        example_trace_snippet=None,
+    )
+    result = AnalysisResult(
+        triage_report=make_triage_report(project_id=42),
+        clustering_report=make_clustering_report(
+            clusters=[cluster_a, cluster_b, cluster_empty],
+            cluster_count=3,
+            total_failures=4,
+        ),
+        feedback_contexts={
+            "c-merge-a": FeedbackClusterContext(
+                audit_text="[message]\nGateway timeout",
+                base_issue_signature=FeedbackIssueSignature(
+                    signature_hash="a" * 64,
+                    basis="message_exact",
+                ),
+            ),
+            "c-merge-b": FeedbackClusterContext(
+                audit_text="[message]\nConnection refused",
+                base_issue_signature=FeedbackIssueSignature(
+                    signature_hash="b" * 64,
+                    basis="message_exact",
+                ),
+            ),
+        },
+    )
+
+    html = generate_html_report(
+        result,
+        feedback_api_url="http://feedback.local",
+    )
+
+    assert html.count('class="cluster-merge-checkbox"') == 2
+    assert "cluster-merge-toolbar" in html
+    assert "/api/v1/merge-rules" in html
