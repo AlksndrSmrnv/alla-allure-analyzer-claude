@@ -202,29 +202,47 @@ class Settings(BaseSettings):
         ``delete=False`` — вызывающий код отвечает за их удаление.
         """
         import base64
+        import os
         import tempfile
 
         cert_data = base64.b64decode(self.gigachat_cert_b64)
         key_data = base64.b64decode(self.gigachat_key_b64)
 
-        cert_file = tempfile.NamedTemporaryFile(
-            suffix=".pem", prefix="alla_cert_", delete=False,
-        )
-        cert_file.write(cert_data)
-        cert_file.close()
+        cert_path = ""
+        key_path = ""
 
-        key_file = tempfile.NamedTemporaryFile(
-            suffix=".pem", prefix="alla_key_", delete=False,
-        )
-        key_file.write(key_data)
-        key_file.close()
+        try:
+            with tempfile.NamedTemporaryFile(
+                suffix=".pem",
+                prefix="alla_cert_",
+                delete=False,
+            ) as cert_file:
+                cert_file.write(cert_data)
+                cert_path = cert_file.name
+
+            with tempfile.NamedTemporaryFile(
+                suffix=".pem",
+                prefix="alla_key_",
+                delete=False,
+            ) as key_file:
+                key_file.write(key_data)
+                key_path = key_file.name
+        except Exception:
+            for path in (cert_path, key_path):
+                if not path:
+                    continue
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            raise
 
         logger.debug(
             "GigaChat cert/key записаны во временные файлы: %s, %s",
-            cert_file.name,
-            key_file.name,
+            cert_path,
+            key_path,
         )
-        return cert_file.name, key_file.name
+        return cert_path, key_path
 
     def resolve_secrets(self) -> None:
         """Загрузить секреты из Vault Proxy, если ``ALLURE_VAULT_URL`` задан.

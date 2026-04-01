@@ -392,16 +392,18 @@ async def _run_llm_stage(
     ):
         return None, None
 
-    from alla.clients.gigachat_client import GigaChatClient
-    from alla.services.llm_service import LLMService
-
     _log_llm_stage_input(clustering_report, report.failed_tests, kb_stage.kb_results)
 
     import os
 
-    cert_path, key_path = settings.resolve_cert_files()
+    cert_path: str | None = None
+    key_path: str | None = None
 
     try:
+        from alla.clients.gigachat_client import GigaChatClient
+        from alla.services.llm_service import LLMService
+
+        cert_path, key_path = settings.resolve_cert_files()
         llm_result = None
         async with GigaChatClient(
             base_url=settings.gigachat_base_url,
@@ -437,8 +439,13 @@ async def _run_llm_stage(
             )
 
         return llm_result, llm_launch_summary
+    except Exception as exc:
+        logger.warning("LLM stage пропущен: не удалось инициализировать GigaChat: %s", exc)
+        return None, None
     finally:
         for path in (cert_path, key_path):
+            if not path:
+                continue
             try:
                 os.unlink(path)
             except OSError:
