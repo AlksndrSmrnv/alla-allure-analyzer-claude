@@ -398,51 +398,64 @@ async def _run_llm_stage(
 
     cert_path: str | None = None
     key_path: str | None = None
+    gigachat: object | None = None
 
     try:
         from alla.clients.gigachat_client import GigaChatClient
+        from alla.models.llm import LLMLaunchSummary
         from alla.services.llm_service import LLMService
 
-        cert_path, key_path = settings.resolve_cert_files()
-        llm_result = None
-        async with GigaChatClient(
-            base_url=settings.gigachat_base_url,
-            cert_file=cert_path,
-            key_file=key_path,
-            model=settings.gigachat_model,
-            verify_ssl=settings.ssl_verify,
-            timeout=settings.llm_timeout,
-            max_retries=settings.llm_max_retries,
-            retry_base_delay=settings.llm_retry_base_delay,
-        ) as gigachat:
-            llm_service = LLMService(
-                gigachat,
-                concurrency=settings.llm_concurrency,
-                message_max_chars=settings.llm_prompt_message_max_chars,
-                trace_max_chars=settings.llm_prompt_trace_max_chars,
-                log_max_chars=settings.llm_prompt_log_max_chars,
+        try:
+            cert_path, key_path = settings.resolve_cert_files()
+            gigachat = GigaChatClient(
+                base_url=settings.gigachat_base_url,
+                cert_file=cert_path,
+                key_file=key_path,
+                model=settings.gigachat_model,
+                verify_ssl=settings.ssl_verify,
+                timeout=settings.llm_timeout,
+                max_retries=settings.llm_max_retries,
+                retry_base_delay=settings.llm_retry_base_delay,
             )
-            try:
-                llm_result = await llm_service.analyze_clusters(
-                    clustering_report,
-                    kb_results=kb_stage.kb_results or None,
-                    failed_tests=report.failed_tests,
-                    kb_provenance=kb_stage.kb_provenance or None,
-                )
-            except Exception as exc:
-                logger.warning("LLM анализ: ошибка: %s", exc)
+        except Exception as exc:
+            logger.warning("LLM stage пропущен: не удалось подготовить GigaChat: %s", exc)
+            return None, None
 
+        llm_service = LLMService(
+            gigachat,
+            concurrency=settings.llm_concurrency,
+            message_max_chars=settings.llm_prompt_message_max_chars,
+            trace_max_chars=settings.llm_prompt_trace_max_chars,
+            log_max_chars=settings.llm_prompt_log_max_chars,
+        )
+        llm_result = None
+        try:
+            llm_result = await llm_service.analyze_clusters(
+                clustering_report,
+                kb_results=kb_stage.kb_results or None,
+                failed_tests=report.failed_tests,
+                kb_provenance=kb_stage.kb_provenance or None,
+            )
+        except Exception as exc:
+            logger.warning("LLM анализ: ошибка: %s", exc)
+
+        try:
             llm_launch_summary = await llm_service.generate_launch_summary(
                 clustering_report,
                 report,
                 llm_result,
             )
+        except Exception as exc:
+            logger.warning("LLM summary: ошибка подготовки: %s", exc)
+            llm_launch_summary = LLMLaunchSummary(summary_text="", error=str(exc))
 
         return llm_result, llm_launch_summary
-    except Exception as exc:
-        logger.warning("LLM stage пропущен: не удалось инициализировать GigaChat: %s", exc)
-        return None, None
     finally:
+        if gigachat is not None:
+            try:
+                await gigachat.close()
+            except Exception as exc:
+                logger.warning("LLM stage: ошибка закрытия GigaChat client: %s", exc)
         for path in (cert_path, key_path):
             if not path:
                 continue
