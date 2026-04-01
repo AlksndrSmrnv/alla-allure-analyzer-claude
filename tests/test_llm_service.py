@@ -34,12 +34,13 @@ def test_build_cluster_prompt_smoke_and_truncation() -> None:
         example_message="x" * 3000,
     )
 
-    prompt = build_cluster_prompt(cluster)
+    system, user = build_cluster_prompt(cluster)
 
-    assert "Gateway timeout" in prompt
-    assert "3" in prompt
-    assert "...[обрезано]" in prompt
-    assert "x" * 2001 not in prompt
+    assert "инженер" in system
+    assert "Gateway timeout" in user
+    assert "3" in user
+    assert "...[обрезано]" in user
+    assert "x" * 2001 not in user
 
 
 def test_build_cluster_prompt_includes_kb_provenance_context() -> None:
@@ -48,16 +49,16 @@ def test_build_cluster_prompt_includes_kb_provenance_context() -> None:
         example_message="AssertionError: expected 200 but got 500",
     )
 
-    prompt = build_cluster_prompt(
+    _system, user = build_cluster_prompt(
         cluster,
         kb_matches=[make_kb_match_result()],
         kb_query_provenance=(34, 78, 96),
     )
 
-    assert "AssertionError: expected 200 but got 500" in prompt
-    assert "сообщение об ошибке (34 симв.)" in prompt
-    assert "стек-трейс (78 симв.)" in prompt
-    assert "лог приложения (96 симв.)" in prompt
+    assert "AssertionError: expected 200 but got 500" in user
+    assert "сообщение об ошибке (34 симв.)" in user
+    assert "стек-трейс (78 симв.)" in user
+    assert "лог приложения (96 симв.)" in user
 
 
 def test_build_launch_summary_prompt_smoke() -> None:
@@ -66,10 +67,11 @@ def test_build_launch_summary_prompt_smoke() -> None:
     clustering_report = _make_report(cluster)
     triage_report = make_triage_report(total_results=10, failed_count=3)
 
-    prompt = build_launch_summary_prompt(clustering_report, triage_report)
+    system, user = build_launch_summary_prompt(clustering_report, triage_report)
 
-    assert "Gateway timeout" in prompt
-    assert "Приоритетные исправления" in prompt
+    assert "инженер" in system
+    assert "Gateway timeout" in user
+    assert "Приоритетные исправления" in user
 
 
 @pytest.mark.asyncio
@@ -77,8 +79,8 @@ async def test_analyze_clusters_skips_without_error_text() -> None:
     """Cluster with no message/trace/log is skipped without calling LLM."""
 
     class _Client:
-        async def run_flow(self, input_value):
-            raise AssertionError("run_flow should not be called")
+        async def chat(self, system_prompt, user_prompt):
+            raise AssertionError("chat should not be called")
 
     service = LLMService(_Client())  # type: ignore[arg-type]
     cluster = make_failure_cluster(
@@ -99,8 +101,8 @@ async def test_analyze_clusters_success_uses_representative_log() -> None:
     captured_prompts: list[str] = []
 
     class _Client:
-        async def run_flow(self, input_value):
-            captured_prompts.append(input_value)
+        async def chat(self, system_prompt, user_prompt):
+            captured_prompts.append(user_prompt)
             return "analysis"
 
     service = LLMService(_Client())  # type: ignore[arg-type]
@@ -127,19 +129,19 @@ async def test_analyze_clusters_success_uses_representative_log() -> None:
 
 
 @pytest.mark.asyncio
-async def test_analyze_clusters_handles_langflow_error() -> None:
+async def test_analyze_clusters_handles_llm_error() -> None:
     """Per-cluster LLM failures are captured instead of aborting the batch."""
 
     class _Client:
-        async def run_flow(self, input_value):
-            raise RuntimeError("Langflow unavailable")
+        async def chat(self, system_prompt, user_prompt):
+            raise RuntimeError("GigaChat unavailable")
 
     service = LLMService(_Client())  # type: ignore[arg-type]
     result = await service.analyze_clusters(_make_report(make_failure_cluster()))
 
     assert result.analyzed_count == 0
     assert result.failed_count == 1
-    assert "Langflow unavailable" in (result.cluster_analyses["c1"].error or "")
+    assert "GigaChat unavailable" in (result.cluster_analyses["c1"].error or "")
 
 
 def _make_push_inputs(
@@ -242,10 +244,10 @@ def test_build_cluster_prompt_respects_custom_limits() -> None:
         example_message="A" * 100,
     )
 
-    prompt_default = build_cluster_prompt(cluster)
-    prompt_tight = build_cluster_prompt(cluster, message_max_chars=50)
+    _sys_default, user_default = build_cluster_prompt(cluster)
+    _sys_tight, user_tight = build_cluster_prompt(cluster, message_max_chars=50)
 
     # При жёстком лимите 100 символов обрезаются до 50
-    assert "...[обрезано]" in prompt_tight
+    assert "...[обрезано]" in user_tight
     # При дефолтном лимите 2000 символов 100 символов не обрезаются
-    assert "...[обрезано]" not in prompt_default
+    assert "...[обрезано]" not in user_default

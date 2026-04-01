@@ -25,8 +25,8 @@ class Settings(BaseSettings):
         default="",
         description="Полный URL Vault Proxy для получения секретов "
         "(например http://vault-proxy/v1/secret/data/alla). "
-        "Если задан — ALLURE_TOKEN, ALLURE_KB_POSTGRES_DSN, ALLURE_LANGFLOW_API_KEY "
-        "загружаются из Vault с fallback на env vars.",
+        "Если задан — ALLURE_TOKEN, ALLURE_KB_POSTGRES_DSN, ALLURE_GIGACHAT_CERT_B64, "
+        "ALLURE_GIGACHAT_KEY_B64 загружаются из Vault с fallback на env vars.",
     )
 
     endpoint: str = Field(description="URL сервера Allure TestOps")
@@ -103,17 +103,27 @@ class Settings(BaseSettings):
         description="Вес лог-канала в кластеризации. Лог участвует в сравнении когда доступен; при отсутствии лога вес перераспределяется на message",
     )
 
-    langflow_base_url: str = Field(
+    gigachat_base_url: str = Field(
         default="",
-        description="Базовый URL Langflow API. Если задан вместе с flow_id — LLM и LLM push включаются автоматически.",
+        description="Базовый URL GigaChat API. Если задан вместе с cert и key — LLM включается автоматически.",
     )
-    langflow_flow_id: str = Field(default="", description="ID flow в Langflow для анализа ошибок")
-    langflow_api_key: str = Field(default="", description="API-ключ для аутентификации в Langflow (Bearer token)")
+    gigachat_cert_b64: str = Field(
+        default="",
+        description="Клиентский сертификат PEM в base64 для mTLS-аутентификации в GigaChat.",
+    )
+    gigachat_key_b64: str = Field(
+        default="",
+        description="Приватный ключ PEM в base64 для mTLS-аутентификации в GigaChat.",
+    )
+    gigachat_model: str = Field(
+        default="GigaChat-2-Max",
+        description="Название модели GigaChat (ALLURE_GIGACHAT_MODEL).",
+    )
     llm_timeout: int = Field(default=120, ge=10, description="Таймаут одного LLM-запроса в секундах")
-    llm_concurrency: int = Field(default=3, ge=1, description="Макс. параллельных запросов к Langflow API")
+    llm_concurrency: int = Field(default=3, ge=1, description="Макс. параллельных запросов к GigaChat API")
     llm_max_retries: int = Field(
         default=3, ge=0,
-        description="Макс. число повторных попыток при 429/503/сетевых ошибках Langflow (0 = без retry)",
+        description="Макс. число повторных попыток при 429/503/сетевых ошибках GigaChat (0 = без retry)",
     )
     llm_retry_base_delay: float = Field(
         default=1.0, ge=0.1,
@@ -173,16 +183,48 @@ class Settings(BaseSettings):
 
     @property
     def llm_active(self) -> bool:
-        """LLM включён автоматически если заданы Langflow URL и flow ID."""
-        return bool(self.langflow_base_url and self.langflow_flow_id)
+        """LLM включён автоматически если заданы GigaChat URL, сертификат и ключ."""
+        return bool(self.gigachat_base_url and self.gigachat_cert_b64 and self.gigachat_key_b64)
 
     # -- Vault Proxy integration --
 
     _VAULT_SECRET_FIELDS: dict[str, str] = {
         "ALLURE_TOKEN": "token",
         "ALLURE_KB_POSTGRES_DSN": "kb_postgres_dsn",
-        "ALLURE_LANGFLOW_API_KEY": "langflow_api_key",
+        "ALLURE_GIGACHAT_CERT_B64": "gigachat_cert_b64",
+        "ALLURE_GIGACHAT_KEY_B64": "gigachat_key_b64",
     }
+
+    def resolve_cert_files(self) -> tuple[str, str]:
+        """Декодировать base64 сертификат и ключ GigaChat во временные файлы.
+
+        Возвращает ``(cert_path, key_path)``.  Файлы создаются с
+        ``delete=False`` — вызывающий код отвечает за их удаление.
+        """
+        import base64
+        import tempfile
+
+        cert_data = base64.b64decode(self.gigachat_cert_b64)
+        key_data = base64.b64decode(self.gigachat_key_b64)
+
+        cert_file = tempfile.NamedTemporaryFile(
+            suffix=".pem", prefix="alla_cert_", delete=False,
+        )
+        cert_file.write(cert_data)
+        cert_file.close()
+
+        key_file = tempfile.NamedTemporaryFile(
+            suffix=".pem", prefix="alla_key_", delete=False,
+        )
+        key_file.write(key_data)
+        key_file.close()
+
+        logger.debug(
+            "GigaChat cert/key записаны во временные файлы: %s, %s",
+            cert_file.name,
+            key_file.name,
+        )
+        return cert_file.name, key_file.name
 
     def resolve_secrets(self) -> None:
         """Загрузить секреты из Vault Proxy, если ``ALLURE_VAULT_URL`` задан.

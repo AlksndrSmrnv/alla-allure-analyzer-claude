@@ -392,45 +392,57 @@ async def _run_llm_stage(
     ):
         return None, None
 
-    from alla.clients.langflow_client import LangflowClient
+    from alla.clients.gigachat_client import GigaChatClient
     from alla.services.llm_service import LLMService
 
     _log_llm_stage_input(clustering_report, report.failed_tests, kb_stage.kb_results)
 
-    llm_result = None
-    async with LangflowClient(
-        base_url=settings.langflow_base_url,
-        flow_id=settings.langflow_flow_id,
-        api_key=settings.langflow_api_key,
-        timeout=settings.llm_timeout,
-        ssl_verify=settings.ssl_verify,
-        max_retries=settings.llm_max_retries,
-        retry_base_delay=settings.llm_retry_base_delay,
-    ) as langflow:
-        llm_service = LLMService(
-            langflow,
-            concurrency=settings.llm_concurrency,
-            message_max_chars=settings.llm_prompt_message_max_chars,
-            trace_max_chars=settings.llm_prompt_trace_max_chars,
-            log_max_chars=settings.llm_prompt_log_max_chars,
-        )
-        try:
-            llm_result = await llm_service.analyze_clusters(
-                clustering_report,
-                kb_results=kb_stage.kb_results or None,
-                failed_tests=report.failed_tests,
-                kb_provenance=kb_stage.kb_provenance or None,
+    import os
+
+    cert_path, key_path = settings.resolve_cert_files()
+
+    try:
+        llm_result = None
+        async with GigaChatClient(
+            base_url=settings.gigachat_base_url,
+            cert_file=cert_path,
+            key_file=key_path,
+            model=settings.gigachat_model,
+            verify_ssl=settings.ssl_verify,
+            timeout=settings.llm_timeout,
+            max_retries=settings.llm_max_retries,
+            retry_base_delay=settings.llm_retry_base_delay,
+        ) as gigachat:
+            llm_service = LLMService(
+                gigachat,
+                concurrency=settings.llm_concurrency,
+                message_max_chars=settings.llm_prompt_message_max_chars,
+                trace_max_chars=settings.llm_prompt_trace_max_chars,
+                log_max_chars=settings.llm_prompt_log_max_chars,
             )
-        except Exception as exc:
-            logger.warning("LLM анализ: ошибка: %s", exc)
+            try:
+                llm_result = await llm_service.analyze_clusters(
+                    clustering_report,
+                    kb_results=kb_stage.kb_results or None,
+                    failed_tests=report.failed_tests,
+                    kb_provenance=kb_stage.kb_provenance or None,
+                )
+            except Exception as exc:
+                logger.warning("LLM анализ: ошибка: %s", exc)
 
-        llm_launch_summary = await llm_service.generate_launch_summary(
-            clustering_report,
-            report,
-            llm_result,
-        )
+            llm_launch_summary = await llm_service.generate_launch_summary(
+                clustering_report,
+                report,
+                llm_result,
+            )
 
-    return llm_result, llm_launch_summary
+        return llm_result, llm_launch_summary
+    finally:
+        for path in (cert_path, key_path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 def _log_llm_stage_input(
