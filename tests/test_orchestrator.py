@@ -264,8 +264,61 @@ def test_feedback_signature_uses_anchor_for_short_message_when_log_differs() -> 
     assert first.issue_signature.signature_hash != second.issue_signature.signature_hash
 
 
+def test_feedback_signature_ignores_http_sections_in_log_anchor() -> None:
+    """HTTP-метаданные не должны менять exact-feedback signature."""
+    cluster = FailureCluster(
+        cluster_id="c-http-anchor",
+        label="Gateway timeout",
+        signature=ClusterSignature(),
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message="Gateway timeout",
+    )
+    first = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout",
+                log_snippet=(
+                    "--- [файл: app.log] ---\n"
+                    "retry budget exhausted while saving order\n"
+                    "\n"
+                    "--- [HTTP: response.json] ---\n"
+                    "HTTP статус: 503\n"
+                    "error: Service unavailable"
+                ),
+            ),
+        },
+    )
+    second = build_feedback_cluster_context(
+        cluster,
+        {
+            1: _failed_test(
+                1,
+                status_message="Gateway timeout",
+                log_snippet=(
+                    "--- [файл: app.log] ---\n"
+                    "retry budget exhausted while saving order\n"
+                    "\n"
+                    "--- [HTTP: response.json] ---\n"
+                    "HTTP статус: 502\n"
+                    "error: Upstream gateway timeout"
+                ),
+            ),
+        },
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.issue_signature.basis == "message_log_anchor"
+    assert second.issue_signature.basis == "message_log_anchor"
+    assert first.issue_signature.signature_hash == second.issue_signature.signature_hash
+
+
 def test_feedback_signature_uses_matched_error_line_for_short_message() -> None:
-    """Short-case должен различать одинаковый summary с одной exception, но разными error lines."""
+    """Short-case должен различать одинаковый summary с разными error lines."""
     cluster = FailureCluster(
         cluster_id="c-short-matched",
         label="Gateway timeout",

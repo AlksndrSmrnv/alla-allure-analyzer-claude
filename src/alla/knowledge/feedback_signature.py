@@ -308,7 +308,7 @@ def _extract_log_anchor(log_snippet: str) -> _AnchorCandidate:
     matched_lines: list[_AnchorLine] = []
     fallback_lines: list[_AnchorLine] = []
 
-    for _, body in parse_log_sections(log_snippet):
+    for _, body in parse_log_sections(log_snippet, include_http=False):
         for raw_line in body.splitlines():
             stripped = raw_line.strip()
             if not stripped or _STACK_FRAME_RE.match(stripped):
