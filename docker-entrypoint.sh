@@ -6,7 +6,8 @@
 # Expected layout (one secret per file):
 #   /app/secrets/ALLURE_TOKEN
 #   /app/secrets/ALLURE_KB_POSTGRES_DSN
-#   /app/secrets/ALLURE_LANGFLOW_API_KEY
+#   /app/secrets/ALLURE_GIGACHAT_CERT_B64
+#   /app/secrets/ALLURE_GIGACHAT_KEY_B64
 #
 # The directory is optional: if secman is disabled or the path does not
 # exist the script still starts the application normally.

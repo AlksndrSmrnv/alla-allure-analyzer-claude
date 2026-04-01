@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from alla.config import Settings
 from alla.knowledge.feedback_models import FeedbackRecord, FeedbackVote
 from alla.knowledge.feedback_signature import build_feedback_cluster_context
 from alla.knowledge.models import KBEntry, KBMatchResult, RootCauseCategory
-from alla.models.clustering import ClusterSignature, FailureCluster
+from alla.models.clustering import ClusterSignature, ClusteringReport, FailureCluster
+from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary
 from alla.models.common import TestStatus as Status
 from alla.models.onboarding import OnboardingMode
-from alla.models.testops import FailedTestSummary
+from alla.models.testops import FailedTestSummary, TriageReport
+from alla.orchestrator import _KBStageResult
 from alla.orchestrator import (
     _apply_exact_feedback_memory,
     _build_kb_query_text,
     _build_onboarding_state,
+    _run_llm_stage,
 )
 
 
@@ -163,6 +170,228 @@ def test_build_onboarding_state_marks_missing_kb_config() -> None:
 
     assert state.mode == OnboardingMode.KB_NOT_CONFIGURED
     assert state.needs_bootstrap is False
+
+
+def _llm_settings() -> Settings:
+    return Settings(
+        endpoint="https://allure.example.com",
+        token="tok",
+        gigachat_base_url="https://gigachat.example.com/api/v1",
+        gigachat_cert_b64="Y2VydA==",
+        gigachat_key_b64="a2V5",
+    )
+
+
+def _single_cluster_report() -> ClusteringReport:
+    return ClusteringReport(
+        launch_id=1,
+        total_failures=1,
+        cluster_count=1,
+        clusters=[
+            FailureCluster(
+                cluster_id="c-1",
+                label="cluster",
+                signature=ClusterSignature(),
+                member_test_ids=[1],
+                member_count=1,
+                example_message="boom",
+            )
+        ],
+    )
+
+
+def _single_triage_report() -> TriageReport:
+    return TriageReport(
+        launch_id=1,
+        total_results=3,
+        failed_count=1,
+        failed_tests=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_llm_stage_returns_none_when_cert_resolution_fails(monkeypatch) -> None:
+    """Ошибка resolve_cert_files не должна валить весь pipeline."""
+    settings = _llm_settings()
+
+    def fail_resolve_cert_files(self: Settings) -> tuple[str, str]:
+        raise ValueError("bad cert payload")
+
+    monkeypatch.setattr(Settings, "resolve_cert_files", fail_resolve_cert_files)
+
+    result, summary = await _run_llm_stage(
+        _single_triage_report(),
+        _single_cluster_report(),
+        settings,
+        kb_stage=_KBStageResult(),
+    )
+
+    assert result is None
+    assert summary is None
+
+
+@pytest.mark.asyncio
+async def test_run_llm_stage_cleans_up_temp_files_when_client_init_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Temp cert/key файлы удаляются даже если GigaChatClient не инициализировался."""
+    settings = _llm_settings()
+    cert_path = tmp_path / "client-cert.pem"
+    key_path = tmp_path / "client-key.pem"
+    cert_path.write_text("cert", encoding="utf-8")
+    key_path.write_text("key", encoding="utf-8")
+
+    def fake_resolve_cert_files(self: Settings) -> tuple[str, str]:
+        return str(cert_path), str(key_path)
+
+    monkeypatch.setattr(Settings, "resolve_cert_files", fake_resolve_cert_files)
+
+    from alla.clients import gigachat_client
+
+    def fail_init(self: object, *args: object, **kwargs: object) -> None:
+        raise RuntimeError("sdk init failed")
+
+    monkeypatch.setattr(gigachat_client.GigaChatClient, "__init__", fail_init)
+
+    result, summary = await _run_llm_stage(
+        _single_triage_report(),
+        _single_cluster_report(),
+        settings,
+        kb_stage=_KBStageResult(),
+    )
+
+    assert result is None
+    assert summary is None
+    assert not Path(cert_path).exists()
+    assert not Path(key_path).exists()
+
+
+@pytest.mark.asyncio
+async def test_run_llm_stage_preserves_cluster_results_when_summary_generation_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Ошибка launch-summary не должна стирать уже успешный cluster analysis."""
+    settings = _llm_settings()
+    cert_path = tmp_path / "client-cert.pem"
+    key_path = tmp_path / "client-key.pem"
+    cert_path.write_text("cert", encoding="utf-8")
+    key_path.write_text("key", encoding="utf-8")
+    expected_result = LLMAnalysisResult(
+        total_clusters=1,
+        analyzed_count=1,
+        failed_count=0,
+        skipped_count=0,
+    )
+
+    def fake_resolve_cert_files(self: Settings) -> tuple[str, str]:
+        return str(cert_path), str(key_path)
+
+    monkeypatch.setattr(Settings, "resolve_cert_files", fake_resolve_cert_files)
+
+    from alla.clients import gigachat_client
+    from alla.services import llm_service
+
+    class _FakeGigaChatClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    class _FakeLLMService:
+        def __init__(self, client: object, **kwargs: object) -> None:
+            self._client = client
+
+        async def analyze_clusters(self, *args: object, **kwargs: object) -> LLMAnalysisResult:
+            return expected_result
+
+        async def generate_launch_summary(
+            self,
+            *args: object,
+            **kwargs: object,
+        ) -> LLMLaunchSummary:
+            raise RuntimeError("summary prompt failed")
+
+    monkeypatch.setattr(gigachat_client, "GigaChatClient", _FakeGigaChatClient)
+    monkeypatch.setattr(llm_service, "LLMService", _FakeLLMService)
+
+    result, summary = await _run_llm_stage(
+        _single_triage_report(),
+        _single_cluster_report(),
+        settings,
+        kb_stage=_KBStageResult(),
+    )
+
+    assert result == expected_result
+    assert summary == LLMLaunchSummary(summary_text="", error="summary prompt failed")
+    assert not cert_path.exists()
+    assert not key_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_run_llm_stage_preserves_results_when_client_close_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Ошибка close() не должна стирать уже полученные LLM results."""
+    settings = _llm_settings()
+    cert_path = tmp_path / "client-cert.pem"
+    key_path = tmp_path / "client-key.pem"
+    cert_path.write_text("cert", encoding="utf-8")
+    key_path.write_text("key", encoding="utf-8")
+    expected_result = LLMAnalysisResult(
+        total_clusters=1,
+        analyzed_count=1,
+        failed_count=0,
+        skipped_count=0,
+    )
+    expected_summary = LLMLaunchSummary(summary_text="ok")
+
+    def fake_resolve_cert_files(self: Settings) -> tuple[str, str]:
+        return str(cert_path), str(key_path)
+
+    monkeypatch.setattr(Settings, "resolve_cert_files", fake_resolve_cert_files)
+
+    from alla.clients import gigachat_client
+    from alla.services import llm_service
+
+    class _FakeGigaChatClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    class _FakeLLMService:
+        def __init__(self, client: object, **kwargs: object) -> None:
+            self._client = client
+
+        async def analyze_clusters(self, *args: object, **kwargs: object) -> LLMAnalysisResult:
+            return expected_result
+
+        async def generate_launch_summary(
+            self,
+            *args: object,
+            **kwargs: object,
+        ) -> LLMLaunchSummary:
+            return expected_summary
+
+    monkeypatch.setattr(gigachat_client, "GigaChatClient", _FakeGigaChatClient)
+    monkeypatch.setattr(llm_service, "LLMService", _FakeLLMService)
+
+    result, summary = await _run_llm_stage(
+        _single_triage_report(),
+        _single_cluster_report(),
+        settings,
+        kb_stage=_KBStageResult(),
+    )
+
+    assert result == expected_result
+    assert summary == expected_summary
+    assert not cert_path.exists()
+    assert not key_path.exists()
 
 
 def test_feedback_signature_is_stable_for_large_logs_with_volatile_values() -> None:

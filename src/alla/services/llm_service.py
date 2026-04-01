@@ -1,9 +1,10 @@
-"""Сервис LLM-анализа кластеров ошибок через Langflow."""
+"""Сервис LLM-анализа кластеров ошибок через GigaChat."""
 
 import asyncio
 import logging
+from typing import Protocol
+
 from alla.clients.base import TestResultsUpdater
-from alla.clients.langflow_client import LangflowClient
 from alla.knowledge.models import KBMatchResult, RootCauseCategory
 from alla.models.clustering import ClusteringReport, FailureCluster
 from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis, LLMLaunchSummary, LLMPushResult
@@ -12,6 +13,13 @@ from alla.utils.log_utils import has_explicit_errors
 from alla.utils.text_normalization import normalize_text_for_llm
 
 logger = logging.getLogger(__name__)
+
+
+class LLMClient(Protocol):
+    """Протокол LLM-клиента для LLMService."""
+
+    async def chat(self, system_prompt: str, user_prompt: str) -> str: ...
+
 
 _LLM_HEADER = "[alla] LLM-анализ ошибки"
 _SEPARATOR = "=" * 40
@@ -94,13 +102,15 @@ def build_cluster_prompt(
     message_max_chars: int = _PROMPT_MESSAGE_MAX_CHARS,
     trace_max_chars: int = _PROMPT_TRACE_MAX_CHARS,
     log_max_chars: int = _PROMPT_LOG_MAX_CHARS,
-) -> str:
+) -> tuple[str, str]:
     """Собрать промпт для LLM-анализа одного кластера.
 
-    Включает: label, member_count, example_message, full_trace (или snippet),
-    опционально log_snippet и совпадения с базой знаний для контекста.
+    Возвращает ``(system_prompt, user_prompt)``.
+
+    System: роль и правила поведения.
+    User: данные кластера + база знаний + задание.
     """
-    parts: list[str] = [
+    system_parts: list[str] = [
         "Ты — инженер по анализу сбоев автотестов.",
         "Твоя задача: быстро и точно определить причину падения и дать полезные шаги исправления.",
         "",
@@ -112,7 +122,9 @@ def build_cluster_prompt(
         "1. БАЗА ЗНАНИЙ — основной источник интерпретации причины и способа исправления, если есть совпадение.",
         "2. Сообщение ошибки / стек / лог — нужны, чтобы подтвердить или опровергнуть совпадение из базы знаний.",
         "3. Не придумывай альтернативную причину, если запись базы знаний #1 хорошо подходит и данные ей не противоречат.",
-        "",
+    ]
+
+    parts: list[str] = [
         "═══════════════════════════════════════",
         "ДАННЫЕ",
         "═══════════════════════════════════════",
@@ -288,27 +300,28 @@ def build_cluster_prompt(
 
     parts.append(instruction)
 
-    return "\n".join(parts)
+    return "\n".join(system_parts), "\n".join(parts)
 
 
 def build_launch_summary_prompt(
     clustering_report: ClusteringReport,
     triage_report: TriageReport,
     llm_result: LLMAnalysisResult | None = None,
-) -> str:
+) -> tuple[str, str]:
     """Собрать промпт для итоговой LLM-сводки по всему прогону.
 
-    Включает метаданные запуска, данные по каждому кластеру и (если доступны)
-    per-cluster LLM-анализы. Просит LLM сформировать единый краткий отчёт.
+    Возвращает ``(system_prompt, user_prompt)``.
     """
-    parts: list[str] = [
+    system_parts: list[str] = [
         "Ты — инженер по анализу сбоев автотестов.",
         "Подготовь краткий итоговый отчёт по прогону тестов.",
         "",
         "ГЛАВНОЕ ПРАВИЛО: пиши только то, что видишь в данных ниже. "
         "Не додумывай, не предполагай. "
         "Если чего-то нет в данных — не упоминай это.",
-        "",
+    ]
+
+    parts: list[str] = [
         "═══════════════════════════════════════",
         "ДАННЫЕ",
         "═══════════════════════════════════════",
@@ -375,7 +388,7 @@ def build_launch_summary_prompt(
         "Будь лаконичен. Избегай повторов. Не упоминай то, чего нет в данных."
     )
 
-    return "\n".join(parts)
+    return "\n".join(system_parts), "\n".join(parts)
 
 
 def format_llm_comment(
@@ -393,21 +406,21 @@ def format_llm_comment(
 
 
 class LLMService:
-    """Анализ кластеров ошибок через Langflow LLM.
+    """Анализ кластеров ошибок через LLM.
 
-    Для каждого кластера: строит промпт, вызывает Langflow, сохраняет результат.
+    Для каждого кластера: строит промпт, вызывает LLM, сохраняет результат.
     """
 
     def __init__(
         self,
-        langflow_client: LangflowClient,
+        client: LLMClient,
         *,
         concurrency: int = 3,
         message_max_chars: int = _PROMPT_MESSAGE_MAX_CHARS,
         trace_max_chars: int = _PROMPT_TRACE_MAX_CHARS,
         log_max_chars: int = _PROMPT_LOG_MAX_CHARS,
     ) -> None:
-        self._client = langflow_client
+        self._client = client
         self._concurrency = concurrency
         self._message_max_chars = message_max_chars
         self._trace_max_chars = trace_max_chars
@@ -493,7 +506,7 @@ class LLMService:
             )
 
             provenance = (kb_provenance or {}).get(cluster.cluster_id)
-            prompt = build_cluster_prompt(
+            system_prompt, user_prompt = build_cluster_prompt(
                 cluster, kb_matches, log_snippet, full_trace,
                 kb_query_provenance=provenance,
                 message_max_chars=self._message_max_chars,
@@ -503,7 +516,7 @@ class LLMService:
 
             async with semaphore:
                 try:
-                    result_text = await self._client.run_flow(prompt)
+                    result_text = await self._client.chat(system_prompt, user_prompt)
                     analyses[cluster.cluster_id] = LLMClusterAnalysis(
                         cluster_id=cluster.cluster_id,
                         analysis_text=result_text,
@@ -555,13 +568,15 @@ class LLMService:
         Строит промпт из данных всех кластеров (и per-cluster анализов, если
         они доступны) и делает один LLM-вызов для получения единой сводки.
         """
-        prompt = build_launch_summary_prompt(clustering_report, triage_report, llm_result)
+        system_prompt, user_prompt = build_launch_summary_prompt(
+            clustering_report, triage_report, llm_result,
+        )
         logger.info(
             "LLM summary: запрос итогового отчёта по %d кластерам",
             clustering_report.cluster_count,
         )
         try:
-            text = await self._client.run_flow(prompt)
+            text = await self._client.chat(system_prompt, user_prompt)
             logger.info("LLM summary: отчёт получен (%d символов)", len(text))
             return LLMLaunchSummary(summary_text=text)
         except Exception as exc:

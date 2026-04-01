@@ -18,7 +18,7 @@
 | `alla/server.py` | HTTP API: FastAPI + uvicorn. |
 | `alla/orchestrator.py` | Общий pipeline (CLI + сервер). `analyze_launch()` → `AnalysisResult`. |
 | `alla/services/` | Бизнес-логика без HTTP. |
-| `alla/clients/` | Allure TestOps + Langflow. Протоколы в `base.py`. |
+| `alla/clients/` | Allure TestOps + GigaChat. Протоколы в `base.py`. |
 | `alla/knowledge/` | База знаний: Protocol + PostgreSQL + TextMatcher. |
 | `alla/report/` | Генерация HTML-отчётов. |
 | `alla/models/` | Pydantic-модели API и доменных объектов. |
@@ -41,7 +41,7 @@ src/alla/
 │   ├── base.py         # Все Protocol-интерфейсы
 │   ├── auth.py         # AllureAuthManager — JWT exchange + cache
 │   ├── testops_client.py
-│   └── langflow_client.py
+│   └── gigachat_client.py
 ├── knowledge/
 │   ├── base.py, models.py      # KBEntry, KBMatchResult, RootCauseCategory
 │   ├── matcher.py              # TextMatcher — TF-IDF cosine similarity
@@ -77,11 +77,12 @@ src/alla/
 | `ALLURE_KB_MIN_SCORE` | нет | `0.15` | Мин. score KB-совпадения |
 | `ALLURE_KB_MAX_RESULTS` | нет | `5` | Макс. KB-совпадений на кластер |
 | `ALLURE_PUSH_TO_TESTOPS` | нет | `true` | Записывать результаты в TestOps |
-| `ALLURE_LANGFLOW_BASE_URL` | нет | `""` | Базовый URL Langflow. **LLM включается автоматически когда заданы `BASE_URL` + `FLOW_ID`.** |
-| `ALLURE_LANGFLOW_FLOW_ID` | нет | `""` | ID flow в Langflow |
-| `ALLURE_LANGFLOW_API_KEY` | нет | `""` | API-ключ Langflow |
+| `ALLURE_GIGACHAT_BASE_URL` | нет | `""` | Базовый URL GigaChat. **LLM включается автоматически когда заданы `BASE_URL` + `CERT_B64` + `KEY_B64`.** |
+| `ALLURE_GIGACHAT_CERT_B64` | нет | `""` | Клиентский сертификат PEM в base64 для mTLS |
+| `ALLURE_GIGACHAT_KEY_B64` | нет | `""` | Приватный ключ PEM в base64 для mTLS |
+| `ALLURE_GIGACHAT_MODEL` | нет | `"GigaChat-2-Max"` | Модель GigaChat для LLM-анализа |
 | `ALLURE_LLM_TIMEOUT` | нет | `120` | Таймаут LLM-запроса (сек) |
-| `ALLURE_LLM_CONCURRENCY` | нет | `3` | Параллельных запросов к Langflow |
+| `ALLURE_LLM_CONCURRENCY` | нет | `3` | Параллельных запросов к GigaChat |
 | `ALLURE_LLM_MAX_RETRIES` | нет | `3` | Retry при 429/503 |
 | `ALLURE_LLM_RETRY_BASE_DELAY` | нет | `1.0` | Базовая задержка backoff (сек) |
 | `ALLURE_LOGS_CLUSTERING_WEIGHT` | нет | `0.15` | Вес лог-канала в кластеризации. Логи скачиваются автоматически если есть вложения `text/plain`. |
