@@ -7,7 +7,9 @@ from alla.models.testops import FailedTestSummary
 from alla.services.clustering_service import (
     ClusteringConfig,
     ClusteringService,
+    _extract_assertion_actual,
     _normalize_text,
+    _strip_correlation_only_http_sections,
 )
 
 
@@ -17,6 +19,8 @@ def _failure(
     status_message: str | None = None,
     status_trace: str | None = None,
     category: str | None = None,
+    log_snippet: str | None = None,
+    failed_step_path: str | None = None,
 ) -> FailedTestSummary:
     return FailedTestSummary(
         test_result_id=test_result_id,
@@ -25,6 +29,8 @@ def _failure(
         status_message=status_message,
         status_trace=status_trace,
         category=category,
+        log_snippet=log_snippet,
+        failed_step_path=failed_step_path,
     )
 
 
@@ -368,3 +374,206 @@ def test_clustering_config_exposes_step_path_penalty_fields() -> None:
     custom = ClusteringConfig(step_path_mismatch_penalty=0.3, step_path_log_reduction=0.4)
     assert custom.step_path_mismatch_penalty == 0.3
     assert custom.step_path_log_reduction == 0.4
+
+
+# ---------------------------------------------------------------------------
+# Unit-тесты _extract_assertion_actual
+# ---------------------------------------------------------------------------
+
+
+class TestExtractAssertionActual:
+    """Извлечение actual-значения из assertion-паттернов."""
+
+    def test_angle_brackets(self) -> None:
+        assert _extract_assertion_actual("expected: <0> but was: <33>") == "33"
+
+    def test_square_brackets(self) -> None:
+        assert _extract_assertion_actual("expected [200] but was [404]") == "404"
+
+    def test_quotes(self) -> None:
+        assert _extract_assertion_actual('expected "OK" but was "ERROR"') == "ERROR"
+
+    def test_russian_variant(self) -> None:
+        assert _extract_assertion_actual("ожидалось: <0> но было: <1>") == "1"
+
+    def test_no_match(self) -> None:
+        assert _extract_assertion_actual("NullPointerException at line 42") is None
+
+    def test_empty_string(self) -> None:
+        assert _extract_assertion_actual("") is None
+
+    def test_string_status_code(self) -> None:
+        assert _extract_assertion_actual("expected: <SUCCESS> but was: <FAIL>") == "FAIL"
+
+    def test_whitespace_normalized(self) -> None:
+        """Пробелы внутри delimiters не влияют на сравнение: '< 33 >' == '<33>'."""
+        assert _extract_assertion_actual("but was: < 33 >") == "33"
+        assert _extract_assertion_actual("but was: <33>") == "33"
+
+    def test_inner_tabs_and_newlines_collapsed(self) -> None:
+        assert _extract_assertion_actual("but was: < some\t value >") == "some value"
+
+
+# ---------------------------------------------------------------------------
+# Unit-тесты _strip_correlation_only_http_sections
+# ---------------------------------------------------------------------------
+
+
+class TestStripCorrelationOnlyHttpSections:
+    """Фильтрация HTTP-секций с только корреляционными ID."""
+
+    def test_correlation_only_removed(self) -> None:
+        snippet = (
+            "--- [HTTP: Отправлен запрос -> ] ---\n"
+            "Корреляция: operUID=qwe123, rquid=rty456"
+        )
+        assert _strip_correlation_only_http_sections(snippet) == ""
+
+    def test_http_section_with_error_preserved(self) -> None:
+        snippet = (
+            "--- [HTTP: Ответ сервера] ---\n"
+            "Корреляция: operUID=abc, rquid=def\n"
+            "HTTP статус: 500\n"
+            "errorMessage: Internal Server Error"
+        )
+        result = _strip_correlation_only_http_sections(snippet)
+        assert "HTTP статус: 500" in result
+        assert "errorMessage:" in result
+
+    def test_no_section_headers_passthrough(self) -> None:
+        plain = "some log line\nanother line"
+        assert _strip_correlation_only_http_sections(plain) == plain
+
+    def test_mixed_file_and_correlation_only_http(self) -> None:
+        snippet = (
+            "--- [файл: app.log] ---\n"
+            "2026-01-01T10:00:00 [ERROR] NullPointerException\n\n"
+            "--- [HTTP: Запрос] ---\n"
+            "Корреляция: operUID=aaa, rquid=bbb"
+        )
+        result = _strip_correlation_only_http_sections(snippet)
+        assert "[файл: app.log]" in result
+        assert "NullPointerException" in result
+        assert "Корреляция:" not in result
+
+    def test_all_correlation_only_returns_empty(self) -> None:
+        snippet = (
+            "--- [HTTP: Запрос 1] ---\n"
+            "Корреляция: operUID=a1, rquid=b1\n\n"
+            "--- [HTTP: Запрос 2] ---\n"
+            "Корреляция: operUID=a2, rquid=b2"
+        )
+        assert _strip_correlation_only_http_sections(snippet) == ""
+
+
+# ---------------------------------------------------------------------------
+# Cluster-level тесты: assertion gate и HTTP-фильтр
+# ---------------------------------------------------------------------------
+
+
+def test_different_assertion_actuals_are_not_merged() -> None:
+    """Разные actual-значения в assertion → разные кластеры."""
+    failures = [
+        _failure(
+            60,
+            status_message='Operuid 12385734057348907\nНеверный "Status Code" ответа ==> expected: <0> but was: <33>',
+        ),
+        _failure(
+            61,
+            status_message='Operuid 12385734057348666\nНеверный "Status Code" ответа ==> expected: <0> but was: <1>',
+        ),
+    ]
+
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 2
+    member_sets = sorted(tuple(c.member_test_ids) for c in report.clusters)
+    assert member_sets == [(60,), (61,)]
+
+
+def test_same_actual_different_expected_still_merged() -> None:
+    """Одинаковый actual, разный expected → один кластер."""
+    failures = [
+        _failure(
+            70,
+            status_message='Неверный "Status Code" ответа ==> expected: <200> but was: <33>',
+        ),
+        _failure(
+            71,
+            status_message='Неверный "Status Code" ответа ==> expected: <0> but was: <33>',
+        ),
+    ]
+
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 1
+    assert sorted(report.clusters[0].member_test_ids) == [70, 71]
+
+
+def test_correlation_only_http_logs_do_not_merge_different_messages() -> None:
+    """Одинаковые correlation-only HTTP логи + разные сообщения → разные кластеры."""
+    corr_log = (
+        "--- [HTTP: Отправлен запрос -> ] ---\n"
+        "Корреляция: operUID=qwe123, rquid=rty456\n\n"
+        "--- [HTTP: Отправлен запрос -> ] ---\n"
+        "Корреляция: operUID=asd345, rquid=zxc567"
+    )
+    failures = [
+        _failure(
+            80,
+            status_message="AssertionError: expected true but got false",
+            log_snippet=corr_log,
+        ),
+        _failure(
+            81,
+            status_message="TimeoutException: request timed out after 30s",
+            log_snippet=corr_log,
+        ),
+    ]
+
+    service = ClusteringService(
+        ClusteringConfig(similarity_threshold=0.60, log_similarity_weight=0.15)
+    )
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 2
+    member_sets = sorted(tuple(c.member_test_ids) for c in report.clusters)
+    assert member_sets == [(80,), (81,)]
+
+
+def test_http_section_with_error_still_influences_clustering() -> None:
+    """HTTP-секция с ошибкой (не только корреляция) сохраняется и участвует в кластеризации.
+
+    Два теста с разными message, но одинаковой HTTP-ошибкой в логе —
+    лог override должен склеить их, т.к. секция содержит реальный error signal.
+    """
+    http_error_log = (
+        "--- [HTTP: Ответ сервера] ---\n"
+        "Корреляция: operUID=abc, rquid=def\n"
+        "HTTP статус: 502\n"
+        "errorMessage: Bad Gateway upstream timeout"
+    )
+    failures = [
+        _failure(
+            90,
+            status_message="Check response status: expected 200",
+            log_snippet=http_error_log,
+        ),
+        _failure(
+            91,
+            status_message="Verify gateway response: expected 200",
+            log_snippet=http_error_log,
+        ),
+    ]
+
+    service = ClusteringService(
+        ClusteringConfig(similarity_threshold=0.60, log_similarity_weight=0.15)
+    )
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    # HTTP-секция с error signal не вырезается → лог-канал работает →
+    # log override склеивает тесты с разными message.
+    assert report.cluster_count == 1
+    assert sorted(report.clusters[0].member_test_ids) == [90, 91]

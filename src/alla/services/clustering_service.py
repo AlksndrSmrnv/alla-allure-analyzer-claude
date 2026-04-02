@@ -21,6 +21,7 @@
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -77,6 +78,69 @@ class ClusteringConfig:
 # ---------------------------------------------------------------------------
 
 _normalize_text = normalize_text
+
+# ---------------------------------------------------------------------------
+# Assertion value extraction
+# ---------------------------------------------------------------------------
+
+# Matches: "but was: <Y>", "but was: [Y]", "but was: \"Y\"", "but was:<Y>"
+# and Russian: "но было: <Y>", "но было: [Y]", "но было: \"Y\""
+_ASSERTION_ACTUAL_RE = re.compile(
+    r"(?:but\s+was|но\s+было)\s*:?\s*"
+    r"(?:<([^>]+)>|\[([^\]]+)\]|\"([^\"]+)\")",
+    re.IGNORECASE,
+)
+
+
+def _extract_assertion_actual(message: str) -> str | None:
+    """Извлечь «actual» значение из assertion-паттерна в сообщении об ошибке.
+
+    Возвращает строку-значение или None если паттерн не найден.
+    """
+    m = _ASSERTION_ACTUAL_RE.search(message)
+    if m is None:
+        return None
+    raw = m.group(1) or m.group(2) or m.group(3)
+    return " ".join(raw.split()) if raw else raw
+
+
+# ---------------------------------------------------------------------------
+# Correlation-only HTTP section filter
+# ---------------------------------------------------------------------------
+
+_LOG_SECTION_HEADER_RE = re.compile(r"^--- \[(?:HTTP|файл): .+\] ---$", re.MULTILINE)
+
+
+def _strip_correlation_only_http_sections(log_snippet: str) -> str:
+    """Убрать HTTP-секции, содержащие только корреляционные ID.
+
+    Секция считается correlation-only если:
+    - заголовок начинается с ``--- [HTTP:``
+    - все непустые строки тела начинаются с ``Корреляция:``
+
+    Секции ``--- [файл: ...]`` всегда сохраняются.
+    Лог без секционных заголовков возвращается как есть.
+    """
+    headers = list(_LOG_SECTION_HEADER_RE.finditer(log_snippet))
+    if not headers:
+        return log_snippet
+
+    kept_parts: list[str] = []
+    for idx, match in enumerate(headers):
+        header_line = match.group(0)
+        body_start = match.end()
+        body_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(log_snippet)
+        body = log_snippet[body_start:body_end].strip()
+
+        if header_line.startswith("--- [HTTP:"):
+            # Проверить: все ли непустые строки тела — Корреляция:
+            body_lines = [line for line in body.splitlines() if line.strip()]
+            if body_lines and all(line.strip().startswith("Корреляция:") for line in body_lines):
+                continue  # correlation-only → убрать
+
+        kept_parts.append(f"{header_line}\n{body}")
+
+    return "\n\n".join(kept_parts)
 
 
 def _build_message_document(failure: FailedTestSummary) -> str:
@@ -141,11 +205,19 @@ def _build_log_document(
     head_lines: int,
     tail_lines: int,
 ) -> str:
-    """Собрать log-документ из log_snippet с предварительной компактацией."""
+    """Собрать log-документ из log_snippet с предварительной компактацией.
+
+    Перед компактацией убираются HTTP-секции, содержащие только
+    корреляционные ID — они одинаковы после нормализации и создают
+    ложную схожесть между несвязанными тестами.
+    """
     if not failure.log_snippet:
         return ""
+    filtered = _strip_correlation_only_http_sections(failure.log_snippet)
+    if not filtered.strip():
+        return ""
     compacted = _compact_trace(
-        failure.log_snippet,
+        filtered,
         head_lines=head_lines,
         tail_lines=tail_lines,
     )
@@ -200,6 +272,9 @@ class ClusteringService:
             for f in failures
         ]
         step_documents: list[str] = [_build_step_document(f) for f in failures]
+        assertion_actuals: list[str | None] = [
+            _extract_assertion_actual(f.status_message or "") for f in failures
+        ]
 
         # 2. Разделить на тесты с текстом и без (в любом канале)
         # Лог считается «текстом» только когда log_weight > 0: при явном opt-out
@@ -228,7 +303,11 @@ class ClusteringService:
             trace_docs = [trace_documents[i] for i in has_text_indices]
             log_docs = [log_documents[i] for i in has_text_indices]
             step_docs = [step_documents[i] for i in has_text_indices]
-            labels = self._cluster_texts(message_docs, trace_docs, log_docs, step_docs)
+            actuals = [assertion_actuals[i] for i in has_text_indices]
+            labels = self._cluster_texts(
+                message_docs, trace_docs, log_docs, step_docs,
+                assertion_actuals=actuals,
+            )
 
             for idx, label in zip(has_text_indices, labels):
                 cluster_groups.setdefault(label, []).append(idx)
@@ -273,6 +352,8 @@ class ClusteringService:
         trace_documents: list[str],
         log_documents: list[str] | None = None,
         step_documents: list[str] | None = None,
+        *,
+        assertion_actuals: list[str | None] | None = None,
     ) -> list[int]:
         """Message-first TF-IDF + agglomerative clustering.
 
@@ -320,6 +401,17 @@ class ClusteringService:
 
         for i in range(n):
             for j in range(i + 1, n):
+                # Assertion value gate: разные actual → разные корневые причины.
+                if (
+                    assertion_actuals is not None
+                    and assertion_actuals[i] is not None
+                    and assertion_actuals[j] is not None
+                    and assertion_actuals[i] != assertion_actuals[j]
+                ):
+                    final_sim[i, j] = 0.0
+                    final_sim[j, i] = 0.0
+                    continue
+
                 if has_message[i] and has_message[j]:
                     # Log override: если лог-кластеризация включена (weight > 0),
                     # оба теста имеют лог и лог-similarity выше порога —
