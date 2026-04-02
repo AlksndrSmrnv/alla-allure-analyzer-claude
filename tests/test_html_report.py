@@ -214,6 +214,40 @@ def test_html_report_renders_http_section_separately() -> None:
     assert "--- [HTTP: response.json] ---" not in html
 
 
+def test_html_report_renders_cluster_correlation_separately_from_log() -> None:
+    cluster = make_failure_cluster(
+        cluster_id="c-corr",
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_correlation="operUID=239482348, rqUID=324234523420",
+    )
+    result = AnalysisResult(
+        triage_report=make_triage_report(
+            failed_tests=[
+                make_failed_test_summary(
+                    test_result_id=1,
+                    log_snippet=(
+                        "--- [файл: app.log] ---\n"
+                        "retry budget exhausted while saving order\n"
+                    ),
+                )
+            ]
+        ),
+        clustering_report=make_clustering_report(
+            clusters=[cluster],
+            cluster_count=1,
+            total_failures=1,
+        ),
+    )
+
+    html = generate_html_report(result)
+
+    assert "Корреляция" in html
+    assert "operUID=239482348, rqUID=324234523420" in html
+    assert "Лог приложения" in html
+
+
 def test_html_report_renders_merge_controls_only_for_mergeable_clusters() -> None:
     """Merge checkbox рисуется только для кластеров с вычислимой сигнатурой."""
     cluster_a = make_failure_cluster(cluster_id="c-merge-a", member_count=2)

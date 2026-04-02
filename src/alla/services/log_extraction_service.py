@@ -8,6 +8,7 @@
 import asyncio
 import logging
 import re
+from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Any
 
@@ -15,6 +16,7 @@ import ijson
 
 from alla.clients.base import AttachmentProvider
 from alla.models.testops import AttachmentMeta, FailedTestSummary
+from alla.utils.log_utils import format_correlation_pairs
 
 logger = logging.getLogger(__name__)
 
@@ -114,68 +116,90 @@ _XML_ERROR_RE = re.compile(
 )
 
 
+@dataclass
+class _HttpSignals:
+    """Собранные HTTP-сигналы из одного документа/объекта."""
+
+    corr_ids: dict[str, str] = field(default_factory=dict)
+    http_statuses: list[str] = field(default_factory=list)
+    error_fields: dict[str, str] = field(default_factory=dict)
+    context_fields: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def has_error_signal(self) -> bool:
+        return bool(self.http_statuses) or bool(self.error_fields)
+
+
+def _format_http_info(signals: _HttpSignals) -> str:
+    """Сформировать человекочитаемый HTTP-блок только при наличии error-signal."""
+    if not signals.has_error_signal:
+        return ""
+
+    lines: list[str] = []
+    if signals.corr_ids:
+        lines.append(
+            "Корреляция: "
+            + ", ".join(f"{k}={v}" for k, v in signals.corr_ids.items())
+        )
+    for status in signals.http_statuses:
+        lines.append(f"HTTP статус: {status}")
+    for key, value in signals.error_fields.items():
+        lines.append(f"{key}: {value}")
+    for key, value in signals.context_fields.items():
+        lines.append(f"{key}: {value}")
+    return "\n".join(lines)
+
+
+def _format_correlation_hint(signals: _HttpSignals) -> str | None:
+    """Сформировать опорную correlation-строку для UI/кластера."""
+    return format_correlation_pairs(signals.corr_ids)
+
+
+def _collect_text_http_signals(text: str) -> _HttpSignals:
+    """Собрать HTTP-сигналы из сырого текста через regex."""
+    signals = _HttpSignals()
+
+    for match in _CORR_ID_JSON_RE.finditer(text):
+        signals.corr_ids.setdefault(match.group("key"), match.group("value"))
+    for match in _CORR_ID_KV_RE.finditer(text):
+        signals.corr_ids.setdefault(match.group("key"), match.group("value"))
+    for match in _CORR_ID_XML_RE.finditer(text):
+        signals.corr_ids.setdefault(match.group("key"), match.group("value"))
+
+    for match in _HTTP_STATUS_RE.finditer(text):
+        status = match.group(1)
+        if status not in signals.http_statuses:
+            signals.http_statuses.append(status)
+
+    for match in _STATUS_CODE_RE.finditer(text):
+        status = match.group("value")
+        if status not in signals.http_statuses:
+            signals.http_statuses.append(status)
+
+    for match in _ERROR_FIELD_RE.finditer(text):
+        value = match.group("value").strip()
+        if value:
+            signals.error_fields[match.group("key")] = value
+
+    for match in _XML_ERROR_RE.finditer(text):
+        value = match.group("value").strip()
+        if value:
+            signals.error_fields.setdefault(match.group("key"), value)
+
+    for match in _CONTEXT_FIELD_RE.finditer(text):
+        value = match.group("value").strip()
+        if value:
+            signals.context_fields[match.group("key")] = value
+
+    return signals
+
+
 def _extract_text_http_info(text: str) -> str:
     """Извлечь HTTP-контекст из сырого текста через regex.
 
     Возвращает форматированную строку или пустую строку если ничего не найдено.
     """
-    corr_ids: dict[str, str] = {}
-    http_statuses: list[str] = []
-    error_fields: dict[str, str] = {}
-    context_fields: dict[str, str] = {}
-    has_error_signal = False
-
-    for m in _CORR_ID_JSON_RE.finditer(text):
-        corr_ids.setdefault(m.group("key"), m.group("value"))
-    for m in _CORR_ID_KV_RE.finditer(text):
-        corr_ids.setdefault(m.group("key"), m.group("value"))
-    for m in _CORR_ID_XML_RE.finditer(text):
-        corr_ids.setdefault(m.group("key"), m.group("value"))
-
-    for m in _HTTP_STATUS_RE.finditer(text):
-        status = m.group(1)
-        if status not in http_statuses:
-            http_statuses.append(status)
-        has_error_signal = True
-
-    for m in _STATUS_CODE_RE.finditer(text):
-        status = m.group("value")
-        if status not in http_statuses:
-            http_statuses.append(status)
-        has_error_signal = True
-
-    for m in _ERROR_FIELD_RE.finditer(text):
-        value = m.group("value").strip()
-        if value:
-            error_fields[m.group("key")] = value
-            has_error_signal = True
-
-    for m in _XML_ERROR_RE.finditer(text):
-        value = m.group("value").strip()
-        if value:
-            error_fields.setdefault(m.group("key"), value)
-            has_error_signal = True
-
-    for m in _CONTEXT_FIELD_RE.finditer(text):
-        value = m.group("value").strip()
-        if value:
-            context_fields[m.group("key")] = value
-
-    if not corr_ids and not has_error_signal:
-        return ""
-
-    lines: list[str] = []
-    if corr_ids:
-        lines.append("Корреляция: " + ", ".join(f"{k}={v}" for k, v in corr_ids.items()))
-    for status in http_statuses:
-        lines.append(f"HTTP статус: {status}")
-    for key, value in error_fields.items():
-        lines.append(f"{key}: {value}")
-    if has_error_signal:
-        for key, value in context_fields.items():
-            lines.append(f"{key}: {value}")
-
-    return "\n".join(lines)
+    return _format_http_info(_collect_text_http_signals(text))
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +221,7 @@ _JSON_VALUE_MAX_CHARS = 300
 def _collect_json_signals(
     obj: Any,
     corr_ids: dict[str, str],
-    http_statuses: list[int],
+    http_statuses: list[str],
     error_fields: dict[str, str],
     context_fields: dict[str, str],
     depth: int,
@@ -213,8 +237,9 @@ def _collect_json_signals(
                     corr_ids.setdefault(str(k), str(v)[:64])
             elif kl in _JSON_STATUS_KEYS:
                 if isinstance(v, int) and 400 <= v <= 599:
-                    if v not in http_statuses:
-                        http_statuses.append(v)
+                    status = str(v)
+                    if status not in http_statuses:
+                        http_statuses.append(status)
             elif kl in _JSON_ERROR_KEYS:
                 if isinstance(v, str) and v.strip():
                     error_fields.setdefault(str(k), v[:_JSON_VALUE_MAX_CHARS])
@@ -230,53 +255,74 @@ def _collect_json_signals(
             _collect_json_signals(item, corr_ids, http_statuses, error_fields, context_fields, depth + 1)
 
 
-def _scan_json_for_http_info(obj: Any) -> str:
-    """Извлечь HTTP-контекст из распарсенного JSON-объекта.
-
-    Рекурсивно ищет correlation IDs, HTTP-статусы и поля ошибок.
-    Возвращает форматированную строку или пустую строку если ничего не найдено.
-    """
+def _scan_json_for_http_signals(obj: Any) -> _HttpSignals:
+    """Собрать HTTP-сигналы из распарсенного JSON-объекта."""
     corr_ids: dict[str, str] = {}
-    http_statuses: list[int] = []
+    http_statuses: list[str] = []
     error_fields: dict[str, str] = {}
     context_fields: dict[str, str] = {}
 
     _collect_json_signals(obj, corr_ids, http_statuses, error_fields, context_fields, 0)
-
-    has_error_signal = bool(http_statuses) or bool(error_fields)
-
-    if not corr_ids and not has_error_signal:
-        return ""
-
-    lines: list[str] = []
-    if corr_ids:
-        lines.append("Корреляция: " + ", ".join(f"{k}={v}" for k, v in corr_ids.items()))
-    for status in http_statuses:
-        lines.append(f"HTTP статус: {status}")
-    for key, value in error_fields.items():
-        lines.append(f"{key}: {value}")
-    if has_error_signal:
-        for key, value in context_fields.items():
-            lines.append(f"{key}: {value}")
-
-    return "\n".join(lines)
+    return _HttpSignals(
+        corr_ids=corr_ids,
+        http_statuses=http_statuses,
+        error_fields=error_fields,
+        context_fields=context_fields,
+    )
 
 
-def _try_parse_json(content: bytes) -> str | None:
+def _scan_json_for_http_info(obj: Any) -> str:
+    """Извлечь HTTP-контекст из распарсенного JSON-объекта."""
+    return _format_http_info(_scan_json_for_http_signals(obj))
+
+
+def _try_parse_json_signals(content: bytes) -> list[_HttpSignals] | None:
     """Потоково распарсить JSON через ijson и извлечь HTTP-сигналы.
 
     Поддерживает одиночный объект и NDJSON (multiple_values=True).
     Возвращает None при ошибке парсинга (сигнал для regex fallback).
     """
     try:
-        sections: list[str] = []
+        signals_list: list[_HttpSignals] = []
         for obj in ijson.items(BytesIO(content), "", multiple_values=True):
-            section = _scan_json_for_http_info(obj)
-            if section:
-                sections.append(section)
-        return "\n\n".join(sections)
+            signals_list.append(_scan_json_for_http_signals(obj))
+        return signals_list
     except Exception:
         return None
+
+
+def _extract_http_artifacts(
+    content: bytes,
+    content_type: str,
+    *,
+    text: str | None = None,
+) -> tuple[str, str | None]:
+    """Вернуть ``(http_section, correlation_hint)`` для аттачмента."""
+    if content_type == "json":
+        parsed = _try_parse_json_signals(content)
+        if parsed is not None:
+            sections = [
+                section
+                for signals in parsed
+                if (section := _format_http_info(signals))
+            ]
+            correlation_hint = next(
+                (
+                    correlation
+                    for signals in parsed
+                    if (correlation := _format_correlation_hint(signals)) is not None
+                ),
+                None,
+            )
+            return "\n\n".join(sections), correlation_hint
+
+    if text is None:
+        text = _decode_text(content)
+    if text is None:
+        return "", None
+
+    signals = _collect_text_http_signals(text)
+    return _format_http_info(signals), _format_correlation_hint(signals)
 
 
 def _detect_and_extract_http(
@@ -291,16 +337,12 @@ def _detect_and_extract_http(
     Для XML/text: regex по декодированному тексту.
     text — уже декодированный текст (передаётся чтобы избежать повторного декодирования).
     """
-    if content_type == "json":
-        parsed = _try_parse_json(content)
-        if parsed is not None:
-            return parsed
-
-    if text is None:
-        text = _decode_text(content)
-    if text is None:
-        return ""
-    return _extract_text_http_info(text)
+    http_info, _correlation_hint = _extract_http_artifacts(
+        content,
+        content_type,
+        text=text,
+    )
+    return http_info
 
 
 class LogExtractionConfig:
@@ -438,6 +480,7 @@ class LogExtractionService:
                 return
 
             all_sections: list[str] = []
+            correlation_hint: str | None = None
 
             for att in processable:
                 if att.id is None:
@@ -475,30 +518,39 @@ class LogExtractionService:
                             )
 
                 # Канал 2: HTTP-экстрактор (все не-binary типы)
-                http_info = _detect_and_extract_http(
-                    content_bytes, detected_type, text=decoded_text
+                http_info, current_correlation = _extract_http_artifacts(
+                    content_bytes,
+                    detected_type,
+                    text=decoded_text,
                 )
+                if correlation_hint is None and current_correlation is not None:
+                    correlation_hint = current_correlation
                 if http_info.strip():
                     all_sections.append(f"--- [HTTP: {att_name}] ---\n{http_info}")
 
-            if not all_sections:
-                return
+            summary.correlation_hint = correlation_hint
+            if all_sections:
+                combined = "\n\n".join(all_sections)
+                summary.log_snippet = combined
 
-            combined = "\n\n".join(all_sections)
-            summary.log_snippet = combined
-
-            if logger.isEnabledFor(logging.DEBUG):
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Логи: тест %d — секций: %d, общий размер: %d символов",
+                        summary.test_result_id,
+                        len(all_sections),
+                        len(combined),
+                    )
+            elif logger.isEnabledFor(logging.DEBUG) and correlation_hint is not None:
                 logger.debug(
-                    "Логи: тест %d — секций: %d, общий размер: %d символов",
+                    "Логи: тест %d — сохранена только correlation hint: %s",
                     summary.test_result_id,
-                    len(all_sections),
-                    len(combined),
+                    correlation_hint,
                 )
 
         tasks = [fetch_and_extract(s) for s in summaries]
         await asyncio.gather(*tasks)
 
-        enriched = sum(1 for s in summaries if s.log_snippet)
+        enriched = sum(1 for s in summaries if s.log_snippet or s.correlation_hint)
         logger.info("Логи: обогащено %d/%d тестов", enriched, len(summaries))
 
     @staticmethod

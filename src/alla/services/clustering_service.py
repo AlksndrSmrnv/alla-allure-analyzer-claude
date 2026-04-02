@@ -35,6 +35,7 @@ from alla.models.clustering import (
     FailureCluster,
 )
 from alla.models.testops import FailedTestSummary
+from alla.utils.log_utils import extract_correlation_from_log
 from alla.utils.step_paths import normalize_step_path
 from alla.utils.text_normalization import normalize_text
 
@@ -224,6 +225,39 @@ def _build_log_document(
         tail_lines=tail_lines,
     )
     return _normalize_text(compacted) if compacted else ""
+
+
+def _get_failure_correlation(failure: FailedTestSummary) -> str | None:
+    """Вернуть одну опорную correlation-строку для конкретного падения."""
+    if failure.correlation_hint:
+        return failure.correlation_hint
+    return extract_correlation_from_log(failure.log_snippet)
+
+
+def _select_cluster_correlation(
+    representative: FailedTestSummary,
+    group_failures: list[FailedTestSummary],
+    member_ids: list[int],
+) -> str | None:
+    """Выбрать одну correlation-строку на кластер.
+
+    Приоритет:
+    1. representative test
+    2. остальные members по возрастанию test_result_id
+    """
+    representative_correlation = _get_failure_correlation(representative)
+    if representative_correlation is not None:
+        return representative_correlation
+
+    failures_by_id = {failure.test_result_id: failure for failure in group_failures}
+    for test_id in member_ids:
+        if test_id == representative.test_result_id:
+            continue
+        failure = failures_by_id[test_id]
+        correlation = _get_failure_correlation(failure)
+        if correlation is not None:
+            return correlation
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -607,6 +641,11 @@ class ClusteringService:
         )
 
         label = self._generate_label(representative)
+        example_correlation = _select_cluster_correlation(
+            representative,
+            group_failures,
+            member_ids,
+        )
 
         return FailureCluster(
             cluster_id=self._generate_cluster_id(signature, member_ids),
@@ -621,6 +660,7 @@ class ClusteringService:
                 self._config.trace_snippet_lines,
             ),
             example_step_path=representative.failed_step_path,
+            example_correlation=example_correlation,
         )
 
     def _generate_label(self, representative: FailedTestSummary) -> str:

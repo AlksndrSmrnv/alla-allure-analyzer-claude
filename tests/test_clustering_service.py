@@ -20,6 +20,7 @@ def _failure(
     status_trace: str | None = None,
     category: str | None = None,
     log_snippet: str | None = None,
+    correlation_hint: str | None = None,
     failed_step_path: str | None = None,
 ) -> FailedTestSummary:
     return FailedTestSummary(
@@ -30,6 +31,7 @@ def _failure(
         status_trace=status_trace,
         category=category,
         log_snippet=log_snippet,
+        correlation_hint=correlation_hint,
         failed_step_path=failed_step_path,
     )
 
@@ -472,6 +474,66 @@ class TestStripCorrelationOnlyHttpSections:
             "Корреляция: operUID=a1, rquid=b1"
         )
         assert _strip_correlation_only_http_sections(snippet) == ""
+
+
+def test_cluster_uses_representative_correlation_hint() -> None:
+    failures = [
+        _failure(
+            70,
+            status_message="Gateway timeout while saving order",
+            correlation_hint="operUID=op-1, rqUID=req-1",
+        ),
+        _failure(
+            71,
+            status_message="Gateway timeout while saving order",
+            correlation_hint="operUID=op-2, rqUID=req-2",
+        ),
+    ]
+
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 1
+    assert report.clusters[0].example_correlation == "operUID=op-1, rqUID=req-1"
+
+
+def test_cluster_falls_back_to_member_correlation_when_representative_has_none() -> None:
+    failures = [
+        _failure(
+            72,
+            status_message="Gateway timeout while saving order",
+        ),
+        _failure(
+            73,
+            status_message="Gateway timeout while saving order",
+            correlation_hint="operUID=op-73, rqUID=req-73",
+        ),
+    ]
+
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 1
+    assert report.clusters[0].example_correlation == "operUID=op-73, rqUID=req-73"
+
+
+def test_cluster_reads_correlation_from_old_http_log_sections() -> None:
+    failures = [
+        _failure(
+            74,
+            status_message="Gateway timeout while saving order",
+            log_snippet=(
+                "--- [HTTP: TrRq] ---\n"
+                "Корреляция: rqUID=req-74, OperUID=op-74"
+            ),
+        ),
+    ]
+
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 1
+    assert report.clusters[0].example_correlation == "operUID=op-74, rqUID=req-74"
 
 
 # ---------------------------------------------------------------------------
