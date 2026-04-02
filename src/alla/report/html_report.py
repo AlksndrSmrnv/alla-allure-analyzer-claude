@@ -389,7 +389,7 @@ def _render_cluster(
         )
 
     error_html = ""
-    if cluster.example_message or rep_log_snippet:
+    if cluster.example_message or cluster.example_correlation or rep_log_snippet:
         error_parts: list[str] = []
         error_parts.append('<div class="block">')
         error_parts.append('<div class="block-title">Пример ошибки</div>')
@@ -401,6 +401,14 @@ def _render_cluster(
             error_parts.append(
                 '<div class="error-block">'
                 f"<pre>{_e(snippet)}</pre>"
+                "</div>"
+            )
+
+        if cluster.example_correlation:
+            error_parts.append(
+                '<div class="block-title" style="margin-top: 0.75rem;">Корреляция</div>'
+                '<div class="error-block">'
+                f"<pre>{_e(cluster.example_correlation)}</pre>"
                 "</div>"
             )
 

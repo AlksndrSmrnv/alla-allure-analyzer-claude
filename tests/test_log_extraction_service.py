@@ -230,6 +230,11 @@ class TestExtractTextHttpInfo:
         result = _extract_text_http_info(text)
         assert "Connection timed out" in result
 
+    def test_corr_id_without_error_signal_returns_empty(self):
+        text = '{"RqUID": "abc-123"}'
+        result = _extract_text_http_info(text)
+        assert result == ""
+
     def test_no_http_signals_returns_empty(self):
         text = "Just a regular log line without any HTTP context"
         result = _extract_text_http_info(text)
@@ -289,6 +294,11 @@ class TestDetectAndExtractHttp:
         result = _detect_and_extract_http(content, "json")
         assert result == ""
 
+    def test_json_corr_id_without_error_signal_returns_empty(self):
+        content = b'{"RqUID": "corr-only"}'
+        result = _detect_and_extract_http(content, "json")
+        assert result == ""
+
 
 class TestScanJsonForHttpInfo:
     def test_flat_json_with_all_fields(self):
@@ -301,8 +311,7 @@ class TestScanJsonForHttpInfo:
     def test_nested_corr_id(self):
         obj = {"header": {"RqUID": "nested-id", "OperUID": "op-42"}, "body": {}}
         result = _scan_json_for_http_info(obj)
-        assert "nested-id" in result
-        assert "op-42" in result
+        assert result == ""
 
     def test_http_status_not_included_if_2xx(self):
         obj = {"statusCode": 200, "message": "OK"}
@@ -405,6 +414,7 @@ class TestLogExtractionServiceIntegration:
         assert "req-abc" in summary.log_snippet
         assert "503" in summary.log_snippet
         assert "Backend unavailable" in summary.log_snippet
+        assert summary.correlation_hint == "rqUID=req-abc"
 
     @pytest.mark.asyncio
     async def test_text_attachment_extracts_both_log_and_http(self):
@@ -440,6 +450,7 @@ class TestLogExtractionServiceIntegration:
             await service.enrich_with_logs([summary])
 
         assert summary.log_snippet is None
+        assert summary.correlation_hint is None
 
     @pytest.mark.asyncio
     async def test_no_processable_attachments_skips_download(self):
@@ -458,6 +469,7 @@ class TestLogExtractionServiceIntegration:
 
         assert len(download_called) == 0
         assert summary.log_snippet is None
+        assert summary.correlation_hint is None
 
     @pytest.mark.asyncio
     async def test_multiple_json_attachments_combined(self):
@@ -501,3 +513,31 @@ class TestLogExtractionServiceIntegration:
                 assert line.strip().endswith("] ---"), (
                     f"Section header broken across lines: {line!r}"
                 )
+
+    @pytest.mark.asyncio
+    async def test_correlation_only_attachments_do_not_create_log_snippet(self):
+        atts = [
+            AttachmentMeta(id=30, name="TrRq", type="text/plain"),
+            AttachmentMeta(id=31, name="TrRs", type="application/json"),
+            AttachmentMeta(id=32, name="DB_LOG", type="text/plain"),
+        ]
+        provider = FakeAttachmentProvider(
+            atts,
+            {
+                30: b"OperUID=239482348\nRqUID=324234523420",
+                31: b'{"OperUID": "239482348"}',
+                32: b"OperUID=239482348",
+            },
+        )
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch(
+                 "magic.from_buffer",
+                 side_effect=["text/plain", "application/json", "text/plain"],
+             ):
+            await service.enrich_with_logs([summary])
+
+        assert summary.log_snippet is None
+        assert summary.correlation_hint == "operUID=239482348, rqUID=324234523420"
