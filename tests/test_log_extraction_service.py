@@ -478,3 +478,26 @@ class TestLogExtractionServiceIntegration:
         assert summary.log_snippet is not None
         assert "first" in summary.log_snippet
         assert "second" in summary.log_snippet
+
+    @pytest.mark.asyncio
+    async def test_attachment_name_with_newline_sanitized(self):
+        """Имя вложения с переносом строки не ломает формат заголовка секции."""
+        content = b'{"RqUID": "id1", "error": "fail"}'
+        att = AttachmentMeta(
+            id=20, name="Отправлен запрос ->\n", type="application/json"
+        )
+        provider = FakeAttachmentProvider([att], {20: content})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="application/json"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.log_snippet is not None
+        # Заголовок секции должен быть однострочным
+        for line in summary.log_snippet.splitlines():
+            if line.startswith("---"):
+                assert line.strip().endswith("] ---"), (
+                    f"Section header broken across lines: {line!r}"
+                )

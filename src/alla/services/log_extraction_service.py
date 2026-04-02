@@ -455,7 +455,7 @@ class LogExtractionService:
                         )
                         continue
 
-                att_name = att.name or f"attachment-{att.id}"
+                att_name = (att.name or f"attachment-{att.id}").replace("\n", " ").replace("\r", " ").strip()
                 fallback_mime = (att.type or att.content_type or "").lower()
                 detected_type = _detect_content_type(content_bytes, fallback_mime=fallback_mime)
 
