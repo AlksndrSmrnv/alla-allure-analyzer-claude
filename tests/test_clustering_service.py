@@ -465,6 +465,14 @@ class TestStripCorrelationOnlyHttpSections:
         )
         assert _strip_correlation_only_http_sections(snippet) == ""
 
+    def test_no_space_after_dashes_still_matched(self) -> None:
+        """Заголовок без пробела после --- (e.g. ---[HTTP: ...]) тоже распознаётся."""
+        snippet = (
+            "---[HTTP: Отправлен запрос] ---\n"
+            "Корреляция: operUID=a1, rquid=b1"
+        )
+        assert _strip_correlation_only_http_sections(snippet) == ""
+
 
 # ---------------------------------------------------------------------------
 # Cluster-level тесты: assertion gate и HTTP-фильтр

@@ -108,7 +108,9 @@ def _extract_assertion_actual(message: str) -> str | None:
 # Correlation-only HTTP section filter
 # ---------------------------------------------------------------------------
 
-_LOG_SECTION_HEADER_RE = re.compile(r"^--- \[(?:HTTP|файл): .+\] ---$", re.MULTILINE)
+_LOG_SECTION_HEADER_RE = re.compile(
+    r"^---\s*\[(?:HTTP|файл):\s.+?\]\s*---$", re.MULTILINE
+)
 
 
 def _strip_correlation_only_http_sections(log_snippet: str) -> str:
@@ -132,7 +134,7 @@ def _strip_correlation_only_http_sections(log_snippet: str) -> str:
         body_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(log_snippet)
         body = log_snippet[body_start:body_end].strip()
 
-        if header_line.startswith("--- [HTTP:"):
+        if "[HTTP:" in header_line:
             # Проверить: все ли непустые строки тела — Корреляция:
             body_lines = [line for line in body.splitlines() if line.strip()]
             if body_lines and all(line.strip().startswith("Корреляция:") for line in body_lines):
