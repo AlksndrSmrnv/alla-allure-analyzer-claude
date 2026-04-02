@@ -5,10 +5,19 @@ import logging
 from dataclasses import dataclass
 
 from alla.exceptions import LLMApiError
+from alla.models.llm import TokenUsage
 
 logger = logging.getLogger(__name__)
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
+
+
+@dataclass(frozen=True, slots=True)
+class ChatResponse:
+    """Ответ GigaChat: текст + статистика токенов."""
+
+    text: str
+    token_usage: TokenUsage = TokenUsage()
 
 
 class _FallbackMessagesRole:
@@ -56,6 +65,24 @@ def _build_chat_request(system_prompt: str, user_prompt: str, model: str) -> obj
     )
 
 
+def _extract_token_usage(response: object) -> TokenUsage:
+    """Извлечь статистику токенов из ответа GigaChat SDK.
+
+    Если ``response.usage`` отсутствует или ``None`` — возвращает нули.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return TokenUsage()
+    try:
+        return TokenUsage(
+            prompt_tokens=int(usage.prompt_tokens),
+            completion_tokens=int(usage.completion_tokens),
+            total_tokens=int(usage.total_tokens),
+        )
+    except (AttributeError, TypeError, ValueError):
+        return TokenUsage()
+
+
 class GigaChatClient:
     """Асинхронная обёртка над синхронным GigaChat SDK.
 
@@ -91,8 +118,8 @@ class GigaChatClient:
             timeout=timeout,
         )
 
-    async def chat(self, system_prompt: str, user_prompt: str) -> str:
-        """Отправить system + user сообщения в GigaChat и вернуть текст ответа.
+    async def chat(self, system_prompt: str, user_prompt: str) -> ChatResponse:
+        """Отправить system + user сообщения в GigaChat и вернуть ответ.
 
         Retry: при сетевых ошибках и 429/502-504 — exponential backoff
         (delay = base * 2^attempt), до ``max_retries`` повторов.
@@ -140,7 +167,7 @@ class GigaChatClient:
                         f"Ожидался str, получен {type(text).__name__}",
                         self._base_url,
                     )
-                return text
+                return ChatResponse(text=text, token_usage=_extract_token_usage(response))
 
             if retryable and attempt < self._max_retries:
                 delay = self._retry_base_delay * (2 ** attempt)

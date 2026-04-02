@@ -72,6 +72,7 @@ def build_analysis_response(result: "AnalysisResult") -> dict[str, Any]:
                 cluster_id: analysis.model_dump()
                 for cluster_id, analysis in result.llm_result.cluster_analyses.items()
             },
+            "token_usage": asdict(result.llm_result.token_usage),
         }
 
     if result.llm_push_result is not None:
@@ -81,6 +82,7 @@ def build_analysis_response(result: "AnalysisResult") -> dict[str, Any]:
         payload["llm_launch_summary"] = {
             "summary_text": result.llm_launch_summary.summary_text,
             "error": result.llm_launch_summary.error,
+            "token_usage": asdict(result.llm_launch_summary.token_usage),
         }
 
     return payload

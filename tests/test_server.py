@@ -580,3 +580,41 @@ async def test_delete_merge_rule_returns_404_when_missing(monkeypatch, _http_cli
 
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Merge rule 99 not found"
+
+
+# ---------------------------------------------------------------------------
+# build_analysis_response — token_usage
+# ---------------------------------------------------------------------------
+
+
+def test_build_analysis_response_includes_token_usage() -> None:
+    """token_usage присутствует в JSON когда llm_result задан."""
+    from alla.app_support import build_analysis_response
+    from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary, TokenUsage
+
+    result = _make_analysis_result(
+        llm_result=LLMAnalysisResult(
+            total_clusters=1,
+            analyzed_count=1,
+            failed_count=0,
+            skipped_count=0,
+            token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+        ),
+        llm_launch_summary=LLMLaunchSummary(
+            summary_text="summary",
+            token_usage=TokenUsage(prompt_tokens=200, completion_tokens=80, total_tokens=280),
+        ),
+    )
+
+    payload = build_analysis_response(result)
+
+    assert payload["llm_result"]["token_usage"] == {
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "total_tokens": 150,
+    }
+    assert payload["llm_launch_summary"]["token_usage"] == {
+        "prompt_tokens": 200,
+        "completion_tokens": 80,
+        "total_tokens": 280,
+    }

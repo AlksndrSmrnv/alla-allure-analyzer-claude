@@ -424,6 +424,7 @@ async def _run_llm_stage(
         llm_service = LLMService(
             gigachat,
             concurrency=settings.llm_concurrency,
+            request_delay=settings.llm_request_delay,
             message_max_chars=settings.llm_prompt_message_max_chars,
             trace_max_chars=settings.llm_prompt_trace_max_chars,
             log_max_chars=settings.llm_prompt_log_max_chars,
@@ -448,6 +449,18 @@ async def _run_llm_stage(
         except Exception as exc:
             logger.warning("LLM summary: ошибка подготовки: %s", exc)
             llm_launch_summary = LLMLaunchSummary(summary_text="", error=str(exc))
+
+        # Суммарный расход токенов (cluster analysis + launch summary)
+        clusters_usage = llm_result.token_usage if llm_result else None
+        summary_usage = llm_launch_summary.token_usage if llm_launch_summary else None
+        total_prompt = (clusters_usage.prompt_tokens if clusters_usage else 0) + (summary_usage.prompt_tokens if summary_usage else 0)
+        total_completion = (clusters_usage.completion_tokens if clusters_usage else 0) + (summary_usage.completion_tokens if summary_usage else 0)
+        total_all = (clusters_usage.total_tokens if clusters_usage else 0) + (summary_usage.total_tokens if summary_usage else 0)
+        if total_all > 0:
+            logger.info(
+                "LLM: токены — входящих: %d, исходящих: %d, всего: %d",
+                total_prompt, total_completion, total_all,
+            )
 
         return llm_result, llm_launch_summary
     finally:

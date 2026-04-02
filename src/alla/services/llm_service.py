@@ -5,9 +5,16 @@ import logging
 from typing import Protocol
 
 from alla.clients.base import TestResultsUpdater
+from alla.clients.gigachat_client import ChatResponse
 from alla.knowledge.models import KBMatchResult, RootCauseCategory
 from alla.models.clustering import ClusteringReport, FailureCluster
-from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis, LLMLaunchSummary, LLMPushResult
+from alla.models.llm import (
+    LLMAnalysisResult,
+    LLMClusterAnalysis,
+    LLMLaunchSummary,
+    LLMPushResult,
+    TokenUsage,
+)
 from alla.models.testops import FailedTestSummary, TriageReport
 from alla.utils.log_utils import has_explicit_errors
 from alla.utils.text_normalization import normalize_text_for_llm
@@ -18,7 +25,7 @@ logger = logging.getLogger(__name__)
 class LLMClient(Protocol):
     """Протокол LLM-клиента для LLMService."""
 
-    async def chat(self, system_prompt: str, user_prompt: str) -> str: ...
+    async def chat(self, system_prompt: str, user_prompt: str) -> ChatResponse: ...
 
 
 _LLM_HEADER = "[alla] LLM-анализ ошибки"
@@ -409,6 +416,8 @@ class LLMService:
     """Анализ кластеров ошибок через LLM.
 
     Для каждого кластера: строит промпт, вызывает LLM, сохраняет результат.
+    Между запросами выдерживается минимальный интервал ``request_delay``
+    для предотвращения 429 ошибок от GigaChat API.
     """
 
     def __init__(
@@ -416,15 +425,39 @@ class LLMService:
         client: LLMClient,
         *,
         concurrency: int = 3,
+        request_delay: float = 0.5,
         message_max_chars: int = _PROMPT_MESSAGE_MAX_CHARS,
         trace_max_chars: int = _PROMPT_TRACE_MAX_CHARS,
         log_max_chars: int = _PROMPT_LOG_MAX_CHARS,
     ) -> None:
         self._client = client
         self._concurrency = concurrency
+        self._request_delay = request_delay
         self._message_max_chars = message_max_chars
         self._trace_max_chars = trace_max_chars
         self._log_max_chars = log_max_chars
+        self._rate_lock = asyncio.Lock()
+        self._last_request_time = 0.0
+
+    async def _rate_limited_chat(
+        self, system_prompt: str, user_prompt: str,
+    ) -> ChatResponse:
+        """Вызвать LLM с соблюдением минимального интервала между запросами.
+
+        Lock удерживается только на время вычисления паузы и обновления
+        timestamp. Сетевой запрос выполняется после отпускания lock,
+        чтобы не сериализовать параллельные запросы.
+        """
+        if self._request_delay > 0:
+            async with self._rate_lock:
+                loop = asyncio.get_running_loop()
+                now = loop.time()
+                elapsed = now - self._last_request_time
+                if self._last_request_time > 0 and elapsed < self._request_delay:
+                    await asyncio.sleep(self._request_delay - elapsed)
+                self._last_request_time = loop.time()
+
+        return await self._client.chat(system_prompt, user_prompt)
 
     async def analyze_clusters(
         self,
@@ -452,9 +485,13 @@ class LLMService:
         analyzed = 0
         failed = 0
         skipped = 0
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_tokens = 0
 
         async def analyze_one(cluster: FailureCluster) -> None:
             nonlocal analyzed, failed, skipped
+            nonlocal total_prompt_tokens, total_completion_tokens, total_tokens
 
             kb_matches = (kb_results or {}).get(cluster.cluster_id)
 
@@ -516,16 +553,21 @@ class LLMService:
 
             async with semaphore:
                 try:
-                    result_text = await self._client.chat(system_prompt, user_prompt)
+                    chat_response = await self._rate_limited_chat(system_prompt, user_prompt)
                     analyses[cluster.cluster_id] = LLMClusterAnalysis(
                         cluster_id=cluster.cluster_id,
-                        analysis_text=result_text,
+                        analysis_text=chat_response.text,
                     )
                     analyzed += 1
+                    usage = chat_response.token_usage
+                    total_prompt_tokens += usage.prompt_tokens
+                    total_completion_tokens += usage.completion_tokens
+                    total_tokens += usage.total_tokens
                     logger.debug(
-                        "LLM: кластер %s проанализирован (%d символов)",
+                        "LLM: кластер %s проанализирован (%d символов, %d токенов)",
                         cluster.cluster_id,
-                        len(result_text),
+                        len(chat_response.text),
+                        usage.total_tokens,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -555,6 +597,11 @@ class LLMService:
             failed_count=failed,
             skipped_count=skipped,
             cluster_analyses=analyses,
+            token_usage=TokenUsage(
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
+                total_tokens=total_tokens,
+            ),
         )
 
     async def generate_launch_summary(
@@ -576,9 +623,12 @@ class LLMService:
             clustering_report.cluster_count,
         )
         try:
-            text = await self._client.chat(system_prompt, user_prompt)
-            logger.info("LLM summary: отчёт получен (%d символов)", len(text))
-            return LLMLaunchSummary(summary_text=text)
+            chat_response = await self._rate_limited_chat(system_prompt, user_prompt)
+            logger.info("LLM summary: отчёт получен (%d символов)", len(chat_response.text))
+            return LLMLaunchSummary(
+                summary_text=chat_response.text,
+                token_usage=chat_response.token_usage,
+            )
         except Exception as exc:
             logger.warning("LLM summary: ошибка: %s", exc)
             return LLMLaunchSummary(summary_text="", error=str(exc))
