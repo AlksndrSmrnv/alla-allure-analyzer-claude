@@ -7,13 +7,21 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from alla.clients.gigachat_client import GigaChatClient, _extract_status_code
+from alla.clients.gigachat_client import GigaChatClient, _extract_status_code, _extract_token_usage
 from alla.exceptions import LLMApiError
+from alla.models.llm import TokenUsage
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class _MockUsage:
+    prompt_tokens: int = 10
+    completion_tokens: int = 5
+    total_tokens: int = 15
 
 
 @dataclass
@@ -29,6 +37,7 @@ class _MockChoice:
 @dataclass
 class _MockResponse:
     choices: list[_MockChoice] = field(default_factory=lambda: [_MockChoice()])
+    usage: _MockUsage | None = field(default_factory=_MockUsage)
 
 
 def _make_client(mock_giga: object) -> GigaChatClient:
@@ -58,7 +67,7 @@ async def test_chat_success() -> None:
     client = _make_client(mock_giga)
     result = await client.chat("system", "user input")
 
-    assert result == "Hello LLM"
+    assert result.text == "Hello LLM"
     mock_giga.chat.assert_called_once()
 
 
@@ -82,6 +91,66 @@ async def test_chat_passes_system_and_user_messages() -> None:
     assert captured_chat.messages[1].content == "user prompt"
     assert captured_chat.model == "test-model"
     assert captured_chat.stream is False
+
+
+# ---------------------------------------------------------------------------
+# chat — token usage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_returns_token_usage() -> None:
+    """Token usage извлекается из ответа GigaChat."""
+    mock_giga = MagicMock()
+    mock_giga.chat.return_value = _MockResponse(
+        choices=[_MockChoice(_MockMessage("ok"))],
+        usage=_MockUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+    )
+
+    client = _make_client(mock_giga)
+    result = await client.chat("sys", "user")
+
+    assert result.token_usage.prompt_tokens == 100
+    assert result.token_usage.completion_tokens == 50
+    assert result.token_usage.total_tokens == 150
+
+
+@pytest.mark.asyncio
+async def test_chat_returns_zero_usage_when_missing() -> None:
+    """Отсутствие usage → TokenUsage(0, 0, 0)."""
+    mock_giga = MagicMock()
+    mock_giga.chat.return_value = _MockResponse(
+        choices=[_MockChoice(_MockMessage("ok"))],
+        usage=None,
+    )
+
+    client = _make_client(mock_giga)
+    result = await client.chat("sys", "user")
+
+    assert result.token_usage == TokenUsage()
+
+
+# ---------------------------------------------------------------------------
+# _extract_token_usage
+# ---------------------------------------------------------------------------
+
+
+def test_extract_token_usage_with_valid_usage() -> None:
+    """Извлечение usage из объекта с полями prompt/completion/total."""
+    response = _MockResponse(usage=_MockUsage(prompt_tokens=20, completion_tokens=10, total_tokens=30))
+    usage = _extract_token_usage(response)
+    assert usage == TokenUsage(prompt_tokens=20, completion_tokens=10, total_tokens=30)
+
+
+def test_extract_token_usage_none() -> None:
+    """usage=None → TokenUsage(0, 0, 0)."""
+    response = _MockResponse(usage=None)
+    assert _extract_token_usage(response) == TokenUsage()
+
+
+def test_extract_token_usage_no_attr() -> None:
+    """Объект без атрибута usage → TokenUsage(0, 0, 0)."""
+    assert _extract_token_usage(object()) == TokenUsage()
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +220,7 @@ async def test_chat_retryable_status_code_retries() -> None:
     client = _make_client(_Giga())
     result = await client.chat("sys", "user")
 
-    assert result == "ok"
+    assert result.text == "ok"
     assert call_count == 3
 
 

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
+from alla.clients.gigachat_client import ChatResponse
 from alla.models.clustering import ClusteringReport, FailureCluster
 from alla.models.common import TestStatus as StatusEnum
-from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis
+from alla.models.llm import LLMAnalysisResult, LLMClusterAnalysis, TokenUsage
 from alla.models.testops import FailedTestSummary, TriageReport
 from alla.services.llm_service import (
     LLMService,
@@ -24,6 +27,11 @@ def _make_report(*clusters: FailureCluster) -> ClusteringReport:
         cluster_count=len(clusters),
         clusters=list(clusters),
     )
+
+
+def _chat_response(text: str = "analysis", prompt: int = 10, completion: int = 5, total: int = 15) -> ChatResponse:
+    """Создать ChatResponse с заданными токенами."""
+    return ChatResponse(text=text, token_usage=TokenUsage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total))
 
 
 def test_build_cluster_prompt_smoke_and_truncation() -> None:
@@ -82,7 +90,7 @@ async def test_analyze_clusters_skips_without_error_text() -> None:
         async def chat(self, system_prompt, user_prompt):
             raise AssertionError("chat should not be called")
 
-    service = LLMService(_Client())  # type: ignore[arg-type]
+    service = LLMService(_Client(), request_delay=0)  # type: ignore[arg-type]
     cluster = make_failure_cluster(
         example_message=None,
         example_trace_snippet=None,
@@ -103,9 +111,9 @@ async def test_analyze_clusters_success_uses_representative_log() -> None:
     class _Client:
         async def chat(self, system_prompt, user_prompt):
             captured_prompts.append(user_prompt)
-            return "analysis"
+            return _chat_response("analysis")
 
-    service = LLMService(_Client())  # type: ignore[arg-type]
+    service = LLMService(_Client(), request_delay=0)  # type: ignore[arg-type]
     cluster = make_failure_cluster(representative_test_id=42, member_test_ids=[42])
     failed_tests = [
         FailedTestSummary(
@@ -136,12 +144,101 @@ async def test_analyze_clusters_handles_llm_error() -> None:
         async def chat(self, system_prompt, user_prompt):
             raise RuntimeError("GigaChat unavailable")
 
-    service = LLMService(_Client())  # type: ignore[arg-type]
+    service = LLMService(_Client(), request_delay=0)  # type: ignore[arg-type]
     result = await service.analyze_clusters(_make_report(make_failure_cluster()))
 
     assert result.analyzed_count == 0
     assert result.failed_count == 1
     assert "GigaChat unavailable" in (result.cluster_analyses["c1"].error or "")
+
+
+# ---------------------------------------------------------------------------
+# Token usage aggregation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_analyze_clusters_aggregates_token_usage() -> None:
+    """Token usage суммируется по всем успешно проанализированным кластерам."""
+    call_count = 0
+
+    class _Client:
+        async def chat(self, system_prompt, user_prompt):
+            nonlocal call_count
+            call_count += 1
+            return _chat_response(
+                f"analysis-{call_count}",
+                prompt=100 * call_count,
+                completion=50 * call_count,
+                total=150 * call_count,
+            )
+
+    service = LLMService(_Client(), concurrency=1, request_delay=0)  # type: ignore[arg-type]
+    c1 = make_failure_cluster(cluster_id="c1", member_test_ids=[1], member_count=1)
+    c2 = make_failure_cluster(cluster_id="c2", member_test_ids=[2], member_count=1)
+
+    result = await service.analyze_clusters(_make_report(c1, c2))
+
+    assert result.analyzed_count == 2
+    # Сумма: 100+200=300 prompt, 50+100=150 completion, 150+300=450 total
+    assert result.token_usage.prompt_tokens == 300
+    assert result.token_usage.completion_tokens == 150
+    assert result.token_usage.total_tokens == 450
+
+
+@pytest.mark.asyncio
+async def test_generate_launch_summary_includes_token_usage() -> None:
+    """generate_launch_summary записывает token_usage из ответа LLM."""
+
+    class _Client:
+        async def chat(self, system_prompt, user_prompt):
+            return _chat_response("summary text", prompt=200, completion=80, total=280)
+
+    service = LLMService(_Client(), request_delay=0)  # type: ignore[arg-type]
+    cluster = make_failure_cluster()
+    report = _make_report(cluster)
+    triage = make_triage_report()
+
+    summary = await service.generate_launch_summary(report, triage)
+
+    assert summary.summary_text == "summary text"
+    assert summary.token_usage.prompt_tokens == 200
+    assert summary.token_usage.completion_tokens == 80
+    assert summary.token_usage.total_tokens == 280
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_enforces_delay() -> None:
+    """Между стартами запросов выдерживается минимальный интервал."""
+    timestamps: list[float] = []
+
+    class _Client:
+        async def chat(self, system_prompt, user_prompt):
+            timestamps.append(asyncio.get_running_loop().time())
+            return _chat_response("ok")
+
+    delay = 0.15
+    service = LLMService(_Client(), concurrency=1, request_delay=delay)  # type: ignore[arg-type]
+    c1 = make_failure_cluster(cluster_id="c1", member_test_ids=[1], member_count=1)
+    c2 = make_failure_cluster(cluster_id="c2", member_test_ids=[2], member_count=1)
+    c3 = make_failure_cluster(cluster_id="c3", member_test_ids=[3], member_count=1)
+
+    await service.analyze_clusters(_make_report(c1, c2, c3))
+
+    assert len(timestamps) == 3
+    for i in range(1, len(timestamps)):
+        elapsed = timestamps[i] - timestamps[i - 1]
+        assert elapsed >= delay * 0.9, f"Interval {i}: {elapsed:.3f}s < {delay}s"
+
+
+# ---------------------------------------------------------------------------
+# Push LLM results
+# ---------------------------------------------------------------------------
 
 
 def _make_push_inputs(

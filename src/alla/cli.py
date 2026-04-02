@@ -232,10 +232,14 @@ async def async_main(args: argparse.Namespace) -> int:
                 f" | Пропущено: {kb_push_result.skipped_count}"
             )
         if llm_result is not None:
+            total_tokens = llm_result.token_usage.total_tokens
+            if llm_launch_summary is not None:
+                total_tokens += llm_launch_summary.token_usage.total_tokens
             print(
                 f"[LLM] Проанализировано: {llm_result.analyzed_count}"
                 f" | Ошибок: {llm_result.failed_count}"
                 f" | Пропущено: {llm_result.skipped_count}"
+                f" | Токены: {total_tokens}"
             )
         if llm_push_result is not None:
             print(

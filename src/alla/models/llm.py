@@ -5,6 +5,15 @@ from dataclasses import dataclass, field
 from pydantic import BaseModel
 
 
+@dataclass(frozen=True)
+class TokenUsage:
+    """Статистика использования токенов LLM."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
 class LLMClusterAnalysis(BaseModel):
     """Результат LLM-анализа одного кластера ошибок."""
 
@@ -25,6 +34,7 @@ class LLMAnalysisResult:
     # После отказа от exact-KB bypass всегда равно 0.
     kb_bypass_count: int = 0
     cluster_analyses: dict[str, LLMClusterAnalysis] = field(default_factory=dict)
+    token_usage: TokenUsage = field(default_factory=TokenUsage)
 
 
 @dataclass(frozen=True)
@@ -43,3 +53,4 @@ class LLMLaunchSummary:
 
     summary_text: str
     error: str | None = None
+    token_usage: TokenUsage = field(default_factory=TokenUsage)

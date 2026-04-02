@@ -50,6 +50,37 @@ def test_logs_clustering_weight_rejects_out_of_range(monkeypatch, tmp_path) -> N
         Settings(logs_clustering_weight=1.5)
 
 
+def test_llm_request_delay_default(monkeypatch, tmp_path) -> None:
+    """llm_request_delay по умолчанию 0.5."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ALLURE_ENDPOINT", "https://allure.example.com")
+    monkeypatch.setenv("ALLURE_TOKEN", "tok")
+
+    settings = Settings()
+
+    assert settings.llm_request_delay == 0.5
+
+
+def test_llm_request_delay_rejects_negative(monkeypatch, tmp_path) -> None:
+    """llm_request_delay не принимает отрицательные значения."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ALLURE_ENDPOINT", "https://allure.example.com")
+    monkeypatch.setenv("ALLURE_TOKEN", "tok")
+
+    with pytest.raises(ValidationError):
+        Settings(llm_request_delay=-0.1)
+
+
+def test_llm_request_delay_accepts_zero(monkeypatch, tmp_path) -> None:
+    """llm_request_delay принимает 0 (без паузы)."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ALLURE_ENDPOINT", "https://allure.example.com")
+    monkeypatch.setenv("ALLURE_TOKEN", "tok")
+
+    settings = Settings(llm_request_delay=0)
+    assert settings.llm_request_delay == 0
+
+
 def test_resolve_cert_files_cleans_up_cert_when_key_creation_fails(monkeypatch, tmp_path) -> None:
     """При сбое создания key temp-файла ранее созданный cert-файл удаляется."""
     monkeypatch.chdir(tmp_path)
