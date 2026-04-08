@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from alla.clients.gigachat_client import GigaChatClient, _extract_status_code, _extract_token_usage
+from alla.clients.gigachat_client import GigaChatClient, _extract_retry_after, _extract_status_code, _extract_token_usage
 from alla.exceptions import LLMApiError
 from alla.models.llm import TokenUsage
 
@@ -298,3 +298,136 @@ def test_extract_status_code_from_response() -> None:
 def test_extract_status_code_returns_none() -> None:
     """Без status_code → None."""
     assert _extract_status_code(RuntimeError("oops")) is None
+
+
+# ---------------------------------------------------------------------------
+# _extract_retry_after
+# ---------------------------------------------------------------------------
+
+
+def test_extract_retry_after_numeric_header() -> None:
+    """Retry-After: 30 → 30.0."""
+
+    class _Response:
+        headers = {"Retry-After": "30"}
+
+    class _Exc(Exception):
+        response = _Response()
+
+    assert _extract_retry_after(_Exc()) == 30.0
+
+
+def test_extract_retry_after_lowercase_header() -> None:
+    """retry-after (строчные) → значение считывается."""
+
+    class _Response:
+        headers = {"retry-after": "10"}
+
+    class _Exc(Exception):
+        response = _Response()
+
+    assert _extract_retry_after(_Exc()) == 10.0
+
+
+def test_extract_retry_after_no_header() -> None:
+    """Заголовок Retry-After отсутствует → None."""
+
+    class _Response:
+        headers = {}
+
+    class _Exc(Exception):
+        response = _Response()
+
+    assert _extract_retry_after(_Exc()) is None
+
+
+def test_extract_retry_after_no_response() -> None:
+    """Нет response на исключении → None."""
+    assert _extract_retry_after(RuntimeError("oops")) is None
+
+
+def test_extract_retry_after_invalid_value() -> None:
+    """Нечисловое значение Retry-After → None."""
+
+    class _Response:
+        headers = {"Retry-After": "Wed, 21 Oct 2025 07:28:00 GMT"}
+
+    class _Exc(Exception):
+        response = _Response()
+
+    assert _extract_retry_after(_Exc()) is None
+
+
+# ---------------------------------------------------------------------------
+# chat — Retry-After header respected
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_respects_retry_after_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """429 с Retry-After: 5 → задержка не меньше 5s (вместо backoff 0.01s)."""
+    call_count = 0
+    sleep_calls: list[float] = []
+
+    class _Response:
+        headers = {"Retry-After": "5"}
+
+    class _HttpError(Exception):
+        status_code = 429
+        response = _Response()
+
+    class _Giga:
+        def chat(self, _):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise _HttpError("Too many requests")
+            return _MockResponse(choices=[_MockChoice(_MockMessage("ok"))])
+
+    async def _mock_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("alla.clients.gigachat_client.asyncio.sleep", _mock_sleep)
+
+    client = _make_client(_Giga())
+    result = await client.chat("sys", "user")
+
+    assert result.text == "ok"
+    assert call_count == 2
+    # backoff would be 0.01s, but Retry-After says 5s → delay must be >= 5s
+    assert len(sleep_calls) == 1
+    assert sleep_calls[0] >= 5.0
+
+
+@pytest.mark.asyncio
+async def test_chat_uses_backoff_when_retry_after_smaller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retry-After меньше backoff → используется backoff."""
+    call_count = 0
+    sleep_calls: list[float] = []
+
+    class _Response:
+        headers = {"Retry-After": "0"}
+
+    class _HttpError(Exception):
+        status_code = 429
+        response = _Response()
+
+    class _Giga:
+        def chat(self, _):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise _HttpError("Too many requests")
+            return _MockResponse(choices=[_MockChoice(_MockMessage("ok"))])
+
+    async def _mock_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("alla.clients.gigachat_client.asyncio.sleep", _mock_sleep)
+
+    client = _make_client(_Giga())
+    result = await client.chat("sys", "user")
+
+    assert result.text == "ok"
+    # backoff=0.01 > retry_after=0 → use backoff
+    assert sleep_calls[0] == pytest.approx(0.01)

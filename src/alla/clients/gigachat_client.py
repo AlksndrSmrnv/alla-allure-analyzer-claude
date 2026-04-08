@@ -170,13 +170,17 @@ class GigaChatClient:
                 return ChatResponse(text=text, token_usage=_extract_token_usage(response))
 
             if retryable and attempt < self._max_retries:
-                delay = self._retry_base_delay * (2 ** attempt)
+                backoff = self._retry_base_delay * (2 ** attempt)
+                raw_exc = last_error.__cause__ if last_error else None
+                server_delay = _extract_retry_after(raw_exc) if raw_exc else None
+                delay = max(backoff, server_delay) if server_delay is not None else backoff
                 logger.warning(
-                    "GigaChat ошибка (попытка %d/%d): %s — повтор через %.1fs",
+                    "GigaChat ошибка (попытка %d/%d): %s — повтор через %.1fs%s",
                     attempt + 1,
                     1 + self._max_retries,
                     last_error,
                     delay,
+                    f" (Retry-After от сервера: {server_delay:.0f}s)" if server_delay else "",
                 )
                 await asyncio.sleep(delay)
             elif last_error is not None:
@@ -203,4 +207,22 @@ def _extract_status_code(exc: Exception) -> int | None:
         return int(exc.status_code)
     if hasattr(exc, "response") and hasattr(exc.response, "status_code"):
         return int(exc.response.status_code)
+    return None
+
+
+def _extract_retry_after(exc: Exception) -> float | None:
+    """Извлечь значение Retry-After (секунды) из заголовков ответа 429."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    for name in ("Retry-After", "retry-after"):
+        value = headers.get(name) if hasattr(headers, "get") else None
+        if value is not None:
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                pass
     return None
