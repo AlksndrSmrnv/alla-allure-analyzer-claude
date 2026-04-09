@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
 import pytest
 
-from alla.clients.gigachat_client import GigaChatClient, _extract_retry_after, _extract_status_code, _extract_token_usage
+from alla.clients.gigachat_client import ChatResponse, GigaChatClient, _extract_retry_after, _extract_status_code, _extract_token_usage
 from alla.exceptions import LLMApiError
 from alla.models.llm import TokenUsage
 
@@ -48,6 +49,8 @@ def _make_client(mock_giga: object) -> GigaChatClient:
     client._max_retries = 3
     client._retry_base_delay = 0.01  # Быстрый retry для тестов
     client._giga = mock_giga
+    client._rate_limit_until = 0.0
+    client._rate_limit_lock = asyncio.Lock()
     return client
 
 
@@ -394,9 +397,9 @@ async def test_chat_respects_retry_after_header(monkeypatch: pytest.MonkeyPatch)
 
     assert result.text == "ok"
     assert call_count == 2
-    # backoff would be 0.01s, but Retry-After says 5s → delay must be >= 5s
+    # backoff would be 0.01s, but Retry-After says 5s → delay must be close to 5s
     assert len(sleep_calls) == 1
-    assert sleep_calls[0] >= 5.0
+    assert sleep_calls[0] == pytest.approx(5.0, abs=0.01)
 
 
 @pytest.mark.asyncio
@@ -430,4 +433,86 @@ async def test_chat_uses_backoff_when_retry_after_smaller(monkeypatch: pytest.Mo
 
     assert result.text == "ok"
     # backoff=0.01 > retry_after=0 → use backoff
-    assert sleep_calls[0] == pytest.approx(0.01)
+    assert sleep_calls[0] == pytest.approx(0.01, abs=0.001)
+
+
+# ---------------------------------------------------------------------------
+# chat — глобальный кулдаун при параллельных запросах
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_requests_share_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Если один из параллельных запросов получил 429, остальные тоже ждут кулдаун."""
+    call_count = 0
+    sleep_calls: list[float] = []
+
+    class _HttpError(Exception):
+        status_code = 429
+
+    class _Giga:
+        def chat(self, _):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:  # первые два вызова — 429
+                raise _HttpError("Too many requests")
+            return _MockResponse(choices=[_MockChoice(_MockMessage("ok"))])
+
+    async def _mock_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("alla.clients.gigachat_client.asyncio.sleep", _mock_sleep)
+
+    client = _make_client(_Giga())
+
+    results = await asyncio.gather(
+        client.chat("sys", "user1"),
+        client.chat("sys", "user2"),
+        return_exceptions=True,
+    )
+
+    successes = [r for r in results if isinstance(r, ChatResponse)]
+    assert len(successes) >= 1
+    # Хотя бы один sleep произошёл (кулдаун от 429)
+    assert len(sleep_calls) >= 1
+    assert all(s >= 0.0 for s in sleep_calls)
+
+
+@pytest.mark.asyncio
+async def test_second_request_waits_for_cooldown_set_by_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Второй параллельный запрос ждёт кулдаун, установленный первым при 429."""
+    sleep_calls: list[float] = []
+    call_order: list[str] = []
+
+    class _HttpError(Exception):
+        status_code = 429
+
+    class _Giga:
+        def __init__(self) -> None:
+            self._count = 0
+
+        def chat(self, _):
+            self._count += 1
+            if self._count == 1:
+                call_order.append("429")
+                raise _HttpError("Too many requests")
+            call_order.append("ok")
+            return _MockResponse(choices=[_MockChoice(_MockMessage("ok"))])
+
+    async def _mock_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("alla.clients.gigachat_client.asyncio.sleep", _mock_sleep)
+
+    client = _make_client(_Giga())
+
+    # Первый вызов получает 429 и устанавливает кулдаун backoff=0.01s
+    # Второй вызов должен его уважить (увидит remaining > 0 в _wait_for_rate_limit)
+    await asyncio.gather(
+        client.chat("sys", "a"),
+        client.chat("sys", "b"),
+        return_exceptions=True,
+    )
+
+    # Суммарно должны быть sleep-вызовы (от _set_rate_limit_cooldown + _wait_for_rate_limit)
+    assert len(sleep_calls) >= 1

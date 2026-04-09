@@ -109,6 +109,8 @@ class GigaChatClient:
         self._base_url = base_url.rstrip("/")
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
+        self._rate_limit_until: float = 0.0
+        self._rate_limit_lock: asyncio.Lock = asyncio.Lock()
         self._giga = GigaChat(
             base_url=base_url,
             cert_file=cert_file,
@@ -118,17 +120,39 @@ class GigaChatClient:
             timeout=timeout,
         )
 
+    async def _wait_for_rate_limit(self) -> None:
+        """Подождать, если активен глобальный rate-limit кулдаун.
+
+        Lock удерживается только на время чтения _rate_limit_until.
+        Сам sleep выполняется вне lock, чтобы не блокировать _set_rate_limit_cooldown.
+        """
+        async with self._rate_limit_lock:
+            remaining = self._rate_limit_until - asyncio.get_running_loop().time()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+
+    async def _set_rate_limit_cooldown(self, delay: float) -> None:
+        """Установить/продлить глобальный кулдаун (берётся максимум из текущего и нового)."""
+        async with self._rate_limit_lock:
+            new_until = asyncio.get_running_loop().time() + delay
+            if new_until > self._rate_limit_until:
+                self._rate_limit_until = new_until
+
     async def chat(self, system_prompt: str, user_prompt: str) -> ChatResponse:
         """Отправить system + user сообщения в GigaChat и вернуть ответ.
 
         Retry: при сетевых ошибках и 429/502-504 — exponential backoff
         (delay = base * 2^attempt), до ``max_retries`` повторов.
+
+        При 429 устанавливается глобальный кулдаун через _set_rate_limit_cooldown,
+        чтобы все параллельные вызовы тоже ждали — и не бились одновременно.
         """
         chat_request = _build_chat_request(system_prompt, user_prompt, self._model)
 
         last_error: LLMApiError | None = None
 
         for attempt in range(1 + self._max_retries):
+            await self._wait_for_rate_limit()
             logger.debug(
                 "GigaChat запрос: model=%s, user_len=%d, attempt=%d/%d",
                 self._model,
@@ -175,14 +199,14 @@ class GigaChatClient:
                 server_delay = _extract_retry_after(raw_exc) if raw_exc else None
                 delay = max(backoff, server_delay) if server_delay is not None else backoff
                 logger.warning(
-                    "GigaChat ошибка (попытка %d/%d): %s — повтор через %.1fs%s",
+                    "GigaChat ошибка (попытка %d/%d): %s — кулдаун %.1fs%s",
                     attempt + 1,
                     1 + self._max_retries,
                     last_error,
                     delay,
-                    f" (Retry-After от сервера: {server_delay:.0f}s)" if server_delay else "",
+                    f" (Retry-After: {server_delay:.0f}s)" if server_delay else "",
                 )
-                await asyncio.sleep(delay)
+                await self._set_rate_limit_cooldown(delay)
             elif last_error is not None:
                 raise last_error
 
