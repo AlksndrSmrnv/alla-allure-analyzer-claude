@@ -2,37 +2,41 @@
 
 ## Архитектура
 
-- [ ] Новые внешние зависимости добавлены в `pyproject.toml` (раздел `[project.dependencies]`)
-- [ ] Новые `ALLURE_*` переменные добавлены в `src/alla/config.py` + `.env.example` + `CLAUDE.md`
-- [ ] Новые Protocol-интерфейсы (если нужны) добавлены в `src/alla/clients/base.py` или `src/alla/knowledge/base.py`
-- [ ] Новая фича opt-in: по умолчанию `False` / `disabled`
+- [ ] Новый внешний контракт вынесен в правильный слой: `src/alla/clients/base.py` для async HTTP/TestOps-клиентов; `src/alla/knowledge/base.py` или `src/alla/knowledge/feedback_store.py` для KB/storage-контрактов
+- [ ] Для основного analysis pipeline новая логика подключена через `src/alla/orchestrator.py`; для вспомогательных флоу используется осознанное подключение через `src/alla/server.py`, `src/alla/app_support.py`, store или отдельный service
+- [ ] Если фича затрагивает HTML-отчёт, ссылки на отчёт или feedback UI, обновлены `src/alla/report/html_report.py`, `src/alla/app_support.py` и при необходимости `src/alla/server.py`
+- [ ] Новая настройка безопасна по умолчанию: либо `False`, либо пустое значение/отключённый backend, либо явное условие активации через конфиг
 
 ## Код
 
-- [ ] Все публичные методы новых сервисов — `async def`
-- [ ] Параллельные запросы контролируются через `asyncio.Semaphore` (не голый `gather` с неограниченным N)
-- [ ] Новые Pydantic-модели: все поля `Optional` с `None` дефолтом (кроме `id`)
-- [ ] Модели из внешних API: `extra="allow"`, `populate_by_name=True`
+- [ ] I/O-bound публичные методы новых клиентов и сетевых сервисов — `async def`; чистые CPU/transform helper'ы могут оставаться sync
+- [ ] Fan-out к внешним ресурсам ограничен через `asyncio.Semaphore` или эквивалентный throttling
+- [ ] Новые модели внешнего API в `src/alla/models/` используют `populate_by_name=True` и `extra="allow"`; optional-поля добавлены там, где источник реально может их не прислать
+- [ ] Новые доменные модели/dataclass'ы не ломают текущие контракты `AnalysisResult`, CLI JSON и HTTP JSON
 - [ ] Новые исключения наследуют от `AllaError` в `src/alla/exceptions.py`
-- [ ] Нет hardcoded URL, токенов, путей — всё через `Settings`
+- [ ] Нет hardcoded URL, токенов, DSN, путей и фича-флагов вне `Settings`
 
 ## Слои и связность
 
-- [ ] Сервисы не импортируют httpx напрямую — работают через Protocol-интерфейсы
-- [ ] Новый сервис подключён через `orchestrator.py` (не вызывается из `cli.py` или `server.py` напрямую)
-- [ ] CLI (`cli.py`) и сервер (`server.py`) используют только `orchestrator.analyze_launch()`
+- [ ] Сетевой доступ сосредоточен в `clients/`; PostgreSQL storage — в `knowledge/` или `report/`
+- [ ] Сервисный код не тянет зависимости из entrypoint-слоя (`argparse`, `print`, FastAPI, `HTTPException`)
+- [ ] `cli.py` и analysis-роуты `server.py` используют `orchestrator.analyze_launch()` для основного pipeline; служебные операции (`alla delete`, feedback, merge rules, reports) идут через свои service/store helper'ы
 
 ## Документация
 
-- [ ] `CLAUDE.md` обновлён: раздел «Что сделано», таблица конфигурации, примеры команд
-- [ ] `.env.example` содержит новые переменные с комментарием
+- [ ] Обновлены релевантные разделы `CLAUDE.md`: архитектура, структура файлов, конфигурация, команды запуска или HTTP endpoints
+- [ ] `.env.example` содержит все новые пользовательские `ALLURE_*` переменные с актуальными комментариями
+- [ ] Если изменился JSON/HTML/API-контракт, обновлены примеры и тесты
 
 ## Ручная проверка
 
-- [ ] `alla --help` отрабатывает без ошибок (deferred imports не сломаны)
+- [ ] `alla --help` отрабатывает без ошибок
 - [ ] `alla --version` отрабатывает
-- [ ] `alla {launch_id}` с новой фичей отключённой работает как раньше (backward compatibility)
+- [ ] Базовый сценарий `alla {launch_id}` работает без новой конфигурации
+- [ ] Если затронут резолв запуска по имени — проверен `alla --launch-name ...`
+- [ ] Если затронуты комментарии — проверен `alla delete {launch_id} --dry-run`
+- [ ] Если затронут сервер/HTML/report links — проверены `/health`, `/api/v1/analyze/{launch_id}` и нужный служебный endpoint
 
 ---
 
-Для каждого ❌ укажи: что нарушено и в каком файле исправить.
+Для каждого ❌ укажи: что нарушено, почему это важно и в каком файле исправить.

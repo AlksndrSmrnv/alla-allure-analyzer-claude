@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "alla-server",
+      "runtimeExecutable": "alla-server",
+      "runtimeArgs": [],
+      "port": 8090
+    }
+  ]
+}
