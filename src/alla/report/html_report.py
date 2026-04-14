@@ -37,6 +37,7 @@ def generate_html_report(
     result: "AnalysisResult",
     endpoint: str = "",
     feedback_api_url: str = "",
+    server_url: str = "",
 ) -> str:
     """Сгенерировать self-contained HTML-отчёт из AnalysisResult."""
     from alla import __version__
@@ -94,16 +95,33 @@ def generate_html_report(
 
     csp_meta = ""
     if feedback_api_url:
-        safe_url = _e(feedback_api_url)
+        connect_urls = [_e(feedback_api_url)]
+        if server_url:
+            connect_urls.append(_e(server_url))
         csp_meta = (
             f'  <meta http-equiv="Content-Security-Policy" content="'
             f"default-src 'self'; "
             f"script-src 'self' 'unsafe-inline'; "
             f"style-src 'self' 'unsafe-inline'; "
-            f"connect-src 'self' {safe_url}; "
+            f"connect-src 'self' {' '.join(connect_urls)}; "
             f"img-src 'self' data:;"
             f'">\n'
         )
+
+    rerun_button_html = ""
+    rerun_script = ""
+    if server_url:
+        rerun_button_html = (
+            '<div class="header-actions">'
+            '<button type="button" class="rerun-btn" id="alla-rerun-btn" '
+            f'data-launch-id="{_e(str(triage.launch_id))}" '
+            f'data-server-url="{_e(server_url.rstrip("/"))}">'
+            '<span class="rerun-btn-spinner" aria-hidden="true"></span>'
+            '<span class="rerun-btn-label">Перезапустить анализ</span>'
+            '</button>'
+            '</div>'
+        )
+        rerun_script = _RERUN_SCRIPT
 
     return f"""<!DOCTYPE html>
 <html lang="ru">
@@ -120,9 +138,12 @@ def generate_html_report(
   <div class="container">
 
     <header class="header">
-      <div class="header-brand">Alla · AI Test Analysis</div>
-      <div class="header-title">{'<a href="' + _e(launch_url) + '" target="_blank" rel="noopener">' + _e(launch_title) + '</a>' if launch_url else _e(launch_title)}</div>
-      <div class="header-meta">Сгенерировано: {generated_at} · Alla v{_e(__version__)}</div>
+      <div class="header-main">
+        <div class="header-brand">Alla · AI Test Analysis</div>
+        <div class="header-title">{'<a href="' + _e(launch_url) + '" target="_blank" rel="noopener">' + _e(launch_title) + '</a>' if launch_url else _e(launch_title)}</div>
+        <div class="header-meta">Сгенерировано: {generated_at} · Alla v{_e(__version__)}</div>
+      </div>
+      {rerun_button_html}
     </header>
 
     {stats_html}
@@ -136,7 +157,7 @@ def generate_html_report(
 
   </div>
 
-{feedback_data_js}{feedback_js}
+{feedback_data_js}{feedback_js}{rerun_script}
 </body>
 </html>"""
 
@@ -1161,8 +1182,62 @@ _CSS = """
       margin-bottom: 2rem;
       box-shadow: 0 1px 3px rgba(0,0,0,0.05);
       display: flex;
+      flex-direction: row;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .header-main {
+      display: flex;
       flex-direction: column;
       gap: 0.5rem;
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .rerun-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--primary);
+      color: #fff;
+      border: 1px solid var(--primary);
+      border-radius: 8px;
+      padding: 0.6rem 1rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s, box-shadow 0.15s, opacity 0.15s;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+    }
+    .rerun-btn:hover:not([disabled]) {
+      background: #1d4ed8;
+      box-shadow: 0 2px 6px rgba(37,99,235,0.25);
+    }
+    .rerun-btn[disabled] {
+      cursor: progress;
+      opacity: 0.75;
+    }
+    .rerun-btn-spinner {
+      display: none;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,0.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: rerun-spin 0.8s linear infinite;
+    }
+    .rerun-btn.is-loading .rerun-btn-spinner {
+      display: inline-block;
+    }
+    @keyframes rerun-spin {
+      to { transform: rotate(360deg); }
     }
     .header-brand {
       font-size: 0.75rem;
@@ -1696,7 +1771,9 @@ _CSS = """
 
     @media (max-width: 768px) {
       .container { padding: 1rem; }
-      .header { padding: 1.25rem; }
+      .header { padding: 1.25rem; flex-direction: column; align-items: stretch; }
+      .header-actions { justify-content: flex-start; }
+      .rerun-btn { width: 100%; justify-content: center; }
       .stats { grid-template-columns: repeat(2, 1fr); }
       .onboarding-banner { padding: 1.35rem 1.15rem; }
       .onboarding-title { font-size: 1.35rem; }
@@ -1705,6 +1782,57 @@ _CSS = """
       .cluster-label { min-width: 100%; }
     }
 """
+
+
+_RERUN_SCRIPT = """
+<script>
+(function () {
+  var btn = document.getElementById('alla-rerun-btn');
+  if (!btn) return;
+  var labelEl = btn.querySelector('.rerun-btn-label');
+  var defaultLabel = labelEl ? labelEl.textContent : 'Перезапустить анализ';
+  btn.addEventListener('click', function () {
+    if (btn.disabled) return;
+    var launchId = btn.getAttribute('data-launch-id');
+    var serverUrl = (btn.getAttribute('data-server-url') || '').replace(/\\/$/, '');
+    if (!launchId || !serverUrl) return;
+    var url = serverUrl + '/api/v1/analyze/' + encodeURIComponent(launchId) + '/html?push_to_testops=false';
+    btn.disabled = true;
+    btn.classList.add('is-loading');
+    if (labelEl) labelEl.textContent = 'Анализ…';
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, 10 * 60 * 1000);
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Accept': 'text/html' },
+      signal: controller.signal,
+    }).then(function (res) {
+      clearTimeout(timer);
+      if (!res.ok) {
+        return res.text().then(function (body) {
+          throw new Error('HTTP ' + res.status + (body ? ': ' + body.slice(0, 300) : ''));
+        });
+      }
+      return res.text();
+    }).then(function (html) {
+      document.open();
+      document.write(html);
+      document.close();
+    }).catch(function (err) {
+      clearTimeout(timer);
+      btn.disabled = false;
+      btn.classList.remove('is-loading');
+      if (labelEl) labelEl.textContent = defaultLabel;
+      var message = (err && err.name === 'AbortError')
+        ? 'Время ожидания анализа истекло.'
+        : 'Не удалось перезапустить анализ: ' + (err && err.message ? err.message : err);
+      alert(message);
+    });
+  });
+})();
+</script>
+"""
+
 
 # ---------------------------------------------------------------------------
 # Feedback CSS (appended only when feedback_api_url is provided)

@@ -103,6 +103,7 @@ def build_html_report_content(
         result,
         endpoint=settings.endpoint,
         feedback_api_url=get_feedback_api_url(settings),
+        server_url=settings.server_external_url,
     )
 
 
