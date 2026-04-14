@@ -54,6 +54,7 @@ def generate_html_report(
     launch_title = f"Прогон #{triage.launch_id}"
     if triage.launch_name:
         launch_title += f" — {triage.launch_name}"
+    launch_url = f"{endpoint.rstrip('/')}/launch/{triage.launch_id}" if endpoint else ""
 
     stats_html = _render_stats(triage, clustering)
     onboarding_html = _render_onboarding(
@@ -120,7 +121,7 @@ def generate_html_report(
 
     <header class="header">
       <div class="header-brand">Alla · AI Test Analysis</div>
-      <div class="header-title">{_e(launch_title)}</div>
+      <div class="header-title">{'<a href="' + _e(launch_url) + '" target="_blank" rel="noopener">' + _e(launch_title) + '</a>' if launch_url else _e(launch_title)}</div>
       <div class="header-meta">Сгенерировано: {generated_at} · Alla v{_e(__version__)}</div>
     </header>
 
@@ -580,7 +581,7 @@ def _render_cluster(
             f'<form class="{form_cls}" data-api-url="{_e(feedback_api_url)}">'
             '<div class="form-intro">'
             'Опишите <strong>причину</strong> возникновения ошибки и шаги по её устранению. '
-            'Просто перечислить шаги недостаточно&nbsp;— объясните, <em>почему</em> эта проблема возникает.'
+            'Будет полезно не только перечислить шаги, но и объяснить, <em>почему</em> эта проблема возникает.'
             '</div>'
             f'{_render_form_field("Шаги по устранению", "основное поле", resolution_control, required=True)}'
             f'{_render_form_field("Заголовок", "необязательно", title_control)}'
