@@ -157,7 +157,7 @@ def generate_html_report(
 
   </div>
 
-{feedback_data_js}{feedback_js}{rerun_script}
+{feedback_data_js}{feedback_js}{rerun_script}{_TEST_EXPAND_SCRIPT}
 </body>
 </html>"""
 
@@ -618,27 +618,34 @@ def _render_cluster(
         )
 
     # --- test links ---
-    _MAX_IDS = 60
-    shown_ids = cluster.member_test_ids[:_MAX_IDS]
+    _VISIBLE_IDS = 10
     links: list[str] = []
-    for tid in shown_ids:
+    for i, tid in enumerate(cluster.member_test_ids):
         test = test_by_id.get(tid)
         display = _e(test.name) if test and test.name else str(tid)
+        extra_cls = " test-id-hidden" if i >= _VISIBLE_IDS else ""
         if test and test.link:
             href = _e(test.link.replace("/testresult/", "/errors/"))
-            links.append(f'<a href="{href}" target="_blank" class="test-id">{display}</a>')
+            links.append(f'<a href="{href}" target="_blank" class="test-id{extra_cls}">{display}</a>')
         else:
-            links.append(f'<span class="test-id no-link">{display}</span>')
+            links.append(f'<span class="test-id no-link{extra_cls}">{display}</span>')
+
+    toggle_html = ""
+    hidden_count = len(cluster.member_test_ids) - _VISIBLE_IDS
+    if hidden_count > 0:
+        show_label = f"Показать ещё {hidden_count}"
+        toggle_html = (
+            f'<button type="button" class="test-expand-btn" '
+            f'data-expanded="false" data-label-show="{_e(show_label)}" '
+            f'data-label-hide="Свернуть">{_e(show_label)}</button>'
+        )
 
     tests_html = ""
     if links:
-        extra = ""
-        if len(cluster.member_test_ids) > _MAX_IDS:
-            extra = f'<span class="test-more">и ещё {len(cluster.member_test_ids) - _MAX_IDS}…</span>'
         tests_html = (
             '<div class="block">'
             '<div class="block-title">Затронутые тесты</div>'
-            f'<div class="test-list">{ "".join(links) }{extra}</div>'
+            f'<div class="test-list">{ "".join(links) }{toggle_html}</div>'
             "</div>"
         )
 
@@ -1691,12 +1698,27 @@ _CSS = """
       border-color: var(--border);
       color: var(--text);
     }
-    .test-more {
+    .test-id-hidden {
+      display: none;
+    }
+    .test-list.expanded .test-id-hidden {
+      display: block;
+    }
+    .test-expand-btn {
+      align-self: flex-start;
+      margin-top: 0.25rem;
       font-size: 0.8125rem;
-      color: var(--text-muted);
-      display: flex;
-      align-items: center;
-      padding: 0 0.5rem;
+      background: var(--bg);
+      color: var(--primary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.3rem 0.6rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .test-expand-btn:hover {
+      background: var(--primary-light);
+      border-color: #bfdbfe;
     }
 
     /* ---- Markdown Rendered Styles ---- */
@@ -1828,6 +1850,24 @@ _RERUN_SCRIPT = """
         : 'Не удалось перезапустить анализ: ' + (err && err.message ? err.message : err);
       alert(message);
     });
+  });
+})();
+</script>
+"""
+
+
+_TEST_EXPAND_SCRIPT = """
+<script>
+(function () {
+  document.addEventListener('click', function (event) {
+    var btn = event.target.closest('.test-expand-btn');
+    if (!btn) return;
+    var list = btn.closest('.test-list');
+    if (!list) return;
+    var expanded = btn.dataset.expanded === 'true';
+    list.classList.toggle('expanded', !expanded);
+    btn.dataset.expanded = expanded ? 'false' : 'true';
+    btn.textContent = expanded ? btn.dataset.labelShow : btn.dataset.labelHide;
   });
 })();
 </script>
