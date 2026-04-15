@@ -1943,7 +1943,7 @@ _FEEDBACK_CSS = """
     /* ---- Create Knowledge Base Entry Form ---- */
     .create-kb-action{gap:.8rem}
     .create-kb-toggle{background:#eff6ff;border:1px solid var(--primary);border-radius:var(--radius-sm);padding:.65rem 1rem;cursor:pointer;color:var(--primary);font-size:.9375rem;font-weight:600;width:100%;text-align:center;transition:all .2s}
-    .create-kb-toggle:hover{background:var(--primary);color:#fff}
+    .create-kb-toggle:not(.create-kb-toggle-primary):hover{background:var(--primary);color:#fff}
     .create-kb-toggle-primary{background:linear-gradient(135deg,#f97316 0%,#ea580c 100%);border:none;color:#fff;font-size:1rem;font-weight:700;padding:1rem 1.25rem;border-radius:14px;text-align:center;box-shadow:0 14px 30px rgba(234,88,12,.28)}
     .create-kb-toggle-primary:hover{color:#fff;opacity:.96;transform:translateY(-1px)}
     .create-kb-form{display:flex;flex-direction:column;gap:.9rem;padding:1rem;border:1px solid var(--border);border-radius:var(--radius-sm);margin-top:.25rem;background:#fff}
