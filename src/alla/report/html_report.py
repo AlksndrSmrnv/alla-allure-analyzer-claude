@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import html as _html
 import json as _json
 import re
 from datetime import datetime, timezone
+from functools import lru_cache
+from importlib import resources
 from typing import TYPE_CHECKING, TypedDict
 
 from alla.models.onboarding import OnboardingMode, OnboardingState
@@ -27,6 +30,21 @@ class _KBPrefill(TypedDict):
     step_path: str
     description: str
     resolution_steps: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Ассеты
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def _logo_data_uri() -> str:
+    """Вернуть data URI логотипа или пустую строку, если файла нет."""
+    try:
+        ref = resources.files("alla.report").joinpath("assets/logo.png")
+        data = ref.read_bytes()
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        return ""
+    return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +126,14 @@ def generate_html_report(
             f'">\n'
         )
 
+    logo_uri = _logo_data_uri()
+    logo_html = (
+        f'<img class="header-logo" src="{logo_uri}" alt="Alla logo" '
+        f'width="142" height="195">'
+        if logo_uri
+        else ""
+    )
+
     rerun_button_html = ""
     rerun_script = ""
     if server_url:
@@ -138,6 +164,7 @@ def generate_html_report(
   <div class="container">
 
     <header class="header">
+      {logo_html}
       <div class="header-main">
         <div class="header-brand">Alla · AI Test Analysis</div>
         <div class="header-title">{'<a href="' + _e(launch_url) + '" target="_blank" rel="noopener">' + _e(launch_title) + '</a>' if launch_url else _e(launch_title)}</div>
@@ -1194,6 +1221,14 @@ _CSS = """
       justify-content: space-between;
       gap: 1rem;
       flex-wrap: wrap;
+    }
+    .header-logo {
+      height: auto;
+      max-height: 96px;
+      width: auto;
+      flex-shrink: 0;
+      align-self: center;
+      display: block;
     }
     .header-main {
       display: flex;
