@@ -381,12 +381,112 @@ async def async_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def build_backfill_parser() -> argparse.ArgumentParser:
+    """Создать парсер для команды ``alla backfill-report-projects``."""
+    parser = argparse.ArgumentParser(
+        prog="alla backfill-report-projects",
+        description=(
+            "Заполнить колонку alla.report.project_id для существующих отчётов "
+            "(тянет project_id из Allure TestOps по launch_id)."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Не записывать изменения, только показать сводку",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Максимум уникальных launch_id для обработки за один запуск",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=5,
+        help="Параллельных запросов к TestOps (по умолчанию 5)",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=None,
+        help="Уровень логирования (переопределяет ALLURE_LOG_LEVEL)",
+    )
+    return parser
+
+
+async def async_backfill_report_projects(args: argparse.Namespace) -> int:
+    """Бэкфилл колонки alla.report.project_id. Возвращает код выхода."""
+    from alla.app_support import format_configuration_error, load_settings
+    from alla.clients.auth import AllureAuthManager
+    from alla.clients.testops_client import AllureTestOpsClient
+    from alla.dashboard.backfill import backfill_report_projects
+    from alla.exceptions import AllaError, ConfigurationError
+    from alla.logging_config import setup_logging
+
+    try:
+        settings = load_settings()
+    except (ConfigurationError, Exception) as exc:
+        print(format_configuration_error(exc), file=sys.stderr)
+        return 2
+
+    setup_logging(args.log_level or settings.log_level)
+
+    if not settings.kb_active or not settings.kb_postgres_dsn:
+        print(
+            "Бэкфилл требует ALLURE_KB_POSTGRES_DSN (PostgreSQL).",
+            file=sys.stderr,
+        )
+        return 2
+
+    auth = AllureAuthManager(
+        endpoint=settings.endpoint,
+        api_token=settings.token,
+        timeout=settings.request_timeout,
+        ssl_verify=settings.ssl_verify,
+    )
+    try:
+        async with AllureTestOpsClient(settings, auth) as client:
+            report = await backfill_report_projects(
+                client,
+                dsn=settings.kb_postgres_dsn,
+                concurrency=args.concurrency,
+                dry_run=args.dry_run,
+                limit=args.limit,
+            )
+    except AllaError as exc:
+        logger.error("Ошибка: %s", exc)
+        return 1
+    except KeyboardInterrupt:
+        logger.info("Прервано пользователем")
+        return 130
+    finally:
+        await auth.close()
+
+    mode = " (DRY RUN)" if args.dry_run else ""
+    print()
+    print(f"=== Backfill report.project_id{mode} ===")
+    print(f"Уникальных launch_id без project_id: {report.total}")
+    print(f"Получили project_id: {report.resolved}")
+    print(f"Лонч без project_id (пропуск): {report.skipped}")
+    print(f"Ошибок TestOps: {report.failed}")
+    if not args.dry_run:
+        print(f"Обновлено строк alla.report: {report.rows_updated}")
+    print()
+    return 0
+
+
 def main() -> None:
     """Синхронная точка входа для CLI."""
     if len(sys.argv) > 1 and sys.argv[1] == "delete":
         parser = build_delete_parser()
         args = parser.parse_args(sys.argv[2:])
         exit_code = asyncio.run(async_delete(args))
+    elif len(sys.argv) > 1 and sys.argv[1] == "backfill-report-projects":
+        parser = build_backfill_parser()
+        args = parser.parse_args(sys.argv[2:])
+        exit_code = asyncio.run(async_backfill_report_projects(args))
     else:
         parser = build_parser()
         args = parser.parse_args()

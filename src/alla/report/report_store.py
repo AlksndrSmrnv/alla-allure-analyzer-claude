@@ -31,7 +31,10 @@ CREATE TABLE IF NOT EXISTS alla.report (
     html        TEXT         NOT NULL,
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_report_launch_id ON alla.report(launch_id);
+ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS project_id INTEGER NULL;
+CREATE INDEX IF NOT EXISTS idx_report_launch_id  ON alla.report(launch_id);
+CREATE INDEX IF NOT EXISTS idx_report_project_id ON alla.report(project_id);
+CREATE INDEX IF NOT EXISTS idx_report_created_at ON alla.report(created_at);
 """
 
 
@@ -57,15 +60,22 @@ class PostgresReportStore:
     # Public API
     # ------------------------------------------------------------------
 
-    def save(self, filename: str, launch_id: int, html: str) -> None:
+    def save(
+        self,
+        filename: str,
+        launch_id: int,
+        html: str,
+        project_id: int | None = None,
+    ) -> None:
         """Insert a new report. Silently replaces if filename already exists."""
         with psycopg.connect(self._dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO alla.report (filename, launch_id, html) "
-                    "VALUES (%s, %s, %s) "
-                    "ON CONFLICT (filename) DO UPDATE SET html = EXCLUDED.html",
-                    (filename, launch_id, html),
+                    "INSERT INTO alla.report (filename, launch_id, html, project_id) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (filename) DO UPDATE "
+                    "SET html = EXCLUDED.html, project_id = EXCLUDED.project_id",
+                    (filename, launch_id, html, project_id),
                 )
             conn.commit()
 

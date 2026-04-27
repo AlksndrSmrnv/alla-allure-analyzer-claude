@@ -27,6 +27,7 @@ class AllureTestOpsClient:
     TESTRESULT_ENDPOINT = "/api/testresult"
     COMMENT_ENDPOINT = "/api/comment"
     ATTACHMENT_ENDPOINT = "/api/testresult/attachment"
+    PROJECT_ENDPOINT = "/api/project"
 
     def __init__(self, settings: Settings, auth_manager: AllureAuthManager) -> None:
         self._endpoint = str(settings.endpoint).rstrip("/")
@@ -72,6 +73,34 @@ class AllureTestOpsClient:
             f"Запуск '{name}' не найден в последних {len(content)} запусках проекта "
             f"(projectId={project_id}). Доступные имена: {found_names}"
         )
+
+    async def list_projects(self) -> dict[int, str]:
+        """Вернуть отображение ``{project_id: name}`` со всех страниц ``/api/project``.
+
+        Постранично обходит ``GET /api/project?page=N&size={page_size}``,
+        пока не закончатся страницы или не сработает защита ``max_pages``.
+        Используется на сервере для получения человекочитаемых имён проектов.
+        """
+        out: dict[int, str] = {}
+        page = 0
+        while page < self._max_pages:
+            params: dict[str, Any] = {"page": page, "size": self._page_size}
+            data = await self._request("GET", self.PROJECT_ENDPOINT, params=params)
+            content = data.get("content", []) if isinstance(data, dict) else []
+            for project in content:
+                if not isinstance(project, dict):
+                    continue
+                pid = project.get("id")
+                name = project.get("name")
+                if isinstance(pid, int) and isinstance(name, str):
+                    out[pid] = name
+            total_pages = data.get("totalPages") if isinstance(data, dict) else None
+            page += 1
+            if not isinstance(total_pages, int) or page >= total_pages:
+                break
+            if not content:
+                break
+        return out
 
     async def get_launch(self, launch_id: int) -> LaunchResponse:
         """Получить метаданные запуска по ID.

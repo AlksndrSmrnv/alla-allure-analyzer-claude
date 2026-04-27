@@ -1,5 +1,6 @@
 """HTTP-сервер alla — REST API для анализа запусков Allure TestOps."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, TypeVar, cast
@@ -88,9 +89,22 @@ class _AppState:
         self.report_store: Any = None
         self.feedback_store: Any = None
         self.merge_rules_store: Any = None
+        self.dashboard_store: Any = None
+        self.project_names_cache: dict[int, str] = {}
+        self.project_names_expires_at: float = 0.0
 
 
 _state = _AppState()
+
+
+def _reset_lazy_stores_and_caches() -> None:
+    """Сбросить ленивые storage-объекты и кэши, завязанные на Settings."""
+    _state.report_store = None
+    _state.feedback_store = None
+    _state.merge_rules_store = None
+    _state.dashboard_store = None
+    _state.project_names_cache = {}
+    _state.project_names_expires_at = 0.0
 
 
 # --- Lifespan ---
@@ -119,9 +133,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     _state.settings = settings
     _state.client = client
     _state.auth = auth
-    _state.report_store = None
-    _state.feedback_store = None
-    _state.merge_rules_store = None
+    _reset_lazy_stores_and_caches()
 
     if settings.reports_dir:
         from pathlib import Path
@@ -358,6 +370,7 @@ async def analyze_launch_html(
         report_filename=report_filename,
         settings=_state.settings,
         report_store=_state.report_store,
+        project_id=result.triage_report.project_id,
     )
 
     effective_report_url = resolve_report_url(
@@ -524,6 +537,58 @@ def _require_merge_rules_store(detail: str) -> "PostgresMergeRulesStore":
     if store is None:
         raise HTTPException(status_code=501, detail=detail)
     return store
+
+
+_PROJECT_NAMES_TTL = 600.0  # секунд
+
+
+def _get_dashboard_store() -> Any:
+    """Вернуть DashboardStatsStore или None (ленивая инициализация)."""
+    settings = _state.settings
+    if settings is None or not settings.kb_active:
+        return None
+    if _state.dashboard_store is None:
+        from alla.dashboard.stats_store import DashboardStatsStore
+
+        _state.dashboard_store = DashboardStatsStore(dsn=settings.kb_postgres_dsn)
+    return _state.dashboard_store
+
+
+async def _get_project_names_cached() -> dict[int, str]:
+    """Получить ``{project_id: name}`` из TestOps с TTL-кэшем.
+
+    На любую ошибку TestOps возвращает прошлый кэш (если был) или ``{}``.
+    Дашборд продолжит работать с лейблами вида ``Project #N``.
+    """
+    import time
+
+    now = time.monotonic()
+    if _state.project_names_cache and now < _state.project_names_expires_at:
+        return _state.project_names_cache
+    client = _state.client
+    if client is None:
+        return _state.project_names_cache or {}
+    try:
+        names = cast(dict[int, str], await client.list_projects())
+    except Exception as exc:  # noqa: BLE001 - сетевые/HTTP ошибки разные
+        logger.warning("Не удалось получить список проектов из TestOps: %s", exc)
+        return _state.project_names_cache or {}
+    _state.project_names_cache = names
+    _state.project_names_expires_at = now + _PROJECT_NAMES_TTL
+    return names
+
+
+def _read_dashboard_stats(
+    store: Any,
+    *,
+    days: int,
+) -> tuple[dict[str, int], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Синхронно прочитать dashboard-агрегации; вызывается из threadpool."""
+    return (
+        store.totals(days=days),
+        store.per_project_rollup(days=days),
+        store.reports_per_day(days=days),
+    )
 
 
 def _parse_request(model_cls: type[ModelT], request: dict[str, Any]) -> ModelT:
@@ -767,6 +832,59 @@ def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
         }
 
     return {"votes": votes}
+
+
+# --- Dashboard ---
+
+
+@app.get("/api/v1/dashboard/stats")
+async def dashboard_stats(days: int = 30) -> dict[str, Any]:
+    """Агрегированная статистика использования alla из PostgreSQL.
+
+    Окно времени (`days`) применяется ко всем метрикам: отчётам, KB-записям,
+    лайкам/дизлайкам и merge-правилам.
+    """
+    from datetime import datetime, timezone
+
+    days = max(1, min(int(days), 365))
+    store = _get_dashboard_store()
+    if store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Дашборд требует ALLURE_KB_POSTGRES_DSN",
+        )
+    kpis, per_project_raw, series = await asyncio.to_thread(
+        _read_dashboard_stats,
+        store,
+        days=days,
+    )
+    names = await _get_project_names_cached()
+
+    per_project: list[dict[str, Any]] = []
+    for row in per_project_raw:
+        pid = row["project_id"]
+        if pid is None:
+            project_name = "Без привязки к проекту"
+        else:
+            project_name = names.get(pid) or f"Project #{pid}"
+        per_project.append({**row, "project_name": project_name})
+
+    return {
+        "days": days,
+        "kpis": kpis,
+        "per_project": per_project,
+        "series": series,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_page() -> HTMLResponse:
+    """Self-contained HTML-страница дашборда использования."""
+    from alla.dashboard.html_view import render_dashboard_html_shell
+
+    return HTMLResponse(content=render_dashboard_html_shell(), headers=_build_csp_headers())
+
 
 def main() -> None:
     """Точка входа консольного скрипта alla-server."""
