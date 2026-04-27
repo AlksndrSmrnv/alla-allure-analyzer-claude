@@ -1,5 +1,6 @@
 """HTTP-сервер alla — REST API для анализа запусков Allure TestOps."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, TypeVar, cast
@@ -96,6 +97,16 @@ class _AppState:
 _state = _AppState()
 
 
+def _reset_lazy_stores_and_caches() -> None:
+    """Сбросить ленивые storage-объекты и кэши, завязанные на Settings."""
+    _state.report_store = None
+    _state.feedback_store = None
+    _state.merge_rules_store = None
+    _state.dashboard_store = None
+    _state.project_names_cache = {}
+    _state.project_names_expires_at = 0.0
+
+
 # --- Lifespan ---
 
 
@@ -122,9 +133,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     _state.settings = settings
     _state.client = client
     _state.auth = auth
-    _state.report_store = None
-    _state.feedback_store = None
-    _state.merge_rules_store = None
+    _reset_lazy_stores_and_caches()
 
     if settings.reports_dir:
         from pathlib import Path
@@ -560,13 +569,26 @@ async def _get_project_names_cached() -> dict[int, str]:
     if client is None:
         return _state.project_names_cache or {}
     try:
-        names = await client.list_projects()
+        names = cast(dict[int, str], await client.list_projects())
     except Exception as exc:  # noqa: BLE001 - сетевые/HTTP ошибки разные
         logger.warning("Не удалось получить список проектов из TestOps: %s", exc)
         return _state.project_names_cache or {}
     _state.project_names_cache = names
     _state.project_names_expires_at = now + _PROJECT_NAMES_TTL
     return names
+
+
+def _read_dashboard_stats(
+    store: Any,
+    *,
+    days: int,
+) -> tuple[dict[str, int], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Синхронно прочитать dashboard-агрегации; вызывается из threadpool."""
+    return (
+        store.totals(days=days),
+        store.per_project_rollup(days=days),
+        store.reports_per_day(days=days),
+    )
 
 
 def _parse_request(model_cls: type[ModelT], request: dict[str, Any]) -> ModelT:
@@ -831,9 +853,11 @@ async def dashboard_stats(days: int = 30) -> dict[str, Any]:
             status_code=503,
             detail="Дашборд требует ALLURE_KB_POSTGRES_DSN",
         )
-    kpis = store.totals(days=days)
-    per_project_raw = store.per_project_rollup(days=days)
-    series = store.reports_per_day(days=days)
+    kpis, per_project_raw, series = await asyncio.to_thread(
+        _read_dashboard_stats,
+        store,
+        days=days,
+    )
     names = await _get_project_names_cached()
 
     per_project: list[dict[str, Any]] = []

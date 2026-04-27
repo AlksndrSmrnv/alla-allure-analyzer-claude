@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -98,6 +99,26 @@ class _StubStatsStore:
         return self._series
 
 
+class _ThreadRecordingStatsStore(_StubStatsStore):
+    """Stats store, который запоминает thread id каждого sync DB-вызова."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.thread_ids: list[int] = []
+
+    def totals(self, *, days: int) -> dict[str, int]:
+        self.thread_ids.append(threading.get_ident())
+        return super().totals(days=days)
+
+    def per_project_rollup(self, *, days: int) -> list[dict[str, Any]]:
+        self.thread_ids.append(threading.get_ident())
+        return super().per_project_rollup(days=days)
+
+    def reports_per_day(self, *, days: int) -> list[dict[str, Any]]:
+        self.thread_ids.append(threading.get_ident())
+        return super().reports_per_day(days=days)
+
+
 @pytest.fixture
 def _http_client():
     from alla.server import app
@@ -107,15 +128,13 @@ def _http_client():
 
 
 @pytest.fixture(autouse=True)
-def _reset_project_names_cache():
-    """Сбрасываем TTL-кэш имён проектов между тестами."""
-    from alla.server import _state
+def _reset_dashboard_state():
+    """Сбрасываем lazy dashboard state между тестами."""
+    from alla.server import _reset_lazy_stores_and_caches
 
-    _state.project_names_cache = {}
-    _state.project_names_expires_at = 0.0
+    _reset_lazy_stores_and_caches()
     yield
-    _state.project_names_cache = {}
-    _state.project_names_expires_at = 0.0
+    _reset_lazy_stores_and_caches()
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +217,28 @@ def test_dashboard_html_top5_uses_russian_knowledge_base_copy() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_lifespan_reset_clears_dashboard_store_and_project_names_cache() -> None:
+    """Lifespan reset должен сбрасывать dashboard store и TTL-кэш имён."""
+    from alla.server import _reset_lazy_stores_and_caches, _state
+
+    sentinel = object()
+    _state.report_store = sentinel
+    _state.feedback_store = sentinel
+    _state.merge_rules_store = sentinel
+    _state.dashboard_store = sentinel
+    _state.project_names_cache = {7: "Old project"}
+    _state.project_names_expires_at = 123.0
+
+    _reset_lazy_stores_and_caches()
+
+    assert _state.report_store is None
+    assert _state.feedback_store is None
+    assert _state.merge_rules_store is None
+    assert _state.dashboard_store is None
+    assert _state.project_names_cache == {}
+    assert _state.project_names_expires_at == 0.0
+
+
 @pytest.mark.asyncio
 async def test_dashboard_stats_503_without_dsn(_http_client, monkeypatch) -> None:
     """Без ALLURE_KB_POSTGRES_DSN эндпоинт отдаёт 503 с осмысленным detail."""
@@ -262,6 +303,28 @@ async def test_dashboard_stats_uses_testops_names(_http_client, monkeypatch) -> 
     data = resp.json()
     rows_by_pid = {row["project_id"]: row for row in data["per_project"]}
     assert rows_by_pid[7]["project_name"] == "Mobile App"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_stats_reads_db_in_threadpool(_http_client, monkeypatch) -> None:
+    """Sync stats store вызовы не должны выполняться на event loop thread."""
+    from alla.server import _state
+
+    settings = _DashboardSettings()
+    store = _ThreadRecordingStatsStore()
+    client_stub = _StubClient(projects={7: "Mobile App"})
+
+    monkeypatch.setattr(_state, "settings", settings)
+    monkeypatch.setattr(_state, "client", client_stub)
+    monkeypatch.setattr(_state, "dashboard_store", store)
+
+    event_loop_thread_id = threading.get_ident()
+    async with _http_client as http:
+        resp = await http.get("/api/v1/dashboard/stats?days=30")
+
+    assert resp.status_code == 200
+    assert len(store.thread_ids) == 3
+    assert all(thread_id != event_loop_thread_id for thread_id in store.thread_ids)
 
 
 @pytest.mark.asyncio
