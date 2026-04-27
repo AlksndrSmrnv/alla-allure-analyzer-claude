@@ -131,6 +131,15 @@ async def test_health_returns_ok(_http_client) -> None:
     assert data["version"] == alla.__version__
 
 
+def test_mcp_mount_exposes_transport_at_documented_path() -> None:
+    """Mounted MCP transport is available at /mcp, not /mcp/mcp."""
+    mount = next(route for route in app.routes if getattr(route, "path", None) == "/mcp")
+    inner_paths = {getattr(route, "path", None) for route in mount.app.routes}
+
+    assert "/" in inner_paths
+    assert "/mcp" not in inner_paths
+
+
 # ---------------------------------------------------------------------------
 # POST /api/v1/analyze/{launch_id} — успех
 # ---------------------------------------------------------------------------

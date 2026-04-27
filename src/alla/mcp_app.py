@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("alla", stateless_http=True)
+mcp = FastMCP("alla", stateless_http=True, streamable_http_path="/")
 
 
 def _truncate(text: str | None, limit: int) -> str:
