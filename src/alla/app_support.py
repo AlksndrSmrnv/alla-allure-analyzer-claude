@@ -121,6 +121,7 @@ def persist_generated_report(
     report_filename: str | None,
     settings: "Settings",
     report_store: Any = None,
+    project_id: int | None = None,
 ) -> None:
     """Сохраняет сгенерированный отчёт в файловую систему/PostgreSQL при наличии настроек."""
     if settings.reports_dir and report_filename:
@@ -129,7 +130,7 @@ def persist_generated_report(
         logger.info("HTML-отчёт сохранён: %s", report_path)
 
     if report_store is not None and report_filename:
-        report_store.save(report_filename, launch_id, html_content)
+        report_store.save(report_filename, launch_id, html_content, project_id)
         logger.info("HTML-отчёт сохранён в PostgreSQL: %s", report_filename)
 
 
