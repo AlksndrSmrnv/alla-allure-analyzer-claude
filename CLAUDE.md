@@ -117,12 +117,13 @@ alla-server   # слушает на 0.0.0.0:8090
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| GET | `/health` | Health check |
+| GET | `/health` | Health check (поле `mcp:true` подтверждает, что MCP смонтирован) |
 | GET | `/api/v1/launch/resolve` | Резолв имени запуска → ID (`?name=&project_id=`) |
 | POST | `/api/v1/analyze/{launch_id}` | Pipeline анализа → JSON |
 | POST | `/api/v1/analyze/{launch_id}/html` | Pipeline анализа → HTML-отчёт |
 | GET | `/reports/{filename}` | Отдать сохранённый HTML-отчёт |
 | DELETE | `/api/v1/comments/{launch_id}` | Удалить комментарии alla (`?dry_run=true`) |
+| ANY | `/mcp` | MCP-сервер (streamable HTTP) для qwen CLI и других MCP-клиентов — инструменты `analyze_launch`, `analyze_launch_html`. Реализация в `alla/mcp_app.py`. |
 | GET | `/docs` | Swagger UI |
 
 ## Ключевые дизайн-решения
