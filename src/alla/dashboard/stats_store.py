@@ -80,10 +80,10 @@ SELECT ids.project_id,
          COALESCE(mr.last_merge,    'epoch'::timestamptz)
        ) AS last_activity
 FROM ids
-LEFT JOIN r  USING (project_id)
-LEFT JOIN k  USING (project_id)
-LEFT JOIN fb USING (project_id)
-LEFT JOIN mr USING (project_id)
+LEFT JOIN r  ON ids.project_id IS NOT DISTINCT FROM r.project_id
+LEFT JOIN k  ON ids.project_id IS NOT DISTINCT FROM k.project_id
+LEFT JOIN fb ON ids.project_id IS NOT DISTINCT FROM fb.project_id
+LEFT JOIN mr ON ids.project_id IS NOT DISTINCT FROM mr.project_id
 ORDER BY reports DESC, kb_entries DESC;
 """
 

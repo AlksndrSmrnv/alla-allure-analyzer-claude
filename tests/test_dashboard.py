@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Any
 
 import httpx
 import pytest
 
 from alla.dashboard.html_view import render_dashboard_html_shell
-from alla.dashboard.stats_store import gap_fill_series
+from alla.dashboard.stats_store import _PER_PROJECT_SQL, gap_fill_series
 from alla.models.testops import LaunchResponse
 
 
@@ -146,6 +146,16 @@ def test_reports_per_day_empty_input() -> None:
     assert all(p["n"] == 0 for p in out)
 
 
+def test_per_project_sql_joins_null_project_ids() -> None:
+    """NULL project_id из CTE должен матчиться с NULL project_id в ids."""
+    assert "USING (project_id)" not in _PER_PROJECT_SQL
+    for alias in ["r", "k", "fb", "mr"]:
+        assert (
+            f"ids.project_id IS NOT DISTINCT FROM {alias}.project_id"
+            in _PER_PROJECT_SQL
+        )
+
+
 # ---------------------------------------------------------------------------
 # html_view.render_dashboard_html_shell
 # ---------------------------------------------------------------------------
@@ -174,6 +184,13 @@ def test_dashboard_html_has_required_elements() -> None:
         'id="generatedAt"',
     ]:
         assert marker in html, f"missing {marker}"
+
+
+def test_dashboard_html_top5_uses_russian_knowledge_base_copy() -> None:
+    """User-facing Top-5 copy называет базу знаний без KB-аббревиатуры."""
+    html = render_dashboard_html_shell()
+    assert "KB-записей" not in html
+    assert "записей в базе знаний" in html
 
 
 # ---------------------------------------------------------------------------

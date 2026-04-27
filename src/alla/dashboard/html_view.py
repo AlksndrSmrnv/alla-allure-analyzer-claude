@@ -288,7 +288,7 @@ _DASHBOARD_JS = """
       const li = el('li', {}, [
         el('b', { text: r.project_name }),
         document.createTextNode(' — отчётов: ' + fmt(r.reports) +
-          ', KB-записей: ' + fmt(r.kb_entries) +
+          ', записей в базе знаний: ' + fmt(r.kb_entries) +
           ', лайки/дизлайки: ' + fmt(r.likes) + '/' + fmt(r.dislikes)),
       ]);
       ol.appendChild(li);
