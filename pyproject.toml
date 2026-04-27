@@ -19,6 +19,7 @@ dependencies = [
     "charset-normalizer>=3.0",
     "ijson>=3.2",
     "gigachat>=0.1",
+    "mcp>=1.2,<2.0",
 ]
 
 [project.scripts]

@@ -55,6 +55,7 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
+    mcp: bool = True
 
 
 class DeleteCommentsResponse(BaseModel):
@@ -134,7 +135,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         _state.report_store = PostgresReportStore(dsn=settings.kb_postgres_dsn)
         logger.info("Хранилище отчётов: PostgreSQL")
 
-    yield
+    # MCP session manager должен жить столько же, сколько FastAPI-приложение.
+    # Starlette не пробрасывает lifespan смонтированных приложений, поэтому
+    # стартуем менеджер вручную здесь.
+    from alla.mcp_app import mcp as _mcp
+
+    async with _mcp.session_manager.run():
+        logger.info("MCP сервер смонтирован: %s/mcp", settings.server_external_url or "")
+        yield
 
     logger.info("alla server останавливается")
     await client.close()
@@ -159,6 +167,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# MCP-эндпоинт для qwen CLI и других MCP-клиентов.
+# Транспорт streamable HTTP, инструменты определены в alla/mcp_app.py.
+from alla.mcp_app import build_mcp_app  # noqa: E402
+
+app.mount("/mcp", build_mcp_app())
 
 
 # --- Вспомогательные функции ---
