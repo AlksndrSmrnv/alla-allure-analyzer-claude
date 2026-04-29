@@ -5,15 +5,15 @@ Use these rules after `scripts/run_alla_analysis.py` returns compact JSON.
 ## Prioritization
 
 - Sort clusters by `size` descending.
-- Raise priority for clusters with weak or missing KB matches.
+- Поднимай приоритет кластеров со слабым или отсутствующим совпадением в базе знаний.
 - Raise priority for clusters where LLM analysis failed, was skipped, or returned an error.
 - Treat muted failures as context, not active work, unless the user explicitly asks about muted tests.
 
-## KB Matches
+## База знаний
 
 - Score `>= 0.75`: likely known issue, but still check whether the step path and representative message agree.
 - Score `0.40..0.74`: partial match; present as a hypothesis, not a confirmed cause.
-- Score `< 0.40` or no match: likely unknown/new issue; recommend collecting logs, correlation ids, service owner context, or adding a KB entry after confirmation.
+- Score `< 0.40` or no match: likely unknown/new issue; recommend collecting logs, correlation ids, service owner context, and adding an entry to «база знаний» after confirmation.
 - `match_origin=feedback_exact` is stronger than text-only similarity when the current cluster context still matches.
 
 ## LLM Signals
@@ -38,5 +38,5 @@ Use these rules after `scripts/run_alla_analysis.py` returns compact JSON.
 ## Recommended Output
 
 - Keep the answer compact and decision-oriented.
-- For each top cluster include: label, size, strongest evidence, KB confidence, likely category, next action.
+- Для каждого важного кластера укажи: label, size, strongest evidence, уверенность совпадения с базой знаний, likely category, next action.
 - Prefer concrete next steps over restating raw JSON.

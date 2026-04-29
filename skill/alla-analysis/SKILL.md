@@ -14,19 +14,19 @@ Use this skill to run a read-only Alla analysis for an Allure TestOps launch thr
 1. Run the helper script first:
 
 ```bash
-python /Users/exc333ption/.codex/skills/alla-analysis/scripts/run_alla_analysis.py --launch-id 12345
+python skill/alla-analysis/scripts/run_alla_analysis.py --launch-id 12345
 ```
 
 2. If the user gives a launch name instead of an id, resolve it through the server:
 
 ```bash
-python /Users/exc333ption/.codex/skills/alla-analysis/scripts/run_alla_analysis.py --launch-name "Launch name" --project-id 1
+python skill/alla-analysis/scripts/run_alla_analysis.py --launch-name "Launch name" --project-id 1
 ```
 
 3. Generate HTML only when the user explicitly asks for a report file or link:
 
 ```bash
-python /Users/exc333ption/.codex/skills/alla-analysis/scripts/run_alla_analysis.py --launch-id 12345 --html
+python skill/alla-analysis/scripts/run_alla_analysis.py --launch-id 12345 --html
 ```
 
 The helper always sends `push_to_testops=false` unless the script is edited. This keeps the agent workflow read-only by default.
@@ -40,7 +40,7 @@ The server address lives in `scripts/run_alla_analysis.py` as `ALLA_SERVER_URL`.
 After running the helper, analyze the compact JSON it prints:
 
 - Start with launch counters: total results, active failures, muted failures, failed/broken/skipped counts.
-- Rank clusters by impact: larger clusters first, then clusters with no strong KB match, then clusters with LLM errors.
+- Ранжируй кластеры по влиянию: сначала крупные, затем без сильного совпадения в базе знаний, затем с ошибками LLM.
 - Read `references/cluster_interpretation.md` before writing the final interpretation.
 - Treat Alla's LLM text as source material, not as the whole answer. Add your own prioritization, merge/split suspicions, and concrete debugging steps.
 
