@@ -18,6 +18,7 @@ from alla.exceptions import (
     KnowledgeBaseError,
     PaginationLimitError,
 )
+from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary, TokenUsage
 from alla.models.testops import (
     CommentResponse,
     TestResultResponse as ResultResponse,
@@ -599,7 +600,6 @@ async def test_delete_merge_rule_returns_404_when_missing(monkeypatch, _http_cli
 def test_build_analysis_response_includes_token_usage() -> None:
     """token_usage присутствует в JSON когда llm_result задан."""
     from alla.app_support import build_analysis_response
-    from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary, TokenUsage
 
     result = _make_analysis_result(
         llm_result=LLMAnalysisResult(
@@ -627,3 +627,58 @@ def test_build_analysis_response_includes_token_usage() -> None:
         "completion_tokens": 80,
         "total_tokens": 280,
     }
+
+
+@pytest.mark.parametrize(
+    ("llm_result", "llm_launch_summary", "expected"),
+    [
+        (
+            LLMAnalysisResult(
+                total_clusters=1,
+                analyzed_count=1,
+                failed_count=0,
+                skipped_count=0,
+                token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+            ),
+            LLMLaunchSummary(
+                summary_text="summary",
+                token_usage=TokenUsage(prompt_tokens=20, completion_tokens=10, total_tokens=30),
+            ),
+            TokenUsage(prompt_tokens=120, completion_tokens=60, total_tokens=180),
+        ),
+        (
+            LLMAnalysisResult(
+                total_clusters=1,
+                analyzed_count=1,
+                failed_count=0,
+                skipped_count=0,
+                token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+            ),
+            None,
+            TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+        ),
+        (
+            None,
+            LLMLaunchSummary(
+                summary_text="summary",
+                token_usage=TokenUsage(prompt_tokens=20, completion_tokens=10, total_tokens=30),
+            ),
+            TokenUsage(prompt_tokens=20, completion_tokens=10, total_tokens=30),
+        ),
+        (None, None, None),
+    ],
+)
+def test_calculate_llm_token_usage(
+    llm_result: LLMAnalysisResult | None,
+    llm_launch_summary: LLMLaunchSummary | None,
+    expected: TokenUsage | None,
+) -> None:
+    """Token usage для дашборда суммирует LLM stage и не считает skipped LLM."""
+    from alla.app_support import calculate_llm_token_usage
+
+    result = _make_analysis_result(
+        llm_result=llm_result,
+        llm_launch_summary=llm_launch_summary,
+    )
+
+    assert calculate_llm_token_usage(result) == expected

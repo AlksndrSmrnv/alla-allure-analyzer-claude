@@ -93,6 +93,7 @@ body {
 .kpi-card.likes  .value { color: var(--success); }
 .kpi-card.dislikes .value { color: var(--danger); }
 .kpi-card.reports .value { color: var(--primary); }
+.kpi-card.tokens .value { color: var(--info); }
 .ratio-bar {
   display: flex;
   height: 14px;
@@ -220,6 +221,8 @@ _DASHBOARD_JS = """
       ['dislikes', 'Дизлайки',        kpis.total_dislikes],
       ['',         'Merge rules',     kpis.total_merge_rules],
       ['',         'Активных проектов', kpis.active_projects],
+      ['tokens',   'Токены за период', kpis.llm_total_tokens],
+      ['tokens',   'В среднем на прогон', kpis.llm_avg_tokens_per_run],
     ];
     for (const [cls, label, value] of cards) {
       const card = el('div', { class: 'kpi-card' + (cls ? ' ' + cls : '') }, [
@@ -289,6 +292,7 @@ _DASHBOARD_JS = """
         el('b', { text: r.project_name }),
         document.createTextNode(' — отчётов: ' + fmt(r.reports) +
           ', записей в базе знаний: ' + fmt(r.kb_entries) +
+          ', токены: ' + fmt(r.llm_total_tokens) +
           ', лайки/дизлайки: ' + fmt(r.likes) + '/' + fmt(r.dislikes)),
       ]);
       ol.appendChild(li);
@@ -316,7 +320,7 @@ _DASHBOARD_JS = """
     const ordered = named.concat(unattributed);
     if (ordered.length === 0) {
       tbody.appendChild(el('tr', {}, [
-        el('td', { colSpan: 7, class: 'muted', text: 'Нет данных за период' }),
+        el('td', { colSpan: 9, class: 'muted', text: 'Нет данных за период' }),
       ]));
       return;
     }
@@ -328,6 +332,8 @@ _DASHBOARD_JS = """
         el('td', { class: 'num', text: fmt(r.likes) }),
         el('td', { class: 'num', text: fmt(r.dislikes) }),
         el('td', { class: 'num', text: fmt(r.merge_rules) }),
+        el('td', { class: 'num', text: fmt(r.llm_total_tokens) }),
+        el('td', { class: 'num', text: fmt(r.llm_avg_tokens_per_run) }),
         el('td', { class: 'muted', text: fmtDate(r.last_activity) }),
       ]);
       tbody.appendChild(tr);
@@ -462,6 +468,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
               <th data-col="likes"       class="num">Лайки</th>
               <th data-col="dislikes"    class="num">Дизлайки</th>
               <th data-col="merge_rules" class="num">Merge rules</th>
+              <th data-col="llm_total_tokens" class="num">Токены</th>
+              <th data-col="llm_avg_tokens_per_run" class="num">Токены/прогон</th>
               <th data-col="last_activity">Последняя активность</th>
             </tr>
           </thead>

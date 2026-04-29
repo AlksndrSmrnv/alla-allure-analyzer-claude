@@ -12,6 +12,7 @@ from alla.report.html_report import generate_html_report
 
 if TYPE_CHECKING:
     from alla.config import Settings
+    from alla.models.llm import TokenUsage
     from alla.orchestrator import AnalysisResult
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,34 @@ def build_analysis_response(result: "AnalysisResult") -> dict[str, Any]:
     return payload
 
 
+def calculate_llm_token_usage(result: "AnalysisResult") -> "TokenUsage | None":
+    """Суммарный расход токенов LLM stage или ``None``, если LLM не запускался."""
+    from alla.models.llm import TokenUsage
+
+    if result.llm_result is None and result.llm_launch_summary is None:
+        return None
+
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+
+    if result.llm_result is not None:
+        prompt_tokens += result.llm_result.token_usage.prompt_tokens
+        completion_tokens += result.llm_result.token_usage.completion_tokens
+        total_tokens += result.llm_result.token_usage.total_tokens
+
+    if result.llm_launch_summary is not None:
+        prompt_tokens += result.llm_launch_summary.token_usage.prompt_tokens
+        completion_tokens += result.llm_launch_summary.token_usage.completion_tokens
+        total_tokens += result.llm_launch_summary.token_usage.total_tokens
+
+    return TokenUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+    )
+
+
 def get_feedback_api_url(settings: "Settings") -> str:
     """Возвращает URL API обратной связи только когда база знаний активна."""
     return settings.feedback_server_url if settings.kb_active else ""
@@ -122,6 +151,7 @@ def persist_generated_report(
     settings: "Settings",
     report_store: Any = None,
     project_id: int | None = None,
+    analysis_result: "AnalysisResult | None" = None,
 ) -> None:
     """Сохраняет сгенерированный отчёт в файловую систему/PostgreSQL при наличии настроек."""
     if settings.reports_dir and report_filename:
@@ -130,7 +160,18 @@ def persist_generated_report(
         logger.info("HTML-отчёт сохранён: %s", report_path)
 
     if report_store is not None and report_filename:
-        report_store.save(report_filename, launch_id, html_content, project_id)
+        token_usage = (
+            calculate_llm_token_usage(analysis_result)
+            if analysis_result is not None
+            else None
+        )
+        report_store.save(
+            report_filename,
+            launch_id,
+            html_content,
+            project_id,
+            token_usage=token_usage,
+        )
         logger.info("HTML-отчёт сохранён в PostgreSQL: %s", report_filename)
 
 

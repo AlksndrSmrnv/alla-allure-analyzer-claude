@@ -371,6 +371,7 @@ async def analyze_launch_html(
         settings=_state.settings,
         report_store=_state.report_store,
         project_id=result.triage_report.project_id,
+        analysis_result=result,
     )
 
     effective_report_url = resolve_report_url(
