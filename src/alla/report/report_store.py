@@ -7,18 +7,27 @@
 
     CREATE SCHEMA IF NOT EXISTS alla;
     CREATE TABLE IF NOT EXISTS alla.report (
-        id          SERIAL       PRIMARY KEY,
-        filename    TEXT         NOT NULL UNIQUE,
-        launch_id   INTEGER      NOT NULL,
-        html        TEXT         NOT NULL,
-        created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+        id                    SERIAL       PRIMARY KEY,
+        filename              TEXT         NOT NULL UNIQUE,
+        launch_id             INTEGER      NOT NULL,
+        html                  TEXT         NOT NULL,
+        llm_prompt_tokens     INTEGER      NULL,
+        llm_completion_tokens INTEGER      NULL,
+        llm_total_tokens      INTEGER      NULL,
+        created_at            TIMESTAMPTZ  NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_report_launch_id ON alla.report(launch_id);
 """
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import psycopg
+
+if TYPE_CHECKING:
+    from alla.models.llm import TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +41,9 @@ CREATE TABLE IF NOT EXISTS alla.report (
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS project_id INTEGER NULL;
+ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS llm_prompt_tokens INTEGER NULL;
+ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS llm_completion_tokens INTEGER NULL;
+ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS llm_total_tokens INTEGER NULL;
 CREATE INDEX IF NOT EXISTS idx_report_launch_id  ON alla.report(launch_id);
 CREATE INDEX IF NOT EXISTS idx_report_project_id ON alla.report(project_id);
 CREATE INDEX IF NOT EXISTS idx_report_created_at ON alla.report(created_at);
@@ -66,16 +78,36 @@ class PostgresReportStore:
         launch_id: int,
         html: str,
         project_id: int | None = None,
+        *,
+        token_usage: "TokenUsage | None" = None,
     ) -> None:
         """Insert a new report. Silently replaces if filename already exists."""
+        prompt_tokens = token_usage.prompt_tokens if token_usage is not None else None
+        completion_tokens = token_usage.completion_tokens if token_usage is not None else None
+        total_tokens = token_usage.total_tokens if token_usage is not None else None
+
         with psycopg.connect(self._dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO alla.report (filename, launch_id, html, project_id) "
-                    "VALUES (%s, %s, %s, %s) "
+                    "INSERT INTO alla.report ("
+                    "filename, launch_id, html, project_id, "
+                    "llm_prompt_tokens, llm_completion_tokens, llm_total_tokens"
+                    ") VALUES (%s, %s, %s, %s, %s, %s, %s) "
                     "ON CONFLICT (filename) DO UPDATE "
-                    "SET html = EXCLUDED.html, project_id = EXCLUDED.project_id",
-                    (filename, launch_id, html, project_id),
+                    "SET html = EXCLUDED.html, "
+                    "project_id = EXCLUDED.project_id, "
+                    "llm_prompt_tokens = EXCLUDED.llm_prompt_tokens, "
+                    "llm_completion_tokens = EXCLUDED.llm_completion_tokens, "
+                    "llm_total_tokens = EXCLUDED.llm_total_tokens",
+                    (
+                        filename,
+                        launch_id,
+                        html,
+                        project_id,
+                        prompt_tokens,
+                        completion_tokens,
+                        total_tokens,
+                    ),
                 )
             conn.commit()
 

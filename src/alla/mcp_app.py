@@ -198,6 +198,7 @@ async def analyze_launch_html(
         settings=settings,
         report_store=state.report_store,
         project_id=result.triage_report.project_id,
+        analysis_result=result,
     )
 
     report_url = resolve_report_url(

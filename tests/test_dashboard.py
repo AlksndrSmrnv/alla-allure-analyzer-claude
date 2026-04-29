@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from alla.dashboard.html_view import render_dashboard_html_shell
-from alla.dashboard.stats_store import _PER_PROJECT_SQL, gap_fill_series
+from alla.dashboard.stats_store import _KPI_SQL, _PER_PROJECT_SQL, gap_fill_series
 from alla.models.testops import LaunchResponse
 
 
@@ -63,6 +63,9 @@ class _StubStatsStore:
             "total_dislikes": 1,
             "total_merge_rules": 0,
             "active_projects": 1,
+            "llm_total_tokens": 900,
+            "llm_avg_tokens_per_run": 450,
+            "llm_reports_with_usage": 2,
         }
         self._per_project = per_project or [
             {
@@ -72,6 +75,9 @@ class _StubStatsStore:
                 "likes": 2,
                 "dislikes": 1,
                 "merge_rules": 0,
+                "llm_total_tokens": 900,
+                "llm_avg_tokens_per_run": 450,
+                "llm_reports_with_usage": 2,
                 "last_activity": "2026-04-27T10:00:00+00:00",
             },
             {
@@ -81,6 +87,9 @@ class _StubStatsStore:
                 "likes": 0,
                 "dislikes": 0,
                 "merge_rules": 0,
+                "llm_total_tokens": 0,
+                "llm_avg_tokens_per_run": 0,
+                "llm_reports_with_usage": 0,
                 "last_activity": None,
             },
         ]
@@ -175,6 +184,15 @@ def test_per_project_sql_joins_null_project_ids() -> None:
         )
 
 
+def test_dashboard_sql_aggregates_llm_tokens_without_old_reports() -> None:
+    """Среднее по токенам считается только по отчётам с сохранённым usage."""
+    assert "llm_total_tokens IS NOT NULL" in _KPI_SQL
+    assert "AVG(llm_total_tokens)" in _KPI_SQL
+    assert "COUNT(llm_total_tokens)" in _KPI_SQL
+    assert "FILTER (WHERE llm_total_tokens IS NOT NULL)" in _PER_PROJECT_SQL
+    assert "COUNT(llm_total_tokens) AS llm_reports_with_usage" in _PER_PROJECT_SQL
+
+
 # ---------------------------------------------------------------------------
 # html_view.render_dashboard_html_shell
 # ---------------------------------------------------------------------------
@@ -203,6 +221,12 @@ def test_dashboard_html_has_required_elements() -> None:
         'id="generatedAt"',
     ]:
         assert marker in html, f"missing {marker}"
+    for label in [
+        "Токены за период",
+        "В среднем на прогон",
+        "Токены/прогон",
+    ]:
+        assert label in html
 
 
 def test_dashboard_html_top5_uses_russian_knowledge_base_copy() -> None:
@@ -281,6 +305,12 @@ async def test_dashboard_stats_falls_back_when_testops_unavailable(
     assert rows_by_pid[7]["project_name"] == "Project #7"
     assert rows_by_pid[None]["project_name"] == "Без привязки к проекту"
     assert data["kpis"]["total_reports"] == 5
+    assert data["kpis"]["llm_total_tokens"] == 900
+    assert data["kpis"]["llm_avg_tokens_per_run"] == 450
+    assert data["kpis"]["llm_reports_with_usage"] == 2
+    assert rows_by_pid[7]["llm_total_tokens"] == 900
+    assert rows_by_pid[7]["llm_avg_tokens_per_run"] == 450
+    assert rows_by_pid[7]["llm_reports_with_usage"] == 2
 
 
 @pytest.mark.asyncio
@@ -349,8 +379,11 @@ async def test_dashboard_html_endpoint_returns_shell(_http_client, monkeypatch) 
 
 
 def test_persist_generated_report_passes_project_id(tmp_path) -> None:
-    """persist_generated_report пробрасывает project_id в report_store.save."""
+    """persist_generated_report пробрасывает project_id и token_usage в report_store.save."""
     from alla.app_support import persist_generated_report
+    from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary, TokenUsage
+    from alla.models.testops import TriageReport
+    from alla.orchestrator import AnalysisResult
 
     @dataclass
     class _Settings:
@@ -360,8 +393,55 @@ def test_persist_generated_report_passes_project_id(tmp_path) -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[Any, ...]] = []
 
-        def save(self, filename, launch_id, html, project_id=None) -> None:
-            self.calls.append((filename, launch_id, html, project_id))
+        def save(self, filename, launch_id, html, project_id=None, *, token_usage=None) -> None:
+            self.calls.append((filename, launch_id, html, project_id, token_usage))
+
+    store = _RecordingStore()
+    analysis_result = AnalysisResult(
+        triage_report=TriageReport(launch_id=42, total_results=0),
+        llm_result=LLMAnalysisResult(
+            total_clusters=1,
+            analyzed_count=1,
+            failed_count=0,
+            skipped_count=0,
+            token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+        ),
+        llm_launch_summary=LLMLaunchSummary(
+            summary_text="summary",
+            token_usage=TokenUsage(prompt_tokens=20, completion_tokens=10, total_tokens=30),
+        ),
+    )
+    persist_generated_report(
+        html_content="<html></html>",
+        launch_id=42,
+        report_filename="42_x.html",
+        settings=_Settings(),
+        report_store=store,
+        project_id=99,
+        analysis_result=analysis_result,
+    )
+    assert len(store.calls) == 1
+    filename, launch_id, html, project_id, token_usage = store.calls[0]
+    assert (filename, launch_id, html, project_id) == ("42_x.html", 42, "<html></html>", 99)
+    assert token_usage == TokenUsage(prompt_tokens=120, completion_tokens=60, total_tokens=180)
+
+
+def test_persist_generated_report_keeps_skipped_llm_usage_null() -> None:
+    """Если LLM stage полностью пропущен, report_store получает token_usage=None."""
+    from alla.app_support import persist_generated_report
+    from alla.models.testops import TriageReport
+    from alla.orchestrator import AnalysisResult
+
+    @dataclass
+    class _Settings:
+        reports_dir: str = ""
+
+    class _RecordingStore:
+        def __init__(self) -> None:
+            self.token_usage: Any = "not-called"
+
+        def save(self, filename, launch_id, html, project_id=None, *, token_usage=None) -> None:
+            self.token_usage = token_usage
 
     store = _RecordingStore()
     persist_generated_report(
@@ -371,8 +451,12 @@ def test_persist_generated_report_passes_project_id(tmp_path) -> None:
         settings=_Settings(),
         report_store=store,
         project_id=99,
+        analysis_result=AnalysisResult(
+            triage_report=TriageReport(launch_id=42, total_results=0),
+        ),
     )
-    assert store.calls == [("42_x.html", 42, "<html></html>", 99)]
+
+    assert store.token_usage is None
 
 
 # ---------------------------------------------------------------------------
