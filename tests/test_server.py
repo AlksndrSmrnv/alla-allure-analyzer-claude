@@ -24,7 +24,7 @@ from alla.models.testops import (
     TriageReport,
 )
 from alla.orchestrator import AnalysisResult
-from alla.server import _make_slug, app
+from alla.server import _McpNoSlashRedirectMiddleware, _make_slug, app
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +138,26 @@ def test_mcp_mount_exposes_transport_at_documented_path() -> None:
 
     assert "/" in inner_paths
     assert "/mcp" not in inner_paths
+
+
+@pytest.mark.asyncio
+async def test_mcp_exact_path_is_rewritten_without_redirect() -> None:
+    """POST /mcp reaches the mounted app as /mcp/ without a client-visible 307."""
+    seen_scope: dict[str, Any] = {}
+
+    async def downstream(scope, receive, send) -> None:
+        seen_scope.update(scope)
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    middleware = _McpNoSlashRedirectMiddleware(downstream)
+    transport = httpx.ASGITransport(app=middleware)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        resp = await client.post("/mcp")
+
+    assert resp.status_code == 204
+    assert seen_scope["path"] == "/mcp/"
+    assert seen_scope["raw_path"] == b"/mcp/"
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, TypeVar, cast
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from alla import __version__
 from alla.app_support import (
@@ -33,6 +34,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 ModelT = TypeVar("ModelT", bound=BaseModel)
 ResultT = TypeVar("ResultT")
+
+
+class _McpNoSlashRedirectMiddleware:
+    """Route /mcp to the mounted MCP app without exposing a 307 redirect."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path") == "/mcp":
+            rewritten_scope = cast(Scope, {**scope, "path": "/mcp/"})
+            raw_path = rewritten_scope.get("raw_path")
+            if isinstance(raw_path, bytes) and raw_path.endswith(b"/mcp"):
+                rewritten_scope["raw_path"] = raw_path + b"/"
+            scope = rewritten_scope
+
+        await self.app(scope, receive, send)
 
 
 # --- Модели ответов ---
@@ -179,6 +197,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(_McpNoSlashRedirectMiddleware)
 
 # MCP-эндпоинт для qwen CLI и других MCP-клиентов.
 # Транспорт streamable HTTP, инструменты определены в alla/mcp_app.py.
