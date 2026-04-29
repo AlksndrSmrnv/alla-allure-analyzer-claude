@@ -118,6 +118,11 @@ def _request(
             url=url,
         ) from exc
     except URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise AllaRequestError(
+                f"Alla server request timed out after {timeout}s",
+                url=url,
+            ) from exc
         raise AllaRequestError(
             f"Cannot reach Alla server: {exc.reason}",
             url=url,
