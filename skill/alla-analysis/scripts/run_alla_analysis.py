@@ -278,6 +278,7 @@ def _representative_test_context(
 def _compact_analysis(
     raw: dict[str, Any],
     *,
+    base_url: str,
     health: dict[str, Any],
     html_report: dict[str, Any] | None,
 ) -> dict[str, Any]:
@@ -342,7 +343,7 @@ def _compact_analysis(
     payload: dict[str, Any] = {
         "ok": True,
         "server": {
-            "url": ALLA_SERVER_URL.rstrip("/"),
+            "url": base_url,
             "health": health,
         },
         "launch": {
@@ -413,7 +414,12 @@ def main(argv: list[str] | None = None) -> int:
             launch_id = _resolve_launch(base_url, args.launch_name, args.project_id)
         raw_analysis = _run_analysis(base_url, launch_id)
         html_report = _write_html_report(base_url, launch_id) if args.html else None
-        payload = _compact_analysis(raw_analysis, health=health, html_report=html_report)
+        payload = _compact_analysis(
+            raw_analysis,
+            base_url=base_url,
+            health=health,
+            html_report=html_report,
+        )
         payload["duration_seconds"] = round(time.time() - started_at, 3)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
