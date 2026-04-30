@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import httpx
@@ -70,6 +70,7 @@ class _MockClient:
         self._comments_by_tc = comments_by_tc or {}
         self._raise_on_get_all = raise_on_get_all
         self.delete_calls: list[int] = []
+        self.patch_launch_link_calls: list[tuple[int, str, str]] = []
 
     async def get_all_test_results_for_launch(self, launch_id: int) -> list[ResultResponse]:
         if self._raise_on_get_all:
@@ -84,6 +85,9 @@ class _MockClient:
 
     async def post_comment(self, test_case_id: int, body: str) -> None:
         pass
+
+    async def patch_launch_links(self, launch_id: int, name: str, url: str) -> None:
+        self.patch_launch_link_calls.append((launch_id, name, url))
 
 
 class _NonCommentClient:
@@ -100,12 +104,24 @@ def _setup_state(client: Any = None, settings: Any = None) -> None:
     _state.client = client or _MockClient()
     _state.settings = settings or _DummySettings()
     _state.auth = None
+    _state.report_store = None
 
 
 @dataclass
 class _DummySettings:
     """Минимальный Settings-заглушка для сервера."""
     detail_concurrency: int = 5
+    push_to_testops: bool = True
+    reports_dir: str = ""
+    report_url: str = ""
+    server_external_url: str = ""
+    report_link_name: str = "Alla report"
+    endpoint: str = "https://allure.example"
+    kb_active: bool = False
+    feedback_server_url: str = ""
+
+    def model_copy(self, *, update: dict[str, Any] | None = None) -> "_DummySettings":
+        return replace(self, **(update or {}))
 
 
 @pytest.fixture
@@ -209,6 +225,42 @@ async def test_analyze_includes_clustering(monkeypatch, _http_client) -> None:
     data = resp.json()
     assert data["clustering_report"]["total_failures"] == 5
     assert data["clustering_report"]["cluster_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_analyze_html_push_false_does_not_attach_report_link(
+    monkeypatch,
+    _http_client,
+) -> None:
+    """?push_to_testops=false запрещает запись ссылки на отчёт в TestOps."""
+    mock_client = _MockClient()
+    _setup_state(
+        client=mock_client,
+        settings=_DummySettings(
+            push_to_testops=True,
+            report_url="https://jenkins.example/alla-report.html",
+        ),
+    )
+    captured_settings: dict[str, Any] = {}
+
+    async def mock_analyze(launch_id, client, settings, *, updater=None):
+        captured_settings["push_to_testops"] = settings.push_to_testops
+        return _make_analysis_result()
+
+    monkeypatch.setattr("alla.orchestrator.analyze_launch", mock_analyze)
+    monkeypatch.setattr(
+        "alla.server.build_html_report_content",
+        lambda result, *, settings: "<html><body>report</body></html>",
+    )
+    monkeypatch.setattr("alla.server.persist_generated_report", lambda **kwargs: None)
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/analyze/123/html?push_to_testops=false")
+
+    assert resp.status_code == 200
+    assert captured_settings["push_to_testops"] is False
+    assert resp.headers["X-Report-URL"] == "https://jenkins.example/alla-report.html"
+    assert mock_client.patch_launch_link_calls == []
 
 
 # ---------------------------------------------------------------------------
