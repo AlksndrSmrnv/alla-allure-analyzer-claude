@@ -370,35 +370,36 @@ async def analyze_launch_html(
         launch_id,
         push_to_testops=push_to_testops,
     )
+    effective_settings = _effective_settings(push_to_testops)
 
     from datetime import datetime
 
     report_filename: str | None = None
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    need_filename = _state.settings.reports_dir or _state.report_store
+    need_filename = effective_settings.reports_dir or _state.report_store
     if need_filename:
         report_filename = f"{launch_id}_{timestamp}.html"
 
     html = build_html_report_content(
         result,
-        settings=_state.settings,
+        settings=effective_settings,
     )
     persist_generated_report(
         html_content=html,
         launch_id=launch_id,
         report_filename=report_filename,
-        settings=_state.settings,
+        settings=effective_settings,
         report_store=_state.report_store,
         project_id=result.triage_report.project_id,
         analysis_result=result,
     )
 
     effective_report_url = resolve_report_url(
-        _state.settings,
+        effective_settings,
         report_url_override=report_url or None,
         report_filename=report_filename,
     )
-    if not effective_report_url:
+    if not effective_report_url and effective_settings.push_to_testops:
         logger.warning(
             "Ссылка на отчёт не будет прикреплена к запуску #%d: "
             "задайте ALLURE_SERVER_EXTERNAL_URL + ALLURE_REPORTS_DIR "
@@ -406,12 +407,13 @@ async def analyze_launch_html(
             launch_id,
         )
 
-    await attach_report_link(
-        _state.client,
-        launch_id=launch_id,
-        settings=_state.settings,
-        report_url=effective_report_url,
-    )
+    if effective_report_url and effective_settings.push_to_testops:
+        await attach_report_link(
+            _state.client,
+            launch_id=launch_id,
+            settings=effective_settings,
+            report_url=effective_report_url,
+        )
 
     headers = _build_csp_headers()
     if effective_report_url:
