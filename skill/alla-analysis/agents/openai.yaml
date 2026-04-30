@@ -1,4 +1,0 @@
-interface:
-  display_name: "Alla Analysis"
-  short_description: "Analyze Alla launch clusters"
-  default_prompt: "Use $alla-analysis to analyze an Alla launch and summarize the most important failure clusters."
