@@ -1,4 +1,4 @@
-"""Behavioral tests for TriageService."""
+"""Поведенческие тесты TriageService."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ async def test_analyze_launch_skips_detail_fetch_when_error_already_present(
     monkeypatch,
     tmp_path,
 ) -> None:
-    """Fallback detail fetch is skipped when execution already contains the error."""
+    """Fallback detail fetch пропускается, если execution уже содержит ошибку."""
     settings = _make_settings(monkeypatch, tmp_path)
     result = _make_failed_result(id=1)
     client = _Client(
@@ -95,7 +95,7 @@ async def test_analyze_launch_fills_trace_from_detail_fallback(
     monkeypatch,
     tmp_path,
 ) -> None:
-    """Missing execution/statusDetails are backfilled from GET /api/testresult/{id}."""
+    """Отсутствующие execution/statusDetails дополняются из GET /api/testresult/{id}."""
     settings = _make_settings(monkeypatch, tmp_path)
     result = _make_failed_result(id=2)
     detail = ResultResponse.model_validate(
@@ -121,7 +121,7 @@ async def test_analyze_launch_ignores_detail_fetch_error(
     monkeypatch,
     tmp_path,
 ) -> None:
-    """Detail fallback errors do not abort triage."""
+    """Ошибки detail fallback не прерывают triage."""
     settings = _make_settings(monkeypatch, tmp_path)
     result = _make_failed_result(id=3)
     client = _Client(

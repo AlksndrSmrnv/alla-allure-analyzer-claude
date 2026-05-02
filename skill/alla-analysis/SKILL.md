@@ -1,58 +1,97 @@
 ---
 name: alla-analysis
-description: Use this skill when the user asks to analyze an Allure TestOps/Alla launch, run Alla analysis, inspect launch failure clusters, get the main failing clusters, summarize an Alla run report, or investigate prompts such as “проанализируй прогон 12345”, “разбери launch”, “найди главные кластеры падений”. This skill uses the running alla-server REST API only.
+description: Используй этот skill, когда пользователь просит проанализировать launch Allure TestOps/Alla, запустить анализ Alla, посмотреть кластеры падений, найти главные кластеры, кратко разобрать отчёт Alla или расследовать запросы вроде «проанализируй прогон 12345», «разбери launch», «найди главные кластеры падений». Skill работает только через REST API запущенного alla-server.
 ---
 
-# Alla Analysis
+# Анализ Alla
 
-## Overview
+## Обзор
 
-Use this skill to run a read-only Alla analysis for an Allure TestOps launch through the running `alla-server` REST API, normalize the result, and produce an agent-level interpretation of the failure clusters.
+Используй этот skill для read-only анализа через REST API запущенного
+`alla-server`. Вспомогательный скрипт вызывает сервер, нормализует большой JSON
+в компактный формат для агента и всегда передаёт `push_to_testops=false`.
 
-## Quick Start
+Этот workflow нужен для расследований и сводок. Он не должен писать комментарии
+или ссылки на отчёты обратно в TestOps.
 
-1. Run the helper script first:
+## Быстрый старт
+
+Анализ по числовому launch ID:
 
 ```bash
 python skill/alla-analysis/scripts/run_alla_analysis.py --launch-id 12345
 ```
 
-2. If the user gives a launch name instead of an id, resolve it through the server:
+Сначала найти точное имя launch, затем проанализировать:
 
 ```bash
 python skill/alla-analysis/scripts/run_alla_analysis.py --launch-name "Launch name" --project-id 1
 ```
 
-3. Generate HTML only when the user explicitly asks for a report file or link:
+Создавай HTML-файл только когда пользователь явно просит отчёт/ссылку:
 
 ```bash
 python skill/alla-analysis/scripts/run_alla_analysis.py --launch-id 12345 --html
 ```
 
-The helper always sends `push_to_testops=false` unless the script is edited. This keeps the agent workflow read-only by default.
+С `--html` helper вызывает `/api/v1/analyze/{launch_id}/html`, записывает
+вернувшийся HTML во временный файл и добавляет `html_report.html_path`. Если
+сервер вернул `X-Report-URL`, он будет доступен как `html_report.report_url`.
 
-## Server URL
+## URL сервера
 
-The server address lives in `scripts/run_alla_analysis.py` as `ALLA_SERVER_URL`. It is intentionally a placeholder and intentionally not read from environment variables. If the placeholder has not been replaced, stop and tell the user to set the server URL inside the script.
+Адрес сервера задан внутри
+`skill/alla-analysis/scripts/run_alla_analysis.py` в `ALLA_SERVER_URL`.
 
-## Analysis Workflow
+Скрипт намеренно не читает переменные окружения. Если значение всё ещё
+содержит `TODO-ALLA-SERVER`, остановись и попроси пользователя указать URL
+сервера в скрипте.
 
-After running the helper, analyze the compact JSON it prints:
+## Что делает helper
 
-- Start with launch counters: total results, active failures, muted failures, failed/broken/skipped counts.
-- Ранжируй кластеры по влиянию: сначала крупные, затем без сильного совпадения в базе знаний, затем с ошибками LLM.
-- Read `references/cluster_interpretation.md` before writing the final interpretation.
-- Treat Alla's LLM text as source material, not as the whole answer. Add your own prioritization, merge/split suspicions, and concrete debugging steps.
+1. Вызывает `GET /health` и кладёт ответ в `server.health`.
+2. При необходимости резолвит имя launch через
+   `GET /api/v1/launch/resolve?name=...&project_id=...`.
+3. Вызывает `POST /api/v1/analyze/{launch_id}?push_to_testops=false`.
+4. Опционально вызывает `POST /api/v1/analyze/{launch_id}/html?push_to_testops=false`.
+5. Возвращает компактный JSON со счётчиками, сводками кластеров, лучшими
+   совпадениями из базы знаний, контекстом representative test,
+   LLM verdict/error, launch summary и duration.
 
-## Final Response Shape
+## Поля вывода
 
-Return a concise investigation summary in Russian unless the user asks otherwise:
+- `counters.active_failures`: failed + broken минус muted failures.
+- `clustering.clusters`: отсортированы по убыванию `size`.
+- Для каждого кластера: `label`, `size`, `step_path`, `representative_message`,
+  `correlation_hint`, `trace_snippet`, `representative_test.log_snippet`.
+- `kb_matches`: лучшие совпадения с title, category, score, origin и feedback vote.
+- `llm.llm_launch_summary.summary_text`: launch-level summary, если есть.
+- `llm_verdict` / `llm_error` по каждому кластеру: исходный материал, а не
+  финальный ответ.
 
-- executive summary of the run;
-- top problematic clusters ordered by impact;
-- likely shared root causes by category: test, service, env, data;
-- suspicious split/merge candidates;
-- concrete next debugging or fix actions;
-- report URL or local HTML path when generated.
+## Workflow анализа
 
-If the helper returns an error payload, explain the failure and include the relevant HTTP status/detail.
+- Перед финальным ответом прочитай `references/cluster_interpretation.md`.
+- Начни со счётчиков и объясни, сконцентрированы ли active failures в
+  нескольких кластерах или размазаны по запуску.
+- Ранжируй кластеры по влиянию: сначала `size`, затем отсутствующие/слабые
+  совпадения в базе знаний, затем LLM errors/skips.
+- Считай `origin=feedback_exact` сильнее обычной текстовой похожести, если
+  текущий step/message context ему не противоречит.
+- Текст LLM от Alla используй как исходный материал. Добавляй свою
+  приоритизацию, подозрения на merge/split и конкретные шаги отладки.
+
+## Форма финального ответа
+
+Отвечай краткой сводкой расследования на русском, если пользователь не попросил
+иначе:
+
+- краткий итог прогона;
+- главные проблемные кластеры по влиянию;
+- вероятные общие root causes по категориям: test, service, env, data;
+- подозрительные кандидаты на split/merge;
+- конкретные следующие действия для отладки или исправления;
+- report URL или локальный HTML path, если отчёт был создан.
+
+Если helper вернул payload с ошибкой, объясни сбой и укажи соответствующие HTTP
+status/detail.

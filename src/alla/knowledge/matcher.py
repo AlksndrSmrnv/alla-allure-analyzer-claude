@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Вспомогательные функции
 # ---------------------------------------------------------------------------
 
 _MULTI_WS_RE = re.compile(r"\s+")
@@ -40,7 +40,7 @@ def _make_number_agnostic(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Config
+# Конфигурация
 # ---------------------------------------------------------------------------
 
 
@@ -62,7 +62,7 @@ class MatcherConfig:
     tier2_min_lines: int = 2
     tier2_fuzzy_word_threshold: float = 0.75  # доля слов строки, найденных в query
 
-    # --- Tier 3: TF-IDF (fallback) ---
+    # --- Tier 3: TF-IDF (fallback-ветка) ---
     tier3_score_cap: float = 0.5
     tfidf_max_features: int = 500
     tfidf_ngram_range: tuple[int, int] = (1, 2)
@@ -80,14 +80,14 @@ class TextMatcher:
 
     def __init__(self, config: MatcherConfig | None = None) -> None:
         self._config = config or MatcherConfig()
-        # Pre-trained TF-IDF (заполняется через fit())
+        # Предобученный TF-IDF (заполняется через fit())
         self._fitted_vectorizer: TfidfVectorizer | None = None
         self._fitted_example_matrix: "spmatrix | None" = None
         self._fitted_title_desc_matrix: "spmatrix | None" = None
         self._entry_index: dict[str, int] = {}  # entry.id → строка в матрице
 
     # ------------------------------------------------------------------
-    # Pre-training
+    # Предобучение
     # ------------------------------------------------------------------
 
     def fit(self, entries: list[KBEntry]) -> None:
@@ -132,7 +132,7 @@ class TextMatcher:
         )
 
     # ------------------------------------------------------------------
-    # Public API
+    # Публичный API
     # ------------------------------------------------------------------
 
     def match(
@@ -238,7 +238,7 @@ class TextMatcher:
                     entry.title, entry.id, capped_score, ex_sim, td_sim,
                 )
 
-        # --- Step-aware rerank / filtering ---
+        # --- Step-aware rerank / filtering результатов ---
         if results:
             results = self._apply_step_path_policy(
                 results,
@@ -298,7 +298,7 @@ class TextMatcher:
         """
         if line in query_collapsed:
             return True
-        # Number-agnostic: "0", "1050444", "<NUM>" → "<#>"
+        # Number-agnostic сравнение: "0", "1050444", "<NUM>" → "<#>"
         if _make_number_agnostic(line) in _make_number_agnostic(query_collapsed):
             return True
         words = _WORD_RE.findall(line)
@@ -472,7 +472,7 @@ class TextMatcher:
         return hits
 
     # ------------------------------------------------------------------
-    # Step path policy
+    # Политика step path
     # ------------------------------------------------------------------
 
     def _classify_step_path_match(

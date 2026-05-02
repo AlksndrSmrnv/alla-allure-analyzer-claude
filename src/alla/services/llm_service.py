@@ -556,7 +556,7 @@ class LLMService:
 
             kb_matches = (kb_results or {}).get(cluster.cluster_id)
 
-            # Получить log_snippet и full_trace представителя (fallback на members)
+            # Получить log_snippet и full_trace представителя (fallback на members кластера)
             log_snippet: str | None = None
             full_trace: str | None = None
             if test_by_id and cluster.representative_test_id is not None:

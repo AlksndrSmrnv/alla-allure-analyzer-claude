@@ -29,7 +29,7 @@ from alla.server import _McpNoSlashRedirectMiddleware, _make_slug, app
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Вспомогательные функции
 # ---------------------------------------------------------------------------
 
 
@@ -149,7 +149,7 @@ async def test_health_returns_ok(_http_client) -> None:
 
 
 def test_mcp_mount_exposes_transport_at_documented_path() -> None:
-    """Mounted MCP transport is available at /mcp, not /mcp/mcp."""
+    """Смонтированный MCP transport доступен на /mcp, а не /mcp/mcp."""
     mount = next(route for route in app.routes if getattr(route, "path", None) == "/mcp")
     inner_paths = {getattr(route, "path", None) for route in mount.app.routes}
 
@@ -159,7 +159,7 @@ def test_mcp_mount_exposes_transport_at_documented_path() -> None:
 
 @pytest.mark.asyncio
 async def test_mcp_exact_path_is_rewritten_without_redirect() -> None:
-    """POST /mcp reaches the mounted app as /mcp/ without a client-visible 307."""
+    """POST /mcp доходит до mounted app как /mcp/ без видимого клиенту 307."""
     seen_scope: dict[str, Any] = {}
 
     async def downstream(scope, receive, send) -> None:
@@ -264,7 +264,7 @@ async def test_analyze_html_push_false_does_not_attach_report_link(
 
 
 # ---------------------------------------------------------------------------
-# POST /api/v1/analyze/{launch_id} — error mappings
+# POST /api/v1/analyze/{launch_id} — маппинг ошибок
 # ---------------------------------------------------------------------------
 
 
@@ -518,7 +518,7 @@ async def test_submit_feedback_uses_exact_signature_payload(monkeypatch, _http_c
 
 @pytest.mark.asyncio
 async def test_resolve_feedback_uses_exact_signature_hash(monkeypatch, _http_client) -> None:
-    """Resolve endpoint работает только по issue_signature_hash/version."""
+    """Resolve-эндпоинт работает только по issue_signature_hash/version."""
     captured: dict[str, Any] = {}
 
     class _Store:
@@ -745,7 +745,7 @@ def test_calculate_llm_token_usage(
     llm_launch_summary: LLMLaunchSummary | None,
     expected: TokenUsage | None,
 ) -> None:
-    """Token usage для дашборда суммирует LLM stage и не считает skipped LLM."""
+    """Статистика токенов для дашборда суммирует LLM stage и не считает skipped LLM."""
     from alla.app_support import calculate_llm_token_usage
 
     result = _make_analysis_result(
