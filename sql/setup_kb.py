@@ -185,7 +185,7 @@ COMMENT ON TABLE alla.project_group IS
 # ---------------------------------------------------------------------------
 
 SEED_ENTRIES = [
-    # --- из knowledge_base/entries.yaml ---
+    # --- базовый starter pack общих ошибок ---
     (
         "connection_timeout",
         "Таймаут подключения к сервису",

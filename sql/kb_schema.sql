@@ -55,8 +55,7 @@ CREATE TABLE IF NOT EXISTS alla.kb_entry (
     resolution_steps TEXT[]                    NOT NULL DEFAULT '{}',
 
     -- NULL  → глобальная запись (видна всем проектам)
-    -- N > 0 → запись только для проекта Allure TestOps с данным ID
-    --          (аналог per-project файла project_{id}.yaml)
+    -- N > 0 → запись только для проекта Allure TestOps с данным ID.
     --          Проектная запись с тем же slug переопределяет глобальную в Python-коде.
     project_id       INTEGER                   NULL,
 
