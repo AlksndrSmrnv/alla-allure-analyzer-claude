@@ -190,7 +190,7 @@ class Settings(BaseSettings):
         """LLM включён автоматически если заданы GigaChat URL, сертификат и ключ."""
         return bool(self.gigachat_base_url and self.gigachat_cert_b64 and self.gigachat_key_b64)
 
-    # -- Vault Proxy integration --
+    # -- Интеграция с Vault Proxy --
 
     _VAULT_SECRET_FIELDS: dict[str, str] = {
         "ALLURE_TOKEN": "token",

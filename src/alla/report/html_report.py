@@ -1,4 +1,4 @@
-"""Генератор self-contained HTML-отчёта для Alla."""
+"""Генератор самодостаточного HTML-отчёта для Alla."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def generate_html_report(
     feedback_api_url: str = "",
     server_url: str = "",
 ) -> str:
-    """Сгенерировать self-contained HTML-отчёт из AnalysisResult."""
+    """Сгенерировать самодостаточный HTML-отчёт из AnalysisResult."""
     from alla import __version__
 
     triage = result.triage_report
@@ -97,7 +97,7 @@ def generate_html_report(
     feedback_css = _FEEDBACK_CSS if feedback_api_url else ""
     feedback_js = _build_feedback_js(feedback_api_url) if feedback_api_url else ""
 
-    # Embed exact feedback contexts as JS data for vote submission / resolve
+    # Встроить exact feedback contexts как JS-данные для отправки голоса/resolve
     feedback_data_js = ""
     if feedback_api_url and feedback_contexts:
         safe_payload = {
@@ -409,7 +409,7 @@ def _render_cluster(
         if analysis and analysis.analysis_text:
             llm_text = analysis.analysis_text
 
-    # --- LLM analysis ---
+    # --- LLM-анализ ---
     llm_html = ""
     if llm_text:
         content = _render_llm_text(llm_text)
@@ -420,7 +420,7 @@ def _render_cluster(
             "</div>"
         )
 
-    # --- error example + log snippet ---
+    # --- Пример ошибки + log snippet ---
     rep_test = (
         test_by_id.get(cluster.representative_test_id)
         if cluster.representative_test_id is not None
@@ -488,7 +488,7 @@ def _render_cluster(
 
     project_matches, starter_pack_matches = _split_kb_matches(kb_matches)
 
-    # Pre-compute cluster error example for edit-KB forms
+    # Заранее вычислить cluster error_example для edit-KB форм
     prefill: _KBPrefill | None = (
         _build_kb_prefill(cluster, llm_text, rep_log_snippet)
         if feedback_api_url
@@ -496,7 +496,7 @@ def _render_cluster(
     )
     cluster_error_example = prefill["error_example"] if prefill is not None else ""
 
-    # --- matches from knowledge base ---
+    # --- Совпадения из базы знаний ---
     kb_html = ""
     if not guided_mode and kb_matches:
         entries_html = "".join(
@@ -574,7 +574,7 @@ def _render_cluster(
             "</div>"
         )
 
-    # --- create knowledge-base entry form ---
+    # --- Форма создания записи базы знаний ---
     create_kb_html = ""
     if feedback_api_url:
         pid = _e(str(project_id)) if project_id is not None else ""
@@ -640,7 +640,7 @@ def _render_cluster(
             "</div>"
         )
 
-    # --- test links ---
+    # --- Ссылки на тесты ---
     _VISIBLE_IDS = 10
     links: list[str] = []
     for i, tid in enumerate(cluster.member_test_ids):
@@ -754,7 +754,7 @@ def _render_kb_entry(
     feedback_html = ""
     if feedback_api_url and cluster_id:
         entry_id = _e(str(m.entry.entry_id)) if m.entry.entry_id is not None else _e(m.entry.id)
-        # Pre-compute CSS classes from feedback_vote.
+        # Заранее вычислить CSS-классы из feedback_vote.
         like_cls = "fb-btn fb-like"
         dislike_cls = "fb-btn fb-dislike"
         if m.feedback_vote == "like":
@@ -862,7 +862,7 @@ def _render_kb_entry(
 def _split_kb_matches(
     kb_matches: list["KBMatchResult"],
 ) -> tuple[list["KBMatchResult"], list["KBMatchResult"]]:
-    """Разделить совпадения с базой знаний на project knowledge и global starter pack."""
+    """Разделить совпадения с базой знаний на знания проекта и global starter pack."""
     project_matches: list["KBMatchResult"] = []
     starter_pack_matches: list["KBMatchResult"] = []
     for match in kb_matches:
@@ -914,7 +914,7 @@ def _build_kb_prefill(
     llm_text: str | None,
     rep_log_snippet: str | None,
 ) -> _KBPrefill:
-    """Подготовить prefill для формы project knowledge."""
+    """Подготовить prefill для формы знаний проекта."""
     parsed_llm = _extract_llm_prefill(llm_text or "")
     prefill_parts: list[str] = []
     if cluster.example_message:
@@ -1015,7 +1015,7 @@ def _build_starter_pack_payload(
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Вспомогательные функции
 # ---------------------------------------------------------------------------
 
 def _e(s: object) -> str:
@@ -1024,13 +1024,13 @@ def _e(s: object) -> str:
 
 
 def _linkify(text: str) -> str:
-    """Turn plain-text URLs into clickable <a> links (text must be HTML-escaped already)."""
+    """Превратить plain-text URLs в кликабельные <a> links (text уже HTML-escaped)."""
 
     def _replace(m: re.Match[str]) -> str:
         url = m.group(1)
-        # Strip trailing sentence punctuation that's unlikely to be part of the URL
+        # Отрезать завершающую пунктуацию предложения, которая вряд ли входит в URL
         stripped = url.rstrip(".,)!?:;")
-        # Restore ';' if stripping broke an HTML entity (e.g., &amp; → &amp)
+        # Вернуть ';', если обрезка сломала HTML entity (например, &amp; → &amp)
         if re.search(r"&\w+$", stripped) and url[len(stripped):].startswith(";"):
             stripped += ";"
         trail = url[len(stripped):]
@@ -1040,24 +1040,24 @@ def _linkify(text: str) -> str:
 
 
 def _inline_md(text: str) -> str:
-    """HTML-escape text then apply inline Markdown (bold, italic, code, links)."""
+    """HTML-escape text и применить inline Markdown (bold, italic, code, links)."""
     text = _html.escape(text)
     # Bold **text**
     text = re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", text)
-    # Italic *text* (not preceded/followed by another *)
+    # Italic *text* (без соседней *)
     text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", text)
     # Inline code `code`
     text = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", text)
-    # Auto-linkify URLs
+    # Автоматически linkify URLs
     text = _linkify(text)
     return text
 
 
 def _markdown_to_html(text: str) -> str:
-    """Convert a Markdown subset to HTML (pure Python, no external dependencies).
+    """Преобразовать подмножество Markdown в HTML (pure Python, без внешних зависимостей).
 
-    Handles: ATX headings, fenced code blocks, unordered/ordered lists,
-    bold, italic, inline code, and paragraphs.
+    Поддерживает: ATX headings, fenced code blocks, unordered/ordered lists,
+    bold, italic, inline code и paragraphs.
     """
     lines = text.splitlines()
     parts: list[str] = []
@@ -1085,7 +1085,7 @@ def _markdown_to_html(text: str) -> str:
             in_ol = False
 
     for line in lines:
-        # Fenced code block toggle
+        # Переключение fenced code block
         if line.startswith("```"):
             if in_code:
                 parts.append(code_open_tag + _html.escape("\n".join(code_buf)) + "</code></pre>")
@@ -1114,7 +1114,7 @@ def _markdown_to_html(text: str) -> str:
             parts.append(f"<h{level}>{_inline_md(m.group(2))}</h{level}>")
             continue
 
-        # Unordered list item
+        # Элемент unordered list
         m = re.match(r"^[-*+]\s+(.*)", line)
         if m:
             flush_para()
@@ -1126,7 +1126,7 @@ def _markdown_to_html(text: str) -> str:
             parts.append(f"<li>{_inline_md(m.group(1))}</li>")
             continue
 
-        # Ordered list item
+        # Элемент ordered list
         m = re.match(r"^\d+[.)]\s+(.*)", line)
         if m:
             flush_para()
@@ -1138,13 +1138,13 @@ def _markdown_to_html(text: str) -> str:
             parts.append(f"<li>{_inline_md(m.group(1))}</li>")
             continue
 
-        # Blank line — end paragraph and list
+        # Пустая строка — завершить paragraph и list
         if not line.strip():
             flush_para()
             close_list()
             continue
 
-        # Regular text — close any open list and accumulate into paragraph
+        # Обычный текст — закрыть открытый list и накопить paragraph
         close_list()
         para.append(line)
 
@@ -1157,7 +1157,7 @@ def _markdown_to_html(text: str) -> str:
 
 
 def _render_llm_text(text: str) -> str:
-    """Render LLM Markdown to HTML server-side (no external dependencies)."""
+    """Отрендерить LLM Markdown в HTML на сервере (без внешних зависимостей)."""
     return f'<div class="markdown-rendered">{_markdown_to_html(text)}</div>'
 
 
@@ -1203,7 +1203,7 @@ _CSS = """
       padding: 2rem 1.5rem;
     }
 
-    /* ---- Header ---- */
+    /* ---- Шапка ---- */
     .header {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -1295,7 +1295,7 @@ _CSS = """
       color: var(--text-muted);
     }
 
-    /* ---- Stats ---- */
+    /* ---- Статистика ---- */
     .stats {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -1335,7 +1335,7 @@ _CSS = """
     .stat-card.info .stat-value { color: var(--info); }
     .stat-card.muted .stat-value { color: var(--text-muted); }
 
-    /* ---- Sections ---- */
+    /* ---- Секции ---- */
     .section {
       margin-bottom: 2.5rem;
     }
@@ -1358,7 +1358,7 @@ _CSS = """
       border: 1px dashed var(--border);
     }
 
-    /* ---- Onboarding ---- */
+    /* ---- Онбординг ---- */
     .onboarding-banner {
       background: linear-gradient(135deg, #fff3d6 0%, #ffd7b8 42%, #fff8ef 100%);
       border: 2px solid #f59e0b;
@@ -1426,7 +1426,7 @@ _CSS = """
       padding: 0.65rem 0.9rem;
     }
 
-    /* ---- LLM Summary ---- */
+    /* ---- LLM-сводка ---- */
     .llm-summary {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -1436,7 +1436,7 @@ _CSS = """
       box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
 
-    /* ---- Clusters ---- */
+    /* ---- Кластеры ---- */
     .cluster {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -1488,7 +1488,7 @@ _CSS = """
       box-shadow: 0 10px 24px rgba(249, 115, 22, 0.08);
     }
 
-    /* ---- Blocks ---- */
+    /* ---- Блоки ---- */
     .block {
       display: flex;
       flex-direction: column;
@@ -1527,7 +1527,7 @@ _CSS = """
       color: var(--text-muted);
     }
 
-    /* ---- Error Block ---- */
+    /* ---- Блок ошибки ---- */
     .error-block {
       background: var(--danger-light);
       border: 1px solid #fca5a5;
@@ -1545,7 +1545,7 @@ _CSS = """
       overflow-y: auto;
     }
 
-    /* ---- Log Block ---- */
+    /* ---- Блок лога ---- */
     .log-block {
       background: #f5f3ff;
       border: 1px solid #c4b5fd;
@@ -1572,7 +1572,7 @@ _CSS = """
     }
     .log-file-name:first-child { margin-top: 0; }
 
-    /* ---- LLM Analysis ---- */
+    /* ---- LLM-анализ ---- */
     .llm-analysis {
       background: var(--info-light);
       border: 1px solid #bae6fd;
@@ -1580,7 +1580,7 @@ _CSS = """
       padding: 1.25rem 1.5rem;
     }
 
-    /* ---- Knowledge Base Matches ---- */
+    /* ---- Совпадения базы знаний ---- */
     .kb-matches {
       display: flex;
       flex-direction: column;
@@ -1696,7 +1696,7 @@ _CSS = """
       display: none;
     }
 
-    /* ---- Test IDs ---- */
+    /* ---- ID тестов ---- */
     .test-list {
       display: flex;
       flex-direction: column;
@@ -1752,7 +1752,7 @@ _CSS = """
       border-color: #bfdbfe;
     }
 
-    /* ---- Markdown Rendered Styles ---- */
+    /* ---- Стили отрендеренного Markdown ---- */
     .markdown-rendered {
       font-size: 0.9375rem;
       line-height: 1.6;
@@ -1812,7 +1812,7 @@ _CSS = """
       font-style: italic;
     }
 
-    /* ---- Footer ---- */
+    /* ---- Подвал ---- */
     .footer {
       text-align: center;
       font-size: 0.8125rem;
@@ -1906,11 +1906,11 @@ _TEST_EXPAND_SCRIPT = """
 
 
 # ---------------------------------------------------------------------------
-# Feedback CSS (appended only when feedback_api_url is provided)
+# Feedback CSS (добавляется только когда задан feedback_api_url)
 # ---------------------------------------------------------------------------
 
 _FEEDBACK_CSS = """
-    /* ---- Cluster Merge Rules ---- */
+    /* ---- Правила объединения кластеров ---- */
     .cluster-merge-toggle{display:inline-flex;align-items:center;gap:.5rem;padding:.45rem .7rem;border:1px solid var(--border);border-radius:9999px;background:#fff;font-size:.8rem;font-weight:600;color:var(--text-muted);cursor:pointer}
     .cluster-merge-toggle input[type="checkbox"]{margin:0;inline-size:1rem;block-size:1rem;accent-color:var(--primary)}
     .cluster.cluster-selected{border-color:#93c5fd;box-shadow:0 0 0 1px rgba(37,99,235,.18),0 12px 24px rgba(37,99,235,.08)}
@@ -1929,7 +1929,7 @@ _FEEDBACK_CSS = """
     .cluster-merge-status.cluster-merge-ok{color:#86efac}
     .cluster-merge-status.cluster-merge-error{color:#fca5a5}
 
-    /* ---- Knowledge Base Feedback Buttons ---- */
+    /* ---- Кнопки feedback для базы знаний ---- */
     .kb-feedback{display:flex;align-items:center;gap:.5rem;margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--border)}
     .fb-btn{display:inline-flex;align-items:center;gap:.25rem;padding:.375rem .75rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);cursor:pointer;font-size:.8125rem;color:var(--text-muted);transition:all .2s}
     .fb-btn:hover{border-color:var(--primary);color:var(--primary)}
@@ -1940,7 +1940,7 @@ _FEEDBACK_CSS = """
     .fb-status-error{color:var(--danger)}
     .fb-id{font-size:.65rem;color:var(--text-muted);font-variant-numeric:tabular-nums}
 
-    /* ---- Create Knowledge Base Entry Form ---- */
+    /* ---- Форма создания записи базы знаний ---- */
     .create-kb-action{gap:.8rem}
     .create-kb-toggle{background:#eff6ff;border:1px solid var(--primary);border-radius:var(--radius-sm);padding:.65rem 1rem;cursor:pointer;color:var(--primary);font-size:.9375rem;font-weight:600;width:100%;text-align:center;transition:all .2s}
     .create-kb-toggle:not(.create-kb-toggle-primary):hover{background:var(--primary);color:#fff}
@@ -1971,7 +1971,7 @@ _FEEDBACK_CSS = """
     .copy-kb-ok{color:var(--success)}
     .copy-kb-error{color:var(--danger)}
 
-    /* ---- Edit Knowledge Base Entry ---- */
+    /* ---- Редактирование записи базы знаний ---- */
     .edit-kb-action{margin-top:.75rem}
     .edit-kb-toggle{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.5rem 1rem;cursor:pointer;color:var(--text-muted);font-size:.8125rem;width:100%;text-align:left;transition:all .2s}
     .edit-kb-toggle:hover{border-color:var(--primary);color:var(--primary)}
@@ -1999,19 +1999,19 @@ _FEEDBACK_CSS = """
 
 
 # ---------------------------------------------------------------------------
-# Feedback JavaScript builder
+# Сборщик Feedback JavaScript
 # ---------------------------------------------------------------------------
 
 def _build_feedback_js(feedback_api_url: str) -> str:
-    """Return a <script> block for feedback interactions.
+    """Вернуть <script> block для feedback-взаимодействий.
 
-    Only called when *feedback_api_url* is non-empty.
+    Вызывается только когда *feedback_api_url* не пустой.
     """
     import json as _json
-    # json.dumps produces a valid JS string literal (handles \, ", newlines, etc.)
-    # _html.escape must NOT be used here: inside <script>, the browser does not
-    # decode HTML entities, so & → &amp; would corrupt any URL with query params.
-    js_url = _json.dumps(feedback_api_url)  # includes surrounding double-quotes
+    # json.dumps создаёт валидный JS string literal (обрабатывает \, ", newlines и т.д.)
+    # _html.escape здесь использовать нельзя: внутри <script> браузер не
+    # декодирует HTML entities, поэтому & → &amp; испортит URL с query params.
+    js_url = _json.dumps(feedback_api_url)  # включает окружающие двойные кавычки
     return (
         "<script>\n"
         "(function() {\n"
@@ -2224,7 +2224,7 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    });\n"
         "  }\n"
         "\n"
-        "  // --- Like / Dislike ---\n"
+        "  // --- Like / dislike голоса ---\n"
         "  function sendFeedback(el, isLike) {\n"
         "    var wrap = el.closest('.kb-feedback');\n"
         "    var status = wrap.querySelector('.fb-status');\n"
@@ -2312,7 +2312,7 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    updateMergeToolbar();\n"
         "  });\n"
         "\n"
-        "  // --- Create Knowledge Base Entry ---\n"
+        "  // --- Создание записи базы знаний ---\n"
         "  document.addEventListener('submit', function(e) {\n"
         "    var form = e.target.closest('.create-kb-form');\n"
         "    if (!form) return;\n"
@@ -2349,7 +2349,7 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    });\n"
         "  });\n"
         "\n"
-        "  // --- Edit Knowledge Base Entry ---\n"
+        "  // --- Редактирование записи базы знаний ---\n"
         "  document.addEventListener('submit', function(e) {\n"
         "    var form = e.target.closest('.edit-kb-form');\n"
         "    if (!form) return;\n"
@@ -2382,7 +2382,7 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "      status.textContent = 'Сохранено!';\n"
         "      status.className = 'edit-kb-status edit-kb-ok';\n"
         "      saveBtn.disabled = false;\n"
-        "      // Update the displayed KB entry content\n"
+        "      // Обновить показанное содержимое KB entry\n"
         "      var entry = form.closest('.kb-entry');\n"
         "      if (entry) {\n"
         "        var titleEl = entry.querySelector('.kb-title');\n"
@@ -2400,7 +2400,7 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    });\n"
         "  });\n"
         "\n"
-        "  // --- Refresh error_example from cluster ---\n"
+        "  // --- Обновление error_example из кластера ---\n"
         "  document.addEventListener('click', function(e) {\n"
         "    var btn = e.target.closest('.edit-kb-refresh-example');\n"
         "    if (!btn) return;\n"
@@ -2412,7 +2412,7 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    }\n"
         "  });\n"
         "\n"
-        "  // --- Cancel Edit Knowledge Base Entry ---\n"
+        "  // --- Отмена редактирования записи базы знаний ---\n"
         "  document.addEventListener('click', function(e) {\n"
         "    var cancelBtn = e.target.closest('.edit-kb-cancel');\n"
         "    if (!cancelBtn) return;\n"
@@ -2425,7 +2425,7 @@ def _build_feedback_js(feedback_api_url: str) -> str:
         "    }\n"
         "  });\n"
         "\n"
-        "  // --- Load existing votes on page load (exact resolve) ---\n"
+        "  // --- Загрузка существующих голосов при открытии страницы (exact resolve) ---\n"
         "  document.addEventListener('DOMContentLoaded', function() {\n"
         "    updateMergeToolbar();\n"
         "    if (typeof CLUSTER_FEEDBACK_CONTEXTS === 'undefined') return;\n"

@@ -6,8 +6,9 @@ description: Анализ упавших автотестов из Allure TestOp
 # alla — MCP-триаж упавших тестов Allure TestOps
 
 `alla` — сервис анализа запусков Allure TestOps. MCP endpoint живёт внутри
-running `alla-server` и вызывает тот же pipeline, что REST API: триаж, логи,
-кластеризация, merge rules, база знаний, LLM и optional push в TestOps.
+запущенного `alla-server` и вызывает тот же pipeline, что REST API: триаж,
+логи, кластеризация, merge rules, база знаний, LLM и опциональный push в
+TestOps.
 
 ## Когда использовать
 
@@ -18,19 +19,19 @@ running `alla-server` и вызывает тот же pipeline, что REST API:
 - просит основные кластеры, совпадения с базой знаний или LLM-вывод;
 - хочет ссылку на HTML-отчёт по launch ID.
 
-Если пользователь дал только имя запуска, MCP tools не умеют резолвить имя.
+Если пользователь дал только имя запуска, MCP-инструменты не умеют резолвить имя.
 Сначала используй REST `/api/v1/launch/resolve` или read-only helper из
 `skill/alla-analysis`.
 
-## MCP endpoint
+## MCP-эндпоинт
 
-`alla-server` монтирует streamable HTTP transport на:
+`alla-server` монтирует streamable HTTP transport по адресу:
 
 ```text
 http://<host>:8090/mcp
 ```
 
-Health check:
+Проверка health:
 
 ```bash
 curl http://localhost:8090/health
@@ -42,8 +43,8 @@ curl http://localhost:8090/health
 
 | Инструмент | Когда вызывать | Что возвращает |
 |---|---|---|
-| `analyze_launch(launch_id, push_to_testops?)` | Нужна компактная сводка без HTML | `launch_id`, `launch_name`, `total_failed`, `clusters_count`, `clusters`, optional `llm_launch_summary` |
-| `analyze_launch_html(launch_id, push_to_testops?)` | Пользователь просит отчёт/ссылку | Всё из `analyze_launch`, плюс `report_filename`, optional `report_url` или `hint` |
+| `analyze_launch(launch_id, push_to_testops?)` | Нужна компактная сводка без HTML | `launch_id`, `launch_name`, `total_failed`, `clusters_count`, `clusters`, опционально `llm_launch_summary` |
+| `analyze_launch_html(launch_id, push_to_testops?)` | Пользователь просит отчёт/ссылку | Всё из `analyze_launch`, плюс `report_filename`, опционально `report_url` или `hint` |
 
 `push_to_testops` переопределяет `ALLURE_PUSH_TO_TESTOPS` для одного вызова:
 

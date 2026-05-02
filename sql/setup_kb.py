@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Создание схемы и optional starter pack для alla.kb_entry.
+"""Создание схемы и опционального starter pack для alla.kb_entry.
 
 Использует psycopg (уже входит в alla[postgres]) — psql не нужен.
 
@@ -32,7 +32,7 @@ from pathlib import Path
 SCHEMA_SQL = """
 CREATE SCHEMA IF NOT EXISTS alla;
 
-COMMENT ON SCHEMA alla IS 'alla test-failure triage — knowledge base';
+COMMENT ON SCHEMA alla IS 'alla test-failure triage — база знаний';
 
 DO $$
 BEGIN
@@ -332,7 +332,7 @@ ON CONFLICT (id, project_id) WHERE project_id IS NOT NULL DO NOTHING
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Вспомогательные функции
 # ---------------------------------------------------------------------------
 
 def _print(msg: str, *, prefix: str = "   ") -> None:
@@ -390,7 +390,7 @@ def _resolve_dsn(dsn_arg: str | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Основной запуск
 # ---------------------------------------------------------------------------
 
 def run(

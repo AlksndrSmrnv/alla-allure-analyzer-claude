@@ -1,57 +1,67 @@
-# Cluster Interpretation Rules
+# Правила интерпретации кластеров
 
-Use these rules after `scripts/run_alla_analysis.py` returns compact JSON.
-The helper calls Alla in read-only mode with `push_to_testops=false`.
+Используй эти правила после того, как `scripts/run_alla_analysis.py` вернул
+компактный JSON. Helper вызывает Alla в read-only режиме с
+`push_to_testops=false`.
 
-## Prioritization
+## Приоритизация
 
-- Start with `counters.active_failures`: it excludes muted failures and is the
-  real amount of work for the run.
-- Sort clusters by `size` descending.
+- Начинай с `counters.active_failures`: он исключает muted failures и показывает
+  реальный объём работы по прогону.
+- Сортируй кластеры по убыванию `size`.
 - Поднимай приоритет кластеров со слабым или отсутствующим совпадением в базе знаний.
-- Raise priority for clusters where LLM analysis failed, was skipped, or returned an error.
-- Treat muted failures as context, not active work, unless the user explicitly asks about muted tests.
+- Поднимай приоритет кластеров, где LLM analysis упал, был пропущен или вернул ошибку.
+- Считай muted failures контекстом, а не активной работой, если пользователь
+  явно не спрашивает про muted tests.
 
 ## База знаний
 
-- `origin=feedback_exact`: strongest signal, because a user previously
-  confirmed this exact issue signature. Still verify the current step/message
-  does not obviously contradict it.
-- Score `>= 0.75`: likely known issue, but still check whether the step path
-  and representative message agree.
-- Score `0.40..0.74`: partial match; present as a hypothesis, not a confirmed
-  cause.
-- Score `< 0.40` or no match: likely unknown/new issue; recommend collecting
-  logs, correlation ids, service owner context, and adding an entry to
-  «база знаний» after confirmation.
-- A dislike/negative feedback vote means the match should not be treated as a
-  recommendation for the same signature.
+- `origin=feedback_exact`: самый сильный сигнал, потому что пользователь уже
+  подтверждал эту exact issue signature. Всё равно проверь, что текущий
+  step/message не противоречит совпадению.
+- Score `>= 0.75`: вероятная known issue, но всё равно проверь согласованность
+  step path и representative message.
+- Score `0.40..0.74`: частичное совпадение; подавай как гипотезу, а не как
+  подтверждённую причину.
+- Score `< 0.40` или отсутствие совпадения: вероятно unknown/new issue;
+  рекомендуй собрать logs, correlation ids, контекст service owner и после
+  подтверждения добавить запись в базу знаний.
+- Dislike/negative feedback vote означает, что match не стоит трактовать как
+  рекомендацию для той же signature.
 
-## LLM Signals
+## LLM-Сигналы
 
-- Surface cluster-level `llm_error` values explicitly.
-- Use `llm_verdict` for root-cause hypotheses and recommended actions, but do not paste long verdicts verbatim.
-- If there is a launch-level summary, fold it into the executive summary and compare it with the largest clusters.
-- If LLM is absent, do not imply an AI conclusion exists; rely on message, log,
-  trace and база знаний signals.
+- Явно показывай значения `llm_error` на уровне кластера.
+- Используй `llm_verdict` для гипотез о root cause и recommended actions, но не
+  вставляй длинные вердикты дословно.
+- Если есть launch-level summary, включи её в краткий итог и сопоставь с
+  крупнейшими кластерами.
+- Если LLM отсутствует, не создавай впечатление, что AI-вывод есть; опирайся на
+  message, log, trace и сигналы базы знаний.
 
-## Merge And Split Suspicion
+## Подозрения на merge и split
 
-- Potential merge: similar labels, similar representative messages, same step
-  path, same correlation hint, or visibly same service/error code across
-  multiple clusters.
-- Potential split: one large cluster with mixed step paths, mixed exception categories, or a vague label covering visibly different messages.
-- Suggest merge/split review only as an action, not as a fact, unless the data is very strong.
+- Potential merge: похожие labels, похожие representative messages, тот же step
+  path, тот же correlation hint или явно один service/error code в нескольких
+  кластерах.
+- Potential split: один большой кластер со смешанными step paths, разными
+  exception categories или расплывчатым label для явно разных messages.
+- Предлагай review merge/split как действие, а не как факт, если данные не
+  выглядят очень сильными.
 
-## Root Cause Categories
+## Категории root cause
 
-- `test`: assertions, waits, test data setup inside the test, selector drift, test framework failures.
-- `service`: API 4xx/5xx, backend validation, downstream timeouts, business logic regressions.
-- `env`: infrastructure, network, unavailable dependencies, deployment/configuration issues.
-- `data`: missing or stale fixtures, account state, duplicate entities, inconsistent reference data.
+- `test`: assertions, waits, test data setup внутри теста, selector drift,
+  failures тестового framework.
+- `service`: API 4xx/5xx, backend validation, downstream timeouts, regressions в
+  business logic.
+- `env`: infrastructure, network, недоступные dependencies, проблемы
+  deployment/configuration.
+- `data`: отсутствующие или устаревшие fixtures, account state, duplicate
+  entities, inconsistent reference data.
 
-## Recommended Output
+## Рекомендуемый вывод
 
-- Keep the answer compact and decision-oriented.
+- Держи ответ компактным и decision-oriented.
 - Для каждого важного кластера укажи: label, size, strongest evidence, уверенность совпадения с базой знаний, likely category, next action.
-- Prefer concrete next steps over restating raw JSON.
+- Предпочитай конкретные next steps пересказу raw JSON.

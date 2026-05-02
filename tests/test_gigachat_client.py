@@ -14,7 +14,7 @@ from alla.models.llm import TokenUsage
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Вспомогательные функции
 # ---------------------------------------------------------------------------
 
 
@@ -103,7 +103,7 @@ async def test_chat_passes_system_and_user_messages() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_returns_token_usage() -> None:
-    """Token usage извлекается из ответа GigaChat."""
+    """Статистика токенов извлекается из ответа GigaChat."""
     mock_giga = MagicMock()
     mock_giga.chat.return_value = _MockResponse(
         choices=[_MockChoice(_MockMessage("ok"))],
@@ -259,7 +259,7 @@ async def test_chat_non_string_content_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Context manager
+# Контекстный менеджер
 # ---------------------------------------------------------------------------
 
 
@@ -362,7 +362,7 @@ def test_extract_retry_after_invalid_value() -> None:
 
 
 # ---------------------------------------------------------------------------
-# chat — Retry-After header respected
+# chat — заголовок Retry-After учитывается
 # ---------------------------------------------------------------------------
 
 
@@ -397,7 +397,7 @@ async def test_chat_respects_retry_after_header(monkeypatch: pytest.MonkeyPatch)
 
     assert result.text == "ok"
     assert call_count == 2
-    # backoff would be 0.01s, but Retry-After says 5s → delay must be close to 5s
+    # backoff был бы 0.01s, но Retry-After задаёт 5s → delay должен быть близок к 5s
     assert len(sleep_calls) == 1
     assert sleep_calls[0] == pytest.approx(5.0, abs=0.01)
 
@@ -432,7 +432,7 @@ async def test_chat_uses_backoff_when_retry_after_smaller(monkeypatch: pytest.Mo
     result = await client.chat("sys", "user")
 
     assert result.text == "ok"
-    # backoff=0.01 > retry_after=0 → use backoff
+    # backoff=0.01 > retry_after=0 → используем backoff
     assert sleep_calls[0] == pytest.approx(0.01, abs=0.001)
 
 

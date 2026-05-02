@@ -16,7 +16,7 @@
    - иначе взвешенная комбинация message/trace/log
    - если message у одного/обоих пустой, fallback на trace (+log)
    - если лога нет у одного/обоих тестов, его вес перераспределяется на message
-5. Agglomerative clustering (complete linkage) по итоговой distance.
+5. Агломеративная кластеризация (complete linkage) по итоговой distance.
 """
 
 import hashlib
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Конфигурация
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -75,17 +75,17 @@ class ClusteringConfig:
 
 
 # ---------------------------------------------------------------------------
-# Text normalization (delegated to alla.utils.text_normalization)
+# Нормализация текста (делегирована alla.utils.text_normalization)
 # ---------------------------------------------------------------------------
 
 _normalize_text = normalize_text
 
 # ---------------------------------------------------------------------------
-# Assertion value extraction
+# Извлечение actual-значения из assertion
 # ---------------------------------------------------------------------------
 
-# Matches: "but was: <Y>", "but was: [Y]", "but was: \"Y\"", "but was:<Y>"
-# and Russian: "но было: <Y>", "но было: [Y]", "но было: \"Y\""
+# Матчит: "but was: <Y>", "but was: [Y]", "but was: \"Y\"", "but was:<Y>"
+# и русский вариант: "но было: <Y>", "но было: [Y]", "но было: \"Y\""
 _ASSERTION_ACTUAL_RE = re.compile(
     r"(?:but\s+was|но\s+было)\s*:?\s*"
     r"(?:<([^>]+)>|\[([^\]]+)\]|\"([^\"]+)\")",
@@ -106,7 +106,7 @@ def _extract_assertion_actual(message: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Correlation-only HTTP section filter
+# Фильтр HTTP-секций только с корреляционными ID
 # ---------------------------------------------------------------------------
 
 _LOG_SECTION_HEADER_RE = re.compile(
@@ -139,7 +139,7 @@ def _strip_correlation_only_http_sections(log_snippet: str) -> str:
             # Проверить: все ли непустые строки тела — Корреляция:
             body_lines = [line for line in body.splitlines() if line.strip()]
             if body_lines and all(line.strip().startswith("Корреляция:") for line in body_lines):
-                continue  # correlation-only → убрать
+                continue  # только корреляция → убрать
 
         kept_parts.append(f"{header_line}\n{body}")
 
@@ -261,7 +261,7 @@ def _select_cluster_correlation(
 
 
 # ---------------------------------------------------------------------------
-# ClusteringService
+# Сервис ClusteringService
 # ---------------------------------------------------------------------------
 
 class ClusteringService:
@@ -314,7 +314,7 @@ class ClusteringService:
 
         # 2. Разделить на тесты с текстом и без (в любом канале)
         # Лог считается «текстом» только когда log_weight > 0: при явном opt-out
-        # (ALLURE_LOGS_CLUSTERING_WEIGHT=0) log-only тест становится singleton.
+        # (ALLURE_LOGS_CLUSTERING_WEIGHT=0) тест только с log становится singleton.
         log_weight_positive = self._config.log_similarity_weight > 0
         has_text_indices: list[int] = []
         empty_indices: list[int] = []
@@ -328,7 +328,7 @@ class ClusteringService:
                 empty_indices.append(i)
 
         # 3. Кластеризация тестов с текстом
-        cluster_groups: dict[int, list[int]] = {}  # label -> [failure indices]
+        cluster_groups: dict[int, list[int]] = {}  # label -> индексы падений
 
         if len(has_text_indices) == 0:
             pass
@@ -355,7 +355,7 @@ class ClusteringService:
             cluster = self._build_cluster(group_indices, failures)
             result_clusters.append(cluster)
 
-        # Singletons — тесты без текста
+        # Singleton-кластеры — тесты без текста
         for idx in empty_indices:
             cluster = self._build_cluster([idx], failures)
             result_clusters.append(cluster)
@@ -380,7 +380,7 @@ class ClusteringService:
             unclustered_count=unclustered,
         )
 
-    # --- Clustering ---
+    # --- Кластеризация ---
 
     def _cluster_texts(
         self,
@@ -391,7 +391,7 @@ class ClusteringService:
         *,
         assertion_actuals: list[str | None] | None = None,
     ) -> list[int]:
-        """Message-first TF-IDF + agglomerative clustering.
+        """Message-first TF-IDF + агломеративная кластеризация.
 
         Возвращает список меток кластеров (одна метка на документ).
         """
@@ -437,7 +437,7 @@ class ClusteringService:
 
         for i in range(n):
             for j in range(i + 1, n):
-                # Assertion value gate: разные actual → разные корневые причины.
+                # Gate по actual-значению assertion: разные actual → разные корневые причины.
                 if (
                     assertion_actuals is not None
                     and assertion_actuals[i] is not None
@@ -449,9 +449,9 @@ class ClusteringService:
                     continue
 
                 if has_message[i] and has_message[j]:
-                    # Log override: если лог-кластеризация включена (weight > 0),
+                    # Override по log: если лог-кластеризация включена (weight > 0),
                     # оба теста имеют лог и лог-similarity выше порога —
-                    # обойти message gate. Одинаковый application log при
+                    # обойти gate по message. Одинаковый application log при
                     # разных assertion → скорее всего одна проблема.
                     # Если log_weight == 0 (ALLURE_LOGS_CLUSTERING_WEIGHT=0),
                     # override не срабатывает — явный opt-out уважается.
@@ -466,11 +466,11 @@ class ClusteringService:
                         message_sim[i, j] < self._config.similarity_threshold
                         and not log_overrides_gate
                     ):
-                        # Message gate: если сообщения различаются ниже порога
+                        # Gate по message: если сообщения различаются ниже порога
                         # и лог не override'ит — пара не может быть склеена.
                         pair_sim = message_sim[i, j]
                     elif log_overrides_gate and message_sim[i, j] < self._config.similarity_threshold:
-                        # Log override: message различаются, но лог одинаковый.
+                        # Override по log: message различаются, но лог одинаковый.
                         # Лог становится доминирующим каналом (0.6 log + 0.2 msg + 0.2 trace).
                         assert log_sim is not None
                         log_pair_sim = float(log_sim[i, j])
@@ -523,7 +523,7 @@ class ClusteringService:
         np.clip(final_sim, 0.0, 1.0, out=final_sim)
         dist_matrix = 1.0 - final_sim
 
-        # Condensed form для scipy
+        # Сжатая форма для scipy
         condensed = np.zeros(n * (n - 1) // 2, dtype=np.float64)
         idx = 0
         for i in range(n):
@@ -531,7 +531,7 @@ class ClusteringService:
                 condensed[idx] = dist_matrix[i, j]
                 idx += 1
 
-        # Agglomerative clustering (complete linkage)
+        # Агломеративная кластеризация (complete linkage)
         linkage_matrix = linkage(condensed, method="complete")
         labels = fcluster(
             linkage_matrix,
@@ -542,7 +542,7 @@ class ClusteringService:
         return [int(label) for label in labels.tolist()]
 
     def _pairwise_similarity(self, documents: list[str]) -> np.ndarray:
-        """Cosine similarity matrix по списку документов.
+        """Матрица cosine similarity по списку документов.
 
         Пустые документы не участвуют в векторизации и имеют similarity=0
         с любыми другими документами (кроме диагонали=1).
@@ -612,7 +612,7 @@ class ClusteringService:
             final_max,
         )
 
-    # --- Cluster building ---
+    # --- Построение кластера ---
 
     def _build_cluster(
         self,
@@ -694,7 +694,7 @@ class ClusteringService:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Вспомогательные функции
 # ---------------------------------------------------------------------------
 
 

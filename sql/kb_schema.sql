@@ -1,9 +1,9 @@
--- alla Knowledge Base — PostgreSQL DDL
+-- alla база знаний — PostgreSQL DDL
 -- Применить: psql -U <user> -d <dbname> -f sql/kb_schema.sql
 
 CREATE SCHEMA IF NOT EXISTS alla;
 
-COMMENT ON SCHEMA alla IS 'alla test-failure triage — knowledge base';
+COMMENT ON SCHEMA alla IS 'alla test-failure triage — база знаний';
 
 -- ---------------------------------------------------------------------------
 -- Тип-enum для категории первопричины.

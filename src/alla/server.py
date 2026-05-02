@@ -37,7 +37,7 @@ ResultT = TypeVar("ResultT")
 
 
 class _McpNoSlashRedirectMiddleware:
-    """Route /mcp to the mounted MCP app without exposing a 307 redirect."""
+    """Провести /mcp в смонтированное MCP-приложение без видимого 307 redirect."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -125,7 +125,7 @@ def _reset_lazy_stores_and_caches() -> None:
     _state.project_names_expires_at = 0.0
 
 
-# --- Lifespan ---
+# --- Жизненный цикл ---
 
 
 @asynccontextmanager
@@ -178,7 +178,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     await client.close()
 
 
-# --- FastAPI ---
+# --- FastAPI-приложение ---
 
 
 app = FastAPI(
@@ -226,12 +226,12 @@ def _build_csp_headers() -> dict[str, str]:
 
 
 def _settings() -> "Settings":
-    """Return initialized server settings."""
+    """Вернуть инициализированные настройки сервера."""
     return cast("Settings", _state.settings)
 
 
 def _effective_settings(push_to_testops: bool | None = None) -> "Settings":
-    """Return settings, optionally overriding push_to_testops per request."""
+    """Вернуть настройки, опционально переопределив push_to_testops на запрос."""
     settings = _settings()
     if push_to_testops is None:
         return settings
@@ -243,7 +243,7 @@ async def _run_analysis_or_raise(
     *,
     push_to_testops: bool | None = None,
 ) -> "AnalysisResult":
-    """Run orchestrator analysis and map domain errors to HTTP errors."""
+    """Запустить анализ orchestrator и смэппить доменные ошибки в HTTP-ошибки."""
     from alla.exceptions import (
         AllureApiError,
         AuthenticationError,
@@ -516,7 +516,7 @@ async def delete_comments(launch_id: int, dry_run: bool = False) -> dict[str, An
     }
 
 
-# --- KB Feedback endpoints ---
+# --- Эндпоинты KB feedback ---
 
 
 def _get_feedback_store() -> "PostgresFeedbackStore | None":
@@ -856,7 +856,7 @@ def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
     return {"votes": votes}
 
 
-# --- Dashboard ---
+# --- Дашборд ---
 
 
 @app.get("/api/v1/dashboard/stats")
@@ -902,7 +902,7 @@ async def dashboard_stats(days: int = 30) -> dict[str, Any]:
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page() -> HTMLResponse:
-    """Self-contained HTML-страница дашборда использования."""
+    """Самодостаточная HTML-страница дашборда использования."""
     from alla.dashboard.html_view import render_dashboard_html_shell
 
     return HTMLResponse(content=render_dashboard_html_shell(), headers=_build_csp_headers())

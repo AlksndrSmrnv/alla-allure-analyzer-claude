@@ -1,4 +1,4 @@
--- alla Knowledge Base — начальное наполнение таблицы
+-- alla база знаний — начальное наполнение таблицы
 -- Применить после kb_schema.sql:
 --   psql -U <user> -d <dbname> -f sql/kb_seed.sql
 --
