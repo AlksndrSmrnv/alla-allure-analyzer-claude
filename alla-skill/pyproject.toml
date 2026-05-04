@@ -1,0 +1,11 @@
+[project]
+name = "alla-skill"
+version = "0.1.0"
+description = "Skill scripts for Allure TestOps failure triage (Claude Code, qwen CLI, codex CLI)"
+requires-python = ">=3.11"
+# Все зависимости приходят из корневого пакета alla:
+#   pip install -e ..
+# Скрипты импортируют alla.services.*, alla.knowledge.* и т.д.
+dependencies = [
+    "alla",
+]
