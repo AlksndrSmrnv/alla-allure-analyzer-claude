@@ -1,4 +1,4 @@
-"""Behavioral tests for LLM service contracts."""
+"""Поведенческие тесты контрактов LLM-сервиса."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _chat_response(text: str = "analysis", prompt: int = 10, completion: int = 5
 
 
 def test_build_cluster_prompt_smoke_and_truncation() -> None:
-    """Prompt keeps core cluster context and truncates oversized message text."""
+    """Prompt сохраняет основной контекст кластера и обрезает слишком длинный message."""
     cluster = make_failure_cluster(
         label="Gateway timeout",
         member_count=3,
@@ -52,7 +52,7 @@ def test_build_cluster_prompt_smoke_and_truncation() -> None:
 
 
 def test_build_cluster_prompt_includes_kb_provenance_context() -> None:
-    """Prompt explains when KB match came from combined message/trace/log data."""
+    """Prompt объясняет, что KB match построен из объединённых message/trace/log."""
     cluster = make_failure_cluster(
         example_message="AssertionError: expected 200 but got 500",
     )
@@ -70,7 +70,7 @@ def test_build_cluster_prompt_includes_kb_provenance_context() -> None:
 
 
 def test_build_launch_summary_prompt_smoke() -> None:
-    """Launch summary prompt includes cluster info and asks for prioritized fixes."""
+    """Launch summary prompt включает данные кластеров и просит приоритизировать fixes."""
     cluster = make_failure_cluster(label="Gateway timeout", member_count=3)
     clustering_report = _make_report(cluster)
     triage_report = make_triage_report(total_results=10, failed_count=3)
@@ -84,7 +84,7 @@ def test_build_launch_summary_prompt_smoke() -> None:
 
 @pytest.mark.asyncio
 async def test_analyze_clusters_skips_without_error_text() -> None:
-    """Cluster with no message/trace/log is skipped without calling LLM."""
+    """Кластер без message/trace/log пропускается без вызова LLM."""
 
     class _Client:
         async def chat(self, system_prompt, user_prompt):
@@ -105,7 +105,7 @@ async def test_analyze_clusters_skips_without_error_text() -> None:
 
 @pytest.mark.asyncio
 async def test_analyze_clusters_success_uses_representative_log() -> None:
-    """Representative test log is included in the LLM request."""
+    """Лог representative test включается в LLM-запрос."""
     captured_prompts: list[str] = []
 
     class _Client:
@@ -138,7 +138,7 @@ async def test_analyze_clusters_success_uses_representative_log() -> None:
 
 @pytest.mark.asyncio
 async def test_analyze_clusters_handles_llm_error() -> None:
-    """Per-cluster LLM failures are captured instead of aborting the batch."""
+    """Per-cluster LLM failures сохраняются, не прерывая весь batch."""
 
     class _Client:
         async def chat(self, system_prompt, user_prompt):
@@ -153,13 +153,13 @@ async def test_analyze_clusters_handles_llm_error() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Token usage aggregation
+# Агрегация token usage
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_analyze_clusters_aggregates_token_usage() -> None:
-    """Token usage суммируется по всем успешно проанализированным кластерам."""
+    """Статистика токенов суммируется по всем успешно проанализированным кластерам."""
     call_count = 0
 
     class _Client:
@@ -208,7 +208,7 @@ async def test_generate_launch_summary_includes_token_usage() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Rate limiter
+# Ограничитель частоты запросов
 # ---------------------------------------------------------------------------
 
 
@@ -237,7 +237,7 @@ async def test_rate_limiter_enforces_delay() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Push LLM results
+# Push LLM-результатов
 # ---------------------------------------------------------------------------
 
 
@@ -296,7 +296,7 @@ def _make_push_inputs(
 
 @pytest.mark.asyncio
 async def test_push_llm_results_deduplicates_by_test_case_id() -> None:
-    """Two failed results sharing one test_case_id produce one comment."""
+    """Два failed result с одним test_case_id дают один комментарий."""
     posted: list[int] = []
 
     class _Updater:
@@ -316,7 +316,7 @@ async def test_push_llm_results_deduplicates_by_test_case_id() -> None:
 
 @pytest.mark.asyncio
 async def test_push_llm_results_is_error_resilient() -> None:
-    """One failed post_comment does not block the rest."""
+    """Один упавший post_comment не блокирует остальные."""
 
     class _Updater:
         async def post_comment(self, test_case_id, body):

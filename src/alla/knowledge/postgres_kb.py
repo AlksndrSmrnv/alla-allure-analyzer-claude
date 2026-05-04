@@ -137,7 +137,7 @@ class PostgresKnowledgeBase:
         )
 
     # ------------------------------------------------------------------
-    # KnowledgeBaseProvider Protocol
+    # Protocol KnowledgeBaseProvider
     # ------------------------------------------------------------------
 
     def search_by_error(

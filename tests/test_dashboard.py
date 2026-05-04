@@ -17,7 +17,7 @@ from alla.models.testops import LaunchResponse
 
 
 # ---------------------------------------------------------------------------
-# helpers / fixtures
+# Вспомогательные функции / fixtures
 # ---------------------------------------------------------------------------
 
 
@@ -109,7 +109,7 @@ class _StubStatsStore:
 
 
 class _ThreadRecordingStatsStore(_StubStatsStore):
-    """Stats store, который запоминает thread id каждого sync DB-вызова."""
+    """Хранилище статистики, которое запоминает thread id каждого sync DB-вызова."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -199,7 +199,7 @@ def test_dashboard_sql_aggregates_llm_tokens_without_old_reports() -> None:
 
 
 def test_dashboard_html_no_external_urls() -> None:
-    """HTML-страница self-contained: ни одной http(s)://-ссылки кроме data:image."""
+    """HTML-страница самодостаточна: ни одной http(s)://-ссылки кроме data:image."""
     html = render_dashboard_html_shell()
     assert html.startswith("<!DOCTYPE html>")
     assert "<style>" in html and "<script>" in html
@@ -230,7 +230,7 @@ def test_dashboard_html_has_required_elements() -> None:
 
 
 def test_dashboard_html_top5_uses_russian_knowledge_base_copy() -> None:
-    """User-facing Top-5 copy называет базу знаний без KB-аббревиатуры."""
+    """Пользовательский Top-5 текст называет базу знаний без KB-аббревиатуры."""
     html = render_dashboard_html_shell()
     assert "KB-записей" not in html
     assert "записей в базе знаний" in html
@@ -242,7 +242,7 @@ def test_dashboard_html_top5_uses_russian_knowledge_base_copy() -> None:
 
 
 def test_lifespan_reset_clears_dashboard_store_and_project_names_cache() -> None:
-    """Lifespan reset должен сбрасывать dashboard store и TTL-кэш имён."""
+    """Сброс lifespan должен сбрасывать dashboard store и TTL-кэш имён."""
     from alla.server import _reset_lazy_stores_and_caches, _state
 
     sentinel = object()
@@ -337,7 +337,7 @@ async def test_dashboard_stats_uses_testops_names(_http_client, monkeypatch) -> 
 
 @pytest.mark.asyncio
 async def test_dashboard_stats_reads_db_in_threadpool(_http_client, monkeypatch) -> None:
-    """Sync stats store вызовы не должны выполняться на event loop thread."""
+    """Синхронные вызовы stats store не должны выполняться на thread event loop."""
     from alla.server import _state
 
     settings = _DashboardSettings()

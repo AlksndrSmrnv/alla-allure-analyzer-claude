@@ -547,7 +547,7 @@ def test_feedback_signature_ignores_http_sections_in_log_anchor() -> None:
 
 
 def test_feedback_signature_uses_matched_error_line_for_short_message() -> None:
-    """Short-case должен различать одинаковый summary с разными error lines."""
+    """Короткий случай должен различать одинаковый summary с разными error lines."""
     cluster = FailureCluster(
         cluster_id="c-short-matched",
         label="Gateway timeout",
@@ -665,7 +665,7 @@ def test_feedback_signature_is_stable_when_representative_log_falls_back_to_memb
 
 
 def test_feedback_signature_fallback_ignores_richer_member_log_for_same_issue() -> None:
-    """Более подробный member-log не должен менять fallback hash при том же core issue."""
+    """Более подробный member-log не должен менять fallback hash при той же core issue."""
     base_cluster = FailureCluster(
         cluster_id="c-fallback-rich-base",
         label="Gateway timeout",
@@ -952,7 +952,7 @@ def test_feedback_signature_preserves_long_numeric_codes_in_log_anchor() -> None
 
 
 def test_feedback_signature_preserves_embedded_numeric_codes_in_log_anchor() -> None:
-    """Embedded codes вроде ORA-12541 и ORA-12514 не должны схлопываться."""
+    """Встроенные codes вроде ORA-12541 и ORA-12514 не должны схлопываться."""
     cluster = FailureCluster(
         cluster_id="c-ora-code",
         label="Oracle error",

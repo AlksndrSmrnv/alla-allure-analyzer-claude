@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import httpx
@@ -29,7 +29,7 @@ from alla.server import _McpNoSlashRedirectMiddleware, _make_slug, app
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Вспомогательные функции
 # ---------------------------------------------------------------------------
 
 
@@ -70,6 +70,7 @@ class _MockClient:
         self._comments_by_tc = comments_by_tc or {}
         self._raise_on_get_all = raise_on_get_all
         self.delete_calls: list[int] = []
+        self.patch_launch_link_calls: list[tuple[int, str, str]] = []
 
     async def get_all_test_results_for_launch(self, launch_id: int) -> list[ResultResponse]:
         if self._raise_on_get_all:
@@ -84,6 +85,9 @@ class _MockClient:
 
     async def post_comment(self, test_case_id: int, body: str) -> None:
         pass
+
+    async def patch_launch_links(self, launch_id: int, name: str, url: str) -> None:
+        self.patch_launch_link_calls.append((launch_id, name, url))
 
 
 class _NonCommentClient:
@@ -100,12 +104,24 @@ def _setup_state(client: Any = None, settings: Any = None) -> None:
     _state.client = client or _MockClient()
     _state.settings = settings or _DummySettings()
     _state.auth = None
+    _state.report_store = None
 
 
 @dataclass
 class _DummySettings:
     """Минимальный Settings-заглушка для сервера."""
     detail_concurrency: int = 5
+    push_to_testops: bool = True
+    reports_dir: str = ""
+    report_url: str = ""
+    server_external_url: str = ""
+    report_link_name: str = "Alla report"
+    endpoint: str = "https://allure.example"
+    kb_active: bool = False
+    feedback_server_url: str = ""
+
+    def model_copy(self, *, update: dict[str, Any] | None = None) -> "_DummySettings":
+        return replace(self, **(update or {}))
 
 
 @pytest.fixture
@@ -133,7 +149,7 @@ async def test_health_returns_ok(_http_client) -> None:
 
 
 def test_mcp_mount_exposes_transport_at_documented_path() -> None:
-    """Mounted MCP transport is available at /mcp, not /mcp/mcp."""
+    """Смонтированный MCP transport доступен на /mcp, а не /mcp/mcp."""
     mount = next(route for route in app.routes if getattr(route, "path", None) == "/mcp")
     inner_paths = {getattr(route, "path", None) for route in mount.app.routes}
 
@@ -143,7 +159,7 @@ def test_mcp_mount_exposes_transport_at_documented_path() -> None:
 
 @pytest.mark.asyncio
 async def test_mcp_exact_path_is_rewritten_without_redirect() -> None:
-    """POST /mcp reaches the mounted app as /mcp/ without a client-visible 307."""
+    """POST /mcp доходит до mounted app как /mcp/ без видимого клиенту 307."""
     seen_scope: dict[str, Any] = {}
 
     async def downstream(scope, receive, send) -> None:
@@ -211,8 +227,44 @@ async def test_analyze_includes_clustering(monkeypatch, _http_client) -> None:
     assert data["clustering_report"]["cluster_count"] == 2
 
 
+@pytest.mark.asyncio
+async def test_analyze_html_push_false_does_not_attach_report_link(
+    monkeypatch,
+    _http_client,
+) -> None:
+    """?push_to_testops=false запрещает запись ссылки на отчёт в TestOps."""
+    mock_client = _MockClient()
+    _setup_state(
+        client=mock_client,
+        settings=_DummySettings(
+            push_to_testops=True,
+            report_url="https://jenkins.example/alla-report.html",
+        ),
+    )
+    captured_settings: dict[str, Any] = {}
+
+    async def mock_analyze(launch_id, client, settings, *, updater=None):
+        captured_settings["push_to_testops"] = settings.push_to_testops
+        return _make_analysis_result()
+
+    monkeypatch.setattr("alla.orchestrator.analyze_launch", mock_analyze)
+    monkeypatch.setattr(
+        "alla.server.build_html_report_content",
+        lambda result, *, settings: "<html><body>report</body></html>",
+    )
+    monkeypatch.setattr("alla.server.persist_generated_report", lambda **kwargs: None)
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/analyze/123/html?push_to_testops=false")
+
+    assert resp.status_code == 200
+    assert captured_settings["push_to_testops"] is False
+    assert resp.headers["X-Report-URL"] == "https://jenkins.example/alla-report.html"
+    assert mock_client.patch_launch_link_calls == []
+
+
 # ---------------------------------------------------------------------------
-# POST /api/v1/analyze/{launch_id} — error mappings
+# POST /api/v1/analyze/{launch_id} — маппинг ошибок
 # ---------------------------------------------------------------------------
 
 
@@ -466,7 +518,7 @@ async def test_submit_feedback_uses_exact_signature_payload(monkeypatch, _http_c
 
 @pytest.mark.asyncio
 async def test_resolve_feedback_uses_exact_signature_hash(monkeypatch, _http_client) -> None:
-    """Resolve endpoint работает только по issue_signature_hash/version."""
+    """Resolve-эндпоинт работает только по issue_signature_hash/version."""
     captured: dict[str, Any] = {}
 
     class _Store:
@@ -693,7 +745,7 @@ def test_calculate_llm_token_usage(
     llm_launch_summary: LLMLaunchSummary | None,
     expected: TokenUsage | None,
 ) -> None:
-    """Token usage для дашборда суммирует LLM stage и не считает skipped LLM."""
+    """Статистика токенов для дашборда суммирует LLM stage и не считает skipped LLM."""
     from alla.app_support import calculate_llm_token_usage
 
     result = _make_analysis_result(

@@ -21,7 +21,7 @@ from alla.utils.log_utils import format_correlation_pairs
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Content type detection and text decoding
+# Определение content type и декодирование текста
 # ---------------------------------------------------------------------------
 
 try:
@@ -203,7 +203,7 @@ def _extract_text_http_info(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# JSON scanning for HTTP info
+# Сканирование JSON для HTTP-информации
 # ---------------------------------------------------------------------------
 
 _JSON_CORR_KEYS = frozenset({"rquid", "operuid", "requestid", "correlationid", "traceid"})
@@ -362,7 +362,7 @@ _PROCESSABLE_MIME_EXACT = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# ERROR-block extraction
+# Извлечение ERROR-блоков
 # ---------------------------------------------------------------------------
 
 # Паттерн для определения начала новой лог-записи (строка с датой/временем).
@@ -409,7 +409,7 @@ def _extract_error_blocks(log_text: str) -> str:
                 current_block = []
                 in_error_block = False
             else:
-                # Continuation (stack trace) или ещё один [ERROR] без timestamp.
+                # Продолжение (stack trace) или ещё один [ERROR] без timestamp.
                 current_block.append(line)
 
     # Финальный блок
@@ -420,7 +420,7 @@ def _extract_error_blocks(log_text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LogExtractionService
+# Сервис LogExtractionService
 # ---------------------------------------------------------------------------
 
 class LogExtractionService:

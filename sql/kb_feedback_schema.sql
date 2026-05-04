@@ -1,11 +1,11 @@
--- alla Knowledge Base Feedback — PostgreSQL DDL
+-- alla feedback базы знаний — PostgreSQL DDL
 -- Применить ПОСЛЕ kb_schema.sql:
 --   psql -U <user> -d <dbname> -f sql/kb_feedback_schema.sql
 
 -- ---------------------------------------------------------------------------
 -- Таблица обратной связи: like / dislike на KB-совпадения из HTML-отчёта.
 --
--- Exact memory: связывает KB-запись (entry_id) с issue_signature_hash.
+-- Exact memory связывает KB-запись (entry_id) с issue_signature_hash.
 -- Один голос на пару (entry_id, issue_signature_hash). Повторный голос — UPSERT.
 -- Старое поле error_text сохраняется только как audit-текст для отладки.
 -- ---------------------------------------------------------------------------
@@ -18,13 +18,13 @@ CREATE TABLE IF NOT EXISTS alla.kb_feedback (
                                    REFERENCES alla.kb_entry(entry_id)
                                    ON DELETE CASCADE,
 
-    -- Audit-текст exact issue signature. Не участвует в matching.
+    -- Аудит-текст exact issue signature. Не участвует в matching.
     error_text        TEXT         NOT NULL,
 
-    -- Legacy hash audit_text. Оставлен для совместимости/аудита.
+    -- Legacy-хэш audit_text. Оставлен для совместимости/аудита.
     error_text_hash   TEXT         GENERATED ALWAYS AS (md5(error_text)) STORED,
 
-    -- Stable signature текущего issue, по которой работает exact memory.
+    -- Стабильная signature текущего issue, по которой работает exact memory.
     issue_signature_hash     TEXT,
     issue_signature_version  INTEGER      NOT NULL DEFAULT 1,
     issue_signature_payload  JSONB,

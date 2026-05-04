@@ -537,7 +537,7 @@ def test_cluster_reads_correlation_from_old_http_log_sections() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cluster-level тесты: assertion gate и HTTP-фильтр
+# Тесты уровня кластеров: assertion gate и HTTP-фильтр
 # ---------------------------------------------------------------------------
 
 

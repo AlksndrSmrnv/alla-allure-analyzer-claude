@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run read-only Alla launch analysis through alla-server REST endpoints.
+"""Запустить read-only анализ launch Alla через REST-эндпоинты alla-server.
 
-This helper intentionally uses only Python's standard library. It intentionally
-does not read environment variables: edit ALLA_SERVER_URL below.
+Этот helper намеренно использует только стандартную библиотеку Python. Он
+намеренно не читает переменные окружения: отредактируйте ALLA_SERVER_URL ниже.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ MAX_MATCHES_PER_CLUSTER = 3
 
 
 class AllaRequestError(RuntimeError):
-    """HTTP or network failure returned in a structured form."""
+    """HTTP- или сетевая ошибка, возвращаемая в структурированном виде."""
 
     def __init__(
         self,
@@ -61,7 +61,7 @@ def _ensure_configured() -> str:
     base_url = ALLA_SERVER_URL.strip().rstrip("/")
     if not base_url or "TODO-ALLA-SERVER" in base_url:
         raise AllaRequestError(
-            "ALLA_SERVER_URL is still a placeholder. Edit scripts/run_alla_analysis.py."
+            "ALLA_SERVER_URL всё ещё placeholder. Отредактируйте scripts/run_alla_analysis.py."
         )
     return base_url
 
@@ -278,6 +278,7 @@ def _representative_test_context(
 def _compact_analysis(
     raw: dict[str, Any],
     *,
+    base_url: str,
     health: dict[str, Any],
     html_report: dict[str, Any] | None,
 ) -> dict[str, Any]:
@@ -342,7 +343,7 @@ def _compact_analysis(
     payload: dict[str, Any] = {
         "ok": True,
         "server": {
-            "url": ALLA_SERVER_URL.rstrip("/"),
+            "url": base_url,
             "health": health,
         },
         "launch": {
@@ -384,20 +385,20 @@ def _compact_analysis(
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run read-only Alla analysis through alla-server REST API."
+        description="Запустить read-only анализ Alla через REST API alla-server."
     )
     launch = parser.add_mutually_exclusive_group(required=True)
-    launch.add_argument("--launch-id", type=int, help="Allure TestOps launch id.")
-    launch.add_argument("--launch-name", help="Exact Allure TestOps launch name.")
+    launch.add_argument("--launch-id", type=int, help="ID launch в Allure TestOps.")
+    launch.add_argument("--launch-name", help="Точное имя launch Allure TestOps.")
     parser.add_argument(
         "--project-id",
         type=int,
-        help="Project id used with --launch-name resolution.",
+        help="ID проекта для резолва --launch-name.",
     )
     parser.add_argument(
         "--html",
         action="store_true",
-        help="Also generate HTML through /api/v1/analyze/{launch_id}/html.",
+        help="Дополнительно сгенерировать HTML через /api/v1/analyze/{launch_id}/html.",
     )
     return parser.parse_args(argv)
 
@@ -413,7 +414,12 @@ def main(argv: list[str] | None = None) -> int:
             launch_id = _resolve_launch(base_url, args.launch_name, args.project_id)
         raw_analysis = _run_analysis(base_url, launch_id)
         html_report = _write_html_report(base_url, launch_id) if args.html else None
-        payload = _compact_analysis(raw_analysis, health=health, html_report=html_report)
+        payload = _compact_analysis(
+            raw_analysis,
+            base_url=base_url,
+            health=health,
+            html_report=html_report,
+        )
         payload["duration_seconds"] = round(time.time() - started_at, 3)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0

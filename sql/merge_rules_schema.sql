@@ -1,4 +1,4 @@
--- alla Cluster Merge Rules — PostgreSQL DDL
+-- alla правила объединения кластеров — PostgreSQL DDL
 -- Применить ПОСЛЕ kb_schema.sql:
 --   psql -U <user> -d <dbname> -f sql/merge_rules_schema.sql
 

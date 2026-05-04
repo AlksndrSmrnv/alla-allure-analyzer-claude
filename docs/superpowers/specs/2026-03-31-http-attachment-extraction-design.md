@@ -5,7 +5,13 @@
 
 ## Цель
 
-Alla сейчас извлекает только `[ERROR]`-блоки из текстовых логов (`text/plain`). Тест-фреймворки прикладывают также HTTP-запросы и ответы — JSON, XML, текстовые дампы — которые содержат корреляционные идентификаторы (`RqUID`, `OperUID`) и тело ошибочных ответов (4xx/5xx). Эти данные нужно включать в `log_snippet`, чтобы улучшить качество кластеризации и LLM-анализа.
+Исторически Alla извлекала только `[ERROR]`-блоки из текстовых логов
+(`text/plain`). Тест-фреймворки прикладывают также HTTP-запросы и ответы —
+JSON, XML, NDJSON и текстовые дампы — которые содержат корреляционные
+идентификаторы (`RqUID`, `OperUID`, `requestId`, `correlationId`, `traceId`) и
+тело ошибочных ответов (4xx/5xx). Эти данные включаются в `log_snippet` или
+`correlation_hint`, чтобы улучшить качество кластеризации, поиска в базе
+знаний и LLM-анализа.
 
 ## Ограничения
 
@@ -34,12 +40,12 @@ Alla сейчас извлекает только `[ERROR]`-блоки из те
 
 ```text
 bytes
-→ detect_content_type(content[:2048])   # python-magic
-→ if binary (не текст/json/xml): skip
-→ decode via charset-normalizer
-→ если json-like: stream parse via ijson → _scan_json_for_http_info
-→ если parse fail или не json: _extract_text_http_info (regex)
-→ если text/plain: также _extract_error_blocks (существующий)
+→ detect_content_type(content[:2048], fallback_mime)
+→ if binary (не text/json/xml): skip
+→ decode via charset-normalizer when text is needed
+→ если json-like: stream parse via ijson → _scan_json_for_http_signals
+→ если parse fail или не json: _collect_text_http_signals (regex)
+→ если text/plain: также _extract_error_blocks
 ```
 
 ### Два канала для одного аттачмента
@@ -47,28 +53,30 @@ bytes
 ```text
 for att in all_attachments:
     content_bytes = download(att)
-    detected_type = python-magic.from_buffer(content_bytes[:2048], mime=True)
+    detected_type = _detect_content_type(content_bytes, fallback_mime=att.mime)
 
     if text/plain:
-        → _extract_error_blocks(text)           # существующий лог-экстрактор
-        → _detect_and_extract_http(content_bytes)  # HTTP-детекция тоже
+        → _extract_error_blocks(text)
+        → _extract_http_artifacts(content_bytes, text=text)
     if json / xml:
-        → _detect_and_extract_http(content_bytes)  # только HTTP-экстрактор
-    if binary / unknown:
+        → _extract_http_artifacts(content_bytes)
+    if binary:
         → skip
 ```
 
 Для `text/plain` оба экстрактора запускаются безусловно — дамп HTTP-запроса может содержать и `[ERROR]`-строки, и корреляционные ID. Каждый возвращает пустую строку если ничего не нашёл; в `log_snippet` добавляются только непустые секции.
 
-### `_detect_and_extract_http(content_bytes) -> str`
+### `_extract_http_artifacts(content_bytes, content_type, text=None) -> tuple[str, str | None]`
 
 1. Попытаться потоковый парсинг через `ijson` (если тип json-like):
    - `ijson.items(BytesIO(content_bytes), "", multiple_values=True)`
-   - Для каждого top-level объекта → `_scan_json_for_http_info(obj)`
-2. Если `ijson` упал или тип не JSON → `_extract_text_http_info(text)` (regex).
-3. Возвращает пустую строку если ничего не найдено.
+   - Для каждого top-level объекта → `_scan_json_for_http_signals(obj)`
+2. Если `ijson` упал или тип не JSON → `_collect_text_http_signals(text)` (regex).
+3. Возвращает HTTP-секцию только при наличии error-signal: HTTP 4xx/5xx или
+   error/fault/cause/reason field.
+4. Возвращает `correlation_hint` отдельно даже если HTTP-секция не создана.
 
-### `_scan_json_for_http_info(obj) -> str`
+### `_scan_json_for_http_signals(obj) -> _HttpSignals`
 
 Рекурсивный обход JSON-дерева, глубина ≤ 10.
 
@@ -79,17 +87,25 @@ for att in all_attachments:
 только если значение — целое число 400–599.
 
 **Собирает поля ошибок** (ключи, case-insensitive):
-`error`, `errorcode`, `errormessage`, `fault`, `faultcode`, `message`, `description`, `reason`, `details`, `cause`
+`error`, `errorcode`, `errormessage`, `fault`, `faultcode`, `faultstring`,
+`cause`, `reason`
 
-Логика включения `message`: только если рядом (в том же объекте) есть признак ошибки — status 4xx/5xx или непустое поле `error`/`fault`. Иначе слишком много ложных срабатываний.
+**Собирает контекстные поля**:
+`message`, `description`, `details`
 
-### `_extract_text_http_info(text) -> str`
+Контекстные поля выводятся только если в итоговом сигнале есть error-signal.
+Корреляция без ошибки не попадает в `log_snippet`, но сохраняется в
+`FailedTestSummary.correlation_hint`.
+
+### `_collect_text_http_signals(text) -> _HttpSignals`
 
 Regex по сырому тексту — fallback для невалидного JSON и смешанных текстовых дампов:
 
-- Корреляция: `RqUID\s*[=:"]\s*(\S+)`, `OperUID\s*[=:"]\s*(\S+)` (case-insensitive)
+- Корреляция: JSON/KV/XML формы для `RqUID`, `OperUID`, `requestId`,
+  `correlationId`, `traceId` (case-insensitive)
 - HTTP статус: `HTTP/[12]\.\d\s+(4\d\d|5\d\d)\b`
-- Ошибки: `"error"\s*:\s*"([^"]{1,200})"`, `"message"\s*:\s*"([^"]{1,200})"`, `"fault[^"]*"\s*:\s*"([^"]{1,200})"`
+- Ошибки: JSON/XML поля `error*`, `fault*`, `cause`, `reason`
+- Контекст: JSON поля `message`, `description`, `details`
 
 ### Декодирование текста
 
@@ -114,7 +130,9 @@ error: Service unavailable
 message: Database connection failed
 ```
 
-Секция добавляется только если нашлось хотя бы одно из: correlation ID, HTTP статус ≥ 400, поле ошибки.
+HTTP-секция добавляется только если нашлось хотя бы одно из: HTTP статус ≥ 400
+или поле ошибки. Корреляция без ошибки сохраняется как отдельная подсказка
+кластера, но не создаёт самостоятельную HTTP-секцию.
 
 ## Конфигурация
 
@@ -135,7 +153,7 @@ message: Database connection failed
 | `src/alla/services/log_extraction_service.py` | content-based детекция, charset-normalizer decode, ijson parse, `_detect_and_extract_http`, `_scan_json_for_http_info`, `_extract_text_http_info` |
 | `src/alla/config.py` | Без изменений (HTTP_MAX_BYTES не нужен) |
 | `src/alla/orchestrator.py` | Без изменений |
-| `tests/services/test_log_extraction.py` | Новые unit-тесты для HTTP-экстракторов |
+| `tests/test_log_extraction_service.py` | Unit-тесты для HTTP-экстракторов |
 
 ## За рамками этого PR (бэклог)
 

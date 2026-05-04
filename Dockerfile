@@ -63,7 +63,6 @@ COPY --from=builder /opt/app-root/bin/alla* /opt/app-root/bin/
 
 WORKDIR /app
 
-COPY --chown=1001:0 knowledge_base/ knowledge_base/
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 
 # sed -i needs write access to the parent directory (creates a temp file).

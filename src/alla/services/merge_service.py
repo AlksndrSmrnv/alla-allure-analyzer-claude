@@ -1,4 +1,4 @@
-"""Post-clustering merge правил для кластеров падений."""
+"""Merge rules для кластеров падений после кластеризации."""
 
 from __future__ import annotations
 

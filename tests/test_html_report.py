@@ -1,4 +1,4 @@
-"""Behavioral tests for HTML report generation."""
+"""Поведенческие тесты генерации HTML-отчёта."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _extract_error_example_textarea(report_html: str) -> str:
 
 
 def test_guided_onboarding_uses_project_learning_flow() -> None:
-    """Guided mode shows project-learning actions instead of the normal KB block."""
+    """Guided mode показывает действия обучения проекта вместо обычного KB-блока."""
     cluster = make_failure_cluster(cluster_id="c1", label="Payment timeout", member_count=5)
     result = AnalysisResult(
         triage_report=make_triage_report(project_id=42),
@@ -72,7 +72,7 @@ def test_guided_onboarding_uses_project_learning_flow() -> None:
 
 
 def test_guided_onboarding_canonicalizes_error_example_prefill() -> None:
-    """KB create form uses normalized message+log without raw volatile values."""
+    """Форма создания KB-записи использует normalized message+log без raw volatile values."""
     cluster = make_failure_cluster(
         cluster_id="c3",
         representative_test_id=1,
@@ -125,7 +125,7 @@ def test_guided_onboarding_canonicalizes_error_example_prefill() -> None:
 
 
 def test_html_report_shows_kb_setup_callout() -> None:
-    """When KB is disabled, the report shows the setup callout."""
+    """Когда KB отключена, отчёт показывает setup callout."""
     result = AnalysisResult(
         triage_report=make_triage_report(),
         clustering_report=make_clustering_report(),
@@ -139,7 +139,7 @@ def test_html_report_shows_kb_setup_callout() -> None:
 
 
 def test_html_report_embeds_exact_feedback_payload() -> None:
-    """Exact feedback entries render their badge and payload bootstrap data."""
+    """Записи exact feedback рендерят badge и bootstrap payload."""
     cluster = make_failure_cluster(cluster_id="c-exact")
     result = AnalysisResult(
         triage_report=make_triage_report(project_id=42),
