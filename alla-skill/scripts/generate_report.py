@@ -15,8 +15,13 @@
   и ``generate_report``).
 * :func:`alla.app_support.build_html_report_content` — рендер HTML с тем
   же ``feedback_api_url`` и ``server_url``, что серверный путь.
-* :func:`alla.app_support.persist_generated_report` /
-  :func:`alla.app_support.resolve_report_url` — сохранение и URL.
+* :func:`alla.app_support.resolve_report_url` — построение публичного URL.
+
+Запись на диск/в БД выполняется здесь напрямую (а не через
+``persist_generated_report``), чтобы независимо отслеживать успех FS-
+и DB-шагов: если один упадёт, другой всё равно отработает, и в
+итоговом JSON ``saved_to_disk`` / ``saved_to_db`` отражают реальный,
+а не предполагаемый результат.
 """
 
 from __future__ import annotations
@@ -149,7 +154,6 @@ def main(argv: list[str] | None = None) -> None:
 
     from alla.app_support import (
         build_html_report_content,
-        persist_generated_report,
         resolve_report_url,
     )
     from alla.report.report_store import PostgresReportStore
@@ -185,40 +189,52 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     filename = _build_filename(skill_run)
-    report_store = None
-    saved_to_db = False
-    if args.save_to_db:
-        try:
-            report_store = PostgresReportStore(dsn=dsn)
-        except Exception as exc:
-            logger.warning("Не удалось инициализировать PostgresReportStore: %s", exc)
-
-    try:
-        persist_generated_report(
-            html_content=html,
-            launch_id=skill_run.launch_id,
-            report_filename=filename,
-            settings=settings,
-            report_store=report_store,
-            project_id=skill_run.project_id,
-            analysis_result=result,
-        )
-        if report_store is not None:
-            saved_to_db = True
-    except Exception as exc:
-        logger.warning("Не удалось сохранить отчёт: %s", exc)
-
     saved_to_disk: str | None = None
+    saved_to_db = False
+
+    # FS save: явный --out имеет приоритет над `ALLURE_REPORTS_DIR`.
+    # `saved_to_disk` фиксируется только после успешного `write_text`,
+    # чтобы при падении (например, нет прав на каталог) скрипт не
+    # рапортовал о записи, которой не было.
     if args.out:
         out_path = pathlib.Path(args.out).expanduser().resolve()
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(html, encoding="utf-8")
-        saved_to_disk = str(out_path)
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(html, encoding="utf-8")
+            saved_to_disk = str(out_path)
+        except Exception as exc:
+            logger.warning("Не удалось записать HTML в %s: %s", out_path, exc)
     elif settings.reports_dir:
-        # `persist_generated_report` уже записал файл в `reports_dir`.
-        saved_to_disk = str(
-            pathlib.Path(settings.reports_dir).expanduser().resolve() / filename
-        )
+        try:
+            reports_dir = pathlib.Path(settings.reports_dir).expanduser().resolve()
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            disk_path = reports_dir / filename
+            disk_path.write_text(html, encoding="utf-8")
+            saved_to_disk = str(disk_path)
+        except Exception as exc:
+            logger.warning(
+                "Не удалось сохранить HTML в %s: %s",
+                settings.reports_dir,
+                exc,
+            )
+
+    # DB save — независимо от FS, чтобы падение одного не маскировало
+    # успех другого.
+    if args.save_to_db:
+        try:
+            from alla.app_support import calculate_llm_token_usage
+
+            report_store = PostgresReportStore(dsn=dsn)
+            report_store.save(
+                filename,
+                skill_run.launch_id,
+                html,
+                skill_run.project_id,
+                token_usage=calculate_llm_token_usage(result),
+            )
+            saved_to_db = True
+        except Exception as exc:
+            logger.warning("Не удалось сохранить отчёт в БД: %s", exc)
 
     report_url = resolve_report_url(settings, report_filename=filename)
 
