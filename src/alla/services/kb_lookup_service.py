@@ -136,7 +136,7 @@ def build_kb_query_text(
     cluster: FailureCluster,
     test_by_id: dict[int, FailedTestSummary],
     *,
-    include_trace: bool = False,
+    include_trace: bool = True,
 ) -> tuple[str, int, int, int]:
     """Собрать единый текст запроса для KB: ``message + log`` (или ``message + trace``).
 

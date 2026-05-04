@@ -98,11 +98,16 @@ async def _main_async(args: argparse.Namespace) -> None:
         exit_with_error(error_envelope(f"Ошибка конфигурации: {exc}"), EXIT_CONFIG)
         return
 
-    if not args.dry_run and not args.confirm and not settings.push_to_testops:
+    # Push в TestOps по контракту скилла требует явного подтверждения от
+    # пользователя. На общую настройку ``ALLURE_PUSH_TO_TESTOPS`` не
+    # полагаемся — её дефолт в shared Settings ``True`` и тихо разрешил
+    # бы push при пустом .env.
+    if not args.dry_run and not args.confirm:
         exit_with_error(
             error_envelope(
-                "push_disabled: ALLURE_PUSH_TO_TESTOPS=false и --confirm не передан. "
-                "Используй --dry-run для предпросмотра или --confirm для реального push.",
+                "push_disabled: для реального постинга комментариев нужен "
+                "флаг --confirm (или --dry-run для предпросмотра). "
+                "Скрипт никогда не пушит без явного подтверждения.",
                 run_id=args.run_id,
             ),
             EXIT_VALIDATION,

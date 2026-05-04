@@ -13,8 +13,22 @@ from alla.models.clustering import ClusteringReport
 from alla.models.onboarding import OnboardingMode, OnboardingState
 from alla.models.testops import FailedTestSummary, TriageReport
 from alla.services.kb_lookup_service import KBStageResult as _KBStageResult
-from alla.services.kb_lookup_service import lookup_kb_for_clusters
+from alla.services.kb_lookup_service import (
+    _apply_exact_feedback_memory,
+    build_kb_query_text as _build_kb_query_text,
+    lookup_kb_for_clusters,
+)
 from alla.services.kb_push_service import KBPushResult
+
+# Backward-compat re-exports для тестов, которые исторически импортировали
+# приватные хелперы из orchestrator. Бизнес-логика теперь в
+# :mod:`alla.services.kb_lookup_service`; здесь — только алиасы.
+__all__ = [
+    "AnalysisResult",
+    "analyze_launch",
+    "_apply_exact_feedback_memory",
+    "_build_kb_query_text",
+]
 
 if TYPE_CHECKING:
     from alla.knowledge.merge_rules_store import PostgresMergeRulesStore
