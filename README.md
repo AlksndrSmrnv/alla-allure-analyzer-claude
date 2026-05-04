@@ -135,10 +135,8 @@ psql "$ALLURE_KB_POSTGRES_DSN" -f sql/kb_seed.sql
 
 ## Agent materials
 
-- `skills/alla/SKILL.md` — инструкция для агентов, которые вызывают running
-  `alla-server` через MCP.
-- `skill/alla-analysis/SKILL.md` — read-only REST workflow через helper
-  `skill/alla-analysis/scripts/run_alla_analysis.py`.
+- `alla-skill/SKILL.md` — основной агентный skill для анализа launch,
+  кластеров, отчётов, KB и постинга рекомендаций в TestOps.
 - `docs/USER_GUIDE.md` — пользовательская инструкция по HTML-отчёту и
   наполнению базы знаний.
 - `CLAUDE.md` — инженерная карта проекта для будущих агентов и разработчиков.

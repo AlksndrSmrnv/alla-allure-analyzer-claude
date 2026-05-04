@@ -1,4 +1,0 @@
-interface:
-  display_name: "Анализ Alla"
-  short_description: "Анализ кластеров launch Alla"
-  default_prompt: "Используй $alla-analysis, чтобы проанализировать launch Alla и кратко описать самые важные кластеры падений."

@@ -98,7 +98,7 @@ MCP сервер монтируется в `alla-server` на `/mcp`.
 | `analyze_launch_html(launch_id, push_to_testops?)` | То же + сохранение HTML в `ALLURE_REPORTS_DIR` и/или PostgreSQL, `report_url`/`hint` |
 
 MCP tools не принимают launch name. Для имени используйте REST
-`/api/v1/launch/resolve` или helper `skill/alla-analysis/scripts/run_alla_analysis.py`.
+`/api/v1/launch/resolve` или helper `alla-skill/scripts/resolve_launch.py`.
 
 ## Конфигурация
 
