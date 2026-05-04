@@ -194,45 +194,23 @@ def agent_to_llm_result(
 
 
 def agent_to_launch_summary(agent_analysis: dict[str, Any]) -> LLMLaunchSummary:
-    """Сконвертировать агентский launch_summary в :class:`LLMLaunchSummary`."""
+    """Сконвертировать агентский launch_summary в :class:`LLMLaunchSummary`.
+
+    ``summary_text`` агента — канонический текст, который рендерится в
+    HTML-отчёте. Структурные поля ``key_findings`` / ``priority_actions``
+    / ``unanalyzed_tail`` остаются в схеме для совместимости (см.
+    :func:`validate_agent_payload`), но НЕ дописываются к
+    ``summary_text``: серверный путь через GigaChat ничего не дописывает,
+    и адаптер обязан давать тот же результат, чтобы skill-режим строил
+    отчёт байт-в-байт идентичный server-side.
+
+    Если агенту нужны эти блоки в HTML — он включает их сам в
+    ``summary_text`` по серверному launch summary промпту.
+    """
     summary_payload = agent_analysis.get("launch_summary") or {}
-    summary_text = summary_payload.get("summary_text") or ""
-
-    extras: list[str] = []
-    key_findings = summary_payload.get("key_findings") or []
-    if isinstance(key_findings, list) and key_findings:
-        extras.append("Ключевые наблюдения:")
-        for item in key_findings:
-            extras.append(f"- {item}")
-
-    priority_actions = summary_payload.get("priority_actions") or []
-    if isinstance(priority_actions, list) and priority_actions:
-        if extras:
-            extras.append("")
-        extras.append("Приоритетные действия:")
-        for item in priority_actions:
-            extras.append(f"- {item}")
-
-    unanalyzed_tail = summary_payload.get("unanalyzed_tail") or {}
-    if isinstance(unanalyzed_tail, dict):
-        cluster_count = unanalyzed_tail.get("cluster_count") or 0
-        test_count = unanalyzed_tail.get("test_count") or 0
-        note = unanalyzed_tail.get("note") or ""
-        if cluster_count or test_count or note:
-            if extras:
-                extras.append("")
-            extras.append(
-                f"Не проанализировано: {cluster_count} кластеров "
-                f"({test_count} тестов)."
-                + (f" {note}" if note else "")
-            )
-
-    composed = summary_text.rstrip()
-    if extras:
-        composed = composed + "\n\n" + "\n".join(extras)
-
+    summary_text = (summary_payload.get("summary_text") or "").rstrip()
     return LLMLaunchSummary(
-        summary_text=composed,
+        summary_text=summary_text,
         token_usage=TokenUsage(),
     )
 
@@ -243,10 +221,15 @@ def agent_to_launch_summary(agent_analysis: dict[str, Any]) -> LLMLaunchSummary:
 
 
 def _compose_cluster_text(item: dict[str, Any]) -> str:
-    text = (item.get("analysis_text") or "").rstrip()
-    recommendations = item.get("recommendations") or []
-    if isinstance(recommendations, list) and recommendations:
-        text += "\n\nРекомендации:"
-        for rec in recommendations:
-            text += f"\n- {rec}"
-    return text
+    """Канонический ``analysis_text`` для :class:`LLMClusterAnalysis`.
+
+    Серверный путь (GigaChat) кладёт в ``analysis_text`` ровно то, что
+    вернула модель по cluster-analysis промпту — там уже есть блок
+    «КАК ИСПРАВИТЬ» с конкретными шагами. Чтобы skill-режим давал тот же
+    HTML-отчёт и тот же user_prompt в launch summary
+    (см. :func:`alla.services.prompt_builder_service.build_launch_summary_prompt`),
+    адаптер ничего не дописывает: поле ``recommendations`` остаётся в
+    схеме для обратной совместимости, но игнорируется — фикс-шаги должны
+    быть в ``analysis_text``.
+    """
+    return (item.get("analysis_text") or "").rstrip()

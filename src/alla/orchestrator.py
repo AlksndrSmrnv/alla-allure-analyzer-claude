@@ -26,6 +26,8 @@ from alla.services.kb_push_service import KBPushResult
 __all__ = [
     "AnalysisResult",
     "analyze_launch",
+    "apply_merge_rules_phase",
+    "build_onboarding_state",
     "_apply_exact_feedback_memory",
     "_build_kb_query_text",
 ]
@@ -72,13 +74,13 @@ async def analyze_launch(
     await _enrich_with_logs(report, client, settings)
 
     clustering_report = _cluster_failures(launch_id, report, settings)
-    clustering_report = _apply_merge_rules_phase(
+    clustering_report = apply_merge_rules_phase(
         report,
         clustering_report,
         settings,
     )
     kb_stage = _run_kb_stage(report, clustering_report, settings)
-    onboarding = _build_onboarding_state(
+    onboarding = build_onboarding_state(
         settings,
         report.project_id,
         clustering_report,
@@ -173,12 +175,17 @@ def _cluster_failures(
     return clustering_service.cluster_failures(launch_id, report.failed_tests)
 
 
-def _apply_merge_rules_phase(
+def apply_merge_rules_phase(
     report: TriageReport,
     clustering_report: ClusteringReport | None,
     settings: Settings,
 ) -> ClusteringReport | None:
-    """Применить сохранённые merge rules к результату кластеризации."""
+    """Применить сохранённые merge rules к результату кластеризации.
+
+    Публичный helper, переиспользуется skill-режимом, чтобы pipeline
+    серверной alla и `alla-skill` шёл через один и тот же gate
+    (`settings.kb_active`, `project_id`, наличие правил).
+    """
     if (
         clustering_report is None
         or not clustering_report.clusters
@@ -436,14 +443,19 @@ async def _push_kb_stage(
         return None
 
 
-def _build_onboarding_state(
+def build_onboarding_state(
     settings: Settings,
     project_id: int | None,
     clustering_report: ClusteringReport | None,
     *,
     kb_entries: list["KBEntry"] | None = None,
 ) -> OnboardingState:
-    """Определить onboarding state проекта для JSON и HTML-отчёта."""
+    """Определить onboarding state проекта для JSON и HTML-отчёта.
+
+    Публичный helper. Skill-режим использует его в `generate_report.py`,
+    чтобы пересчитывать состояние онбординга на момент рендера отчёта,
+    а не возвращать кэш из шага `fetch_clusters`.
+    """
     prioritized_cluster_ids = _prioritize_cluster_ids(clustering_report)
 
     if not settings.kb_active:

@@ -6,8 +6,14 @@
 * :class:`alla.services.triage_service.TriageService`
 * :class:`alla.services.log_extraction_service.LogExtractionService`
 * :class:`alla.services.clustering_service.ClusteringService`
-* :func:`alla.services.merge_service.apply_merge_rules`
+* :func:`alla.orchestrator.apply_merge_rules_phase`
 * :func:`alla.services.kb_lookup_service.lookup_kb_for_clusters`
+* :func:`alla.orchestrator.build_onboarding_state`
+
+Шаги pipeline идут в том же порядке и под теми же gate'ами, что
+``alla.orchestrator.analyze_launch`` — это обеспечивает, что серверная
+alla и skill-режим строят одинаковые кластеры и контексты для одного
+launch_id.
 
 Складывает результат в ``alla.skill_run`` и печатает компактный JSON
 с ``run_id`` + сводкой по кластерам.
@@ -49,16 +55,6 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Нужен с --launch-name; иначе берётся из настроек",
-    )
-    parser.add_argument(
-        "--no-merge-rules",
-        action="store_true",
-        help="Пропустить применение merge rules",
-    )
-    parser.add_argument(
-        "--no-kb",
-        action="store_true",
-        help="Пропустить KB lookup",
     )
     return parser
 
@@ -106,74 +102,6 @@ def _cluster(report: Any, settings: Any) -> Any:
         )
     )
     return service.cluster_failures(report.launch_id, report.failed_tests)
-
-
-def _apply_merge_rules(report: Any, clustering_report: Any, settings: Any) -> Any:
-    if (
-        clustering_report is None
-        or not clustering_report.clusters
-        or report.project_id is None
-    ):
-        return clustering_report
-    from alla.knowledge.merge_rules_store import PostgresMergeRulesStore
-    from alla.services.merge_service import apply_merge_rules
-
-    store = PostgresMergeRulesStore(dsn=settings.kb_postgres_dsn)
-    try:
-        rules = store.load_rules(report.project_id)
-    except Exception as exc:
-        logger.warning(
-            "Merge rules: не удалось загрузить правила для project_id=%s: %s",
-            report.project_id, exc,
-        )
-        return clustering_report
-    if not rules:
-        return clustering_report
-    try:
-        merged = apply_merge_rules(clustering_report, report.failed_tests, rules)
-    except Exception as exc:
-        logger.warning("Merge rules: ошибка применения: %s", exc)
-        return clustering_report
-
-    if merged.cluster_count != clustering_report.cluster_count:
-        logger.info(
-            "Merge rules: project_id=%s, кластеров %d → %d",
-            report.project_id,
-            clustering_report.cluster_count,
-            merged.cluster_count,
-        )
-    return merged
-
-
-def _build_onboarding(settings: Any, report: Any, clustering_report: Any, kb_entries: list[Any]) -> Any:
-    from alla.models.onboarding import OnboardingMode, OnboardingState
-
-    prioritized: list[str] = []
-    if clustering_report is not None and clustering_report.clusters:
-        ranked = sorted(
-            enumerate(clustering_report.clusters),
-            key=lambda item: (-item[1].member_count, item[0]),
-        )
-        prioritized = [c.cluster_id for _, c in ranked[:3]]
-    if not settings.kb_active:
-        return OnboardingState(
-            mode=OnboardingMode.KB_NOT_CONFIGURED,
-            prioritized_cluster_ids=prioritized,
-        )
-    starter_pack_available = any(entry.project_id is None for entry in kb_entries)
-    project_kb_entries = 0
-    if report.project_id is not None:
-        project_kb_entries = sum(
-            1 for entry in kb_entries if entry.project_id == report.project_id
-        )
-    guided = report.project_id is not None and project_kb_entries == 0
-    return OnboardingState(
-        mode=OnboardingMode.GUIDED if guided else OnboardingMode.NORMAL,
-        needs_bootstrap=guided,
-        project_kb_entries=project_kb_entries,
-        prioritized_cluster_ids=prioritized,
-        starter_pack_available=starter_pack_available,
-    )
 
 
 def _build_response(run_id: int, report: Any, clustering_report: Any, kb_results: dict[str, list[Any]]) -> dict[str, Any]:
@@ -255,6 +183,7 @@ async def _main_async(args: argparse.Namespace) -> None:
         exit_with_error(error_envelope(f"Ошибка конфигурации: {exc}"), EXIT_CONFIG)
         return
 
+    from alla.orchestrator import apply_merge_rules_phase, build_onboarding_state
     from alla.services.kb_lookup_service import KBStageResult, lookup_kb_for_clusters
     from alla.services.skill_state_service import create_run, record_error
     from alla.services.triage_service import TriageService
@@ -286,19 +215,20 @@ async def _main_async(args: argparse.Namespace) -> None:
         await _enrich_with_logs(report, client, settings)
 
     clustering_report = _cluster(report, settings)
-    if not args.no_merge_rules:
-        clustering_report = _apply_merge_rules(report, clustering_report, settings)
+    clustering_report = apply_merge_rules_phase(report, clustering_report, settings)
 
-    if args.no_kb:
+    try:
+        kb_stage = lookup_kb_for_clusters(report, clustering_report, settings)
+    except Exception as exc:
+        logger.warning("KB lookup: ошибка: %s", exc)
         kb_stage = KBStageResult()
-    else:
-        try:
-            kb_stage = lookup_kb_for_clusters(report, clustering_report, settings)
-        except Exception as exc:
-            logger.warning("KB lookup: ошибка: %s", exc)
-            kb_stage = KBStageResult()
 
-    onboarding = _build_onboarding(settings, report, clustering_report, kb_stage.kb_entries)
+    onboarding = build_onboarding_state(
+        settings,
+        report.project_id,
+        clustering_report,
+        kb_entries=kb_stage.kb_entries,
+    )
 
     try:
         run_id = create_run(

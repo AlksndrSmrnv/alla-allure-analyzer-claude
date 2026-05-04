@@ -18,14 +18,18 @@ python alla-skill/scripts/fetch_clusters.py \
   --launch-name "Smoke regression" --project-id 1
 ```
 
-Опции: `--no-merge-rules`, `--no-kb`.
+Pipeline идёт под теми же gate'ами, что серверная alla
+(`alla.orchestrator.analyze_launch`). Никаких флагов отключения шагов
+нет — иначе скилл и сервер давали бы разные кластеры/контексты для
+одного launch_id.
 
 Что происходит:
 
 1. Triage (`/api/launch`, `/api/testresult`, `/api/testresult/{id}/execution`).
 2. Log enrichment (`/api/testresult/attachment`).
 3. Кластеризация TF-IDF (message + log fallback).
-4. Применение merge rules (`alla.merge_rules`).
+4. Применение merge rules (`alla.merge_rules`) — тот же gate
+   `kb_active=True` и наличие правил для проекта, что у сервера.
 5. KB lookup (`alla.kb_entry`) + exact-feedback rerank (`alla.kb_feedback`).
 6. INSERT новой строки в `alla.skill_run` со status `clustered`.
 

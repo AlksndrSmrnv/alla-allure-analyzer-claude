@@ -155,7 +155,9 @@ def persist_generated_report(
 ) -> None:
     """Сохраняет сгенерированный отчёт в файловую систему/PostgreSQL при наличии настроек."""
     if settings.reports_dir and report_filename:
-        report_path = Path(settings.reports_dir) / report_filename
+        reports_dir = Path(settings.reports_dir).expanduser()
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        report_path = reports_dir / report_filename
         report_path.write_text(html_content, encoding="utf-8")
         logger.info("HTML-отчёт сохранён: %s", report_path)
 

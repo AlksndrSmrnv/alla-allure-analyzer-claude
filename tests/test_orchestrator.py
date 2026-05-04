@@ -20,7 +20,7 @@ from alla.orchestrator import _KBStageResult
 from alla.orchestrator import (
     _apply_exact_feedback_memory,
     _build_kb_query_text,
-    _build_onboarding_state,
+    build_onboarding_state,
     _run_llm_stage,
 )
 
@@ -145,7 +145,7 @@ def test_build_onboarding_state_guided_for_project_without_project_entries() -> 
         )
     ]
 
-    state = _build_onboarding_state(
+    state = build_onboarding_state(
         SimpleNamespace(kb_active=True),
         42,
         clustering,  # type: ignore[arg-type]
@@ -161,7 +161,7 @@ def test_build_onboarding_state_guided_for_project_without_project_entries() -> 
 
 def test_build_onboarding_state_marks_missing_kb_config() -> None:
     """При выключенной KB выдаётся setup-oriented режим."""
-    state = _build_onboarding_state(
+    state = build_onboarding_state(
         SimpleNamespace(kb_active=False),
         42,
         None,
@@ -170,6 +170,52 @@ def test_build_onboarding_state_marks_missing_kb_config() -> None:
 
     assert state.mode == OnboardingMode.KB_NOT_CONFIGURED
     assert state.needs_bootstrap is False
+
+
+def test_apply_merge_rules_phase_skips_when_kb_inactive() -> None:
+    """Merge rules не применяются при kb_active=False — общий gate для CLI/skill.
+
+    Регрессионный тест: skill-режим раньше пропускал этот gate и мог
+    объединять кластеры даже при выключенной KB. Теперь skill идёт через
+    общий :func:`apply_merge_rules_phase`, поэтому поведение совпадает.
+    """
+    from alla.orchestrator import apply_merge_rules_phase
+
+    clustering_report = ClusteringReport(
+        launch_id=1,
+        total_failures=2,
+        cluster_count=2,
+        unclustered_count=0,
+        clusters=[
+            FailureCluster(
+                cluster_id="c1",
+                label="a",
+                signature=ClusterSignature(),
+                member_test_ids=[1],
+                member_count=1,
+            ),
+            FailureCluster(
+                cluster_id="c2",
+                label="b",
+                signature=ClusterSignature(),
+                member_test_ids=[2],
+                member_count=1,
+            ),
+        ],
+    )
+    triage_report = TriageReport(
+        launch_id=1,
+        launch_name="r",
+        project_id=42,
+        total_results=2,
+        failed_tests=[_failed_test(1), _failed_test(2)],
+    )
+    settings = SimpleNamespace(kb_active=False, kb_postgres_dsn="")
+
+    out = apply_merge_rules_phase(triage_report, clustering_report, settings)  # type: ignore[arg-type]
+
+    # Никаких походов в БД, никаких изменений — pass-through.
+    assert out is clustering_report
 
 
 def _llm_settings() -> Settings:

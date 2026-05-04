@@ -192,7 +192,7 @@ def main(argv: list[str] | None = None) -> None:
 
     prompt = build_cluster_analysis_prompt(
         cluster,
-        kb_matches=kb_matches if kb_matches else None,
+        kb_matches=kb_matches,
         log_snippet=log_snippet,
         full_trace=full_trace,
         kb_query_provenance=provenance,
