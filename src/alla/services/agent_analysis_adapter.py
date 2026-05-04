@@ -88,8 +88,9 @@ def validate_agent_payload(
     launch_summary = payload.get("launch_summary")
     if not isinstance(launch_summary, dict):
         raise AgentAnalysisError("launch_summary должен быть объектом")
-    if not isinstance(launch_summary.get("summary_text"), str):
-        raise AgentAnalysisError("launch_summary.summary_text обязателен")
+    summary_text = launch_summary.get("summary_text")
+    if not isinstance(summary_text, str) or not summary_text.strip():
+        raise AgentAnalysisError("launch_summary.summary_text не может быть пустым")
 
     clusters = payload.get("clusters")
     if not isinstance(clusters, dict):
