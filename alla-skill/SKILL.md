@@ -13,11 +13,22 @@ Allure TestOps API и PostgreSQL. Бизнес-логика (получение 
 комментариев) живёт в публичных сервисах внутри пакета `alla` (`src/alla/`)
 и переиспользуется как server-side, так и скилл-режимом.
 
+**Pipeline скилл-режима совпадает с серверным.** `fetch_clusters.py` идёт
+теми же шагами и под теми же gate'ами, что
+`alla.orchestrator.analyze_launch` (триаж → логи → кластеризация → merge
+rules при `kb_active=True` → KB lookup → onboarding). `generate_report.py`
+рендерит HTML через `alla.app_support.build_html_report_content`, поэтому
+интерактивные элементы (KB-кнопки, like/dislike, merge rules, rerun)
+появляются по тем же условиям. Это значит, что для одного launch_id
+серверный CLI и скилл строят одинаковые кластеры и структурно
+идентичный HTML — отличается только содержимое LLM-ответов (сервер ходит
+в GigaChat, скилл — в текущего агента).
+
 **LLM-анализ выполняешь ты, агент CLI.** Скрипты выдают тебе готовый
 `system_prompt + user_prompt + контекст` для каждого кластера и для
-итогового summary. Ты возвращаешь результат своим стандартным способом
-(в Claude Code — через Task subagents, в qwen — через subagents, в codex —
-инлайн-циклом).
+итогового summary — те же промпты, что использует server-side GigaChat-путь.
+Ты возвращаешь результат своим стандартным способом (в Claude Code —
+через Task subagents, в qwen — через subagents, в codex — инлайн-циклом).
 
 ## Quick Start
 

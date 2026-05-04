@@ -78,18 +78,27 @@ Stdout — JSON с полями:
   "cluster_id": "c-abc123",
   "category": "service",
   "confidence": "high",
-  "analysis_text": "ЧТО СЛОМАЛОСЬ: ...\n\nПРИЧИНА: ...\n\nКАК ИСПРАВИТЬ:\n1. ...\n2. ...\n3. ...",
+  "analysis_text": "ЧТО СЛОМАЛОСЬ: ...\n\nПРИЧИНА: ...\n\nКАК ИСПРАВИТЬ:\n1. Перезапустить service-billing pod в стейдже\n2. Проверить health-check на /api/v1/orders\n3. ...",
   "kb_alignment": {
     "matched_kb_entry_ids": [17],
     "rejected_kb_entry_ids": [],
     "rejection_reason": null
   },
-  "recommendations": [
-    "Перезапустить service-billing pod в стейдже",
-    "Проверить health-check на /api/v1/orders"
-  ]
+  "recommendations": []
 }
 ```
+
+`analysis_text` — это **канонический текст**, который попадает в
+HTML-отчёт и в комментарий TestOps. Шаги фикса должны быть в блоке
+`КАК ИСПРАВИТЬ:` внутри `analysis_text` ровно в таком формате (его
+задаёт серверный cluster-analysis промпт, и серверный путь GigaChat
+ничего не дописывает после).
+
+Поле `recommendations` оставлено в схеме v1 для совместимости, но
+**адаптер `agent_to_llm_result` его игнорирует** — иначе skill-отчёт
+не совпал бы с серверным. Если включишь шаги и в `analysis_text`, и в
+`recommendations` — увидишь дубль только в самом payload, в HTML и в
+TestOps попадёт только `analysis_text`.
 
 Для batched subagent (2–3 кластера) возвращай массив таких объектов.
 
