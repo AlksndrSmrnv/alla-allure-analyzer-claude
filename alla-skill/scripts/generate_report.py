@@ -191,6 +191,9 @@ def main(argv: list[str] | None = None) -> None:
     filename = _build_filename(skill_run)
     saved_to_disk: str | None = None
     saved_to_db = False
+    sink_failures: list[str] = []
+    fs_requested = bool(args.out) or bool(settings.reports_dir)
+    db_requested = bool(args.save_to_db)
 
     # FS save: явный --out имеет приоритет над `ALLURE_REPORTS_DIR`.
     # `saved_to_disk` фиксируется только после успешного `write_text`,
@@ -204,6 +207,7 @@ def main(argv: list[str] | None = None) -> None:
             saved_to_disk = str(out_path)
         except Exception as exc:
             logger.warning("Не удалось записать HTML в %s: %s", out_path, exc)
+            sink_failures.append(f"--out={out_path}: {exc}")
     elif settings.reports_dir:
         try:
             reports_dir = pathlib.Path(settings.reports_dir).expanduser().resolve()
@@ -217,10 +221,11 @@ def main(argv: list[str] | None = None) -> None:
                 settings.reports_dir,
                 exc,
             )
+            sink_failures.append(f"reports_dir={settings.reports_dir}: {exc}")
 
     # DB save — независимо от FS, чтобы падение одного не маскировало
     # успех другого.
-    if args.save_to_db:
+    if db_requested:
         try:
             from alla.app_support import calculate_llm_token_usage
 
@@ -235,6 +240,31 @@ def main(argv: list[str] | None = None) -> None:
             saved_to_db = True
         except Exception as exc:
             logger.warning("Не удалось сохранить отчёт в БД: %s", exc)
+            sink_failures.append(f"postgres: {exc}")
+
+    # Если у пользователя был хотя бы один запрошенный sink (FS или DB)
+    # и все запрошенные упали — это hard error: HTML нигде не лежит,
+    # ссылка из `report_url` указывала бы в никуда. Записываем ошибку
+    # в skill_run и выходим non-zero ДО того, как `save_report` пометит
+    # run как `reported`.
+    if (fs_requested or db_requested) and not (saved_to_disk or saved_to_db):
+        joined = "; ".join(sink_failures) or "нет успешных sinks"
+        try:
+            record_error(
+                dsn=dsn, run_id=args.run_id,
+                error={"step": "persist_report", "message": joined},
+            )
+        except Exception:
+            pass
+        exit_with_error(
+            error_envelope(
+                f"Не удалось сохранить отчёт ни в один sink: {joined}",
+                run_id=args.run_id,
+                report_filename=filename,
+            ),
+            EXIT_ERROR,
+        )
+        return
 
     report_url = resolve_report_url(settings, report_filename=filename)
 
