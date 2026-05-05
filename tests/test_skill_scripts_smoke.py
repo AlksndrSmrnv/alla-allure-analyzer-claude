@@ -78,3 +78,72 @@ def test_serve_parser_accepts_overrides() -> None:
     assert args.host == "0.0.0.0"
     assert args.port == 9000
     assert args.log_level == "debug"
+
+
+def test_serve_mask_dsn_strips_credentials() -> None:
+    import serve
+
+    # Нормальный DSN с user:pass@ — credentials должны исчезнуть из вывода.
+    masked = serve._mask_dsn("postgresql://alla_user:secretpass@db.local:5432/kb")
+    assert "secretpass" not in masked
+    assert "alla_user" not in masked
+    assert "db.local" in masked
+    assert "5432" in masked
+    assert "kb" in masked
+
+
+def test_serve_mask_dsn_handles_edge_cases() -> None:
+    import serve
+
+    assert serve._mask_dsn("") == "<empty>"
+    # DSN без хоста / db: не падать, не возвращать сырую строку.
+    out = serve._mask_dsn("postgresql:///")
+    assert "secret" not in out
+
+
+def test_serve_propagate_env_loads_skill_env_into_environ(
+    tmp_path, monkeypatch
+) -> None:
+    """`_propagate_env_to_server` кладёт переменные skill `.env` в os.environ.
+
+    Без этого `alla.server._lifespan` зовёт `Settings()` от CWD-дефолта и
+    может прочитать другой DSN/URL, чем `_common.load_settings`.
+    """
+    import serve
+
+    fake_env = tmp_path / ".env"
+    fake_env.write_text(
+        "ALLURE_KB_POSTGRES_DSN=postgresql://u:p@host/db\n"
+        "ALLURE_FEEDBACK_SERVER_URL=http://127.0.0.1:8090\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(serve, "ENV_PATH", fake_env)
+    monkeypatch.delenv("ALLURE_KB_POSTGRES_DSN", raising=False)
+    monkeypatch.delenv("ALLURE_FEEDBACK_SERVER_URL", raising=False)
+
+    serve._propagate_env_to_server()
+
+    import os
+
+    assert os.environ["ALLURE_KB_POSTGRES_DSN"] == "postgresql://u:p@host/db"
+    assert os.environ["ALLURE_FEEDBACK_SERVER_URL"] == "http://127.0.0.1:8090"
+
+
+def test_serve_propagate_env_does_not_override_existing(
+    tmp_path, monkeypatch
+) -> None:
+    """Уже выставленные env vars (shell export) имеют приоритет над `.env`."""
+    import serve
+
+    fake_env = tmp_path / ".env"
+    fake_env.write_text(
+        "ALLURE_KB_POSTGRES_DSN=from-file\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(serve, "ENV_PATH", fake_env)
+    monkeypatch.setenv("ALLURE_KB_POSTGRES_DSN", "from-shell")
+
+    serve._propagate_env_to_server()
+
+    import os
+
+    assert os.environ["ALLURE_KB_POSTGRES_DSN"] == "from-shell"
