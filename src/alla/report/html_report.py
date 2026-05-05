@@ -453,6 +453,15 @@ def _render_cluster(
                 "</div>"
             )
 
+        full_trace = rep_test.status_trace if rep_test else None
+        if full_trace and full_trace.strip() != (cluster.example_message or "").strip():
+            error_parts.append(
+                '<button class="error-trace-toggle" '
+                "onclick=\"this.nextElementSibling.classList.toggle('hidden')\">"
+                "Показать полный стектрейс</button>"
+                f'<pre class="error-trace hidden">{_e(full_trace)}</pre>'
+            )
+
         if cluster.example_correlation:
             error_parts.append(
                 '<div class="block-title" style="margin-top: 0.75rem;">Корреляция</div>'
@@ -1662,6 +1671,10 @@ _CSS = """
     .kb-example-toggle:hover{border-color:var(--primary);color:var(--primary)}
     .kb-example{margin:.5rem 0 0;padding:.75rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:.75rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:20rem;overflow-y:auto}
     .kb-example.hidden{display:none}
+    .error-trace-toggle{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.4rem .75rem;cursor:pointer;color:var(--text-muted);font-size:.8rem;margin-top:.5rem;transition:all .2s}
+    .error-trace-toggle:hover{border-color:var(--primary);color:var(--primary)}
+    .error-trace{margin:.5rem 0 0;padding:.75rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:.75rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:30rem;overflow-y:auto}
+    .error-trace.hidden{display:none}
     .project-knowledge-empty {
       background: #f8fafc;
       border: 1px dashed var(--border);
