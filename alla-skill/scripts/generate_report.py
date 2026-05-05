@@ -107,6 +107,22 @@ def _build_analysis_result(skill_run: Any, settings: "Settings") -> Any:
     )
 
 
+def _interactive_disabled_reasons(settings: "Settings") -> list[str]:
+    """Причины, по которым в HTML нет KB-кнопок и like/dislike.
+
+    `html_report.py` гейтит «Создать решение для кластера» и feedback-кнопки
+    на непустой `feedback_api_url` (см. `app_support.get_feedback_api_url`).
+    Если массив пустой — интерактив включён, и пользователю ничего делать не
+    надо.
+    """
+    reasons: list[str] = []
+    if not settings.kb_active:
+        reasons.append("kb_inactive")
+    elif not settings.feedback_server_url:
+        reasons.append("feedback_server_url_empty")
+    return reasons
+
+
 def _refresh_onboarding(settings: "Settings", skill_run: Any) -> Any:
     """Пересчитать ``OnboardingState`` на момент рендера отчёта.
 
@@ -267,6 +283,15 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     report_url = resolve_report_url(settings, report_filename=filename)
+    interactive_disabled_reasons = _interactive_disabled_reasons(settings)
+    if interactive_disabled_reasons:
+        logger.warning(
+            "HTML без интерактивных блоков: %s. "
+            "Подними `python alla-skill/scripts/serve.py` и задай "
+            "ALLURE_FEEDBACK_SERVER_URL=http://127.0.0.1:8090, "
+            "чтобы появились кнопки KB/like-dislike.",
+            ", ".join(interactive_disabled_reasons),
+        )
 
     try:
         save_report(
@@ -295,6 +320,7 @@ def main(argv: list[str] | None = None) -> None:
             "saved_to_db": saved_to_db,
             "saved_to_disk": saved_to_disk,
             "html_size_bytes": len(html.encode("utf-8")),
+            "interactive_disabled_reasons": interactive_disabled_reasons,
         }
     )
 
