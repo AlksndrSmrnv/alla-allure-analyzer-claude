@@ -107,7 +107,29 @@ python alla-skill/scripts/generate_report.py --run-id 42
 
 В stdout: `report_filename`, `report_url` (составляется из
 `ALLURE_SERVER_EXTERNAL_URL` + filename, или из `ALLURE_REPORT_URL`),
-`saved_to_db`, `saved_to_disk`, `html_size_bytes`.
+`saved_to_db`, `saved_to_disk`, `html_size_bytes`,
+`interactive_disabled_reasons`.
+
+Интерактивные элементы HTML (кнопка «Создать решение для кластера»,
+like/dislike, merge rules, «Перезапустить анализ») появляются, только
+если в `.env` заданы `ALLURE_FEEDBACK_SERVER_URL` и (для rerun-кнопки)
+`ALLURE_SERVER_EXTERNAL_URL`. Браузер не пишет в PostgreSQL напрямую —
+JS этих кнопок дёргает REST `alla-server`. Для локального воркфлоу:
+
+```bash
+# Один раз, в отдельном терминале
+python alla-skill/scripts/serve.py
+# → Uvicorn running on http://127.0.0.1:8090
+
+# В alla-skill/.env
+ALLURE_FEEDBACK_SERVER_URL=http://127.0.0.1:8090
+ALLURE_SERVER_EXTERNAL_URL=http://127.0.0.1:8090
+```
+
+Если эти переменные пусты, `generate_report.py` всё равно отдаст
+рабочий HTML, но с `interactive_disabled_reasons=["feedback_server_url_empty"]`.
+В этом случае агент должен явно сказать пользователю, как включить
+интерактив (см. `SKILL.md` → «Финальный ответ пользователю»).
 
 ### 6. (Опц.) Push в Allure TestOps
 

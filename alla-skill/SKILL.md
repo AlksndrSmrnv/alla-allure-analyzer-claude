@@ -127,8 +127,41 @@ python alla-skill/scripts/generate_report.py --run-id 42
 ```
 
 Stdout — JSON: `report_filename`, `report_url`, `saved_to_db`,
-`saved_to_disk`. Отчёт сохраняется в PostgreSQL (`alla.report`) и/или на
-диск (`ALLURE_REPORTS_DIR`).
+`saved_to_disk`, `interactive_disabled_reasons`. Отчёт сохраняется в
+PostgreSQL (`alla.report`) и/или на диск (`ALLURE_REPORTS_DIR`).
+
+Если `interactive_disabled_reasons` непустой (например,
+`["feedback_server_url_empty"]`) — кнопки «Создать решение для
+кластера», like/dislike и merge-rules в HTML отключены. Подними
+локальный сервер (см. ниже) или укажи URL продового `alla-server` в
+`ALLURE_FEEDBACK_SERVER_URL`.
+
+#### Локальный режим интерактива
+
+Браузер не пишет в PostgreSQL напрямую — кнопкам HTML нужен REST-слой
+`alla-server`. Поднимать продовый сервер не обязательно: тот же
+FastAPI-app можно запустить локально на 127.0.0.1.
+
+```bash
+# Терминал 1 — локальный сервер
+python alla-skill/scripts/serve.py
+# → Uvicorn running on http://127.0.0.1:8090
+
+# alla-skill/.env
+ALLURE_FEEDBACK_SERVER_URL=http://127.0.0.1:8090
+ALLURE_SERVER_EXTERNAL_URL=http://127.0.0.1:8090
+
+# Терминал 2 — обычный pipeline скилла
+python alla-skill/scripts/fetch_clusters.py --launch-id 12345
+…
+python alla-skill/scripts/generate_report.py --run-id 42
+# → отчёт по http://127.0.0.1:8090/reports/<filename>.html
+```
+
+Все REST-эндпоинты, которые дёргают кнопки (`/api/v1/kb/feedback`,
+`/api/v1/kb/entries`, `/api/v1/merge-rules`), пишут в ту же PostgreSQL,
+что и `fetch_clusters` / `submit_analysis` — никаких отдельных
+стораджей.
 
 ### 6. (Опц.) Постинг в Allure TestOps
 
@@ -152,6 +185,12 @@ python alla-skill/scripts/push_to_testops.py --run-id 42 --confirm
 * Если есть `unanalyzed_tail` — обязательно скажи: «Глубоко проанализировано
   N кластеров, ещё M кластеров (K тестов) попали в tail-summary без
   индивидуального разбора».
+* Если в JSON `generate_report` поле `interactive_disabled_reasons`
+  непустое — обязательно подскажи пользователю, что включить, чтобы
+  кнопки KB / like-dislike / merge-rules появились (как правило:
+  запустить `python alla-skill/scripts/serve.py` и задать
+  `ALLURE_FEEDBACK_SERVER_URL=http://127.0.0.1:8090` +
+  `ALLURE_SERVER_EXTERNAL_URL=http://127.0.0.1:8090` в `alla-skill/.env`).
 
 ## Использование с qwen / codex CLI
 
@@ -194,6 +233,8 @@ python alla-skill/scripts/record_feedback.py --run-id 42 --cluster-id c-abc \
 | `ALLURE_KB_POSTGRES_DSN` | да | DSN PostgreSQL |
 | `ALLURE_PUSH_TO_TESTOPS` | нет | По умолчанию `false`. Не включай по своей инициативе. |
 | `ALLURE_REPORTS_DIR` | нет | Директория для HTML-отчётов |
+| `ALLURE_FEEDBACK_SERVER_URL` | нет | URL alla-server для KB-кнопок и like/dislike в HTML. Без него HTML рендерится без интерактива. Для локальной работы — `http://127.0.0.1:8090` + `serve.py`. |
+| `ALLURE_SERVER_EXTERNAL_URL` | нет | Публичный URL для ссылок `/reports/<file>` и кнопки «Перезапустить анализ». При локальном serve.py — то же значение, что `ALLURE_FEEDBACK_SERVER_URL`. |
 
 Полный список — в `.env.example`.
 
