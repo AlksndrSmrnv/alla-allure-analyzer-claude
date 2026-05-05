@@ -122,15 +122,15 @@ class Settings(BaseSettings):
     llm_timeout: int = Field(default=120, ge=10, description="Таймаут одного LLM-запроса в секундах")
     llm_concurrency: int = Field(default=3, ge=1, description="Макс. параллельных запросов к GigaChat API")
     llm_request_delay: float = Field(
-        default=0.5, ge=0,
+        default=2.0, ge=0,
         description="Минимальная пауза между запросами к GigaChat API (сек). 0 = без паузы.",
     )
     llm_max_retries: int = Field(
-        default=3, ge=0,
+        default=5, ge=0,
         description="Макс. число повторных попыток при 429/503/сетевых ошибках GigaChat (0 = без retry)",
     )
     llm_retry_base_delay: float = Field(
-        default=1.0, ge=0.1,
+        default=3.0, ge=0.1,
         description="Базовая задержка в секундах для exponential backoff (delay = base * 2^attempt)",
     )
     llm_prompt_message_max_chars: int = Field(
