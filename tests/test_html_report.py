@@ -334,6 +334,48 @@ def test_html_report_renders_expandable_full_stacktrace() -> None:
     assert "com.example.Main.main(Main.java:7)" in html
 
 
+def test_html_report_renders_trace_toggle_when_only_trace_is_available() -> None:
+    """Trace-only кластер (без message/correlation/log) всё равно показывает блок и кнопку."""
+    full_trace = (
+        "java.lang.IllegalStateException: connection closed\n"
+        "\tat com.example.Pool.borrow(Pool.java:88)\n"
+        "\tat com.example.Worker.run(Worker.java:17)"
+    )
+    cluster = make_failure_cluster(
+        cluster_id="c-trace-only",
+        representative_test_id=1,
+        member_test_ids=[1],
+        member_count=1,
+        example_message=None,
+        example_trace_snippet="at com.example.Pool.borrow(Pool.java:88)",
+        example_correlation=None,
+    )
+    result = AnalysisResult(
+        triage_report=make_triage_report(
+            failed_tests=[
+                make_failed_test_summary(
+                    test_result_id=1,
+                    status_message=None,
+                    status_trace=full_trace,
+                )
+            ]
+        ),
+        clustering_report=make_clustering_report(
+            clusters=[cluster],
+            cluster_count=1,
+            total_failures=1,
+        ),
+    )
+
+    html = generate_html_report(result)
+
+    assert '<div class="block-title">Пример ошибки</div>' in html
+    assert '<button class="error-trace-toggle"' in html
+    assert "Показать полный стектрейс" in html
+    assert "com.example.Pool.borrow(Pool.java:88)" in html
+    assert "com.example.Worker.run(Worker.java:17)" in html
+
+
 def test_html_report_skips_trace_toggle_when_trace_equals_message() -> None:
     """Если status_trace дублирует message, кнопка раскрытия не рендерится."""
     same_text = "AssertionError: expected 200 but got 404"

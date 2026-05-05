@@ -437,8 +437,18 @@ def _render_cluster(
             "</div>"
         )
 
+    full_trace = rep_test.status_trace if rep_test else None
+    has_extra_trace = bool(full_trace) and (
+        full_trace.strip() != (cluster.example_message or "").strip()
+    )
+
     error_html = ""
-    if cluster.example_message or cluster.example_correlation or rep_log_snippet:
+    if (
+        cluster.example_message
+        or cluster.example_correlation
+        or rep_log_snippet
+        or has_extra_trace
+    ):
         error_parts: list[str] = []
         error_parts.append('<div class="block">')
         error_parts.append('<div class="block-title">Пример ошибки</div>')
@@ -453,8 +463,7 @@ def _render_cluster(
                 "</div>"
             )
 
-        full_trace = rep_test.status_trace if rep_test else None
-        if full_trace and full_trace.strip() != (cluster.example_message or "").strip():
+        if has_extra_trace:
             error_parts.append(
                 '<button class="error-trace-toggle" '
                 "onclick=\"this.nextElementSibling.classList.toggle('hidden')\">"
