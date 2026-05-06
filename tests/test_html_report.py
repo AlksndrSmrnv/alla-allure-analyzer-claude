@@ -48,6 +48,7 @@ def test_html_report_rerun_button_opens_attached_new_report() -> None:
     assert "is-ready" in html
     assert "X-Report-URL" in html
     assert "window.location.href" in html
+    assert "document.write(result.html)" in html
 
 
 def test_guided_onboarding_uses_project_learning_flow() -> None:

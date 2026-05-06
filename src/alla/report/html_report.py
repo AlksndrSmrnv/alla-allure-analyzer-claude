@@ -1904,16 +1904,24 @@ _RERUN_SCRIPT = """
         });
       }
       var reportUrl = res.headers.get('X-Report-URL');
-      if (!reportUrl) {
-        throw new Error('сервер не вернул X-Report-URL');
+      if (reportUrl) {
+        return { reportUrl: reportUrl };
       }
-      return reportUrl;
-    }).then(function (reportUrl) {
-      btn.disabled = false;
-      btn.classList.remove('is-loading');
-      btn.classList.add('is-ready');
-      btn.setAttribute('data-new-report-url', reportUrl);
-      if (labelEl) labelEl.textContent = 'Открыть новый анализ';
+      return res.text().then(function (html) {
+        return { html: html };
+      });
+    }).then(function (result) {
+      if (result.reportUrl) {
+        btn.disabled = false;
+        btn.classList.remove('is-loading');
+        btn.classList.add('is-ready');
+        btn.setAttribute('data-new-report-url', result.reportUrl);
+        if (labelEl) labelEl.textContent = 'Открыть новый анализ';
+        return;
+      }
+      document.open();
+      document.write(result.html);
+      document.close();
     }).catch(function (err) {
       clearTimeout(timer);
       btn.disabled = false;
