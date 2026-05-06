@@ -4,9 +4,10 @@
 Тонкая обёртка над :func:`alla.services.comment_push_service.push_comments`
 + :func:`alla.app_support.attach_report_link`.
 
-**Push выключен по умолчанию** (`ALLURE_PUSH_TO_TESTOPS=false`). Чтобы
-выполнить реальный push, требуется `--confirm`. Без `--confirm` и без
-`--dry-run` скрипт прерывается с envelope `push_disabled`.
+**Запись комментариев выключена по умолчанию**
+(`ALLURE_PUSH_COMMENTS=false`). Чтобы выполнить реальный push, требуется
+`--confirm`. Без `--confirm` и без `--dry-run` скрипт прерывается с
+envelope `push_disabled`.
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--confirm",
         action="store_true",
-        help="Явное разрешение на реальный push (обязательно при ALLURE_PUSH_TO_TESTOPS=false).",
+        help="Явное разрешение на реальный push (обязательно при ALLURE_PUSH_COMMENTS=false).",
     )
     return parser
 
@@ -99,9 +100,8 @@ async def _main_async(args: argparse.Namespace) -> None:
         return
 
     # Push в TestOps по контракту скилла требует явного подтверждения от
-    # пользователя. На общую настройку ``ALLURE_PUSH_TO_TESTOPS`` не
-    # полагаемся — её дефолт в shared Settings ``True`` и тихо разрешил
-    # бы push при пустом .env.
+    # пользователя. На общую настройку ``ALLURE_PUSH_COMMENTS`` не
+    # полагаемся — скрипт никогда не пушит без --confirm.
     if not args.dry_run and not args.confirm:
         exit_with_error(
             error_envelope(

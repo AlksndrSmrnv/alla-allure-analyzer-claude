@@ -174,10 +174,15 @@ class Settings(BaseSettings):
         "Используется для ссылок на отчёты в TestOps. Пример: https://alla.company.com",
     )
 
-    push_to_testops: bool = Field(
+    push_comments: bool = Field(
+        default=False,
+        description="Записывать LLM/KB-рекомендации как комментарии к тест-кейсам "
+        "в Allure TestOps (ALLURE_PUSH_COMMENTS).",
+    )
+    push_report_link: bool = Field(
         default=True,
-        description="Записывать результаты анализа (KB/LLM) в Allure TestOps "
-        "как комментарии к тест-кейсам (ALLURE_PUSH_TO_TESTOPS).",
+        description="Прикреплять ссылку на HTML-отчёт к запуску в Allure TestOps "
+        "через секцию Links (ALLURE_PUSH_REPORT_LINK).",
     )
 
     @property

@@ -382,7 +382,7 @@ async def _push_llm_stage(
 ) -> "LLMPushResult | None":
     """Записать LLM-рекомендации в TestOps, если stage дал результат."""
     if (
-        not settings.push_to_testops
+        not settings.push_comments
         or not settings.llm_active
         or clustering_report is None
         or llm_result is None
@@ -417,7 +417,7 @@ async def _push_kb_stage(
     """Fallback KB push, когда LLM не сработал или отключён."""
     llm_succeeded = llm_result is not None and llm_result.analyzed_count > 0
     if (
-        not settings.push_to_testops
+        not settings.push_comments
         or not settings.kb_active
         or llm_succeeded
         or not kb_stage.kb_results

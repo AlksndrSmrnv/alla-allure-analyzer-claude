@@ -230,18 +230,28 @@ def _settings() -> "Settings":
     return cast("Settings", _state.settings)
 
 
-def _effective_settings(push_to_testops: bool | None = None) -> "Settings":
-    """Вернуть настройки, опционально переопределив push_to_testops на запрос."""
+def _effective_settings(
+    *,
+    push_comments: bool | None = None,
+    push_report_link: bool | None = None,
+) -> "Settings":
+    """Вернуть настройки, опционально переопределив push-флаги на запрос."""
     settings = _settings()
-    if push_to_testops is None:
+    updates: dict[str, bool] = {}
+    if push_comments is not None:
+        updates["push_comments"] = push_comments
+    if push_report_link is not None:
+        updates["push_report_link"] = push_report_link
+    if not updates:
         return settings
-    return settings.model_copy(update={"push_to_testops": push_to_testops})
+    return settings.model_copy(update=updates)
 
 
 async def _run_analysis_or_raise(
     launch_id: int,
     *,
-    push_to_testops: bool | None = None,
+    push_comments: bool | None = None,
+    push_report_link: bool | None = None,
 ) -> "AnalysisResult":
     """Запустить анализ orchestrator и смэппить доменные ошибки в HTTP-ошибки."""
     from alla.exceptions import (
@@ -257,7 +267,10 @@ async def _run_analysis_or_raise(
         return await run_analysis(
             launch_id=launch_id,
             client=_state.client,
-            settings=_effective_settings(push_to_testops),
+            settings=_effective_settings(
+                push_comments=push_comments,
+                push_report_link=push_report_link,
+            ),
             updater=_state.client,
         )
     except AuthenticationError as exc:
@@ -294,18 +307,21 @@ async def health() -> HealthResponse:
 )
 async def analyze_launch(
     launch_id: int,
-    push_to_testops: bool | None = None,
+    push_comments: bool | None = None,
+    push_report_link: bool | None = None,
 ) -> dict[str, Any]:
     """Анализ запуска — эквивалент ``alla <launch_id> --output-format json``.
 
     Запускает полный pipeline: триаж → кластеризация → KB-поиск →
     LLM-анализ → LLM-push → KB-push (fallback). Возвращает объединённый JSON-результат.
 
-    Query parameter ``push_to_testops`` переопределяет ``ALLURE_PUSH_TO_TESTOPS``.
+    Query-параметр ``push_comments`` переопределяет ``ALLURE_PUSH_COMMENTS``;
+    ``push_report_link`` — ``ALLURE_PUSH_REPORT_LINK``.
     """
     result = await _run_analysis_or_raise(
         launch_id,
-        push_to_testops=push_to_testops,
+        push_comments=push_comments,
+        push_report_link=push_report_link,
     )
     return build_analysis_response(result)
 
@@ -353,7 +369,8 @@ async def resolve_launch(name: str, project_id: int | None = None) -> dict[str, 
 async def analyze_launch_html(
     launch_id: int,
     report_url: str = "",
-    push_to_testops: bool | None = None,
+    push_comments: bool | None = None,
+    push_report_link: bool | None = None,
 ) -> HTMLResponse:
     """Анализ запуска — возвращает self-contained HTML-отчёт.
 
@@ -368,9 +385,13 @@ async def analyze_launch_html(
     """
     result = await _run_analysis_or_raise(
         launch_id,
-        push_to_testops=push_to_testops,
+        push_comments=push_comments,
+        push_report_link=push_report_link,
     )
-    effective_settings = _effective_settings(push_to_testops)
+    effective_settings = _effective_settings(
+        push_comments=push_comments,
+        push_report_link=push_report_link,
+    )
 
     from datetime import datetime
 
@@ -399,7 +420,7 @@ async def analyze_launch_html(
         report_url_override=report_url or None,
         report_filename=report_filename,
     )
-    if not effective_report_url and effective_settings.push_to_testops:
+    if not effective_report_url and effective_settings.push_report_link:
         logger.warning(
             "Ссылка на отчёт не будет прикреплена к запуску #%d: "
             "задайте ALLURE_SERVER_EXTERNAL_URL + ALLURE_REPORTS_DIR "
@@ -407,7 +428,7 @@ async def analyze_launch_html(
             launch_id,
         )
 
-    if effective_report_url and effective_settings.push_to_testops:
+    if effective_report_url and effective_settings.push_report_link:
         await attach_report_link(
             _state.client,
             launch_id=launch_id,
