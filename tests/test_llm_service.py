@@ -137,6 +137,46 @@ async def test_analyze_clusters_success_uses_representative_log() -> None:
 
 
 @pytest.mark.asyncio
+async def test_analyze_clusters_uses_coordinator() -> None:
+    """При наличии координатора каждый chat обёрнут в coordinator.acquire()."""
+
+    class _FakeCoordinator:
+        def __init__(self) -> None:
+            self.acquire_calls = 0
+            self.in_acquire = False
+
+        def acquire(self):
+            outer = self
+
+            class _Ctx:
+                async def __aenter__(self_inner) -> None:
+                    outer.acquire_calls += 1
+                    outer.in_acquire = True
+
+                async def __aexit__(self_inner, *_args) -> None:
+                    outer.in_acquire = False
+
+            return _Ctx()
+
+    coord = _FakeCoordinator()
+    chat_calls: list[bool] = []
+
+    class _Client:
+        async def chat(self, system_prompt, user_prompt):
+            # Должны быть внутри coordinator.acquire()
+            chat_calls.append(coord.in_acquire)
+            return _chat_response("ok")
+
+    service = LLMService(_Client(), coordinator=coord)  # type: ignore[arg-type]
+    cluster = make_failure_cluster(member_test_ids=[1])
+    result = await service.analyze_clusters(_make_report(cluster))
+
+    assert result.analyzed_count == 1
+    assert coord.acquire_calls == 1
+    assert chat_calls == [True]
+
+
+@pytest.mark.asyncio
 async def test_analyze_clusters_handles_llm_error() -> None:
     """Per-cluster LLM failures сохраняются, не прерывая весь batch."""
 

@@ -120,10 +120,19 @@ class Settings(BaseSettings):
         description="Название модели GigaChat (ALLURE_GIGACHAT_MODEL).",
     )
     llm_timeout: int = Field(default=120, ge=10, description="Таймаут одного LLM-запроса в секундах")
-    llm_concurrency: int = Field(default=3, ge=1, description="Макс. параллельных запросов к GigaChat API")
+    llm_concurrency: int = Field(
+        default=3, ge=1,
+        description=(
+            "Макс. параллельных запросов к GigaChat API process-wide "
+            "(глобальный потолок на все одновременные анализы)."
+        ),
+    )
     llm_request_delay: float = Field(
         default=2.0, ge=0,
-        description="Минимальная пауза между запросами к GigaChat API (сек). 0 = без паузы.",
+        description=(
+            "Минимальный интервал между стартами запросов к GigaChat (сек), "
+            "общий для всех одновременных анализов. 0 = без паузы."
+        ),
     )
     llm_max_retries: int = Field(
         default=5, ge=0,

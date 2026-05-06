@@ -41,7 +41,7 @@ class _MockResponse:
     usage: _MockUsage | None = field(default_factory=_MockUsage)
 
 
-def _make_client(mock_giga: object) -> GigaChatClient:
+def _make_client(mock_giga: object, *, coordinator: object = None) -> GigaChatClient:
     """Создать GigaChatClient с подменённым GigaChat SDK."""
     client = GigaChatClient.__new__(GigaChatClient)
     client._model = "test-model"
@@ -49,6 +49,7 @@ def _make_client(mock_giga: object) -> GigaChatClient:
     client._max_retries = 3
     client._retry_base_delay = 0.01  # Быстрый retry для тестов
     client._giga = mock_giga
+    client._coordinator = coordinator
     client._rate_limit_until = 0.0
     client._rate_limit_lock = asyncio.Lock()
     return client
@@ -397,9 +398,10 @@ async def test_chat_respects_retry_after_header(monkeypatch: pytest.MonkeyPatch)
 
     assert result.text == "ok"
     assert call_count == 2
-    # backoff был бы 0.01s, но Retry-After задаёт 5s → delay должен быть близок к 5s
+    # backoff был бы 0.01s, но Retry-After задаёт 5s → delay не меньше 5s.
+    # С jitter может вырасти до ~6s (server_delay + до 20%).
     assert len(sleep_calls) == 1
-    assert sleep_calls[0] == pytest.approx(5.0, abs=0.01)
+    assert 5.0 <= sleep_calls[0] <= 6.05
 
 
 @pytest.mark.asyncio
@@ -432,8 +434,9 @@ async def test_chat_uses_backoff_when_retry_after_smaller(monkeypatch: pytest.Mo
     result = await client.chat("sys", "user")
 
     assert result.text == "ok"
-    # backoff=0.01 > retry_after=0 → используем backoff
-    assert sleep_calls[0] == pytest.approx(0.01, abs=0.001)
+    # backoff=0.01 > retry_after=0 → используем backoff с equal jitter:
+    # delay в диапазоне [0.005, 0.01].
+    assert 0.005 <= sleep_calls[0] <= 0.0105
 
 
 # ---------------------------------------------------------------------------
@@ -516,3 +519,94 @@ async def test_second_request_waits_for_cooldown_set_by_first(monkeypatch: pytes
 
     # Суммарно должны быть sleep-вызовы (от _set_rate_limit_cooldown + _wait_for_rate_limit)
     assert len(sleep_calls) >= 1
+
+
+# ---------------------------------------------------------------------------
+# chat — интеграция с LLMRateCoordinator
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_delegates_cooldown_to_coordinator_on_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    """При 429 вызывается coordinator.trigger_cooldown."""
+
+    class _FakeCoordinator:
+        def __init__(self) -> None:
+            self.trigger_calls: list[tuple[float, str]] = []
+            self.wait_calls = 0
+
+        async def wait_cooldown(self) -> None:
+            self.wait_calls += 1
+
+        async def trigger_cooldown(self, delay: float, *, reason: str) -> None:
+            self.trigger_calls.append((delay, reason))
+
+        def jitter_backoff(self, base: float) -> float:
+            return base
+
+        def jitter_retry_after(self, server: float) -> float:
+            return server
+
+    coord = _FakeCoordinator()
+
+    class _HttpError(Exception):
+        status_code = 429
+
+    call_count = 0
+
+    class _Giga:
+        def chat(self, _):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise _HttpError("Too many requests")
+            return _MockResponse(choices=[_MockChoice(_MockMessage("ok"))])
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("alla.clients.gigachat_client.asyncio.sleep", _no_sleep)
+    client = _make_client(_Giga(), coordinator=coord)
+    result = await client.chat("sys", "user")
+
+    assert result.text == "ok"
+    assert len(coord.trigger_calls) == 1
+    delay, reason = coord.trigger_calls[0]
+    assert delay > 0
+    assert reason == "429"
+    # Локальный _rate_limit_until НЕ должен меняться, т.к. cooldown делегирован.
+    assert client._rate_limit_until == 0.0
+
+
+@pytest.mark.asyncio
+async def test_chat_backoff_has_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Несколько retry дают разные delay (jitter работает)."""
+    call_count = 0
+    sleep_calls: list[float] = []
+
+    class _HttpError(Exception):
+        status_code = 503
+
+    class _Giga:
+        def chat(self, _):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 4:
+                raise _HttpError("Service unavailable")
+            return _MockResponse(choices=[_MockChoice(_MockMessage("ok"))])
+
+    async def _mock_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("alla.clients.gigachat_client.asyncio.sleep", _mock_sleep)
+    client = _make_client(_Giga())
+    client._retry_base_delay = 0.1  # достаточно большой base, чтобы jitter был заметен
+    client._max_retries = 4
+
+    await client.chat("sys", "user")
+
+    # Должно быть 4 sleep-вызова (между retry'ями), все разные из-за jitter
+    cooldown_sleeps = [s for s in sleep_calls if s > 0.001]
+    assert len(cooldown_sleeps) >= 3
+    # Разброс достаточный, чтобы значения не совпадали все
+    assert len(set(round(s, 4) for s in cooldown_sleeps)) >= 2

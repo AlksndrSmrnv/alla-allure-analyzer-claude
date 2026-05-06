@@ -2,10 +2,15 @@
 
 import asyncio
 import logging
+import random
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from alla.exceptions import LLMApiError
 from alla.models.llm import TokenUsage
+
+if TYPE_CHECKING:
+    from alla.services.llm_rate_coordinator import LLMRateCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +107,7 @@ class GigaChatClient:
         timeout: int = 120,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
+        coordinator: "LLMRateCoordinator | None" = None,
     ) -> None:
         from gigachat import GigaChat
 
@@ -109,6 +115,7 @@ class GigaChatClient:
         self._base_url = base_url.rstrip("/")
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
+        self._coordinator = coordinator
         self._rate_limit_until: float = 0.0
         self._rate_limit_lock: asyncio.Lock = asyncio.Lock()
         self._giga = GigaChat(
@@ -121,18 +128,27 @@ class GigaChatClient:
         )
 
     async def _wait_for_rate_limit(self) -> None:
-        """Подождать, если активен глобальный rate-limit кулдаун.
+        """Подождать, если активен 429-кулдаун.
 
-        Lock удерживается только на время чтения _rate_limit_until.
-        Сам sleep выполняется вне lock, чтобы не блокировать _set_rate_limit_cooldown.
+        Если есть координатор — делегируем ему (process-wide кулдаун).
+        Иначе — локальный fallback для CLI/тестов без координатора.
         """
+        if self._coordinator is not None:
+            await self._coordinator.wait_cooldown()
+            return
         async with self._rate_limit_lock:
             remaining = self._rate_limit_until - asyncio.get_running_loop().time()
         if remaining > 0:
             await asyncio.sleep(remaining)
 
-    async def _set_rate_limit_cooldown(self, delay: float) -> None:
-        """Установить/продлить глобальный кулдаун (берётся максимум из текущего и нового)."""
+    async def _set_rate_limit_cooldown(self, delay: float, *, reason: str = "429") -> None:
+        """Установить/продлить кулдаун (берётся максимум).
+
+        Делегирует в координатор если он есть; иначе обновляет локальное состояние.
+        """
+        if self._coordinator is not None:
+            await self._coordinator.trigger_cooldown(delay, reason=reason)
+            return
         async with self._rate_limit_lock:
             new_until = asyncio.get_running_loop().time() + delay
             if new_until > self._rate_limit_until:
@@ -197,7 +213,9 @@ class GigaChatClient:
                 backoff = self._retry_base_delay * (2 ** attempt)
                 raw_exc = last_error.__cause__ if last_error else None
                 server_delay = _extract_retry_after(raw_exc) if raw_exc else None
-                delay = max(backoff, server_delay) if server_delay is not None else backoff
+                delay = self._compute_backoff_with_jitter(backoff, server_delay)
+                status = _extract_status_code(raw_exc) if raw_exc else None
+                reason = f"{status}" if status else "network"
                 logger.warning(
                     "GigaChat ошибка (попытка %d/%d): %s — кулдаун %.1fs%s",
                     attempt + 1,
@@ -206,11 +224,41 @@ class GigaChatClient:
                     delay,
                     f" (Retry-After: {server_delay:.0f}s)" if server_delay else "",
                 )
-                await self._set_rate_limit_cooldown(delay)
+                await self._set_rate_limit_cooldown(delay, reason=reason)
             elif last_error is not None:
                 raise last_error
 
         raise last_error  # type: ignore[misc]
+
+    def _compute_backoff_with_jitter(
+        self,
+        backoff: float,
+        server_delay: float | None,
+    ) -> float:
+        """Equal jitter поверх exponential backoff; учитывает Retry-After.
+
+        Без jitter несколько параллельных задач, словивших 429 одновременно,
+        перезапускают запрос ровно в один и тот же момент → thundering herd.
+        Equal jitter (``base/2 + uniform(0, base/2)``) даёт ожидаемую среднюю
+        задержку ``3*base/4`` и при этом разводит retry-моменты во времени.
+        """
+        if self._coordinator is not None:
+            jittered_backoff = self._coordinator.jitter_backoff(backoff)
+            if server_delay is None:
+                return jittered_backoff
+            jittered_server = self._coordinator.jitter_retry_after(server_delay)
+            return max(jittered_backoff, jittered_server)
+
+        # Локальный fallback (CLI/тесты без координатора).
+        if backoff <= 0:
+            jittered_backoff = 0.0
+        else:
+            half = backoff / 2
+            jittered_backoff = half + random.uniform(0.0, half)
+        if server_delay is None:
+            return jittered_backoff
+        jittered_server = server_delay + random.uniform(0.0, server_delay * 0.2)
+        return max(jittered_backoff, jittered_server)
 
     async def close(self) -> None:
         """Освободить ресурсы."""

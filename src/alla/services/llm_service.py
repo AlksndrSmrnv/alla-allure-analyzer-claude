@@ -15,7 +15,7 @@
 
 import asyncio
 import logging
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from alla.clients.gigachat_client import ChatResponse
 from alla.knowledge.models import KBMatchResult
@@ -31,6 +31,9 @@ from alla.services.comment_push_service import (
     format_comment as format_llm_comment,
     push_comments as push_llm_results,
 )
+
+if TYPE_CHECKING:
+    from alla.services.llm_rate_coordinator import LLMRateCoordinator
 from alla.services.prompt_builder_service import (
     DEFAULT_LOG_MAX_CHARS as _PROMPT_LOG_MAX_CHARS,
     DEFAULT_MESSAGE_MAX_CHARS as _PROMPT_MESSAGE_MAX_CHARS,
@@ -57,6 +60,16 @@ class LLMClient(Protocol):
     """Протокол LLM-клиента для LLMService."""
 
     async def chat(self, system_prompt: str, user_prompt: str) -> ChatResponse: ...
+
+
+class _NullAsyncContext:
+    """No-op async-context: ``async with`` без эффекта (для passthrough)."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
 
 
 def build_cluster_prompt(
@@ -123,6 +136,7 @@ class LLMService:
         message_max_chars: int = _PROMPT_MESSAGE_MAX_CHARS,
         trace_max_chars: int = _PROMPT_TRACE_MAX_CHARS,
         log_max_chars: int = _PROMPT_LOG_MAX_CHARS,
+        coordinator: "LLMRateCoordinator | None" = None,
     ) -> None:
         self._client = client
         self._concurrency = concurrency
@@ -130,6 +144,7 @@ class LLMService:
         self._message_max_chars = message_max_chars
         self._trace_max_chars = trace_max_chars
         self._log_max_chars = log_max_chars
+        self._coordinator = coordinator
         self._rate_lock = asyncio.Lock()
         self._last_request_time = 0.0
 
@@ -138,7 +153,12 @@ class LLMService:
         system_prompt: str,
         user_prompt: str,
     ) -> ChatResponse:
-        """Вызвать LLM с минимальным интервалом между запросами."""
+        """Вызвать LLM с глобальным rate-limit (через координатор) или
+        локальным интервалом, если координатор не задан."""
+        if self._coordinator is not None:
+            async with self._coordinator.acquire():
+                return await self._client.chat(system_prompt, user_prompt)
+
         if self._request_delay > 0:
             async with self._rate_lock:
                 loop = asyncio.get_running_loop()
@@ -173,7 +193,12 @@ class LLMService:
         if failed_tests:
             test_by_id = {t.test_result_id: t for t in failed_tests}
 
-        semaphore = asyncio.Semaphore(self._concurrency)
+        # Если есть глобальный координатор, он сам ограничивает concurrency.
+        # Иначе используем per-instance семафор (CLI/тесты без координатора).
+        if self._coordinator is not None:
+            semaphore: asyncio.Semaphore | _NullAsyncContext = _NullAsyncContext()
+        else:
+            semaphore = asyncio.Semaphore(self._concurrency)
         analyses: dict[str, LLMClusterAnalysis] = {}
         analyzed = 0
         failed = 0
