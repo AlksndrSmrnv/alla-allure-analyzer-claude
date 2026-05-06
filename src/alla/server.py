@@ -153,6 +153,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     _state.auth = auth
     _reset_lazy_stores_and_caches()
 
+    # Пересобираем process-wide LLM rate-coordinator с актуальными настройками,
+    # чтобы он использовал свежие llm_concurrency/llm_request_delay.
+    from alla.services.llm_rate_coordinator import reset_coordinator
+
+    reset_coordinator()
+
     if settings.reports_dir:
         from pathlib import Path
 

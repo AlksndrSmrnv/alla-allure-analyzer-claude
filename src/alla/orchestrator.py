@@ -271,7 +271,10 @@ async def _run_llm_stage(
     try:
         from alla.clients.gigachat_client import GigaChatClient
         from alla.models.llm import LLMLaunchSummary
+        from alla.services.llm_rate_coordinator import get_coordinator
         from alla.services.llm_service import LLMService
+
+        coordinator = get_coordinator(settings)
 
         try:
             cert_path, key_path = settings.resolve_cert_files()
@@ -284,6 +287,7 @@ async def _run_llm_stage(
                 timeout=settings.llm_timeout,
                 max_retries=settings.llm_max_retries,
                 retry_base_delay=settings.llm_retry_base_delay,
+                coordinator=coordinator,
             )
         except Exception as exc:
             logger.warning("LLM stage пропущен: не удалось подготовить GigaChat: %s", exc)
@@ -296,6 +300,7 @@ async def _run_llm_stage(
             message_max_chars=settings.llm_prompt_message_max_chars,
             trace_max_chars=settings.llm_prompt_trace_max_chars,
             log_max_chars=settings.llm_prompt_log_max_chars,
+            coordinator=coordinator,
         )
         llm_result = None
         try:
