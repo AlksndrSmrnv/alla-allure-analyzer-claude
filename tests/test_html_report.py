@@ -30,6 +30,26 @@ def _extract_error_example_textarea(report_html: str) -> str:
     return _html.unescape(match.group(1))
 
 
+def test_html_report_rerun_button_opens_attached_new_report() -> None:
+    """Rerun-кнопка ждёт новый report URL и открывает его отдельным кликом."""
+    result = AnalysisResult(
+        triage_report=make_triage_report(launch_id=123),
+        clustering_report=make_clustering_report(launch_id=123),
+    )
+
+    html = generate_html_report(
+        result,
+        server_url="https://alla.example",
+    )
+
+    assert "push_comments=false&push_report_link=true" in html
+    assert "push_report_link=false" not in html
+    assert "Открыть новый анализ" in html
+    assert "is-ready" in html
+    assert "X-Report-URL" in html
+    assert "window.location.href" in html
+
+
 def test_guided_onboarding_uses_project_learning_flow() -> None:
     """Guided mode показывает действия обучения проекта вместо обычного KB-блока."""
     cluster = make_failure_cluster(cluster_id="c1", label="Payment timeout", member_count=5)
