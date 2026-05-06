@@ -294,10 +294,12 @@ async def test_analyze_html_attaches_report_link_when_only_comments_disabled(
     async with _http_client as client:
         resp = await client.post(
             "/api/v1/analyze/123/html?push_comments=false&push_report_link=true",
+            headers={"Origin": "https://jenkins.example"},
         )
 
     assert resp.status_code == 200
     assert resp.headers["X-Report-URL"] == "https://jenkins.example/alla-report.html"
+    assert "X-Report-URL" in resp.headers["Access-Control-Expose-Headers"]
     assert mock_client.patch_launch_link_calls == [
         (123, "[Alla] HTML", "https://jenkins.example/alla-report.html"),
     ]

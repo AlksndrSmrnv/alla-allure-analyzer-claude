@@ -1276,6 +1276,14 @@ _CSS = """
       background: #1d4ed8;
       box-shadow: 0 2px 6px rgba(37,99,235,0.25);
     }
+    .rerun-btn.is-ready {
+      background: #15803d;
+      border-color: #15803d;
+    }
+    .rerun-btn.is-ready:hover:not([disabled]) {
+      background: #166534;
+      box-shadow: 0 2px 6px rgba(21,128,61,0.25);
+    }
     .rerun-btn[disabled] {
       cursor: progress;
       opacity: 0.75;
@@ -1868,11 +1876,18 @@ _RERUN_SCRIPT = """
   var defaultLabel = labelEl ? labelEl.textContent : 'Перезапустить анализ';
   btn.addEventListener('click', function () {
     if (btn.disabled) return;
+    var newReportUrl = btn.getAttribute('data-new-report-url');
+    if (newReportUrl) {
+      window.location.href = newReportUrl;
+      return;
+    }
     var launchId = btn.getAttribute('data-launch-id');
     var serverUrl = (btn.getAttribute('data-server-url') || '').replace(/\\/$/, '');
     if (!launchId || !serverUrl) return;
-    var url = serverUrl + '/api/v1/analyze/' + encodeURIComponent(launchId) + '/html?push_comments=false&push_report_link=false';
+    var url = serverUrl + '/api/v1/analyze/' + encodeURIComponent(launchId) + '/html?push_comments=false&push_report_link=true';
     btn.disabled = true;
+    btn.removeAttribute('data-new-report-url');
+    btn.classList.remove('is-ready');
     btn.classList.add('is-loading');
     if (labelEl) labelEl.textContent = 'Анализ…';
     var controller = new AbortController();
@@ -1888,15 +1903,31 @@ _RERUN_SCRIPT = """
           throw new Error('HTTP ' + res.status + (body ? ': ' + body.slice(0, 300) : ''));
         });
       }
-      return res.text();
-    }).then(function (html) {
+      var reportUrl = res.headers.get('X-Report-URL');
+      if (reportUrl) {
+        return { reportUrl: reportUrl };
+      }
+      return res.text().then(function (html) {
+        return { html: html };
+      });
+    }).then(function (result) {
+      if (result.reportUrl) {
+        btn.disabled = false;
+        btn.classList.remove('is-loading');
+        btn.classList.add('is-ready');
+        btn.setAttribute('data-new-report-url', result.reportUrl);
+        if (labelEl) labelEl.textContent = 'Открыть новый анализ';
+        return;
+      }
       document.open();
-      document.write(html);
+      document.write(result.html);
       document.close();
     }).catch(function (err) {
       clearTimeout(timer);
       btn.disabled = false;
       btn.classList.remove('is-loading');
+      btn.classList.remove('is-ready');
+      btn.removeAttribute('data-new-report-url');
       if (labelEl) labelEl.textContent = defaultLabel;
       var message = (err && err.name === 'AbortError')
         ? 'Время ожидания анализа истекло.'
