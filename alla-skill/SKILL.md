@@ -165,8 +165,9 @@ python alla-skill/scripts/generate_report.py --run-id 42
 
 ### 6. (Опц.) Постинг в Allure TestOps
 
-**Push выключен по умолчанию (`ALLURE_PUSH_TO_TESTOPS=false`). Не вызывай
-push без явного запроса от пользователя.** Дефолт — `--dry-run`.
+**Запись комментариев в TestOps выключена по умолчанию
+(`ALLURE_PUSH_COMMENTS=false`). Не вызывай push без явного запроса от
+пользователя.** Дефолт — `--dry-run`.
 
 ```bash
 # Посмотреть, что было бы записано
@@ -231,7 +232,8 @@ python alla-skill/scripts/record_feedback.py --run-id 42 --cluster-id c-abc \
 | `ALLURE_TOKEN` | да | API-токен |
 | `ALLURE_PROJECT_ID` | да | ID проекта |
 | `ALLURE_KB_POSTGRES_DSN` | да | DSN PostgreSQL |
-| `ALLURE_PUSH_TO_TESTOPS` | нет | По умолчанию `false`. Не включай по своей инициативе. |
+| `ALLURE_PUSH_COMMENTS` | нет | По умолчанию `false`. Не включай по своей инициативе. |
+| `ALLURE_PUSH_REPORT_LINK` | нет | По умолчанию `true`. Прикрепляет ссылку на HTML-отчёт к запуску. |
 | `ALLURE_REPORTS_DIR` | нет | Директория для HTML-отчётов |
 | `ALLURE_FEEDBACK_SERVER_URL` | нет | URL alla-server для KB-кнопок и like/dislike в HTML. Без него HTML рендерится без интерактива. Для локальной работы — `http://127.0.0.1:8090` + `serve.py`. |
 | `ALLURE_SERVER_EXTERNAL_URL` | нет | Публичный URL для ссылок `/reports/<file>` и кнопки «Перезапустить анализ». При локальном serve.py — то же значение, что `ALLURE_FEEDBACK_SERVER_URL`. |
@@ -245,4 +247,4 @@ python alla-skill/scripts/record_feedback.py --run-id 42 --cluster-id c-abc \
 * `ConfigurationError: ALLURE_KB_POSTGRES_DSN required` — не заполнен `.env`.
 * `psycopg.OperationalError` — недоступна БД, проверь DSN/sslmode/доступы.
 * `404 launch not found` — неверный `project_id` или нет прав у токена.
-* `push_disabled` — попытка push без `--confirm` при `ALLURE_PUSH_TO_TESTOPS=false`.
+* `push_disabled` — попытка push без `--confirm` при `ALLURE_PUSH_COMMENTS=false`.

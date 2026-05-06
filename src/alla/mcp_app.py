@@ -106,7 +106,8 @@ def _build_compact_summary(
 
 async def _run_or_translate(
     launch_id: int,
-    push_to_testops: bool | None,
+    push_comments: bool | None,
+    push_report_link: bool | None,
 ) -> "AnalysisResult":
     """Прогнать анализ через server._run_analysis_or_raise и пере-поднять
     HTTPException как обычный RuntimeError — FastMCP отдаст его клиенту
@@ -118,7 +119,9 @@ async def _run_or_translate(
 
     try:
         return await _run_analysis_or_raise(
-            launch_id, push_to_testops=push_to_testops
+            launch_id,
+            push_comments=push_comments,
+            push_report_link=push_report_link,
         )
     except HTTPException as exc:
         raise RuntimeError(f"alla {exc.status_code}: {exc.detail}") from exc
@@ -127,7 +130,8 @@ async def _run_or_translate(
 @mcp.tool()
 async def analyze_launch(
     launch_id: int,
-    push_to_testops: bool | None = None,
+    push_comments: bool | None = None,
+    push_report_link: bool | None = None,
 ) -> dict[str, Any]:
     """Проанализировать прогон Allure TestOps по его ID.
 
@@ -136,21 +140,23 @@ async def analyze_launch(
 
     Args:
         launch_id: числовой ID запуска (launch) в Allure TestOps.
-        push_to_testops: переопределить ``ALLURE_PUSH_TO_TESTOPS``
-            для этого вызова. ``None`` — использовать значение из конфига.
+        push_comments: переопределить ``ALLURE_PUSH_COMMENTS`` для этого
+            вызова. ``None`` — использовать значение из конфига.
+        push_report_link: переопределить ``ALLURE_PUSH_REPORT_LINK``.
 
     Returns:
         Компактная сводка: счётчики падений, кластеры (label/size/signature),
         совпадения базы знаний и краткий LLM-вердикт по каждому кластеру.
     """
-    result = await _run_or_translate(launch_id, push_to_testops)
+    result = await _run_or_translate(launch_id, push_comments, push_report_link)
     return _build_compact_summary(result, report_url=None)
 
 
 @mcp.tool()
 async def analyze_launch_html(
     launch_id: int,
-    push_to_testops: bool | None = None,
+    push_comments: bool | None = None,
+    push_report_link: bool | None = None,
 ) -> dict[str, Any]:
     """Проанализировать прогон и сгенерировать HTML-отчёт.
 
@@ -160,7 +166,8 @@ async def analyze_launch_html(
 
     Args:
         launch_id: числовой ID запуска в Allure TestOps.
-        push_to_testops: переопределить ``ALLURE_PUSH_TO_TESTOPS``.
+        push_comments: переопределить ``ALLURE_PUSH_COMMENTS``.
+        push_report_link: переопределить ``ALLURE_PUSH_REPORT_LINK``.
 
     Returns:
         ``report_url`` — кликабельная ссылка на сохранённый отчёт
@@ -183,7 +190,7 @@ async def analyze_launch_html(
     state = server_module._state
     settings = state.settings
 
-    result = await _run_or_translate(launch_id, push_to_testops)
+    result = await _run_or_translate(launch_id, push_comments, push_report_link)
 
     report_filename: str | None = None
     if settings.reports_dir or state.report_store:

@@ -1871,7 +1871,7 @@ _RERUN_SCRIPT = """
     var launchId = btn.getAttribute('data-launch-id');
     var serverUrl = (btn.getAttribute('data-server-url') || '').replace(/\\/$/, '');
     if (!launchId || !serverUrl) return;
-    var url = serverUrl + '/api/v1/analyze/' + encodeURIComponent(launchId) + '/html?push_to_testops=false';
+    var url = serverUrl + '/api/v1/analyze/' + encodeURIComponent(launchId) + '/html?push_comments=false&push_report_link=false';
     btn.disabled = true;
     btn.classList.add('is-loading');
     if (labelEl) labelEl.textContent = 'Анализ…';

@@ -41,7 +41,7 @@ TestOps.
    step-aware фильтрация и exact feedback memory.
 7. Если настроен GigaChat, LLM получает данные кластера и совпадения базы
    знаний, возвращает анализ по кластерам и summary запуска.
-8. При `ALLURE_PUSH_TO_TESTOPS=true` в TestOps пишутся LLM-комментарии, если
+8. При `ALLURE_PUSH_COMMENTS=true` в TestOps пишутся LLM-комментарии, если
    LLM успешно отработал; иначе используется fallback KB push.
 9. Формируется self-contained HTML-отчёт и, если есть публичный URL,
    ссылка прикрепляется к launch links в TestOps.
@@ -105,8 +105,9 @@ alla-server
 | `GET` | `/dashboard` | self-contained dashboard UI |
 | `ANY` | `/mcp` | MCP streamable HTTP tools `analyze_launch`, `analyze_launch_html` |
 
-Query parameter `push_to_testops=false` у analyze endpoints запрещает запись
-комментариев/ссылок в TestOps для конкретного запроса.
+Query-параметры `push_comments` и `push_report_link` у analyze endpoints
+переопределяют `ALLURE_PUSH_COMMENTS` и `ALLURE_PUSH_REPORT_LINK` для одного
+запроса.
 
 ## База знаний
 

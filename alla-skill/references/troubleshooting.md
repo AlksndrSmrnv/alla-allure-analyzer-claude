@@ -62,7 +62,7 @@ cp alla-skill/.env.example alla-skill/.env
 ## `push_disabled` envelope
 
 Push выключен по умолчанию. Чтобы запустить реальный push, передай
-`--confirm` (или включи `ALLURE_PUSH_TO_TESTOPS=true` в `.env`, что не
+`--confirm` (или включи `ALLURE_PUSH_COMMENTS=true` в `.env`, что не
 рекомендуется). Для предпросмотра — `--dry-run`.
 
 ## `Невалидный agent payload`

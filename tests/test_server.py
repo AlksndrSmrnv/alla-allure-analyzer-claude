@@ -111,7 +111,8 @@ def _setup_state(client: Any = None, settings: Any = None) -> None:
 class _DummySettings:
     """Минимальный Settings-заглушка для сервера."""
     detail_concurrency: int = 5
-    push_to_testops: bool = True
+    push_comments: bool = False
+    push_report_link: bool = True
     reports_dir: str = ""
     report_url: str = ""
     server_external_url: str = ""
@@ -228,23 +229,23 @@ async def test_analyze_includes_clustering(monkeypatch, _http_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_analyze_html_push_false_does_not_attach_report_link(
+async def test_analyze_html_push_report_link_false_does_not_attach_report_link(
     monkeypatch,
     _http_client,
 ) -> None:
-    """?push_to_testops=false запрещает запись ссылки на отчёт в TestOps."""
+    """?push_report_link=false запрещает запись ссылки на отчёт в TestOps."""
     mock_client = _MockClient()
     _setup_state(
         client=mock_client,
         settings=_DummySettings(
-            push_to_testops=True,
+            push_report_link=True,
             report_url="https://jenkins.example/alla-report.html",
         ),
     )
     captured_settings: dict[str, Any] = {}
 
     async def mock_analyze(launch_id, client, settings, *, updater=None):
-        captured_settings["push_to_testops"] = settings.push_to_testops
+        captured_settings["push_report_link"] = settings.push_report_link
         return _make_analysis_result()
 
     monkeypatch.setattr("alla.orchestrator.analyze_launch", mock_analyze)
@@ -255,12 +256,73 @@ async def test_analyze_html_push_false_does_not_attach_report_link(
     monkeypatch.setattr("alla.server.persist_generated_report", lambda **kwargs: None)
 
     async with _http_client as client:
-        resp = await client.post("/api/v1/analyze/123/html?push_to_testops=false")
+        resp = await client.post("/api/v1/analyze/123/html?push_report_link=false")
 
     assert resp.status_code == 200
-    assert captured_settings["push_to_testops"] is False
+    assert captured_settings["push_report_link"] is False
     assert resp.headers["X-Report-URL"] == "https://jenkins.example/alla-report.html"
     assert mock_client.patch_launch_link_calls == []
+
+
+@pytest.mark.asyncio
+async def test_analyze_html_attaches_report_link_when_only_comments_disabled(
+    monkeypatch,
+    _http_client,
+) -> None:
+    """push_comments=false + push_report_link=true → ссылка прикрепляется."""
+    mock_client = _MockClient()
+    _setup_state(
+        client=mock_client,
+        settings=_DummySettings(
+            push_comments=False,
+            push_report_link=True,
+            report_url="https://jenkins.example/alla-report.html",
+            report_link_name="[Alla] HTML",
+        ),
+    )
+
+    async def mock_analyze(launch_id, client, settings, *, updater=None):
+        return _make_analysis_result()
+
+    monkeypatch.setattr("alla.orchestrator.analyze_launch", mock_analyze)
+    monkeypatch.setattr(
+        "alla.server.build_html_report_content",
+        lambda result, *, settings: "<html><body>report</body></html>",
+    )
+    monkeypatch.setattr("alla.server.persist_generated_report", lambda **kwargs: None)
+
+    async with _http_client as client:
+        resp = await client.post(
+            "/api/v1/analyze/123/html?push_comments=false&push_report_link=true",
+        )
+
+    assert resp.status_code == 200
+    assert resp.headers["X-Report-URL"] == "https://jenkins.example/alla-report.html"
+    assert mock_client.patch_launch_link_calls == [
+        (123, "[Alla] HTML", "https://jenkins.example/alla-report.html"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_analyze_push_comments_query_overrides_settings(
+    monkeypatch,
+    _http_client,
+) -> None:
+    """?push_comments=true пробрасывается в settings.push_comments."""
+    _setup_state(settings=_DummySettings(push_comments=False, push_report_link=False))
+    captured_settings: dict[str, Any] = {}
+
+    async def mock_analyze(launch_id, client, settings, *, updater=None):
+        captured_settings["push_comments"] = settings.push_comments
+        return _make_analysis_result()
+
+    monkeypatch.setattr("alla.orchestrator.analyze_launch", mock_analyze)
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/analyze/123?push_comments=true")
+
+    assert resp.status_code == 200
+    assert captured_settings["push_comments"] is True
 
 
 # ---------------------------------------------------------------------------
