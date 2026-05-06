@@ -72,9 +72,11 @@ class LLMRateCoordinator:
 
     async def wait_cooldown(self) -> None:
         """Подождать, пока истечёт глобальный 429-кулдаун."""
-        async with self._cooldown_lock:
-            remaining = self._cooldown_until - asyncio.get_running_loop().time()
-        if remaining > 0:
+        while True:
+            async with self._cooldown_lock:
+                remaining = self._cooldown_until - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return
             await asyncio.sleep(remaining)
 
     async def trigger_cooldown(self, delay: float, *, reason: str) -> None:

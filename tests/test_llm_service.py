@@ -177,6 +177,41 @@ async def test_analyze_clusters_uses_coordinator() -> None:
 
 
 @pytest.mark.asyncio
+async def test_analyze_clusters_does_not_wrap_client_that_uses_coordinator() -> None:
+    """Клиент, который сам координирует SDK-попытки, не получает внешний acquire."""
+
+    class _FakeCoordinator:
+        def __init__(self) -> None:
+            self.acquire_calls = 0
+
+        def acquire(self):
+            outer = self
+
+            class _Ctx:
+                async def __aenter__(self_inner) -> None:
+                    outer.acquire_calls += 1
+
+                async def __aexit__(self_inner, *_args: object) -> None:
+                    return None
+
+            return _Ctx()
+
+    class _Client:
+        uses_rate_coordinator = True
+
+        async def chat(self, system_prompt, user_prompt):
+            return _chat_response("ok")
+
+    coord = _FakeCoordinator()
+    service = LLMService(_Client(), coordinator=coord)  # type: ignore[arg-type]
+    cluster = make_failure_cluster(member_test_ids=[1])
+    result = await service.analyze_clusters(_make_report(cluster))
+
+    assert result.analyzed_count == 1
+    assert coord.acquire_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_analyze_clusters_handles_llm_error() -> None:
     """Per-cluster LLM failures сохраняются, не прерывая весь batch."""
 

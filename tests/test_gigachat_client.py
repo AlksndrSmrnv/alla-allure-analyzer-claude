@@ -535,6 +535,16 @@ async def test_chat_delegates_cooldown_to_coordinator_on_429(monkeypatch: pytest
             self.trigger_calls: list[tuple[float, str]] = []
             self.wait_calls = 0
 
+        def acquire(self):
+            class _Ctx:
+                async def __aenter__(self_inner) -> None:
+                    return None
+
+                async def __aexit__(self_inner, *_args: object) -> None:
+                    return None
+
+            return _Ctx()
+
         async def wait_cooldown(self) -> None:
             self.wait_calls += 1
 
@@ -576,6 +586,66 @@ async def test_chat_delegates_cooldown_to_coordinator_on_429(monkeypatch: pytest
     assert reason == "429"
     # Локальный _rate_limit_until НЕ должен меняться, т.к. cooldown делегирован.
     assert client._rate_limit_until == 0.0
+
+
+@pytest.mark.asyncio
+async def test_chat_wraps_each_retry_attempt_in_coordinator() -> None:
+    """Каждая физическая SDK-попытка проходит через coordinator.acquire()."""
+
+    class _FakeCoordinator:
+        def __init__(self) -> None:
+            self.acquire_calls = 0
+            self.trigger_calls: list[tuple[float, str]] = []
+            self.in_acquire = False
+
+        def acquire(self):
+            outer = self
+
+            class _Ctx:
+                async def __aenter__(self_inner) -> None:
+                    outer.acquire_calls += 1
+                    outer.in_acquire = True
+
+                async def __aexit__(self_inner, *_args: object) -> None:
+                    outer.in_acquire = False
+
+            return _Ctx()
+
+        async def wait_cooldown(self) -> None:
+            return None
+
+        async def trigger_cooldown(self, delay: float, *, reason: str) -> None:
+            self.trigger_calls.append((delay, reason))
+
+        def jitter_backoff(self, base: float) -> float:
+            return base
+
+        def jitter_retry_after(self, server: float) -> float:
+            return server
+
+    coord = _FakeCoordinator()
+
+    class _HttpError(Exception):
+        status_code = 503
+
+    chat_calls_inside_acquire: list[bool] = []
+
+    class _Giga:
+        def chat(self, _):
+            chat_calls_inside_acquire.append(coord.in_acquire)
+            if len(chat_calls_inside_acquire) == 1:
+                raise _HttpError("Service unavailable")
+            return _MockResponse(choices=[_MockChoice(_MockMessage("ok"))])
+
+    client = _make_client(_Giga(), coordinator=coord)
+    client._max_retries = 1
+
+    result = await client.chat("sys", "user")
+
+    assert result.text == "ok"
+    assert coord.acquire_calls == 2
+    assert chat_calls_inside_acquire == [True, True]
+    assert coord.trigger_calls
 
 
 @pytest.mark.asyncio

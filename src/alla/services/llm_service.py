@@ -156,6 +156,8 @@ class LLMService:
         """Вызвать LLM с глобальным rate-limit (через координатор) или
         локальным интервалом, если координатор не задан."""
         if self._coordinator is not None:
+            if getattr(self._client, "uses_rate_coordinator", False):
+                return await self._client.chat(system_prompt, user_prompt)
             async with self._coordinator.acquire():
                 return await self._client.chat(system_prompt, user_prompt)
 

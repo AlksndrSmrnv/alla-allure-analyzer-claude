@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+import alla.services.llm_rate_coordinator as rate_coordinator_module
 from alla.services.llm_rate_coordinator import (
     LLMRateCoordinator,
     get_coordinator,
@@ -76,6 +77,26 @@ async def test_global_cooldown_blocks_all() -> None:
     # Используем низкоуровневый путь через trigger но floor=5 — разумно проверять что есть задержка
     # На самом деле клампится до 5с, что слишком долго для теста. Тестируем floor отдельно.
     assert elapsed >= 0.05  # просто проверим что cooldown сработал
+
+
+@pytest.mark.asyncio
+async def test_wait_cooldown_rechecks_extended_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """wait_cooldown не выпускает задачу, если cooldown продлили во время sleep."""
+    monkeypatch.setattr(rate_coordinator_module, "_COOLDOWN_FLOOR", 0.0)
+    monkeypatch.setattr(rate_coordinator_module, "_COOLDOWN_CAP", 10.0)
+
+    coord = LLMRateCoordinator(concurrency=1, min_interval=0)
+    loop = asyncio.get_running_loop()
+    await coord.trigger_cooldown(0.05, reason="first")
+
+    start = loop.time()
+    waiter = asyncio.create_task(coord.wait_cooldown())
+    await asyncio.sleep(0.02)
+    await coord.trigger_cooldown(0.20, reason="extend")
+    await waiter
+
+    elapsed = loop.time() - start
+    assert elapsed >= 0.18
 
 
 @pytest.mark.asyncio

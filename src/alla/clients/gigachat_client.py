@@ -127,6 +127,11 @@ class GigaChatClient:
             timeout=timeout,
         )
 
+    @property
+    def uses_rate_coordinator(self) -> bool:
+        """Клиент сам оборачивает каждую физическую SDK-попытку в координатор."""
+        return self._coordinator is not None
+
     async def _wait_for_rate_limit(self) -> None:
         """Подождать, если активен 429-кулдаун.
 
@@ -168,18 +173,22 @@ class GigaChatClient:
         last_error: LLMApiError | None = None
 
         for attempt in range(1 + self._max_retries):
-            await self._wait_for_rate_limit()
-            logger.debug(
-                "GigaChat запрос: model=%s, user_len=%d, attempt=%d/%d",
-                self._model,
-                len(user_prompt),
-                attempt + 1,
-                1 + self._max_retries,
-            )
-
             retryable = False
             try:
-                response = await asyncio.to_thread(self._giga.chat, chat_request)
+                if self._coordinator is not None:
+                    async with self._coordinator.acquire():
+                        response = await self._send_chat_request(
+                            chat_request,
+                            user_prompt,
+                            attempt,
+                        )
+                else:
+                    await self._wait_for_rate_limit()
+                    response = await self._send_chat_request(
+                        chat_request,
+                        user_prompt,
+                        attempt,
+                    )
             except Exception as exc:
                 exc_str = str(exc)
                 status_code = _extract_status_code(exc)
@@ -229,6 +238,22 @@ class GigaChatClient:
                 raise last_error
 
         raise last_error  # type: ignore[misc]
+
+    async def _send_chat_request(
+        self,
+        chat_request: object,
+        user_prompt: str,
+        attempt: int,
+    ) -> object:
+        """Выполнить одну физическую попытку SDK-запроса."""
+        logger.debug(
+            "GigaChat запрос: model=%s, user_len=%d, attempt=%d/%d",
+            self._model,
+            len(user_prompt),
+            attempt + 1,
+            1 + self._max_retries,
+        )
+        return await asyncio.to_thread(self._giga.chat, chat_request)
 
     def _compute_backoff_with_jitter(
         self,
