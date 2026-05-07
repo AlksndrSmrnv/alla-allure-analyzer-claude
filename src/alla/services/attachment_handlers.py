@@ -58,17 +58,27 @@ class AttachmentHandler(Protocol):
 # StructuredErrorLogHandler
 # ---------------------------------------------------------------------------
 
-# Сигнатурные ключи структурированной лог-записи. Если в большинстве
-# объектов JSON-массива встречается ≥2 ключа из этого набора — значит,
-# перед нами журнал ошибок, а не случайный JSON-массив.
-_STRUCTURED_LOG_SIGNATURE_KEYS = frozenset({
-    "message",
-    "loglevel",
-    "stacktrace",
-    "subsystem",
-    "errorcode",
-    "timestamp",
+# =====================================================================
+# КОНФИГУРАЦИЯ РАСПОЗНАВАНИЯ ЖУРНАЛА — РЕДАКТИРУЙТЕ ЗДЕСЬ
+# =====================================================================
+# Чтобы handler признал JSON-массив структурированным журналом ошибок,
+# в каждой записи (точнее — в большинстве записей, см.
+# ``_STRUCTURED_LOG_MATCH_RATIO``) должны присутствовать ВСЕ ключи из
+# набора ниже. Сравнение регистронезависимое — указывайте ключи в
+# lower-case.
+#
+# Чтобы добавить или убрать обязательные поля сигнатуры — отредактируйте
+# этот frozenset. Больше ничего менять не нужно: алгоритм автоматически
+# подхватит новый набор.
+_STRUCTURED_LOG_REQUIRED_KEYS: frozenset[str] = frozenset({
+    "deploymentunit",
+    "tenantcode",
 })
+
+# Минимальная доля объектов массива, в которых должны присутствовать ВСЕ
+# обязательные ключи, чтобы файл был признан структурированным журналом.
+_STRUCTURED_LOG_MATCH_RATIO = 0.6
+# =====================================================================
 
 # Ключи для извлечения correlation-IDs (lowercased).
 _STRUCTURED_LOG_CORR_KEYS = frozenset({
@@ -78,11 +88,6 @@ _STRUCTURED_LOG_CORR_KEYS = frozenset({
     "correlationid",
     "traceid",
 })
-
-# Минимальная доля объектов, которые должны выглядеть как лог-запись.
-_STRUCTURED_LOG_MATCH_RATIO = 0.6
-# Минимальное число ключей-сигнатуры в одном объекте, чтобы он считался "лог-записью".
-_STRUCTURED_LOG_MIN_KEYS = 2
 
 
 def _parse_json_array(content: bytes, decoded_text: str | None) -> list[Any] | None:
@@ -107,8 +112,16 @@ def _parse_json_array(content: bytes, decoded_text: str | None) -> list[Any] | N
 
 
 def _looks_like_structured_log(items: list[Any]) -> bool:
-    """Эвристика: похож ли список на журнал структурированных лог-записей."""
+    """Эвристика: похож ли список на журнал структурированных лог-записей.
+
+    Объект считается лог-записью, если содержит **все** ключи из
+    ``_STRUCTURED_LOG_REQUIRED_KEYS``. Файл признаётся журналом, если
+    таких объектов хотя бы ``_STRUCTURED_LOG_MATCH_RATIO`` от общего числа.
+    """
     if not items:
+        return False
+    if not _STRUCTURED_LOG_REQUIRED_KEYS:
+        # Пустая сигнатура запретит детект — на всякий случай.
         return False
 
     matched = 0
@@ -116,8 +129,7 @@ def _looks_like_structured_log(items: list[Any]) -> bool:
         if not isinstance(entry, dict):
             continue
         keys_lower = {str(k).lower() for k in entry}
-        overlap = len(keys_lower & _STRUCTURED_LOG_SIGNATURE_KEYS)
-        if overlap >= _STRUCTURED_LOG_MIN_KEYS:
+        if keys_lower.issuperset(_STRUCTURED_LOG_REQUIRED_KEYS):
             matched += 1
 
     return matched / len(items) >= _STRUCTURED_LOG_MATCH_RATIO

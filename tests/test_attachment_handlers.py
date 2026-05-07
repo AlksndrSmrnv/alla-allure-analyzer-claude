@@ -1,6 +1,7 @@
 """Тесты для StructuredErrorLogHandler и реестра обработчиков вложений."""
 
 import json
+from typing import Any
 
 from alla.models.testops import AttachmentMeta
 from alla.services.attachment_handlers import (
@@ -22,30 +23,66 @@ def _ctx(content: bytes, *, detected_type: str = "json", name: str = "log.txt") 
     )
 
 
+def _entry(**extra: Any) -> dict[str, Any]:
+    """Базовая запись журнала: содержит обязательные deploymentUnit/tenantCode."""
+    base: dict[str, Any] = {
+        "deploymentUnit": "billing-prod",
+        "tenantCode": "tenant-42",
+    }
+    base.update(extra)
+    return base
+
+
 class TestStructuredErrorLogHandlerDetection:
     def test_detects_structured_journal(self) -> None:
         items = [
-            {
-                "subsystem": "auth",
-                "stackTrace": "com.example.Auth.fail()",
-                "message": "Login failed",
-                "logLevel": "ERROR",
-            },
-            {
-                "subsystem": "db",
-                "message": "Timeout",
-                "logLevel": "ERROR",
-                "errorCode": "DB_42",
-            },
+            _entry(subsystem="auth", message="Login failed", logLevel="ERROR"),
+            _entry(subsystem="db", message="Timeout", logLevel="ERROR"),
         ]
         content = json.dumps(items, ensure_ascii=False).encode("utf-8")
         result = StructuredErrorLogHandler().handle(_ctx(content))
         assert result is not None
         assert result.label == "журнал"
         assert result.consumed is True
-        # Содержимое — валидный JSON-массив с теми же объектами, что были на входе.
         parsed = json.loads(result.section)
         assert parsed == items
+
+    def test_detects_with_only_required_keys(self) -> None:
+        """Достаточно одних обязательных ключей — никакие message/logLevel не нужны."""
+        items = [
+            {"deploymentUnit": "x", "tenantCode": "y"},
+            {"deploymentUnit": "x2", "tenantCode": "y2"},
+        ]
+        content = json.dumps(items).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+
+    def test_detection_is_case_insensitive_for_required_keys(self) -> None:
+        items = [
+            {"DeploymentUnit": "x", "TENANTCODE": "y", "msg": "..."},
+            {"deploymentunit": "x2", "tenantCode": "y2", "msg": "..."},
+        ]
+        content = json.dumps(items).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+
+    def test_rejects_when_one_required_key_missing(self) -> None:
+        """Только deploymentUnit без tenantCode — не журнал."""
+        items = [
+            {"deploymentUnit": "x", "message": "fail"},
+            {"deploymentUnit": "y", "message": "fail"},
+        ]
+        content = json.dumps(items).encode("utf-8")
+        assert StructuredErrorLogHandler().handle(_ctx(content)) is None
+
+    def test_rejects_when_other_required_key_missing(self) -> None:
+        """Только tenantCode без deploymentUnit — не журнал."""
+        items = [
+            {"tenantCode": "x", "message": "fail"},
+            {"tenantCode": "y", "message": "fail"},
+        ]
+        content = json.dumps(items).encode("utf-8")
+        assert StructuredErrorLogHandler().handle(_ctx(content)) is None
 
     def test_rejects_plain_array_of_unrelated_objects(self) -> None:
         items = [
@@ -56,9 +93,7 @@ class TestStructuredErrorLogHandlerDetection:
         assert StructuredErrorLogHandler().handle(_ctx(content)) is None
 
     def test_rejects_single_dict(self) -> None:
-        content = json.dumps(
-            {"message": "x", "logLevel": "ERROR", "stackTrace": "..."}
-        ).encode("utf-8")
+        content = json.dumps(_entry(message="x")).encode("utf-8")
         assert StructuredErrorLogHandler().handle(_ctx(content)) is None
 
     def test_rejects_empty_array(self) -> None:
@@ -68,13 +103,13 @@ class TestStructuredErrorLogHandlerDetection:
         assert StructuredErrorLogHandler().handle(_ctx(b"not json at all")) is None
 
     def test_rejects_xml_detected_type(self) -> None:
-        items = [{"message": "x", "logLevel": "ERROR", "stackTrace": "..."}]
+        items = [_entry(message="x")]
         content = json.dumps(items).encode("utf-8")
         result = StructuredErrorLogHandler().handle(_ctx(content, detected_type="xml"))
         assert result is None
 
     def test_rejects_binary_detected_type(self) -> None:
-        items = [{"message": "x", "logLevel": "ERROR", "stackTrace": "..."}]
+        items = [_entry(message="x")]
         content = json.dumps(items).encode("utf-8")
         assert (
             StructuredErrorLogHandler().handle(_ctx(content, detected_type="binary"))
@@ -84,9 +119,9 @@ class TestStructuredErrorLogHandlerDetection:
     def test_majority_threshold_60_percent(self) -> None:
         """3 из 5 объектов — лог-записи (60%), handler должен сработать."""
         items = [
-            {"message": "fail", "logLevel": "ERROR"},
-            {"message": "fail", "stackTrace": "..."},
-            {"subsystem": "x", "errorCode": "E1"},
+            _entry(message="fail-1"),
+            _entry(message="fail-2"),
+            _entry(message="fail-3"),
             {"unrelated": "data"},
             {"more": "junk"},
         ]
@@ -97,8 +132,8 @@ class TestStructuredErrorLogHandlerDetection:
     def test_below_threshold_rejected(self) -> None:
         """2 из 5 — ниже 60%, не срабатываем."""
         items = [
-            {"message": "fail", "logLevel": "ERROR"},
-            {"message": "fail", "stackTrace": "..."},
+            _entry(message="fail-1"),
+            _entry(message="fail-2"),
             {"unrelated": "data"},
             {"foo": "bar"},
             {"baz": "qux"},
@@ -110,24 +145,23 @@ class TestStructuredErrorLogHandlerDetection:
 class TestStructuredErrorLogHandlerFormatting:
     def test_section_is_pretty_printed_json_with_all_keys(self) -> None:
         items = [
-            {
-                "subsystem": "auth",
-                "logLevel": "ERROR",
-                "message": "Login failed",
-                "stackTrace": "com.example.Auth.fail()\n  at line 42",
-                "customField": "extra-value",
-            },
-            {
-                "subsystem": "db",
-                "logLevel": "WARN",
-                "message": "Slow query",
-                "stackTrace": "com.example.Db.q()",
-            },
+            _entry(
+                subsystem="auth",
+                logLevel="ERROR",
+                message="Login failed",
+                stackTrace="com.example.Auth.fail()\n  at line 42",
+                customField="extra-value",
+            ),
+            _entry(
+                subsystem="db",
+                logLevel="WARN",
+                message="Slow query",
+                stackTrace="com.example.Db.q()",
+            ),
         ]
         content = json.dumps(items, ensure_ascii=False).encode("utf-8")
         result = StructuredErrorLogHandler().handle(_ctx(content))
         assert result is not None
-        # Roundtrip: содержимое — валидный pretty-printed JSON, идентичный входу.
         parsed = json.loads(result.section)
         assert parsed == items
         # Pretty-print: должны быть переносы и отступы.
@@ -136,13 +170,13 @@ class TestStructuredErrorLogHandlerFormatting:
 
     def test_correlation_hint_extracted(self) -> None:
         items = [
-            {
-                "message": "fail",
-                "logLevel": "ERROR",
-                "stackTrace": "...",
-                "rqUID": "req-abc-123",
-                "operUID": "op-456",
-            }
+            _entry(
+                message="fail",
+                logLevel="ERROR",
+                stackTrace="...",
+                rqUID="req-abc-123",
+                operUID="op-456",
+            )
         ]
         content = json.dumps(items).encode("utf-8")
         result = StructuredErrorLogHandler().handle(_ctx(content))
@@ -152,14 +186,12 @@ class TestStructuredErrorLogHandlerFormatting:
     def test_correlation_hint_extracted_from_nested_object(self) -> None:
         """Correlation IDs во вложенных dict тоже находятся (как в общем JSON-сканере)."""
         items = [
-            {
-                "message": "fail",
-                "logLevel": "ERROR",
-                "stackTrace": "...",
-                "context": {
-                    "request": {"rqUID": "deep-req-1", "operUID": "deep-op-1"},
-                },
-            }
+            _entry(
+                message="fail",
+                logLevel="ERROR",
+                stackTrace="...",
+                context={"request": {"rqUID": "deep-req-1", "operUID": "deep-op-1"}},
+            )
         ]
         content = json.dumps(items).encode("utf-8")
         result = StructuredErrorLogHandler().handle(_ctx(content))
@@ -168,8 +200,8 @@ class TestStructuredErrorLogHandlerFormatting:
 
     def test_correlation_hint_none_when_absent(self) -> None:
         items = [
-            {"message": "fail", "logLevel": "ERROR", "stackTrace": "..."},
-            {"message": "fail2", "logLevel": "ERROR", "stackTrace": "..."},
+            _entry(message="fail", logLevel="ERROR", stackTrace="..."),
+            _entry(message="fail2", logLevel="ERROR", stackTrace="..."),
         ]
         content = json.dumps(items).encode("utf-8")
         result = StructuredErrorLogHandler().handle(_ctx(content))
@@ -180,32 +212,30 @@ class TestStructuredErrorLogHandlerFormatting:
         """Файл ~12 000 символов целиком попадает в секцию."""
         items = []
         for i in range(40):
-            items.append({
-                "subsystem": f"svc-{i}",
-                "logLevel": "ERROR",
-                "message": f"failure number {i} with reasonably long description " * 4,
-                "stackTrace": "com.example.Class.method()\n  at line 1\n  at line 2\n" * 3,
-            })
+            items.append(_entry(
+                subsystem=f"svc-{i}",
+                logLevel="ERROR",
+                message=f"failure number {i} with reasonably long description " * 4,
+                stackTrace="com.example.Class.method()\n  at line 1\n  at line 2\n" * 3,
+            ))
         content = json.dumps(items, ensure_ascii=False).encode("utf-8")
         assert len(content) >= 10_000
         result = StructuredErrorLogHandler().handle(_ctx(content))
         assert result is not None
-        # Roundtrip — все 40 записей сохранены целиком.
         assert json.loads(result.section) == items
 
     def test_nested_object_preserved(self) -> None:
         items = [
-            {
-                "message": "fail",
-                "logLevel": "ERROR",
-                "stackTrace": "...",
-                "context": {"userId": 42, "tags": ["a", "b"]},
-            }
+            _entry(
+                message="fail",
+                logLevel="ERROR",
+                stackTrace="...",
+                context={"userId": 42, "tags": ["a", "b"]},
+            )
         ]
         content = json.dumps(items, ensure_ascii=False).encode("utf-8")
         result = StructuredErrorLogHandler().handle(_ctx(content))
         assert result is not None
-        # Вложенная структура сохраняется как есть.
         assert json.loads(result.section) == items
 
 
@@ -214,8 +244,8 @@ class TestStructuredErrorLogHandlerNameAgnostic:
 
     def test_works_with_arbitrary_name(self) -> None:
         items = [
-            {"message": "fail", "logLevel": "ERROR", "stackTrace": "..."},
-            {"message": "fail2", "logLevel": "ERROR", "stackTrace": "..."},
+            _entry(message="fail"),
+            _entry(message="fail2"),
         ]
         content = json.dumps(items).encode("utf-8")
         for name in ("random.txt", "data.json", "Какой-то лог", "x.log", ""):
@@ -284,5 +314,4 @@ class TestDefaultHandlersRegistry:
         priorities = [h.priority for h in handlers]
         assert priorities == sorted(priorities)
         names = [h.name for h in handlers]
-        # Структурированный журнал должен идти первым
         assert names[0] == "structured-error-log"

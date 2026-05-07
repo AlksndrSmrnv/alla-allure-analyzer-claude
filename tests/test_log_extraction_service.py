@@ -553,6 +553,8 @@ class TestLogExtractionServiceIntegration:
 
         items = [
             {
+                "deploymentUnit": "billing-prod",
+                "tenantCode": "tenant-42",
                 "subsystem": "billing-service",
                 "stackTrace": "com.example.Billing.charge(Billing.java:42)\n  at sun.reflect.GeneratedMethodAccessor1.invoke",
                 "message": "Failed to charge order #123",
@@ -561,6 +563,8 @@ class TestLogExtractionServiceIntegration:
                 "rqUID": "req-abc-1",
             },
             {
+                "deploymentUnit": "notification-prod",
+                "tenantCode": "tenant-42",
                 "subsystem": "notification",
                 "stackTrace": "com.example.Notify.send(Notify.java:7)",
                 "message": "Email gateway unreachable",
