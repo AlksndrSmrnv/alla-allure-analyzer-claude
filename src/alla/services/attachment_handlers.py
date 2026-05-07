@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Protocol, runtime_checkable
@@ -58,17 +59,27 @@ class AttachmentHandler(Protocol):
 # StructuredErrorLogHandler
 # ---------------------------------------------------------------------------
 
-# Сигнатурные ключи структурированной лог-записи. Если в большинстве
-# объектов JSON-массива встречается ≥2 ключа из этого набора — значит,
-# перед нами журнал ошибок, а не случайный JSON-массив.
-_STRUCTURED_LOG_SIGNATURE_KEYS = frozenset({
-    "message",
-    "loglevel",
-    "stacktrace",
-    "subsystem",
-    "errorcode",
-    "timestamp",
+# =====================================================================
+# КОНФИГУРАЦИЯ РАСПОЗНАВАНИЯ ЖУРНАЛА — РЕДАКТИРУЙТЕ ЗДЕСЬ
+# =====================================================================
+# Чтобы handler признал JSON-массив структурированным журналом ошибок,
+# в каждой записи (точнее — в большинстве записей, см.
+# ``_STRUCTURED_LOG_MATCH_RATIO``) должны присутствовать ВСЕ ключи из
+# набора ниже. Сравнение регистронезависимое — указывайте ключи в
+# lower-case.
+#
+# Чтобы добавить или убрать обязательные поля сигнатуры — отредактируйте
+# этот frozenset. Больше ничего менять не нужно: алгоритм автоматически
+# подхватит новый набор.
+_STRUCTURED_LOG_REQUIRED_KEYS: frozenset[str] = frozenset({
+    "deploymentunit",
+    "tenantcode",
 })
+
+# Минимальная доля объектов массива, в которых должны присутствовать ВСЕ
+# обязательные ключи, чтобы файл был признан структурированным журналом.
+_STRUCTURED_LOG_MATCH_RATIO = 0.6
+# =====================================================================
 
 # Ключи для извлечения correlation-IDs (lowercased).
 _STRUCTURED_LOG_CORR_KEYS = frozenset({
@@ -79,36 +90,67 @@ _STRUCTURED_LOG_CORR_KEYS = frozenset({
     "traceid",
 })
 
-# Минимальная доля объектов, которые должны выглядеть как лог-запись.
-_STRUCTURED_LOG_MATCH_RATIO = 0.6
-# Минимальное число ключей-сигнатуры в одном объекте, чтобы он считался "лог-записью".
-_STRUCTURED_LOG_MIN_KEYS = 2
+
+# Максимальная глубина обхода JSON при поиске вложенного массива-журнала.
+_STRUCTURED_LOG_SEARCH_MAX_DEPTH = 10
 
 
-def _parse_json_array(content: bytes, decoded_text: str | None) -> list[Any] | None:
-    """Распарсить тело как JSON-массив. Возвращает None, если не массив."""
+def _parse_any_json(content: bytes, decoded_text: str | None) -> Any:
+    """Распарсить тело как любой JSON (dict / list / scalar). None — не JSON."""
     if decoded_text is not None:
         try:
-            obj = json.loads(decoded_text)
+            return json.loads(decoded_text)
         except (ValueError, json.JSONDecodeError):
-            obj = None
-        if isinstance(obj, list):
-            return obj
-        if obj is not None:
-            return None  # это валидный JSON, но не массив
-
-    # Fallback на потоковый парсер для случаев, когда decoded_text был None
-    # (decode не справился) — пробуем напрямую по байтам.
+            pass
+    # Fallback: ijson.items с пустым префиксом отдаёт значение целиком.
     try:
-        items = list(ijson.items(BytesIO(content), "item"))
+        for obj in ijson.items(BytesIO(content), "", multiple_values=True):
+            return obj
     except Exception:
         return None
-    return items if items else None
+    return None
+
+
+def _iter_candidate_arrays(obj: Any, depth: int = 0) -> Iterator[list[Any]]:
+    """Обойти JSON и вернуть все list-узлы (включая корневой).
+
+    Используется для поиска массива-журнала, который может лежать как на
+    верхнем уровне, так и быть вложенным внутрь произвольных объектов
+    (например ``{"data": [...]}`` или ``{"response": {"items": [...]}}``).
+    """
+    if depth > _STRUCTURED_LOG_SEARCH_MAX_DEPTH:
+        return
+    if isinstance(obj, list):
+        yield obj
+        for item in obj:
+            yield from _iter_candidate_arrays(item, depth + 1)
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            yield from _iter_candidate_arrays(value, depth + 1)
+
+
+def _find_journal_array(content: bytes, decoded_text: str | None) -> list[Any] | None:
+    """Найти первый JSON-массив (на любой глубине), похожий на журнал."""
+    parsed = _parse_any_json(content, decoded_text)
+    if parsed is None:
+        return None
+    for candidate in _iter_candidate_arrays(parsed):
+        if _looks_like_structured_log(candidate):
+            return candidate
+    return None
 
 
 def _looks_like_structured_log(items: list[Any]) -> bool:
-    """Эвристика: похож ли список на журнал структурированных лог-записей."""
+    """Эвристика: похож ли список на журнал структурированных лог-записей.
+
+    Объект считается лог-записью, если содержит **все** ключи из
+    ``_STRUCTURED_LOG_REQUIRED_KEYS``. Файл признаётся журналом, если
+    таких объектов хотя бы ``_STRUCTURED_LOG_MATCH_RATIO`` от общего числа.
+    """
     if not items:
+        return False
+    if not _STRUCTURED_LOG_REQUIRED_KEYS:
+        # Пустая сигнатура запретит детект — на всякий случай.
         return False
 
     matched = 0
@@ -116,8 +158,7 @@ def _looks_like_structured_log(items: list[Any]) -> bool:
         if not isinstance(entry, dict):
             continue
         keys_lower = {str(k).lower() for k in entry}
-        overlap = len(keys_lower & _STRUCTURED_LOG_SIGNATURE_KEYS)
-        if overlap >= _STRUCTURED_LOG_MIN_KEYS:
+        if keys_lower.issuperset(_STRUCTURED_LOG_REQUIRED_KEYS):
             matched += 1
 
     return matched / len(items) >= _STRUCTURED_LOG_MATCH_RATIO
@@ -175,11 +216,8 @@ class StructuredErrorLogHandler:
         if ctx.detected_type not in {"json", "text"}:
             return None
 
-        items = _parse_json_array(ctx.content, ctx.decoded_text)
+        items = _find_journal_array(ctx.content, ctx.decoded_text)
         if items is None:
-            return None
-
-        if not _looks_like_structured_log(items):
             return None
 
         # Содержимое отдаём как pretty-printed JSON: структура и порядок полей
