@@ -181,17 +181,40 @@ def _format_structured_entry(index: int, entry: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_STRUCTURED_LOG_CORR_MAX_DEPTH = 10
+
+
+def _collect_corr_ids_recursive(
+    obj: Any,
+    pairs: dict[str, str],
+    depth: int = 0,
+) -> None:
+    """Рекурсивно собрать correlation-IDs из вложенных dict/list."""
+    if depth > _STRUCTURED_LOG_CORR_MAX_DEPTH:
+        return
+    if isinstance(obj, dict):
+        for raw_key, raw_value in obj.items():
+            if str(raw_key).lower() in _STRUCTURED_LOG_CORR_KEYS:
+                if isinstance(raw_value, (str, int)) and str(raw_value).strip():
+                    pairs.setdefault(str(raw_key), str(raw_value))
+                    continue
+            _collect_corr_ids_recursive(raw_value, pairs, depth + 1)
+    elif isinstance(obj, list):
+        for item in obj:
+            _collect_corr_ids_recursive(item, pairs, depth + 1)
+
+
 def _extract_structured_correlation(items: list[Any]) -> str | None:
-    """Найти первый объект с correlation-полями и сформировать строку."""
+    """Найти первый объект с correlation-полями (любой вложенности).
+
+    Соответствует поведению `_scan_json_for_http_signals` в общем сканере:
+    correlation IDs ищутся рекурсивно во всех вложенных dict/list.
+    """
     for entry in items:
         if not isinstance(entry, dict):
             continue
         pairs: dict[str, str] = {}
-        for raw_key, raw_value in entry.items():
-            if str(raw_key).lower() not in _STRUCTURED_LOG_CORR_KEYS:
-                continue
-            if isinstance(raw_value, (str, int)) and str(raw_value).strip():
-                pairs.setdefault(str(raw_key), str(raw_value))
+        _collect_corr_ids_recursive(entry, pairs)
         formatted = format_correlation_pairs(pairs)
         if formatted is not None:
             return formatted

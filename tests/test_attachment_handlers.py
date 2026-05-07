@@ -155,6 +155,23 @@ class TestStructuredErrorLogHandlerFormatting:
         assert result is not None
         assert result.correlation_hint == "operUID=op-456, rqUID=req-abc-123"
 
+    def test_correlation_hint_extracted_from_nested_object(self) -> None:
+        """Correlation IDs во вложенных dict тоже находятся (как в общем JSON-сканере)."""
+        items = [
+            {
+                "message": "fail",
+                "logLevel": "ERROR",
+                "stackTrace": "...",
+                "context": {
+                    "request": {"rqUID": "deep-req-1", "operUID": "deep-op-1"},
+                },
+            }
+        ]
+        content = json.dumps(items).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert result.correlation_hint == "operUID=deep-op-1, rqUID=deep-req-1"
+
     def test_correlation_hint_none_when_absent(self) -> None:
         items = [
             {"message": "fail", "logLevel": "ERROR", "stackTrace": "..."},
