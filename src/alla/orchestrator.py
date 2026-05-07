@@ -1,6 +1,7 @@
 """Общая логика анализа запуска — используется и CLI, и HTTP-сервером."""
 
 import logging
+import time
 from dataclasses import dataclass, field
 
 from typing import TYPE_CHECKING
@@ -54,6 +55,7 @@ class AnalysisResult:
     llm_launch_summary: "LLMLaunchSummary | None" = None
     feedback_contexts: dict[str, FeedbackClusterContext] = field(default_factory=dict)
     onboarding: OnboardingState = field(default_factory=OnboardingState)
+    analysis_duration_seconds: float | None = None
 
 
 async def analyze_launch(
@@ -68,6 +70,8 @@ async def analyze_launch(
     Цепочка: триаж → логи → кластеризация → KB-поиск → LLM-анализ → LLM-push → KB-push (fallback).
     """
     from alla.services.triage_service import TriageService
+
+    started_at = time.perf_counter()
 
     service = TriageService(client, settings)
     report = await service.analyze_launch(launch_id)
@@ -120,6 +124,7 @@ async def analyze_launch(
         llm_launch_summary=llm_launch_summary,
         feedback_contexts=kb_stage.feedback_contexts,
         onboarding=onboarding,
+        analysis_duration_seconds=time.perf_counter() - started_at,
     )
 
 

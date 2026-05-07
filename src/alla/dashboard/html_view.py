@@ -1,8 +1,9 @@
 """Самодостаточная HTML-страница дашборда использования.
 
 Серверный шаблон отдаёт пустую оболочку. Данные подгружаются на клиенте
-через ``fetch('/api/v1/dashboard/stats?days=N')`` и рендерятся ванильным JS.
-Ни внешних CSS, ни сторонних скриптов — только inline.
+через ``fetch('/api/v1/dashboard/stats?days=N')`` или
+``?date=YYYY-MM-DD`` и рендерятся ванильным JS. Ни внешних CSS,
+ни сторонних скриптов — только inline.
 """
 
 from __future__ import annotations
@@ -50,12 +51,15 @@ body {
   align-items: center;
   gap: 1rem;
   margin-bottom: 1.5rem;
+  flex-wrap: wrap;
 }
 .header-logo { height: 40px; width: auto; flex-shrink: 0; }
 .header-title { font-size: 1.25rem; font-weight: 600; flex: 1; }
-.header-controls { display: flex; align-items: center; gap: 0.5rem; }
+.header-controls { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .header-controls label { color: var(--text-muted); font-size: 0.85rem; }
-.header-controls select {
+.header-controls select,
+.header-controls input[type="date"],
+.header-controls button {
   padding: 0.4rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -63,6 +67,20 @@ body {
   color: var(--text);
   font-size: 0.9rem;
   cursor: pointer;
+  font-family: inherit;
+}
+.header-controls select:disabled,
+.header-controls input:disabled { opacity: 0.5; cursor: not-allowed; }
+.header-controls button.ghost { color: var(--text-muted); }
+.header-controls button.ghost:hover { color: var(--text); border-color: var(--text-muted); }
+.window-label {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.6rem 1rem;
+  margin-bottom: 1rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
 }
 .section {
   background: var(--surface);
@@ -79,7 +97,7 @@ body {
 }
 .kpis {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 1rem;
 }
 .kpi-card {
@@ -90,22 +108,10 @@ body {
 }
 .kpi-card .label { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .kpi-card .value { font-size: 1.85rem; font-weight: 700; margin-top: 0.5rem; color: var(--text); }
-.kpi-card.likes  .value { color: var(--success); }
-.kpi-card.dislikes .value { color: var(--danger); }
+.kpi-card .sub   { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; }
 .kpi-card.reports .value { color: var(--primary); }
-.kpi-card.tokens .value { color: var(--info); }
-.ratio-bar {
-  display: flex;
-  height: 14px;
-  border-radius: 999px;
-  overflow: hidden;
-  background: var(--border);
-  margin-top: 0.5rem;
-}
-.ratio-bar .like { background: var(--success); }
-.ratio-bar .dislike { background: var(--danger); }
-.ratio-legend { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem; display: flex; gap: 1rem; }
-.ratio-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+.kpi-card.tokens  .value { color: var(--info); }
+.kpi-card.duration .value { color: var(--warning); }
 .bars {
   display: flex;
   gap: 2px;
@@ -151,8 +157,16 @@ tbody td {
   padding: 0.7rem 0.8rem;
   border-bottom: 1px solid var(--border);
 }
-tbody tr:hover { background: var(--bg); }
+tbody tr.project-row { cursor: pointer; }
+tbody tr.project-row:hover { background: var(--bg); }
 tbody tr.unattributed { color: var(--text-muted); font-style: italic; }
+tbody tr.expand-row td { background: var(--bg); padding: 0; }
+tbody tr.expand-row .expand-inner { padding: 0.75rem 1rem; }
+.expand-inner table { font-size: 0.85rem; }
+.expand-inner thead th { background: transparent; cursor: default; }
+.expand-inner .empty { color: var(--text-muted); padding: 0.5rem 0; }
+.disclosure { color: var(--text-muted); margin-right: 0.4rem; display: inline-block; transition: transform 0.15s; }
+tr.project-row.expanded .disclosure { transform: rotate(90deg); }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 .muted { color: var(--text-muted); }
 .banner {
@@ -164,9 +178,6 @@ tbody tr.unattributed { color: var(--text-muted); font-style: italic; }
   margin-bottom: 1rem;
 }
 .banner.warn { background: var(--warning-light); border-color: var(--warning); color: var(--warning); }
-.top5 ol { padding-left: 1.5rem; }
-.top5 li { margin: 0.4rem 0; }
-.top5 li b { color: var(--primary); }
 .footer {
   text-align: center;
   color: var(--text-muted);
@@ -189,7 +200,8 @@ tbody tr.unattributed { color: var(--text-muted); font-style: italic; }
 
 _DASHBOARD_JS = """
 (function () {
-  const API_URL = '/api/v1/dashboard/stats';
+  const STATS_URL = '/api/v1/dashboard/stats';
+  const PROJECT_REPORTS_URL = '/api/v1/dashboard/projects';
 
   function fmt(n) {
     if (n == null) return '—';
@@ -198,6 +210,14 @@ _DASHBOARD_JS = """
   function fmtDate(iso) {
     if (!iso) return '—';
     try { return new Date(iso).toLocaleString('ru-RU'); } catch (e) { return iso; }
+  }
+  function fmtDuration(ms) {
+    if (ms == null) return '—';
+    const totalSec = Math.round(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    if (m === 0) return s + ' сек';
+    return m + ' мин ' + String(s).padStart(2, '0') + ' сек';
   }
   function el(tag, attrs, children) {
     const e = document.createElement(tag);
@@ -211,47 +231,56 @@ _DASHBOARD_JS = """
     return e;
   }
 
+  let CURRENT_WINDOW = { kind: 'days', value: 30 };
+  let WINDOW_DAYS = 30;
+  let PROJECT_REPORTS_CACHE = {};
+
+  function windowQS() {
+    if (CURRENT_WINDOW.kind === 'day') {
+      return 'date=' + encodeURIComponent(CURRENT_WINDOW.value);
+    }
+    return 'days=' + encodeURIComponent(CURRENT_WINDOW.value);
+  }
+
+  function renderWindowLabel(window, kpis) {
+    const node = document.getElementById('windowLabel');
+    if (!node) return;
+    if (window.kind === 'day') {
+      node.textContent = 'За день: ' + window.value;
+    } else {
+      node.textContent = 'За последние ' + window.value + ' дней';
+    }
+    if (kpis && kpis.peak_day) {
+      node.textContent += ' · пиковый день: ' + kpis.peak_day + ' (' + kpis.peak_day_count + ')';
+    }
+  }
+
+  function avgPerDay(kpis) {
+    if (CURRENT_WINDOW.kind === 'day') return kpis.total_reports;
+    const days = Math.max(1, parseInt(CURRENT_WINDOW.value, 10) || 1);
+    return Math.round((kpis.total_reports || 0) / days * 10) / 10;
+  }
+
   function renderKpis(kpis) {
     const grid = document.getElementById('kpis');
     grid.innerHTML = '';
     const cards = [
-      ['reports',  'Отчёты',          kpis.total_reports],
-      ['',         'Записи в базе знаний', kpis.total_kb_entries],
-      ['likes',    'Лайки',           kpis.total_likes],
-      ['dislikes', 'Дизлайки',        kpis.total_dislikes],
-      ['',         'Merge rules',     kpis.total_merge_rules],
-      ['',         'Активных проектов', kpis.active_projects],
-      ['tokens',   'Токены за период', kpis.llm_total_tokens],
-      ['tokens',   'В среднем на прогон', kpis.llm_avg_tokens_per_run],
+      ['reports',  'Отчёты',                  fmt(kpis.total_reports)],
+      ['',         'Уникальных запусков',     fmt(kpis.unique_launches)],
+      ['duration', 'Среднее время анализа',   fmtDuration(kpis.avg_analysis_duration_ms)],
+      ['',         'Записи в базе знаний',    fmt(kpis.total_kb_entries)],
+      ['',         'Merge rules',             fmt(kpis.total_merge_rules)],
+      ['',         'Активных проектов',       fmt(kpis.active_projects)],
+      ['tokens',   'Токены за период',        fmt(kpis.llm_total_tokens)],
+      ['tokens',   'Токены / прогон',         fmt(kpis.llm_avg_tokens_per_run)],
+      ['',         'Среднее отчётов / день',  fmt(avgPerDay(kpis))],
     ];
     for (const [cls, label, value] of cards) {
       const card = el('div', { class: 'kpi-card' + (cls ? ' ' + cls : '') }, [
         el('div', { class: 'label', text: label }),
-        el('div', { class: 'value', text: fmt(value) }),
+        el('div', { class: 'value', text: value }),
       ]);
       grid.appendChild(card);
-    }
-
-    const total = (kpis.total_likes || 0) + (kpis.total_dislikes || 0);
-    const ratioBar = document.getElementById('ratioBar');
-    const legend   = document.getElementById('ratioLegend');
-    if (total === 0) {
-      ratioBar.innerHTML = '<div style="flex:1;background:var(--border)"></div>';
-      legend.textContent = 'Пока нет голосов';
-    } else {
-      const likePct = Math.round(100 * kpis.total_likes / total);
-      ratioBar.innerHTML = '';
-      ratioBar.appendChild(el('div', { class: 'like',    style: 'width:' + likePct + '%' }));
-      ratioBar.appendChild(el('div', { class: 'dislike', style: 'width:' + (100 - likePct) + '%' }));
-      legend.innerHTML = '';
-      legend.appendChild(el('span', { text: '' }, [
-        el('span', { class: 'swatch', style: 'background:var(--success)' }),
-        document.createTextNode(' Лайки: ' + fmt(kpis.total_likes) + ' (' + likePct + '%)'),
-      ]));
-      legend.appendChild(el('span', { text: '' }, [
-        el('span', { class: 'swatch', style: 'background:var(--danger)' }),
-        document.createTextNode(' Дизлайки: ' + fmt(kpis.total_dislikes) + ' (' + (100 - likePct) + '%)'),
-      ]));
     }
   }
 
@@ -279,29 +308,13 @@ _DASHBOARD_JS = """
     }
   }
 
-  function renderTop5(rows) {
-    const ol = document.getElementById('top5List');
-    ol.innerHTML = '';
-    const named = rows.filter(r => r.project_id !== null).slice(0, 5);
-    if (named.length === 0) {
-      ol.appendChild(el('li', { class: 'muted', text: 'Нет данных за период' }));
-      return;
-    }
-    for (const r of named) {
-      const li = el('li', {}, [
-        el('b', { text: r.project_name }),
-        document.createTextNode(' — отчётов: ' + fmt(r.reports) +
-          ', записей в базе знаний: ' + fmt(r.kb_entries) +
-          ', токены: ' + fmt(r.llm_total_tokens) +
-          ', лайки/дизлайки: ' + fmt(r.likes) + '/' + fmt(r.dislikes)),
-      ]);
-      ol.appendChild(li);
-    }
-  }
-
   let TABLE_ROWS = [];
   let SORT_COL = 'reports';
   let SORT_DIR = -1;
+
+  function projectKey(row) {
+    return row.project_id === null ? '_null' : String(row.project_id);
+  }
 
   function renderTable() {
     const tbody = document.querySelector('#projectsTable tbody');
@@ -320,22 +333,29 @@ _DASHBOARD_JS = """
     const ordered = named.concat(unattributed);
     if (ordered.length === 0) {
       tbody.appendChild(el('tr', {}, [
-        el('td', { colSpan: 9, class: 'muted', text: 'Нет данных за период' }),
+        el('td', { colSpan: 8, class: 'muted', text: 'Нет данных за период' }),
       ]));
       return;
     }
     for (const r of ordered) {
-      const tr = el('tr', { class: r.project_id === null ? 'unattributed' : '' }, [
-        el('td', { text: r.project_name }),
+      const key = projectKey(r);
+      const tr = el('tr', {
+        class: 'project-row' + (r.project_id === null ? ' unattributed' : ''),
+        'data-key': key,
+      }, [
+        el('td', {}, [
+          el('span', { class: 'disclosure', text: '▸' }),
+          document.createTextNode(r.project_name),
+        ]),
         el('td', { class: 'num', text: fmt(r.reports) }),
         el('td', { class: 'num', text: fmt(r.kb_entries) }),
-        el('td', { class: 'num', text: fmt(r.likes) }),
-        el('td', { class: 'num', text: fmt(r.dislikes) }),
         el('td', { class: 'num', text: fmt(r.merge_rules) }),
         el('td', { class: 'num', text: fmt(r.llm_total_tokens) }),
         el('td', { class: 'num', text: fmt(r.llm_avg_tokens_per_run) }),
+        el('td', { class: 'num', text: fmtDuration(r.avg_analysis_duration_ms) }),
         el('td', { class: 'muted', text: fmtDate(r.last_activity) }),
       ]);
+      tr.addEventListener('click', () => toggleExpand(tr, r));
       tbody.appendChild(tr);
     }
 
@@ -346,6 +366,84 @@ _DASHBOARD_JS = """
         th.classList.add(SORT_DIR === 1 ? 'sorted-asc' : 'sorted-desc');
       }
     });
+  }
+
+  async function toggleExpand(tr, row) {
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains('expand-row') && next.dataset.key === tr.dataset.key) {
+      next.remove();
+      tr.classList.remove('expanded');
+      return;
+    }
+    if (next && next.classList.contains('expand-row')) next.remove();
+
+    tr.classList.add('expanded');
+    const expandTr = el('tr', { class: 'expand-row', 'data-key': tr.dataset.key });
+    const td = el('td', { colSpan: 8 });
+    const inner = el('div', { class: 'expand-inner' });
+    inner.innerHTML = '<span class="spinner"></span>Загрузка отчётов…';
+    td.appendChild(inner);
+    expandTr.appendChild(td);
+    tr.parentNode.insertBefore(expandTr, tr.nextSibling);
+
+    const cacheKey = tr.dataset.key + '|' + windowQS();
+    let reports;
+    if (PROJECT_REPORTS_CACHE[cacheKey]) {
+      reports = PROJECT_REPORTS_CACHE[cacheKey];
+    } else {
+      const projectIdParam = row.project_id === null ? 0 : row.project_id;
+      try {
+        const resp = await fetch(PROJECT_REPORTS_URL + '/' + projectIdParam + '/reports?' + windowQS());
+        if (!resp.ok) {
+          inner.innerHTML = '';
+          inner.appendChild(el('div', { class: 'empty', text: 'Ошибка загрузки: ' + resp.status }));
+          return;
+        }
+        const data = await resp.json();
+        reports = data.reports || [];
+        PROJECT_REPORTS_CACHE[cacheKey] = reports;
+      } catch (err) {
+        inner.innerHTML = '';
+        inner.appendChild(el('div', { class: 'empty', text: 'Не удалось загрузить отчёты' }));
+        return;
+      }
+    }
+
+    inner.innerHTML = '';
+    if (reports.length === 0) {
+      inner.appendChild(el('div', { class: 'empty', text: 'Нет отчётов в выбранном окне' }));
+      return;
+    }
+    const tbl = el('table');
+    const thead = el('thead', {}, [
+      el('tr', {}, [
+        el('th', { text: 'Создан' }),
+        el('th', { text: 'Launch' }),
+        el('th', { class: 'num', text: 'Токены' }),
+        el('th', { class: 'num', text: 'Длительность' }),
+        el('th', { text: 'Отчёт' }),
+      ]),
+    ]);
+    const tb = el('tbody');
+    for (const rep of reports) {
+      const link = el('a', {
+        href: '/reports/' + encodeURIComponent(rep.filename),
+        target: '_blank',
+        rel: 'noopener',
+        text: 'открыть',
+      });
+      const launchText = rep.launch_id == null ? '—' : '#' + rep.launch_id;
+      tb.appendChild(el('tr', {}, [
+        el('td', { text: fmtDate(rep.created_at) }),
+        el('td', { text: launchText }),
+        el('td', { class: 'num', text: fmt(rep.llm_total_tokens) }),
+        el('td', { class: 'num', text: fmtDuration(rep.analysis_duration_ms) }),
+        el('td', {}, [link]),
+      ]));
+    }
+    tbl.appendChild(thead);
+    tbl.appendChild(tb);
+    inner.appendChild(tbl);
   }
 
   function bindSort() {
@@ -372,10 +470,11 @@ _DASHBOARD_JS = """
     status.innerHTML = busy ? '<span class="spinner"></span>Загрузка…' : '';
   }
 
-  async function load(days) {
+  async function load() {
     setBusy(true);
+    PROJECT_REPORTS_CACHE = {};
     try {
-      const resp = await fetch(API_URL + '?days=' + encodeURIComponent(days));
+      const resp = await fetch(STATS_URL + '?' + windowQS());
       if (!resp.ok) {
         let detail = resp.statusText;
         try { const j = await resp.json(); if (j && j.detail) detail = j.detail; } catch (e) {}
@@ -387,9 +486,9 @@ _DASHBOARD_JS = """
         return;
       }
       const data = await resp.json();
+      renderWindowLabel(data.window || CURRENT_WINDOW, data.kpis);
       renderKpis(data.kpis);
       renderSeries(data.series);
-      renderTop5(data.per_project);
       TABLE_ROWS = data.per_project;
       renderTable();
       const ts = document.getElementById('generatedAt');
@@ -401,11 +500,45 @@ _DASHBOARD_JS = """
     }
   }
 
+  function applyDay(dayValue) {
+    const select = document.getElementById('daysSelect');
+    const reset = document.getElementById('resetDay');
+    if (dayValue) {
+      CURRENT_WINDOW = { kind: 'day', value: dayValue };
+      select.disabled = true;
+      reset.disabled = false;
+    } else {
+      CURRENT_WINDOW = { kind: 'days', value: parseInt(select.value, 10) || 30 };
+      WINDOW_DAYS = CURRENT_WINDOW.value;
+      select.disabled = false;
+      reset.disabled = true;
+    }
+    load();
+  }
+
   window.addEventListener('DOMContentLoaded', () => {
     bindSort();
     const select = document.getElementById('daysSelect');
-    select.addEventListener('change', () => load(select.value));
-    load(select.value);
+    const dateInput = document.getElementById('daySelect');
+    const reset = document.getElementById('resetDay');
+
+    CURRENT_WINDOW = { kind: 'days', value: parseInt(select.value, 10) || 30 };
+    WINDOW_DAYS = CURRENT_WINDOW.value;
+    reset.disabled = true;
+
+    select.addEventListener('change', () => {
+      if (dateInput.value) return;
+      CURRENT_WINDOW = { kind: 'days', value: parseInt(select.value, 10) || 30 };
+      WINDOW_DAYS = CURRENT_WINDOW.value;
+      load();
+    });
+    dateInput.addEventListener('change', () => applyDay(dateInput.value));
+    reset.addEventListener('click', () => {
+      dateInput.value = '';
+      applyDay(null);
+    });
+
+    load();
   });
 })();
 """
@@ -432,18 +565,18 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
           <option value="60">60 дней</option>
           <option value="90">90 дней</option>
         </select>
+        <label for="daySelect">Конкретный день:</label>
+        <input id="daySelect" type="date">
+        <button id="resetDay" class="ghost" type="button">Сбросить день</button>
       </div>
     </header>
+
+    <div id="windowLabel" class="window-label"></div>
 
     <div id="content">
       <section class="section">
         <h2>Ключевые показатели</h2>
         <div id="kpis" class="kpis"></div>
-        <div style="margin-top:1.25rem">
-          <div class="muted" style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.04em">Лайки vs дизлайки</div>
-          <div id="ratioBar" class="ratio-bar"></div>
-          <div id="ratioLegend" class="ratio-legend"></div>
-        </div>
       </section>
 
       <section class="section">
@@ -452,24 +585,21 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         <div id="barsAxis" class="bars-axis"></div>
       </section>
 
-      <section class="section top5">
-        <h2>Топ-5 проектов</h2>
-        <ol id="top5List"></ol>
-      </section>
-
       <section class="section">
         <h2>Все проекты</h2>
+        <p class="muted" style="font-size:0.85rem;margin-bottom:0.5rem">
+          Нажмите на проект, чтобы развернуть список отчётов с прямыми ссылками.
+        </p>
         <table id="projectsTable">
           <thead>
             <tr>
               <th data-col="project_name">Проект</th>
               <th data-col="reports"     class="num">Отчёты</th>
               <th data-col="kb_entries"  class="num">База знаний</th>
-              <th data-col="likes"       class="num">Лайки</th>
-              <th data-col="dislikes"    class="num">Дизлайки</th>
               <th data-col="merge_rules" class="num">Merge rules</th>
               <th data-col="llm_total_tokens" class="num">Токены</th>
               <th data-col="llm_avg_tokens_per_run" class="num">Токены/прогон</th>
+              <th data-col="avg_analysis_duration_ms" class="num">Время анализа</th>
               <th data-col="last_activity">Последняя активность</th>
             </tr>
           </thead>
