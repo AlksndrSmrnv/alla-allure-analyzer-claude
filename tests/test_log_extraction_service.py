@@ -586,14 +586,8 @@ class TestLogExtractionServiceIntegration:
         assert "--- [журнал: journal_dump.txt] ---" in summary.log_snippet
         # HTTP-секция для этого же файла НЕ создаётся
         assert "--- [HTTP: journal_dump.txt] ---" not in summary.log_snippet
-        # Все ключи всех объектов должны присутствовать
-        assert "billing-service" in summary.log_snippet
-        assert "notification" in summary.log_snippet
-        assert "Failed to charge order #123" in summary.log_snippet
-        assert "Email gateway unreachable" in summary.log_snippet
-        assert "BILL_15" in summary.log_snippet
-        assert "NOT_03" in summary.log_snippet
-        assert "Billing.java:42" in summary.log_snippet
-        assert "Notify.java:7" in summary.log_snippet
+        # Тело секции — pretty-printed JSON, roundtrip даёт исходный массив.
+        body = summary.log_snippet.split("--- [журнал: journal_dump.txt] ---\n", 1)[1]
+        assert _json.loads(body) == items
         # correlation hint извлечён из rqUID
         assert summary.correlation_hint == "rqUID=req-abc-1"

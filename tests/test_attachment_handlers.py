@@ -43,9 +43,9 @@ class TestStructuredErrorLogHandlerDetection:
         assert result is not None
         assert result.label == "журнал"
         assert result.consumed is True
-        assert "subsystem=auth" in result.section
-        assert "Login failed" in result.section
-        assert "DB_42" in result.section
+        # Содержимое — валидный JSON-массив с теми же объектами, что были на входе.
+        parsed = json.loads(result.section)
+        assert parsed == items
 
     def test_rejects_plain_array_of_unrelated_objects(self) -> None:
         items = [
@@ -108,7 +108,7 @@ class TestStructuredErrorLogHandlerDetection:
 
 
 class TestStructuredErrorLogHandlerFormatting:
-    def test_section_includes_all_keys_of_all_objects(self) -> None:
+    def test_section_is_pretty_printed_json_with_all_keys(self) -> None:
         items = [
             {
                 "subsystem": "auth",
@@ -127,18 +127,12 @@ class TestStructuredErrorLogHandlerFormatting:
         content = json.dumps(items, ensure_ascii=False).encode("utf-8")
         result = StructuredErrorLogHandler().handle(_ctx(content))
         assert result is not None
-        section = result.section
-        assert "[#1]" in section
-        assert "[#2]" in section
-        assert "logLevel=ERROR" in section
-        assert "logLevel=WARN" in section
-        assert "subsystem=auth" in section
-        assert "subsystem=db" in section
-        assert "Login failed" in section
-        assert "Slow query" in section
-        assert "com.example.Auth.fail()" in section
-        assert "  at line 42" in section
-        assert "customField: extra-value" in section
+        # Roundtrip: содержимое — валидный pretty-printed JSON, идентичный входу.
+        parsed = json.loads(result.section)
+        assert parsed == items
+        # Pretty-print: должны быть переносы и отступы.
+        assert "\n" in result.section
+        assert "  " in result.section
 
     def test_correlation_hint_extracted(self) -> None:
         items = [
@@ -196,12 +190,10 @@ class TestStructuredErrorLogHandlerFormatting:
         assert len(content) >= 10_000
         result = StructuredErrorLogHandler().handle(_ctx(content))
         assert result is not None
-        # Все 40 объектов должны присутствовать
-        for i in range(40):
-            assert f"svc-{i}" in result.section
-            assert f"failure number {i}" in result.section
+        # Roundtrip — все 40 записей сохранены целиком.
+        assert json.loads(result.section) == items
 
-    def test_nested_object_serialized_as_json(self) -> None:
+    def test_nested_object_preserved(self) -> None:
         items = [
             {
                 "message": "fail",
@@ -213,8 +205,8 @@ class TestStructuredErrorLogHandlerFormatting:
         content = json.dumps(items, ensure_ascii=False).encode("utf-8")
         result = StructuredErrorLogHandler().handle(_ctx(content))
         assert result is not None
-        assert "userId" in result.section
-        assert '"a"' in result.section or "'a'" in result.section
+        # Вложенная структура сохраняется как есть.
+        assert json.loads(result.section) == items
 
 
 class TestStructuredErrorLogHandlerNameAgnostic:

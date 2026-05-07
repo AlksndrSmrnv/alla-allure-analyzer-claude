@@ -123,64 +123,6 @@ def _looks_like_structured_log(items: list[Any]) -> bool:
     return matched / len(items) >= _STRUCTURED_LOG_MATCH_RATIO
 
 
-def _format_structured_entry(index: int, entry: dict[str, Any]) -> str:
-    """Сформатировать одну лог-запись как читаемый блок."""
-    # Приводим ключи к нижнему регистру один раз для приоритизации.
-    entry_lower = {str(k).lower(): k for k in entry}
-
-    header_parts: list[str] = [f"[#{index}]"]
-    log_level_key = entry_lower.get("loglevel")
-    if log_level_key is not None:
-        header_parts.append(f"logLevel={entry[log_level_key]}")
-    subsystem_key = entry_lower.get("subsystem")
-    if subsystem_key is not None:
-        header_parts.append(f"subsystem={entry[subsystem_key]}")
-    timestamp_key = entry_lower.get("timestamp")
-    if timestamp_key is not None:
-        header_parts.append(f"timestamp={entry[timestamp_key]}")
-
-    lines: list[str] = ["  ".join(header_parts)]
-
-    # message и errorCode — в первую очередь
-    for priority_key in ("message", "errorcode"):
-        original = entry_lower.get(priority_key)
-        if original is None:
-            continue
-        value = entry[original]
-        if value is None or value == "":
-            continue
-        lines.append(f"{original}: {value}")
-
-    # stackTrace — отдельным блоком с переносом
-    stacktrace_key = entry_lower.get("stacktrace")
-    if stacktrace_key is not None:
-        value = entry[stacktrace_key]
-        if value:
-            lines.append(f"{stacktrace_key}:")
-            for st_line in str(value).splitlines() or [str(value)]:
-                lines.append(f"  {st_line}")
-
-    # Остальные поля — одной строкой
-    handled = {"loglevel", "subsystem", "timestamp", "message", "errorcode", "stacktrace"}
-    for key_lower, original in entry_lower.items():
-        if key_lower in handled:
-            continue
-        value = entry[original]
-        if value is None or value == "":
-            continue
-        # Скаляры — в одну строку, словари/списки — через json.dumps.
-        if isinstance(value, (dict, list)):
-            try:
-                serialized = json.dumps(value, ensure_ascii=False)
-            except (TypeError, ValueError):
-                serialized = str(value)
-            lines.append(f"{original}: {serialized}")
-        else:
-            lines.append(f"{original}: {value}")
-
-    return "\n".join(lines)
-
-
 _STRUCTURED_LOG_CORR_MAX_DEPTH = 10
 
 
@@ -240,16 +182,17 @@ class StructuredErrorLogHandler:
         if not _looks_like_structured_log(items):
             return None
 
-        formatted_blocks: list[str] = []
-        for idx, entry in enumerate(items, start=1):
-            if not isinstance(entry, dict):
-                continue
-            formatted_blocks.append(_format_structured_entry(idx, entry))
-
-        if not formatted_blocks:
+        # Содержимое отдаём как pretty-printed JSON: структура и порядок полей
+        # сохраняются как в исходном файле, читать и парсить (в т.ч. LLM)
+        # такой формат проще, чем плоские key/value.
+        try:
+            section = json.dumps(items, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            # Фолбэк на исходный текст, если в JSON попал не-сериализуемый объект.
+            section = ctx.decoded_text or ""
+        if not section.strip():
             return None
 
-        section = "\n---\n".join(formatted_blocks)
         correlation_hint = _extract_structured_correlation(items)
         return HandlerResult(
             section=section,
