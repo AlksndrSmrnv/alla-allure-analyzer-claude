@@ -84,6 +84,42 @@ class TestStructuredErrorLogHandlerDetection:
         content = json.dumps(items).encode("utf-8")
         assert StructuredErrorLogHandler().handle(_ctx(content)) is None
 
+    def test_detects_nested_journal_one_level_deep(self) -> None:
+        """Массив-журнал лежит под ключом ``data``."""
+        items = [_entry(message="a"), _entry(message="b")]
+        wrapper = {"data": items, "meta": {"version": 1}}
+        content = json.dumps(wrapper).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert json.loads(result.section) == items
+
+    def test_detects_nested_journal_two_levels_deep(self) -> None:
+        """Массив-журнал глубоко в иерархии: response → items."""
+        items = [_entry(message="x"), _entry(message="y"), _entry(message="z")]
+        wrapper = {"response": {"status": "ok", "items": items}}
+        content = json.dumps(wrapper).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert json.loads(result.section) == items
+
+    def test_detects_journal_inside_outer_array(self) -> None:
+        """Внешний массив — не журнал, но один из элементов содержит журнал внутри."""
+        items = [_entry(message="inner-1"), _entry(message="inner-2")]
+        wrapper = [{"meta": "x"}, {"section": "errors", "errors": items}]
+        content = json.dumps(wrapper).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert json.loads(result.section) == items
+
+    def test_rejects_when_no_array_anywhere_matches(self) -> None:
+        """Никакой из массивов в иерархии не выглядит как журнал."""
+        wrapper = {
+            "data": [{"foo": 1}, {"bar": 2}],
+            "more": {"items": [{"x": 1}]},
+        }
+        content = json.dumps(wrapper).encode("utf-8")
+        assert StructuredErrorLogHandler().handle(_ctx(content)) is None
+
     def test_rejects_plain_array_of_unrelated_objects(self) -> None:
         items = [
             {"name": "Alice", "age": 30},
