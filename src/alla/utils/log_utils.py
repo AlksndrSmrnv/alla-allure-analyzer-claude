@@ -14,8 +14,11 @@ _LOG_ERROR_RE = re.compile(
 # Заголовок секции, создаваемый LogExtractionService:
 # --- [файл: name] ---
 # --- [HTTP: name] ---
+# --- [журнал: name] ---  (структурированные лог-журналы)
+# Допускаем любой непустой токен типа секции — это позволяет добавлять новые
+# AttachmentHandler-ы без правок этого regex.
 _LOG_SECTION_RE = re.compile(
-    r"^--- \[(?P<section_type>файл|HTTP): (?P<section_name>.+?)\] ---$",
+    r"^--- \[(?P<section_type>[^\]:\s][^\]:]*?): (?P<section_name>.+?)\] ---$",
     re.MULTILINE,
 )
 _CORRELATION_LINE_RE = re.compile(
@@ -125,7 +128,10 @@ def parse_log_sections(
         )
         body = log_snippet[body_start:body_end].strip()
         if body:
-            label = name if section_type == "файл" else f"HTTP: {name}"
+            # `файл` остаётся без префикса для обратной совместимости с
+            # downstream-кодом (HTML-отчёт, CLI). Все остальные типы секций
+            # (HTTP, журнал, …) получают префикс ``<тип>: ``.
+            label = name if section_type == "файл" else f"{section_type}: {name}"
             sections.append((label, body))
     return sections
 

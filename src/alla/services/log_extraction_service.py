@@ -8,6 +8,7 @@
 import asyncio
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Any
@@ -16,6 +17,11 @@ import ijson
 
 from alla.clients.base import AttachmentProvider
 from alla.models.testops import AttachmentMeta, FailedTestSummary
+from alla.services.attachment_handlers import (
+    AttachmentContext,
+    AttachmentHandler,
+    default_handlers,
+)
 from alla.utils.log_utils import format_correlation_pairs
 
 logger = logging.getLogger(__name__)
@@ -424,15 +430,26 @@ def _extract_error_blocks(log_text: str) -> str:
 # ---------------------------------------------------------------------------
 
 class LogExtractionService:
-    """Извлекает ERROR-блоки из текстовых аттачментов и HTTP-контекст из JSON/XML."""
+    """Извлекает структурированные секции из вложений через цепочку handlers.
+
+    Default-набор обработчиков покрывает старое поведение (ERROR-блоки в text,
+    HTTP-сигналы в JSON/XML/text). Новые типы логов добавляются через кастомный
+    список ``handlers`` без правок самого сервиса.
+    """
 
     def __init__(
         self,
         provider: AttachmentProvider,
         config: LogExtractionConfig | None = None,
+        *,
+        handlers: Sequence[AttachmentHandler] | None = None,
     ) -> None:
         self._provider = provider
         self._config = config or LogExtractionConfig()
+        # Сортируем handlers по priority один раз в конструкторе.
+        chosen = list(handlers) if handlers is not None else default_handlers()
+        chosen.sort(key=lambda h: h.priority)
+        self._handlers: list[AttachmentHandler] = chosen
 
     async def enrich_with_logs(
         self,
@@ -505,28 +522,41 @@ class LogExtractionService:
                 if detected_type == "binary":
                     continue
 
-                decoded_text: str | None = None
+                # Декодируем текст один раз для тех handlers, которым он нужен.
+                # JSON/XML/text — все с большой вероятностью текст; декод дешёвый
+                # и кэшируется в context, чтобы handlers не делали это повторно.
+                decoded_text = _decode_text(content_bytes)
 
-                # Канал 1: лог-экстрактор (только text)
-                if detected_type == "text":
-                    decoded_text = _decode_text(content_bytes)
-                    if decoded_text:
-                        log_blocks = _extract_error_blocks(decoded_text)
-                        if log_blocks.strip():
-                            all_sections.append(
-                                f"--- [файл: {att_name}] ---\n{log_blocks}"
-                            )
-
-                # Канал 2: HTTP-экстрактор (все не-binary типы)
-                http_info, current_correlation = _extract_http_artifacts(
-                    content_bytes,
-                    detected_type,
-                    text=decoded_text,
+                ctx = AttachmentContext(
+                    att=att,
+                    content=content_bytes,
+                    detected_type=detected_type,
+                    decoded_text=decoded_text,
                 )
-                if correlation_hint is None and current_correlation is not None:
-                    correlation_hint = current_correlation
-                if http_info.strip():
-                    all_sections.append(f"--- [HTTP: {att_name}] ---\n{http_info}")
+
+                for handler in self._handlers:
+                    try:
+                        result = handler.handle(ctx)
+                    except Exception as exc:
+                        logger.warning(
+                            "Логи: handler %s упал на аттачменте %d (%s) теста %d: %s",
+                            handler.name,
+                            att.id,
+                            att.name,
+                            summary.test_result_id,
+                            exc,
+                        )
+                        continue
+                    if result is None:
+                        continue
+                    if result.correlation_hint and correlation_hint is None:
+                        correlation_hint = result.correlation_hint
+                    if result.section.strip():
+                        all_sections.append(
+                            f"--- [{result.label}: {att_name}] ---\n{result.section}"
+                        )
+                    if result.consumed:
+                        break
 
             summary.correlation_hint = correlation_hint
             if all_sections:
