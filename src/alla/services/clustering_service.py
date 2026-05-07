@@ -110,7 +110,7 @@ def _extract_assertion_actual(message: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 _LOG_SECTION_HEADER_RE = re.compile(
-    r"^---\s*\[(?:HTTP|файл):\s.+?\]\s*---$", re.MULTILINE
+    r"^---\s*\[(?P<section_type>[^\]:\s][^\]:]*?):\s.+?\]\s*---$", re.MULTILINE
 )
 
 

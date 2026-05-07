@@ -541,3 +541,59 @@ class TestLogExtractionServiceIntegration:
 
         assert summary.log_snippet is None
         assert summary.correlation_hint == "operUID=239482348, rqUID=324234523420"
+
+    @pytest.mark.asyncio
+    async def test_structured_journal_attachment_extracted_in_full(self):
+        """text/plain вложение с JSON-массивом структурированных лог-записей.
+
+        Должно дать секцию ``--- [журнал: ...] ---`` со всеми объектами и
+        полями, без HTTP-секции (handler `consumed=True`).
+        """
+        import json as _json
+
+        items = [
+            {
+                "subsystem": "billing-service",
+                "stackTrace": "com.example.Billing.charge(Billing.java:42)\n  at sun.reflect.GeneratedMethodAccessor1.invoke",
+                "message": "Failed to charge order #123",
+                "logLevel": "ERROR",
+                "errorCode": "BILL_15",
+                "rqUID": "req-abc-1",
+            },
+            {
+                "subsystem": "notification",
+                "stackTrace": "com.example.Notify.send(Notify.java:7)",
+                "message": "Email gateway unreachable",
+                "logLevel": "ERROR",
+                "errorCode": "NOT_03",
+            },
+        ]
+        content = _json.dumps(items, ensure_ascii=False).encode("utf-8")
+        att = AttachmentMeta(id=99, name="journal_dump.txt", type="text/plain")
+        provider = FakeAttachmentProvider([att], {99: content})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+
+        # Эвристика _detect_content_type увидит ведущий '[' и переключит
+        # text/plain на 'json' — handler примет его как JSON-массив.
+        # _MAGIC_AVAILABLE=False гонит через fallback_mime path, чтобы тест
+        # не зависел от наличия системной libmagic.
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", False):
+            await service.enrich_with_logs([summary])
+
+        assert summary.log_snippet is not None
+        # Заголовок секции — журнал
+        assert "--- [журнал: journal_dump.txt] ---" in summary.log_snippet
+        # HTTP-секция для этого же файла НЕ создаётся
+        assert "--- [HTTP: journal_dump.txt] ---" not in summary.log_snippet
+        # Все ключи всех объектов должны присутствовать
+        assert "billing-service" in summary.log_snippet
+        assert "notification" in summary.log_snippet
+        assert "Failed to charge order #123" in summary.log_snippet
+        assert "Email gateway unreachable" in summary.log_snippet
+        assert "BILL_15" in summary.log_snippet
+        assert "NOT_03" in summary.log_snippet
+        assert "Billing.java:42" in summary.log_snippet
+        assert "Notify.java:7" in summary.log_snippet
+        # correlation hint извлечён из rqUID
+        assert summary.correlation_hint == "rqUID=req-abc-1"
