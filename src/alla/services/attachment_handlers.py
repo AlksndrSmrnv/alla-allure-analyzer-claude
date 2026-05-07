@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Protocol, runtime_checkable
@@ -110,7 +111,7 @@ def _parse_any_json(content: bytes, decoded_text: str | None) -> Any:
     return None
 
 
-def _iter_candidate_arrays(obj: Any, depth: int = 0):
+def _iter_candidate_arrays(obj: Any, depth: int = 0) -> Iterator[list[Any]]:
     """Обойти JSON и вернуть все list-узлы (включая корневой).
 
     Используется для поиска массива-журнала, который может лежать как на
