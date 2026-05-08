@@ -34,17 +34,17 @@ logger = logging.getLogger(__name__)
 _ENSURE_TABLE_SQL = """\
 CREATE SCHEMA IF NOT EXISTS alla;
 CREATE TABLE IF NOT EXISTS alla.report (
-    id          SERIAL       PRIMARY KEY,
-    filename    TEXT         NOT NULL UNIQUE,
-    launch_id   INTEGER      NOT NULL,
-    html        TEXT         NOT NULL,
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+    id                     SERIAL       PRIMARY KEY,
+    filename               TEXT         NOT NULL UNIQUE,
+    launch_id              INTEGER      NOT NULL,
+    html                   TEXT         NOT NULL,
+    project_id             INTEGER      NULL,
+    llm_prompt_tokens      INTEGER      NULL,
+    llm_completion_tokens  INTEGER      NULL,
+    llm_total_tokens       INTEGER      NULL,
+    analysis_duration_ms   INTEGER      NULL,
+    created_at             TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
-ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS project_id INTEGER NULL;
-ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS llm_prompt_tokens INTEGER NULL;
-ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS llm_completion_tokens INTEGER NULL;
-ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS llm_total_tokens INTEGER NULL;
-ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS analysis_duration_ms INTEGER NULL;
 CREATE INDEX IF NOT EXISTS idx_report_launch_id  ON alla.report(launch_id);
 CREATE INDEX IF NOT EXISTS idx_report_project_id ON alla.report(project_id);
 CREATE INDEX IF NOT EXISTS idx_report_created_at ON alla.report(created_at);

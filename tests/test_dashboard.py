@@ -1,4 +1,4 @@
-"""Тесты дашборда использования (stats_store, html_view, backfill, эндпоинты)."""
+"""Тесты дашборда использования (stats_store, html_view, эндпоинты)."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from alla.dashboard.stats_store import (
     DateWindow,
     gap_fill_series,
 )
-from alla.models.testops import LaunchResponse
 
 
 # ---------------------------------------------------------------------------
@@ -554,98 +553,3 @@ def test_persist_generated_report_keeps_skipped_llm_usage_null() -> None:
     )
 
     assert store.token_usage is None
-
-
-# ---------------------------------------------------------------------------
-# backfill.backfill_report_projects
-# ---------------------------------------------------------------------------
-
-
-class _FakeBackfillClient:
-    """TestOps-клиент с нужным subset методов (get_launch)."""
-
-    def __init__(self, mapping: dict[int, int | None]) -> None:
-        self._mapping = mapping
-        self.calls: list[int] = []
-
-    async def get_launch(self, launch_id: int) -> LaunchResponse:
-        self.calls.append(launch_id)
-        if launch_id not in self._mapping:
-            raise RuntimeError("network down")
-        return LaunchResponse(id=launch_id, projectId=self._mapping[launch_id])
-
-
-@pytest.mark.asyncio
-async def test_backfill_resolves_project_ids(monkeypatch) -> None:
-    """Бэкфилл вытягивает project_id из TestOps и UPDATE-ит alla.report."""
-    from alla.dashboard import backfill as backfill_mod
-
-    monkeypatch.setattr(
-        backfill_mod, "_list_unattributed_launch_ids",
-        lambda dsn, *, limit=None: [101, 102, 103],
-    )
-
-    update_calls: dict[int, int] = {}
-
-    def fake_apply(dsn: str, mapping: dict[int, int]) -> int:
-        update_calls.update(mapping)
-        return len(mapping)
-
-    monkeypatch.setattr(backfill_mod, "_apply_updates", fake_apply)
-
-    client = _FakeBackfillClient({101: 7, 102: None, 103: 9})
-    report = await backfill_mod.backfill_report_projects(
-        client, dsn="fake://", concurrency=2, dry_run=False,
-    )
-
-    assert sorted(client.calls) == [101, 102, 103]
-    assert update_calls == {101: 7, 103: 9}
-    assert report.total == 3
-    assert report.resolved == 2
-    assert report.skipped == 1
-    assert report.failed == 0
-    assert report.rows_updated == 2
-
-
-@pytest.mark.asyncio
-async def test_backfill_dry_run_does_not_update(monkeypatch) -> None:
-    """В режиме dry-run UPDATE не выполняется."""
-    from alla.dashboard import backfill as backfill_mod
-
-    monkeypatch.setattr(
-        backfill_mod, "_list_unattributed_launch_ids",
-        lambda dsn, *, limit=None: [101],
-    )
-
-    def fail(*_args, **_kwargs):
-        raise AssertionError("UPDATE should not run in dry-run")
-
-    monkeypatch.setattr(backfill_mod, "_apply_updates", fail)
-
-    client = _FakeBackfillClient({101: 7})
-    report = await backfill_mod.backfill_report_projects(
-        client, dsn="fake://", dry_run=True,
-    )
-    assert report.total == 1
-    assert report.resolved == 1
-    assert report.rows_updated == 0
-
-
-@pytest.mark.asyncio
-async def test_backfill_handles_testops_failures(monkeypatch) -> None:
-    """Сетевые ошибки TestOps учитываются в failed, не падают весь бэкфилл."""
-    from alla.dashboard import backfill as backfill_mod
-
-    monkeypatch.setattr(
-        backfill_mod, "_list_unattributed_launch_ids",
-        lambda dsn, *, limit=None: [101, 102],
-    )
-    monkeypatch.setattr(backfill_mod, "_apply_updates", lambda dsn, m: len(m))
-
-    # 101 успешно, 102 бросает в get_launch
-    client = _FakeBackfillClient({101: 7})
-    report = await backfill_mod.backfill_report_projects(
-        client, dsn="fake://", dry_run=False,
-    )
-    assert report.resolved == 1
-    assert report.failed == 1
