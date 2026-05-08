@@ -486,14 +486,26 @@ def _render_cluster(
             per_file_limit = 1500
             inner_parts: list[str] = []
             for _log_filename, _log_body in sections:
-                _snippet = _log_body[:per_file_limit]
-                if len(_log_body) > per_file_limit:
-                    _snippet += "\n…"
                 if _log_filename:
                     inner_parts.append(
                         f'<div class="log-file-name">{_e(_log_filename)}</div>'
                     )
-                inner_parts.append(f"<pre>{_e(_snippet)}</pre>")
+                if len(_log_body) <= per_file_limit:
+                    inner_parts.append(f"<pre>{_e(_log_body)}</pre>")
+                else:
+                    head_end = per_file_limit
+                    nl = _log_body.rfind("\n", per_file_limit - 200, per_file_limit)
+                    if nl != -1:
+                        head_end = nl
+                    head = _log_body[:head_end]
+                    tail = _log_body[head_end:]
+                    inner_parts.append(
+                        f"<pre>{_e(head)}</pre>"
+                        '<button class="error-trace-toggle" '
+                        "onclick=\"this.nextElementSibling.classList.toggle('hidden')\">"
+                        "Показать полный лог</button>"
+                        f'<pre class="error-trace hidden">{_e(tail)}</pre>'
+                    )
             error_parts.append(
                 '<div class="block-title" style="margin-top: 0.75rem;">Лог приложения</div>'
                 '<div class="log-block">'
