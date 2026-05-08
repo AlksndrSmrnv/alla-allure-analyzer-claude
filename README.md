@@ -72,7 +72,6 @@ alla 12345 --output-format json
 alla 12345 --html-report-file alla-report.html --report-url https://ci.example/alla-report.html
 alla delete 12345 --dry-run
 alla delete 12345
-alla backfill-report-projects --dry-run --limit 100
 ```
 
 Обычный анализ через CLI всегда сохраняет HTML-файл. Если

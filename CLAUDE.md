@@ -34,7 +34,7 @@ TestOps.
 
 | Пакет | Назначение |
 |---|---|
-| `alla/cli.py` | CLI: анализ, удаление комментариев, backfill report.project_id |
+| `alla/cli.py` | CLI: анализ, удаление комментариев |
 | `alla/server.py` | FastAPI REST API, HTML reports, feedback API, merge rules, dashboard, MCP mount |
 | `alla/mcp_app.py` | MCP streamable HTTP tools `analyze_launch`, `analyze_launch_html` |
 | `alla/app_support.py` | Общие helpers CLI/HTTP: settings, JSON response, HTML, report persistence/link |
@@ -43,7 +43,7 @@ TestOps.
 | `alla/clients/` | Allure TestOps, auth, GigaChat, Protocol interfaces |
 | `alla/knowledge/` | PostgreSQL база знаний, matcher, feedback memory, merge rules models/store |
 | `alla/report/` | HTML-отчёт и PostgreSQL report store |
-| `alla/dashboard/` | Dashboard HTML, stats store, backfill |
+| `alla/dashboard/` | Dashboard HTML, stats store |
 | `alla/models/` | Pydantic/domain models |
 | `alla/config.py` | `Settings(BaseSettings)`, env prefix `ALLURE_` |
 
@@ -57,7 +57,6 @@ alla 12345 --log-level DEBUG --page-size 200
 alla 12345 --html-report-file alla-report.html --report-url https://ci/alla-report.html
 alla delete 12345 --dry-run
 alla delete 12345
-alla backfill-report-projects --dry-run --limit 100 --concurrency 5
 ```
 
 Обычный `alla <launch_id>` всегда сохраняет HTML. Если `--html-report-file`

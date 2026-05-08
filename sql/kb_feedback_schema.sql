@@ -41,28 +41,6 @@ CREATE TABLE IF NOT EXISTS alla.kb_feedback (
     created_at        TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
-ALTER TABLE alla.kb_feedback
-    ADD COLUMN IF NOT EXISTS issue_signature_hash TEXT;
-
-ALTER TABLE alla.kb_feedback
-    ADD COLUMN IF NOT EXISTS issue_signature_version INTEGER NOT NULL DEFAULT 1;
-
-ALTER TABLE alla.kb_feedback
-    ADD COLUMN IF NOT EXISTS issue_signature_payload JSONB;
-
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM pg_constraint
-        WHERE conname = 'kb_feedback_kb_entry_id_error_text_hash_key'
-    ) THEN
-        ALTER TABLE alla.kb_feedback
-            DROP CONSTRAINT kb_feedback_kb_entry_id_error_text_hash_key;
-    END IF;
-END
-$$;
-
 COMMENT ON TABLE  alla.kb_feedback IS
     'Exact feedback memory тестировщиков: like/dislike на KB-совпадения из HTML-отчёта alla';
 COMMENT ON COLUMN alla.kb_feedback.kb_entry_id IS
