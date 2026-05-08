@@ -203,10 +203,19 @@ def test_date_window_from_day_is_single_day() -> None:
 
 def test_date_window_from_days_covers_n_dates() -> None:
     """DateWindow.from_days возвращает ровно N календарных дат для серии."""
-    window = DateWindow.from_days(3)
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 4, 27, 15, 0, tzinfo=timezone.utc)
+    window = DateWindow.from_days(3, now=now)
     assert window.kind == "days"
     assert window.descriptor() == {"kind": "days", "value": 3}
-    assert len(window.series_dates(today=date(2026, 4, 27))) == 3
+    assert window.series_dates() == [
+        date(2026, 4, 25),
+        date(2026, 4, 26),
+        date(2026, 4, 27),
+    ]
+    assert window.start_ts == datetime(2026, 4, 25, 0, 0, tzinfo=timezone.utc)
+    assert window.end_ts == datetime(2026, 4, 28, 0, 0, tzinfo=timezone.utc)
 
 
 def test_per_project_sql_joins_null_project_ids() -> None:
@@ -235,6 +244,14 @@ def test_dashboard_sql_includes_new_metrics() -> None:
     assert "WITH peak AS" in _KPI_SQL
     assert "kb_feedback" not in _KPI_SQL
     assert "kb_feedback" not in _PER_PROJECT_SQL
+
+
+def test_dashboard_sql_buckets_in_utc() -> None:
+    """Бакетинг по дням должен быть в UTC, чтобы совпасть с DateWindow."""
+    from alla.dashboard.stats_store import _REPORTS_PER_DAY_SQL
+
+    assert "AT TIME ZONE 'UTC'" in _KPI_SQL
+    assert "AT TIME ZONE 'UTC'" in _REPORTS_PER_DAY_SQL
 
 
 # ---------------------------------------------------------------------------

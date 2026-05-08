@@ -29,27 +29,32 @@ class DateWindow:
 
     @classmethod
     def from_days(cls, days: int, *, now: datetime | None = None) -> "DateWindow":
+        """Окно из N последних календарных UTC-дней, включая сегодняшний.
+
+        Границы выровнены по полночи UTC, так что bucketing в SQL
+        (``AT TIME ZONE 'UTC'``) и список ``series_dates`` совпадают.
+        """
         if days <= 0:
             days = 1
-        end = now or datetime.now(tz=timezone.utc)
-        start = end - timedelta(days=days)
+        now_dt = now or datetime.now(tz=timezone.utc)
+        today = now_dt.date()
+        end = datetime.combine(today + timedelta(days=1), time.min, tzinfo=timezone.utc)
+        start = datetime.combine(today - timedelta(days=days - 1), time.min, tzinfo=timezone.utc)
         return cls(start_ts=start, end_ts=end, kind="days", days_value=days)
 
     @classmethod
-    def from_day(cls, d: date, *, tz: timezone | None = None) -> "DateWindow":
-        tzinfo = tz or timezone.utc
-        start = datetime.combine(d, time.min, tzinfo=tzinfo)
+    def from_day(cls, d: date) -> "DateWindow":
+        """Окно ровно одного календарного UTC-дня."""
+        start = datetime.combine(d, time.min, tzinfo=timezone.utc)
         end = start + timedelta(days=1)
         return cls(start_ts=start, end_ts=end, kind="day", day_value=d)
 
-    def series_dates(self, *, today: date | None = None) -> list[date]:
-        """Календарные даты для отрисовки series-чарта."""
-        if self.kind == "day" and self.day_value is not None:
-            return [self.day_value]
-        days = self.days_value or 1
-        anchor = today or datetime.now(tz=timezone.utc).date()
-        start = anchor - timedelta(days=days - 1)
-        return [start + timedelta(days=offset) for offset in range(days)]
+    def series_dates(self) -> list[date]:
+        """Календарные UTC-даты внутри окна для отрисовки series-чарта."""
+        start_d = self.start_ts.date()
+        end_d = self.end_ts.date()  # exclusive
+        count = (end_d - start_d).days
+        return [start_d + timedelta(days=offset) for offset in range(count)]
 
     def descriptor(self) -> dict[str, Any]:
         if self.kind == "day" and self.day_value is not None:
@@ -59,7 +64,7 @@ class DateWindow:
 
 _KPI_SQL = """\
 WITH peak AS (
-  SELECT date_trunc('day', created_at)::date AS d, COUNT(*) AS c
+  SELECT date_trunc('day', created_at AT TIME ZONE 'UTC')::date AS d, COUNT(*) AS c
   FROM alla.report
   WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
   GROUP BY 1
@@ -145,7 +150,7 @@ ORDER BY reports DESC, kb_entries DESC;
 
 
 _REPORTS_PER_DAY_SQL = """\
-SELECT date_trunc('day', created_at)::date AS day, COUNT(*) AS n
+SELECT date_trunc('day', created_at AT TIME ZONE 'UTC')::date AS day, COUNT(*) AS n
 FROM alla.report
 WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
 GROUP BY 1 ORDER BY 1;
