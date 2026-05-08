@@ -12,7 +12,12 @@ import httpx
 import pytest
 
 from alla.dashboard.html_view import render_dashboard_html_shell
-from alla.dashboard.stats_store import _KPI_SQL, _PER_PROJECT_SQL, gap_fill_series
+from alla.dashboard.stats_store import (
+    _KPI_SQL,
+    _PER_PROJECT_SQL,
+    DateWindow,
+    gap_fill_series,
+)
 from alla.models.testops import LaunchResponse
 
 
@@ -59,37 +64,37 @@ class _StubStatsStore:
         self._kpis = kpis or {
             "total_reports": 5,
             "total_kb_entries": 3,
-            "total_likes": 2,
-            "total_dislikes": 1,
             "total_merge_rules": 0,
             "active_projects": 1,
+            "unique_launches": 4,
             "llm_total_tokens": 900,
             "llm_avg_tokens_per_run": 450,
             "llm_reports_with_usage": 2,
+            "avg_analysis_duration_ms": 75000,
+            "peak_day": "2026-04-27",
+            "peak_day_count": 3,
         }
         self._per_project = per_project or [
             {
                 "project_id": 7,
                 "reports": 5,
                 "kb_entries": 3,
-                "likes": 2,
-                "dislikes": 1,
                 "merge_rules": 0,
                 "llm_total_tokens": 900,
                 "llm_avg_tokens_per_run": 450,
                 "llm_reports_with_usage": 2,
+                "avg_analysis_duration_ms": 75000,
                 "last_activity": "2026-04-27T10:00:00+00:00",
             },
             {
                 "project_id": None,
                 "reports": 1,
                 "kb_entries": 0,
-                "likes": 0,
-                "dislikes": 0,
                 "merge_rules": 0,
                 "llm_total_tokens": 0,
                 "llm_avg_tokens_per_run": 0,
                 "llm_reports_with_usage": 0,
+                "avg_analysis_duration_ms": None,
                 "last_activity": None,
             },
         ]
@@ -98,14 +103,25 @@ class _StubStatsStore:
             {"day": "2026-04-27", "n": 3},
         ]
 
-    def totals(self, *, days: int) -> dict[str, int]:
+    def totals(self, *, window) -> dict[str, Any]:
         return self._kpis
 
-    def per_project_rollup(self, *, days: int) -> list[dict[str, Any]]:
+    def per_project_rollup(self, *, window) -> list[dict[str, Any]]:
         return self._per_project
 
-    def reports_per_day(self, *, days: int) -> list[dict[str, Any]]:
+    def reports_per_day(self, *, window) -> list[dict[str, Any]]:
         return self._series
+
+    def reports_for_project(self, *, project_id, window, limit=200) -> list[dict[str, Any]]:
+        return [
+            {
+                "filename": "42_x.html",
+                "launch_id": 42,
+                "created_at": "2026-04-27T10:00:00+00:00",
+                "llm_total_tokens": 150,
+                "analysis_duration_ms": 60000,
+            }
+        ] if project_id == 7 else []
 
 
 class _ThreadRecordingStatsStore(_StubStatsStore):
@@ -115,17 +131,17 @@ class _ThreadRecordingStatsStore(_StubStatsStore):
         super().__init__()
         self.thread_ids: list[int] = []
 
-    def totals(self, *, days: int) -> dict[str, int]:
+    def totals(self, *, window) -> dict[str, Any]:
         self.thread_ids.append(threading.get_ident())
-        return super().totals(days=days)
+        return super().totals(window=window)
 
-    def per_project_rollup(self, *, days: int) -> list[dict[str, Any]]:
+    def per_project_rollup(self, *, window) -> list[dict[str, Any]]:
         self.thread_ids.append(threading.get_ident())
-        return super().per_project_rollup(days=days)
+        return super().per_project_rollup(window=window)
 
-    def reports_per_day(self, *, days: int) -> list[dict[str, Any]]:
+    def reports_per_day(self, *, window) -> list[dict[str, Any]]:
         self.thread_ids.append(threading.get_ident())
-        return super().reports_per_day(days=days)
+        return super().reports_per_day(window=window)
 
 
 @pytest.fixture
@@ -152,32 +168,60 @@ def _reset_dashboard_state():
 
 
 def test_reports_per_day_gap_fills() -> None:
-    """Пропущенные дни заполняются нулями, длина равна days."""
+    """Пропущенные дни заполняются нулями для заданного списка дат."""
     rows = [
         (date(2026, 4, 25), 5),
         (date(2026, 4, 27), 3),
     ]
-    out = gap_fill_series(rows, days=4, today=date(2026, 4, 27))
-    assert [p["day"] for p in out] == [
-        "2026-04-24",
-        "2026-04-25",
-        "2026-04-26",
-        "2026-04-27",
+    series_dates = [
+        date(2026, 4, 24),
+        date(2026, 4, 25),
+        date(2026, 4, 26),
+        date(2026, 4, 27),
     ]
+    out = gap_fill_series(rows, series_dates=series_dates)
+    assert [p["day"] for p in out] == [d.isoformat() for d in series_dates]
     assert [p["n"] for p in out] == [0, 5, 0, 3]
 
 
 def test_reports_per_day_empty_input() -> None:
-    """Пустой input даёт массив длиной days со всеми нулями."""
-    out = gap_fill_series([], days=3, today=date(2026, 4, 27))
+    """Пустой input даёт массив длиной series_dates со всеми нулями."""
+    series_dates = [date(2026, 4, 25), date(2026, 4, 26), date(2026, 4, 27)]
+    out = gap_fill_series([], series_dates=series_dates)
     assert len(out) == 3
     assert all(p["n"] == 0 for p in out)
+
+
+def test_date_window_from_day_is_single_day() -> None:
+    """DateWindow.from_day охватывает ровно один календарный день."""
+    window = DateWindow.from_day(date(2026, 4, 27))
+    assert window.kind == "day"
+    assert (window.end_ts - window.start_ts).total_seconds() == 86400
+    assert window.series_dates() == [date(2026, 4, 27)]
+    assert window.descriptor() == {"kind": "day", "value": "2026-04-27"}
+
+
+def test_date_window_from_days_covers_n_dates() -> None:
+    """DateWindow.from_days возвращает ровно N календарных дат для серии."""
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 4, 27, 15, 0, tzinfo=timezone.utc)
+    window = DateWindow.from_days(3, now=now)
+    assert window.kind == "days"
+    assert window.descriptor() == {"kind": "days", "value": 3}
+    assert window.series_dates() == [
+        date(2026, 4, 25),
+        date(2026, 4, 26),
+        date(2026, 4, 27),
+    ]
+    assert window.start_ts == datetime(2026, 4, 25, 0, 0, tzinfo=timezone.utc)
+    assert window.end_ts == datetime(2026, 4, 28, 0, 0, tzinfo=timezone.utc)
 
 
 def test_per_project_sql_joins_null_project_ids() -> None:
     """NULL project_id из CTE должен матчиться с NULL project_id в ids."""
     assert "USING (project_id)" not in _PER_PROJECT_SQL
-    for alias in ["r", "k", "fb", "mr"]:
+    for alias in ["r", "k", "mr"]:
         assert (
             f"ids.project_id IS NOT DISTINCT FROM {alias}.project_id"
             in _PER_PROJECT_SQL
@@ -191,6 +235,23 @@ def test_dashboard_sql_aggregates_llm_tokens_without_old_reports() -> None:
     assert "COUNT(llm_total_tokens)" in _KPI_SQL
     assert "FILTER (WHERE llm_total_tokens IS NOT NULL)" in _PER_PROJECT_SQL
     assert "COUNT(llm_total_tokens) AS llm_reports_with_usage" in _PER_PROJECT_SQL
+
+
+def test_dashboard_sql_includes_new_metrics() -> None:
+    """KPI-запрос содержит метрики длительности, уникальных запусков и пика."""
+    assert "AVG(analysis_duration_ms)" in _KPI_SQL
+    assert "COUNT(DISTINCT launch_id)" in _KPI_SQL
+    assert "WITH peak AS" in _KPI_SQL
+    assert "kb_feedback" not in _KPI_SQL
+    assert "kb_feedback" not in _PER_PROJECT_SQL
+
+
+def test_dashboard_sql_buckets_in_utc() -> None:
+    """Бакетинг по дням должен быть в UTC, чтобы совпасть с DateWindow."""
+    from alla.dashboard.stats_store import _REPORTS_PER_DAY_SQL
+
+    assert "AT TIME ZONE 'UTC'" in _KPI_SQL
+    assert "AT TIME ZONE 'UTC'" in _REPORTS_PER_DAY_SQL
 
 
 # ---------------------------------------------------------------------------
@@ -213,27 +274,39 @@ def test_dashboard_html_has_required_elements() -> None:
     html = render_dashboard_html_shell()
     for marker in [
         'id="kpis"',
-        'id="ratioBar"',
         'id="bars"',
-        'id="top5List"',
         'id="projectsTable"',
         'id="daysSelect"',
+        'id="daySelect"',
+        'id="resetDay"',
+        'id="windowLabel"',
         'id="generatedAt"',
     ]:
         assert marker in html, f"missing {marker}"
     for label in [
         "Токены за период",
-        "В среднем на прогон",
-        "Токены/прогон",
+        "Среднее время анализа",
+        "Уникальных запусков",
+        "Среднее отчётов / день",
     ]:
         assert label in html
 
 
-def test_dashboard_html_top5_uses_russian_knowledge_base_copy() -> None:
-    """Пользовательский Top-5 текст называет базу знаний без KB-аббревиатуры."""
+def test_dashboard_html_drops_removed_widgets() -> None:
+    """Виджеты лайков/дизлайков и Топ-5 проектов удалены из шаблона."""
+    html = render_dashboard_html_shell()
+    assert "ratioBar" not in html
+    assert "ratioLegend" not in html
+    assert "top5List" not in html
+    assert "Лайки vs дизлайки" not in html
+    assert "Топ-5 проектов" not in html
+
+
+def test_dashboard_html_uses_russian_knowledge_base_copy() -> None:
+    """В шаблоне используется русское «база знаний», не KB-аббревиатура."""
     html = render_dashboard_html_shell()
     assert "KB-записей" not in html
-    assert "записей в базе знаний" in html
+    assert "База знаний" in html
 
 
 # ---------------------------------------------------------------------------
@@ -393,8 +466,19 @@ def test_persist_generated_report_passes_project_id(tmp_path) -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[Any, ...]] = []
 
-        def save(self, filename, launch_id, html, project_id=None, *, token_usage=None) -> None:
-            self.calls.append((filename, launch_id, html, project_id, token_usage))
+        def save(
+            self,
+            filename,
+            launch_id,
+            html,
+            project_id=None,
+            *,
+            token_usage=None,
+            analysis_duration_ms=None,
+        ) -> None:
+            self.calls.append(
+                (filename, launch_id, html, project_id, token_usage, analysis_duration_ms)
+            )
 
     store = _RecordingStore()
     analysis_result = AnalysisResult(
@@ -410,6 +494,7 @@ def test_persist_generated_report_passes_project_id(tmp_path) -> None:
             summary_text="summary",
             token_usage=TokenUsage(prompt_tokens=20, completion_tokens=10, total_tokens=30),
         ),
+        analysis_duration_seconds=12.5,
     )
     persist_generated_report(
         html_content="<html></html>",
@@ -421,9 +506,10 @@ def test_persist_generated_report_passes_project_id(tmp_path) -> None:
         analysis_result=analysis_result,
     )
     assert len(store.calls) == 1
-    filename, launch_id, html, project_id, token_usage = store.calls[0]
+    filename, launch_id, html, project_id, token_usage, analysis_duration_ms = store.calls[0]
     assert (filename, launch_id, html, project_id) == ("42_x.html", 42, "<html></html>", 99)
     assert token_usage == TokenUsage(prompt_tokens=120, completion_tokens=60, total_tokens=180)
+    assert analysis_duration_ms == 12500
 
 
 def test_persist_generated_report_keeps_skipped_llm_usage_null() -> None:
@@ -439,9 +525,20 @@ def test_persist_generated_report_keeps_skipped_llm_usage_null() -> None:
     class _RecordingStore:
         def __init__(self) -> None:
             self.token_usage: Any = "not-called"
+            self.analysis_duration_ms: Any = "not-called"
 
-        def save(self, filename, launch_id, html, project_id=None, *, token_usage=None) -> None:
+        def save(
+            self,
+            filename,
+            launch_id,
+            html,
+            project_id=None,
+            *,
+            token_usage=None,
+            analysis_duration_ms=None,
+        ) -> None:
             self.token_usage = token_usage
+            self.analysis_duration_ms = analysis_duration_ms
 
     store = _RecordingStore()
     persist_generated_report(

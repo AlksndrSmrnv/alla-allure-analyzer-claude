@@ -631,13 +631,28 @@ async def _get_project_names_cached() -> dict[int, str]:
 def _read_dashboard_stats(
     store: Any,
     *,
-    days: int,
-) -> tuple[dict[str, int], list[dict[str, Any]], list[dict[str, Any]]]:
+    window: Any,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Синхронно прочитать dashboard-агрегации; вызывается из threadpool."""
     return (
-        store.totals(days=days),
-        store.per_project_rollup(days=days),
-        store.reports_per_day(days=days),
+        store.totals(window=window),
+        store.per_project_rollup(window=window),
+        store.reports_per_day(window=window),
+    )
+
+
+def _read_project_reports(
+    store: Any,
+    *,
+    project_id: int | None,
+    window: Any,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Синхронно прочитать список отчётов проекта; вызывается из threadpool."""
+    return store.reports_for_project(
+        project_id=project_id,
+        window=window,
+        limit=limit,
     )
 
 
@@ -887,16 +902,38 @@ def resolve_feedback(request: dict[str, Any]) -> dict[str, Any]:
 # --- Дашборд ---
 
 
+def _resolve_dashboard_window(days: int, date_param: str | None) -> Any:
+    """Построить DateWindow из query-параметров `days` / `date`."""
+    from datetime import date as date_cls
+
+    from alla.dashboard.stats_store import DateWindow
+
+    if date_param:
+        try:
+            d = date_cls.fromisoformat(date_param)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Параметр date должен быть в формате YYYY-MM-DD",
+            )
+        return DateWindow.from_day(d)
+    return DateWindow.from_days(max(1, min(int(days), 365)))
+
+
 @app.get("/api/v1/dashboard/stats")
-async def dashboard_stats(days: int = 30) -> dict[str, Any]:
+async def dashboard_stats(
+    days: int = 30,
+    date: str | None = None,
+) -> dict[str, Any]:
     """Агрегированная статистика использования alla из PostgreSQL.
 
-    Окно времени (`days`) применяется ко всем метрикам: отчётам, KB-записям,
-    лайкам/дизлайкам и merge-правилам.
+    Окно времени задаётся либо параметром ``days`` (последние N дней,
+    clamp [1, 365]), либо ``date=YYYY-MM-DD`` (один календарный день UTC).
+    Параметр ``date`` имеет приоритет над ``days``.
     """
     from datetime import datetime, timezone
 
-    days = max(1, min(int(days), 365))
+    window = _resolve_dashboard_window(days, date)
     store = _get_dashboard_store()
     if store is None:
         raise HTTPException(
@@ -906,7 +943,7 @@ async def dashboard_stats(days: int = 30) -> dict[str, Any]:
     kpis, per_project_raw, series = await asyncio.to_thread(
         _read_dashboard_stats,
         store,
-        days=days,
+        window=window,
     )
     names = await _get_project_names_cached()
 
@@ -920,11 +957,48 @@ async def dashboard_stats(days: int = 30) -> dict[str, Any]:
         per_project.append({**row, "project_name": project_name})
 
     return {
-        "days": days,
+        "window": window.descriptor(),
+        "days": window.days_value if window.kind == "days" else None,
+        "date": window.day_value.isoformat() if window.kind == "day" and window.day_value else None,
         "kpis": kpis,
         "per_project": per_project,
         "series": series,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/v1/dashboard/projects/{project_id}/reports")
+async def dashboard_project_reports(
+    project_id: int,
+    days: int = 30,
+    date: str | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Список отчётов проекта в окне дашборда.
+
+    Спец-значение ``project_id=0`` соответствует «Без привязки к проекту»
+    (``project_id IS NULL`` в БД).
+    """
+    window = _resolve_dashboard_window(days, date)
+    store = _get_dashboard_store()
+    if store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Дашборд требует ALLURE_KB_POSTGRES_DSN",
+        )
+    pid: int | None = None if project_id == 0 else int(project_id)
+    limit = max(1, min(int(limit), 1000))
+    reports = await asyncio.to_thread(
+        _read_project_reports,
+        store,
+        project_id=pid,
+        window=window,
+        limit=limit,
+    )
+    return {
+        "project_id": pid,
+        "window": window.descriptor(),
+        "reports": reports,
     }
 
 

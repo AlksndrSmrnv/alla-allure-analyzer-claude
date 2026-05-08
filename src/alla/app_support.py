@@ -167,12 +167,16 @@ def persist_generated_report(
             if analysis_result is not None
             else None
         )
+        analysis_duration_ms: int | None = None
+        if analysis_result is not None and analysis_result.analysis_duration_seconds is not None:
+            analysis_duration_ms = int(round(analysis_result.analysis_duration_seconds * 1000))
         report_store.save(
             report_filename,
             launch_id,
             html_content,
             project_id,
             token_usage=token_usage,
+            analysis_duration_ms=analysis_duration_ms,
         )
         logger.info("HTML-отчёт сохранён в PostgreSQL: %s", report_filename)
 

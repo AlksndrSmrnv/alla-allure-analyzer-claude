@@ -44,6 +44,7 @@ ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS project_id INTEGER NULL;
 ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS llm_prompt_tokens INTEGER NULL;
 ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS llm_completion_tokens INTEGER NULL;
 ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS llm_total_tokens INTEGER NULL;
+ALTER TABLE alla.report ADD COLUMN IF NOT EXISTS analysis_duration_ms INTEGER NULL;
 CREATE INDEX IF NOT EXISTS idx_report_launch_id  ON alla.report(launch_id);
 CREATE INDEX IF NOT EXISTS idx_report_project_id ON alla.report(project_id);
 CREATE INDEX IF NOT EXISTS idx_report_created_at ON alla.report(created_at);
@@ -80,6 +81,7 @@ class PostgresReportStore:
         project_id: int | None = None,
         *,
         token_usage: "TokenUsage | None" = None,
+        analysis_duration_ms: int | None = None,
     ) -> None:
         """Вставить новый отчёт или тихо заменить существующий по filename."""
         prompt_tokens = token_usage.prompt_tokens if token_usage is not None else None
@@ -91,14 +93,16 @@ class PostgresReportStore:
                 cur.execute(
                     "INSERT INTO alla.report ("
                     "filename, launch_id, html, project_id, "
-                    "llm_prompt_tokens, llm_completion_tokens, llm_total_tokens"
-                    ") VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                    "llm_prompt_tokens, llm_completion_tokens, llm_total_tokens, "
+                    "analysis_duration_ms"
+                    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
                     "ON CONFLICT (filename) DO UPDATE "
                     "SET html = EXCLUDED.html, "
                     "project_id = EXCLUDED.project_id, "
                     "llm_prompt_tokens = EXCLUDED.llm_prompt_tokens, "
                     "llm_completion_tokens = EXCLUDED.llm_completion_tokens, "
-                    "llm_total_tokens = EXCLUDED.llm_total_tokens",
+                    "llm_total_tokens = EXCLUDED.llm_total_tokens, "
+                    "analysis_duration_ms = EXCLUDED.analysis_duration_ms",
                     (
                         filename,
                         launch_id,
@@ -107,6 +111,7 @@ class PostgresReportStore:
                         prompt_tokens,
                         completion_tokens,
                         total_tokens,
+                        analysis_duration_ms,
                     ),
                 )
             conn.commit()
