@@ -17,11 +17,11 @@ from alla.models.common import TestStatus as Status
 from alla.models.onboarding import OnboardingMode
 from alla.models.testops import FailedTestSummary, TriageReport
 from alla.orchestrator import (
-    KBStageResult,
     build_onboarding_state,
     _run_llm_stage,
 )
 from alla.services.kb_lookup_service import (
+    KBStageResult,
     _apply_exact_feedback_memory,
     build_kb_query_text,
 )

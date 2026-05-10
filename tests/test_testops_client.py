@@ -20,7 +20,7 @@ def _make_settings(monkeypatch, tmp_path) -> Settings:
     return Settings()
 
 
-def _make_client(monkeypatch, tmp_path) -> tuple[AllureTestOpsClient, MagicMock]:
+async def _make_client(monkeypatch, tmp_path) -> tuple[AllureTestOpsClient, MagicMock]:
     settings = _make_settings(monkeypatch, tmp_path)
     auth = MagicMock(spec=AllureAuthManager)
     # Очерёдность токенов: первый протух, второй валиден.
@@ -32,6 +32,9 @@ def _make_client(monkeypatch, tmp_path) -> tuple[AllureTestOpsClient, MagicMock]
         ]
     )
     client = AllureTestOpsClient(settings, auth)
+    # Конструктор поднимает реальный httpx.AsyncClient — закрываем его перед
+    # подменой на _ScriptedHttp, иначе остаются ResourceWarning'и.
+    await client._http.aclose()
     return client, auth
 
 
@@ -81,7 +84,7 @@ def _make_response(status_code: int, *, body: bytes = b"", text: str = "") -> Ma
 @pytest.mark.asyncio
 async def test_request_retries_on_401_and_returns_json(monkeypatch, tmp_path) -> None:
     """401 → invalidate токена → повтор → возвращён JSON ответа."""
-    client, auth = _make_client(monkeypatch, tmp_path)
+    client, auth = await _make_client(monkeypatch, tmp_path)
     client._http = _ScriptedHttp(
         [
             _make_response(401, text="expired"),
@@ -102,7 +105,7 @@ async def test_request_retries_on_401_and_returns_json(monkeypatch, tmp_path) ->
 @pytest.mark.asyncio
 async def test_request_raises_when_retry_also_returns_401(monkeypatch, tmp_path) -> None:
     """Если повтор тоже вернул 401, поднимаем AllureApiError(401, ...)."""
-    client, _ = _make_client(monkeypatch, tmp_path)
+    client, _ = await _make_client(monkeypatch, tmp_path)
     client._http = _ScriptedHttp(
         [
             _make_response(401, text="first"),
@@ -119,7 +122,7 @@ async def test_request_raises_when_retry_also_returns_401(monkeypatch, tmp_path)
 @pytest.mark.asyncio
 async def test_request_translates_request_error_on_first_attempt(monkeypatch, tmp_path) -> None:
     """httpx.RequestError на первой попытке → AllureApiError(0, ...)."""
-    client, _ = _make_client(monkeypatch, tmp_path)
+    client, _ = await _make_client(monkeypatch, tmp_path)
     client._http = _ScriptedHttp([httpx.ConnectError("connection refused")])
 
     with pytest.raises(AllureApiError) as exc_info:
@@ -132,7 +135,7 @@ async def test_request_translates_request_error_on_first_attempt(monkeypatch, tm
 @pytest.mark.asyncio
 async def test_request_translates_request_error_on_retry(monkeypatch, tmp_path) -> None:
     """httpx.RequestError на повторной попытке после 401 → AllureApiError(0, ...)."""
-    client, _ = _make_client(monkeypatch, tmp_path)
+    client, _ = await _make_client(monkeypatch, tmp_path)
     client._http = _ScriptedHttp(
         [
             _make_response(401, text="expired"),
@@ -150,7 +153,7 @@ async def test_request_translates_request_error_on_retry(monkeypatch, tmp_path) 
 @pytest.mark.asyncio
 async def test_request_404_carries_swagger_hint(monkeypatch, tmp_path) -> None:
     """404 даёт человеко-читаемое сообщение с ссылкой на Swagger."""
-    client, _ = _make_client(monkeypatch, tmp_path)
+    client, _ = await _make_client(monkeypatch, tmp_path)
     client._http = _ScriptedHttp([_make_response(404, text="missing")])
 
     with pytest.raises(AllureApiError) as exc_info:
@@ -168,7 +171,7 @@ async def test_request_404_carries_swagger_hint(monkeypatch, tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_request_raw_retries_on_401_and_returns_bytes(monkeypatch, tmp_path) -> None:
     """401 → invalidate → повтор → возвращены бинарные байты."""
-    client, auth = _make_client(monkeypatch, tmp_path)
+    client, auth = await _make_client(monkeypatch, tmp_path)
     payload = b"\x89PNG\r\n\x1a\nbinary"
     client._http = _ScriptedHttp(
         [
@@ -186,7 +189,7 @@ async def test_request_raw_retries_on_401_and_returns_bytes(monkeypatch, tmp_pat
 @pytest.mark.asyncio
 async def test_request_raw_translates_request_error_on_first_attempt(monkeypatch, tmp_path) -> None:
     """httpx.RequestError на первой попытке raw-запроса → AllureApiError(0, ...)."""
-    client, _ = _make_client(monkeypatch, tmp_path)
+    client, _ = await _make_client(monkeypatch, tmp_path)
     client._http = _ScriptedHttp([httpx.ReadTimeout("timeout")])
 
     with pytest.raises(AllureApiError) as exc_info:
@@ -198,7 +201,7 @@ async def test_request_raw_translates_request_error_on_first_attempt(monkeypatch
 @pytest.mark.asyncio
 async def test_request_raw_translates_request_error_on_retry(monkeypatch, tmp_path) -> None:
     """httpx.RequestError на повторной попытке raw-запроса → AllureApiError(0, ...)."""
-    client, _ = _make_client(monkeypatch, tmp_path)
+    client, _ = await _make_client(monkeypatch, tmp_path)
     client._http = _ScriptedHttp(
         [
             _make_response(401, text="expired"),
