@@ -75,12 +75,6 @@ class ClusteringConfig:
 
 
 # ---------------------------------------------------------------------------
-# Нормализация текста (делегирована alla.utils.text_normalization)
-# ---------------------------------------------------------------------------
-
-_normalize_text = normalize_text
-
-# ---------------------------------------------------------------------------
 # Извлечение actual-значения из assertion
 # ---------------------------------------------------------------------------
 
@@ -157,7 +151,7 @@ def _build_message_document(failure: FailedTestSummary) -> str:
         parts.append(failure.category)
 
     raw = "\n".join(parts)
-    return _normalize_text(raw) if raw else ""
+    return normalize_text(raw) if raw else ""
 
 
 def _build_step_document(failure: FailedTestSummary) -> str:
@@ -199,7 +193,7 @@ def _build_trace_document(
         head_lines=head_lines,
         tail_lines=tail_lines,
     )
-    return _normalize_text(compacted) if compacted else ""
+    return normalize_text(compacted) if compacted else ""
 
 
 def _build_log_document(
@@ -224,7 +218,7 @@ def _build_log_document(
         head_lines=head_lines,
         tail_lines=tail_lines,
     )
-    return _normalize_text(compacted) if compacted else ""
+    return normalize_text(compacted) if compacted else ""
 
 
 def _get_failure_correlation(failure: FailedTestSummary) -> str | None:

@@ -51,14 +51,14 @@ def test_logs_clustering_weight_rejects_out_of_range(monkeypatch, tmp_path) -> N
 
 
 def test_llm_request_delay_default(monkeypatch, tmp_path) -> None:
-    """llm_request_delay по умолчанию 0.5."""
+    """llm_request_delay по умолчанию 2.0."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ALLURE_ENDPOINT", "https://allure.example.com")
     monkeypatch.setenv("ALLURE_TOKEN", "tok")
 
     settings = Settings()
 
-    assert settings.llm_request_delay == 0.5
+    assert settings.llm_request_delay == 2.0
 
 
 def test_llm_request_delay_rejects_negative(monkeypatch, tmp_path) -> None:
