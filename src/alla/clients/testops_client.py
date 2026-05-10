@@ -377,6 +377,45 @@ class AllureTestOpsClient:
 
     # --- Внутренний HTTP ---
 
+    async def _send_with_auth_retry(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        """Выполнить запрос с auth-header и одноразовым повтором при 401.
+
+        Транслирует ``httpx.RequestError`` в ``AllureApiError(0, ...)`` как на
+        первой, так и на повторной попытке. Возвращает ``httpx.Response`` —
+        вызывающий код сам решает, как интерпретировать тело и какие
+        статусы считать ошибками.
+        """
+        url = f"{self._endpoint}{path}"
+        auth_header = await self._auth.get_auth_header()
+
+        try:
+            resp = await self._http.request(
+                method, url, params=params, json=json, headers=auth_header,
+            )
+        except httpx.RequestError as exc:
+            raise AllureApiError(0, str(exc), path) from exc
+
+        if resp.status_code == 401:
+            logger.debug("Получен 401, выполняем повторную аутентификацию и повтор запроса")
+            failed_token = auth_header.get("Authorization", "").removeprefix("Bearer ")
+            self._auth.invalidate(failed_token=failed_token)
+            auth_header = await self._auth.get_auth_header()
+            try:
+                resp = await self._http.request(
+                    method, url, params=params, json=json, headers=auth_header,
+                )
+            except httpx.RequestError as exc:
+                raise AllureApiError(0, str(exc), path) from exc
+
+        return resp
+
     async def _request_raw(
         self,
         method: str,
@@ -387,31 +426,9 @@ class AllureTestOpsClient:
         """Выполнить аутентифицированный HTTP-запрос, возвращая сырые байты.
 
         Используется для скачивания аттачментов (бинарные файлы, текстовые логи).
-        Содержит тот же retry-на-401 механизм, что и ``_request()``.
         """
-        url = f"{self._endpoint}{path}"
-        auth_header = await self._auth.get_auth_header()
-
-        logger.debug("HTTP raw запрос: %s %s", method, url)
-
-        try:
-            resp = await self._http.request(
-                method, url, params=params, headers=auth_header,
-            )
-        except httpx.RequestError as exc:
-            raise AllureApiError(0, str(exc), path) from exc
-
-        if resp.status_code == 401:
-            logger.debug("Получен 401, повторная аутентификация для raw-запроса")
-            failed_token = auth_header.get("Authorization", "").removeprefix("Bearer ")
-            self._auth.invalidate(failed_token=failed_token)
-            auth_header = await self._auth.get_auth_header()
-            try:
-                resp = await self._http.request(
-                    method, url, params=params, headers=auth_header,
-                )
-            except httpx.RequestError as exc:
-                raise AllureApiError(0, str(exc), path) from exc
+        logger.debug("HTTP raw запрос: %s %s%s", method, self._endpoint, path)
+        resp = await self._send_with_auth_retry(method, path, params=params)
 
         if resp.status_code == 404:
             raise AllureApiError(
@@ -441,30 +458,11 @@ class AllureTestOpsClient:
         Если ``expect_json=False``, пустое тело ответа возвращается как ``None``
         (для write-операций, которые могут вернуть 204 No Content).
         """
-        url = f"{self._endpoint}{path}"
-        auth_header = await self._auth.get_auth_header()
-
-        logger.debug("HTTP-запрос: %s %s параметры=%s json=%s", method, url, params, json)
-
-        try:
-            resp = await self._http.request(
-                method, url, params=params, json=json, headers=auth_header,
-            )
-        except httpx.RequestError as exc:
-            raise AllureApiError(0, str(exc), path) from exc
-
-        # Одноразовый повтор при 401 (истёкший JWT)
-        if resp.status_code == 401:
-            logger.debug("Получен 401, выполняем повторную аутентификацию и повтор запроса")
-            failed_token = auth_header.get("Authorization", "").removeprefix("Bearer ")
-            self._auth.invalidate(failed_token=failed_token)
-            auth_header = await self._auth.get_auth_header()
-            try:
-                resp = await self._http.request(
-                    method, url, params=params, json=json, headers=auth_header,
-                )
-            except httpx.RequestError as exc:
-                raise AllureApiError(0, str(exc), path) from exc
+        logger.debug(
+            "HTTP-запрос: %s %s%s параметры=%s json=%s",
+            method, self._endpoint, path, params, json,
+        )
+        resp = await self._send_with_auth_retry(method, path, params=params, json=json)
 
         logger.debug(
             "HTTP-ответ: %s %s status=%d content_length=%d",

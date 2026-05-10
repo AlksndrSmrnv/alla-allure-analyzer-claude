@@ -16,12 +16,14 @@ from alla.models.llm import LLMAnalysisResult, LLMLaunchSummary
 from alla.models.common import TestStatus as Status
 from alla.models.onboarding import OnboardingMode
 from alla.models.testops import FailedTestSummary, TriageReport
-from alla.orchestrator import _KBStageResult
 from alla.orchestrator import (
-    _apply_exact_feedback_memory,
-    _build_kb_query_text,
     build_onboarding_state,
     _run_llm_stage,
+)
+from alla.services.kb_lookup_service import (
+    KBStageResult,
+    _apply_exact_feedback_memory,
+    build_kb_query_text,
 )
 
 
@@ -69,7 +71,7 @@ def test_build_kb_query_text_uses_member_log_when_representative_has_none() -> N
         ),
     }
 
-    query_text, message_len, trace_len, log_len = _build_kb_query_text(
+    query_text, message_len, trace_len, log_len = build_kb_query_text(
         cluster,
         test_by_id,
     )
@@ -103,7 +105,7 @@ def test_build_kb_query_text_falls_back_to_trace_when_log_missing() -> None:
         ),
     }
 
-    query_text, message_len, trace_len, log_len = _build_kb_query_text(
+    query_text, message_len, trace_len, log_len = build_kb_query_text(
         cluster,
         test_by_id,
     )
@@ -269,7 +271,7 @@ async def test_run_llm_stage_returns_none_when_cert_resolution_fails(monkeypatch
         _single_triage_report(),
         _single_cluster_report(),
         settings,
-        kb_stage=_KBStageResult(),
+        kb_stage=KBStageResult(),
     )
 
     assert result is None
@@ -304,7 +306,7 @@ async def test_run_llm_stage_cleans_up_temp_files_when_client_init_fails(
         _single_triage_report(),
         _single_cluster_report(),
         settings,
-        kb_stage=_KBStageResult(),
+        kb_stage=KBStageResult(),
     )
 
     assert result is None
@@ -367,7 +369,7 @@ async def test_run_llm_stage_preserves_cluster_results_when_summary_generation_f
         _single_triage_report(),
         _single_cluster_report(),
         settings,
-        kb_stage=_KBStageResult(),
+        kb_stage=KBStageResult(),
     )
 
     assert result == expected_result
@@ -431,7 +433,7 @@ async def test_run_llm_stage_preserves_results_when_client_close_fails(
         _single_triage_report(),
         _single_cluster_report(),
         settings,
-        kb_stage=_KBStageResult(),
+        kb_stage=KBStageResult(),
     )
 
     assert result == expected_result

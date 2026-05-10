@@ -13,25 +13,8 @@ from alla.knowledge.models import KBMatchResult
 from alla.models.clustering import ClusteringReport
 from alla.models.onboarding import OnboardingMode, OnboardingState
 from alla.models.testops import FailedTestSummary, TriageReport
-from alla.services.kb_lookup_service import KBStageResult as _KBStageResult
-from alla.services.kb_lookup_service import (
-    _apply_exact_feedback_memory,
-    build_kb_query_text as _build_kb_query_text,
-    lookup_kb_for_clusters,
-)
+from alla.services.kb_lookup_service import KBStageResult, lookup_kb_for_clusters
 from alla.services.kb_push_service import KBPushResult
-
-# Backward-compat re-exports для тестов, которые исторически импортировали
-# приватные хелперы из orchestrator. Бизнес-логика теперь в
-# :mod:`alla.services.kb_lookup_service`; здесь — только алиасы.
-__all__ = [
-    "AnalysisResult",
-    "analyze_launch",
-    "apply_merge_rules_phase",
-    "build_onboarding_state",
-    "_apply_exact_feedback_memory",
-    "_build_kb_query_text",
-]
 
 if TYPE_CHECKING:
     from alla.knowledge.merge_rules_store import PostgresMergeRulesStore
@@ -241,7 +224,7 @@ def _run_kb_stage(
     report: TriageReport,
     clustering_report: ClusteringReport | None,
     settings: Settings,
-) -> _KBStageResult:
+) -> KBStageResult:
     """Выполнить KB search stage и собрать его артефакты.
 
     Тонкий wrapper поверх :func:`alla.services.kb_lookup_service.lookup_kb_for_clusters`
@@ -255,7 +238,7 @@ async def _run_llm_stage(
     clustering_report: ClusteringReport | None,
     settings: Settings,
     *,
-    kb_stage: _KBStageResult,
+    kb_stage: KBStageResult,
 ) -> tuple["LLMAnalysisResult | None", "LLMLaunchSummary | None"]:
     """Выполнить LLM stage для кластеров и summary по прогону."""
     if (
@@ -419,7 +402,7 @@ async def _push_llm_stage(
 async def _push_kb_stage(
     report: TriageReport,
     clustering_report: ClusteringReport | None,
-    kb_stage: _KBStageResult,
+    kb_stage: KBStageResult,
     llm_result: "LLMAnalysisResult | None",
     updater: TestResultsUpdater | None,
     settings: Settings,

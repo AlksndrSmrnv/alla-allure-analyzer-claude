@@ -9,7 +9,7 @@ from alla.knowledge.models import KBEntry, RootCauseCategory
 from alla.models.clustering import ClusterSignature, FailureCluster
 from alla.models.common import TestStatus as Status
 from alla.models.testops import FailedTestSummary
-from alla.orchestrator import _build_kb_query_text
+from alla.services.kb_lookup_service import build_kb_query_text
 from alla.utils.text_normalization import canonicalize_kb_error_example
 
 
@@ -57,7 +57,7 @@ def test_build_kb_query_uses_member_log_when_representative_has_no_log() -> None
         ),
     }
 
-    query_text, message_len, trace_len, log_len = _build_kb_query_text(
+    query_text, message_len, trace_len, log_len = build_kb_query_text(
         cluster,
         test_by_id,
     )
@@ -141,7 +141,7 @@ def test_canonicalized_report_entry_gets_tier1_exact_match_on_repeat_analysis() 
         }
     )
 
-    query_text, message_len, trace_len, log_len = _build_kb_query_text(cluster, test_by_id)
+    query_text, message_len, trace_len, log_len = build_kb_query_text(cluster, test_by_id)
     results = TextMatcher().match(query_text, [entry], query_label="cluster-repeat")
 
     assert message_len > 0
