@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, TypeVar, cast
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -800,6 +800,24 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
     entry_id = _run_kb_action(lambda: store.create_kb_entry(entry, req.project_id))
 
     if entry_id is None:
+        # ON CONFLICT DO NOTHING — slug+project уже существует. Это нормальный
+        # сценарий retry после потери ответа (Failed to fetch на стороне браузера).
+        # Если payload совпадает с существующей записью — возвращаем её id как
+        # идемпотентный успех. Если payload отличается — это настоящий конфликт.
+        existing = _run_kb_action(
+            lambda: store.find_kb_entry_by_slug(req.id, req.project_id)
+        )
+        if existing is not None and _kb_entry_matches(existing, entry):
+            return JSONResponse(
+                status_code=200,
+                content=CreateKBEntryResponse(
+                    entry_id=existing.entry_id or 0,
+                    id=existing.id,
+                    title=existing.title,
+                    category=existing.category,
+                    created=False,
+                ).model_dump(),
+            )
         raise HTTPException(
             status_code=409,
             detail=f"KB entry with slug '{req.id}' already exists "
@@ -814,6 +832,22 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
         created=True,
     )
     return resp.model_dump()
+
+
+def _kb_entry_matches(existing: "KBEntry", incoming: "KBEntry") -> bool:
+    """Совпадают ли пользовательские поля двух KB-записей.
+
+    Сравниваем то, что юзер мог изменить через форму. entry_id/project_id/
+    created_at не входят: они либо суррогатные, либо контекстные.
+    """
+    return (
+        existing.title == incoming.title
+        and existing.description == incoming.description
+        and existing.error_example == incoming.error_example
+        and existing.step_path == incoming.step_path
+        and existing.category == incoming.category
+        and list(existing.resolution_steps) == list(incoming.resolution_steps)
+    )
 
 
 @app.put("/api/v1/kb/entries/{entry_id}")

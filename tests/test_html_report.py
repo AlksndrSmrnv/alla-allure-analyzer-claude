@@ -208,8 +208,10 @@ def test_html_report_feedback_fetches_go_through_retry_wrapper() -> None:
     html = generate_html_report(result, feedback_api_url="http://feedback.local")
 
     assert "function fetchWithRetry" in html
-    assert "fetch(FEEDBACK_API_URL" not in html
-    assert "fetch(apiUrl + " not in html
+    # Все feedback/KB вызовы внутри _build_feedback_js должны идти через
+    # fetchWithRetry. Регулярка устойчива к пробелам и любому хвосту URL.
+    assert not re.search(r"\bfetch\s*\(\s*FEEDBACK_API_URL\b", html)
+    assert not re.search(r"\bfetch\s*\(\s*apiUrl\b", html)
 
 
 def test_html_report_renders_http_section_separately() -> None:

@@ -45,6 +45,12 @@ class FeedbackStore(Protocol):
         """Создать новую запись KB в PostgreSQL."""
         ...
 
+    def find_kb_entry_by_slug(
+        self, slug: str, project_id: int | None
+    ) -> KBEntry | None:
+        """Найти существующую запись по (slug, project_id) — для идемпотентного create."""
+        ...
+
     def update_kb_entry(self, entry_id: int, fields: dict[str, Any]) -> bool:
         """Обновить существующую запись базы знаний."""
         ...
