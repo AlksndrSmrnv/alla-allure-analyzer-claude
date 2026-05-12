@@ -102,6 +102,7 @@ def test_build_cluster_prompt_top_level_rule_does_not_exclude_step() -> None:
         "только на сообщение ошибки, трейс и лог",
         "только по ошибке, трейсу и логу",
         "только по фрагменту лога приложения",
+        "категорию определи по сообщению ошибки и трейсу",
     ):
         assert closed_list not in task, closed_list
 
