@@ -135,6 +135,10 @@ def build_cluster_analysis_prompt(
 
     has_symptom = message_chars > 0 or trace_chars > 0
     has_log = log_chars > 0
+    low_evidence_step_hint = (
+        bool(cluster.example_step_path)
+        and (message_chars + trace_chars + log_chars) < 500
+    )
 
     if has_symptom and has_log:
         parts.append(
@@ -150,7 +154,10 @@ def build_cluster_analysis_prompt(
     parts.append("")
     parts.append(
         _build_cluster_instruction(
-            kb_matches, has_symptom=has_symptom, has_log=has_log
+            kb_matches,
+            has_symptom=has_symptom,
+            has_log=has_log,
+            low_evidence_step_hint=low_evidence_step_hint,
         )
     )
 
@@ -297,6 +304,12 @@ _SYSTEM_PROMPT_CLUSTER = "\n".join(
         "8. Если ни одна запись не прошла проверку применимости — прямо "
         "сообщи, что подходящих записей в базе знаний нет, и строй анализ "
         "только по ошибке / трейсу / логу.",
+        "9. «Шаг теста» (если присутствует в данных) — вспомогательный "
+        "контекст: указывает, на какой стадии теста произошёл сбой. Сам "
+        "по себе шаг НЕ доказательство первопричины и не подменяет ошибку, "
+        "трейс или лог. Используй его умеренно — как дополнительный признак "
+        "для выбора категории и формулировки гипотезы, особенно если "
+        "сообщение об ошибке и лог короткие.",
     ]
 )
 
@@ -524,6 +537,7 @@ def _build_cluster_instruction(
     *,
     has_symptom: bool = True,
     has_log: bool = False,
+    low_evidence_step_hint: bool = False,
 ) -> str:
     if has_symptom and has_log:
         what_broke = (
@@ -681,6 +695,15 @@ def _build_cluster_instruction(
         decision_rules.append(
             "Базы знаний нет — опирайся только на сообщение ошибки, "
             "трейс и лог."
+        )
+
+    if low_evidence_step_hint:
+        decision_rules.append(
+            "Данных об ошибке немного. Используй «Шаг теста» из раздела "
+            "ДАННЫЕ как дополнительный контекст: учитывай, на какой стадии "
+            "теста произошёл сбой, при выборе категории причины и "
+            "формулировке гипотезы. Шаг не подменяет ошибку и лог; "
+            "не выдумывай по нему деталей, которых нет в данных."
         )
 
     decision_rules.extend(

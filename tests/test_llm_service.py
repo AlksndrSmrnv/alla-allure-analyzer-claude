@@ -69,6 +69,59 @@ def test_build_cluster_prompt_includes_kb_provenance_context() -> None:
     assert "лог приложения (96 симв.)" in user
 
 
+def test_build_cluster_prompt_mentions_step_in_system_prompt() -> None:
+    """Системный промпт описывает «Шаг теста» как вспомогательный контекст."""
+    cluster = make_failure_cluster()
+
+    system, _user = build_cluster_prompt(cluster)
+
+    assert "Шаг теста" in system
+    assert "вспомогательный" in system
+
+
+def test_build_cluster_prompt_low_evidence_adds_step_rule() -> None:
+    """При коротких ошибке/логе подсказка про «Шаг теста» включается в ЗАДАНИЕ."""
+    cluster = make_failure_cluster(
+        example_message="AssertionError: false",
+        example_trace_snippet=None,
+        example_step_path="Login > Verify success",
+    )
+
+    _system, user = build_cluster_prompt(cluster)
+
+    assert "Шаг теста: Login > Verify success" in user
+    assert "Данных об ошибке немного" in user
+    assert "«Шаг теста»" in user.split("ЗАДАНИЕ")[1]
+
+
+def test_build_cluster_prompt_no_step_rule_with_rich_log() -> None:
+    """При богатом логе подсказка про шаг в ЗАДАНИЕ не добавляется."""
+    cluster = make_failure_cluster(
+        example_message="AssertionError: false",
+        example_step_path="Login > Verify success",
+    )
+
+    _system, user = build_cluster_prompt(
+        cluster, log_snippet="ERROR: something went wrong " * 200
+    )
+
+    assert "Шаг теста: Login > Verify success" in user
+    assert "Данных об ошибке немного" not in user
+
+
+def test_build_cluster_prompt_no_step_rule_without_step_path() -> None:
+    """Без example_step_path подсказка про шаг не добавляется даже при дефиците данных."""
+    cluster = make_failure_cluster(
+        example_message="AssertionError: false",
+        example_trace_snippet=None,
+        example_step_path=None,
+    )
+
+    _system, user = build_cluster_prompt(cluster)
+
+    assert "Данных об ошибке немного" not in user
+
+
 def test_build_launch_summary_prompt_smoke() -> None:
     """Launch summary prompt включает данные кластеров и просит приоритизировать fixes."""
     cluster = make_failure_cluster(label="Gateway timeout", member_count=3)
