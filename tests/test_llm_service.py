@@ -79,6 +79,20 @@ def test_build_cluster_prompt_mentions_step_in_system_prompt() -> None:
     assert "вспомогательный" in system
 
 
+def test_build_cluster_prompt_top_level_rule_does_not_exclude_step() -> None:
+    """«Главное правило» и fallback-указания не исключают шаг как источник."""
+    cluster = make_failure_cluster()
+
+    system, _user = build_cluster_prompt(cluster)
+
+    # Закрытый список источников без шага раньше противоречил пункту 9.
+    assert "ошибке, стек-трейсе, логе или базе знаний" not in system
+    assert "только по сообщению ошибки и трейсу" not in system
+    assert "только по ошибке / трейсу / логу" not in system
+    # Главное правило обязано упомянуть шаг теста в списке допустимых источников.
+    assert "шаге теста" in system
+
+
 def test_build_cluster_prompt_low_evidence_adds_step_rule() -> None:
     """При коротких ошибке/логе подсказка про «Шаг теста» включается в ЗАДАНИЕ."""
     cluster = make_failure_cluster(
