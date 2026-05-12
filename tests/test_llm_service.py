@@ -83,7 +83,7 @@ def test_build_cluster_prompt_top_level_rule_does_not_exclude_step() -> None:
     """«Главное правило» и fallback-указания не исключают шаг как источник."""
     cluster = make_failure_cluster()
 
-    system, _user = build_cluster_prompt(cluster)
+    system, user = build_cluster_prompt(cluster)
 
     # Закрытый список источников без шага раньше противоречил пункту 9.
     assert "ошибке, стек-трейсе, логе или базе знаний" not in system
@@ -91,6 +91,19 @@ def test_build_cluster_prompt_top_level_rule_does_not_exclude_step() -> None:
     assert "только по ошибке / трейсу / логу" not in system
     # Главное правило обязано упомянуть шаг теста в списке допустимых источников.
     assert "шаге теста" in system
+
+    # Аналогично, в самой секции «ЗАДАНИЕ» не должно быть закрытых списков
+    # источников, исключающих шаг — иначе LLM получит смешанный сигнал
+    # одновременно с low_evidence_step_hint правилом.
+    task = user.split("ЗАДАНИЕ")[1]
+    for closed_list in (
+        "анализ построен только по ошибке теста",
+        "только по сообщению ошибки, трейсу и логу",
+        "только на сообщение ошибки, трейс и лог",
+        "только по ошибке, трейсу и логу",
+        "только по фрагменту лога приложения",
+    ):
+        assert closed_list not in task, closed_list
 
 
 def test_build_cluster_prompt_low_evidence_adds_step_rule() -> None:
