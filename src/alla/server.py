@@ -5,8 +5,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, TypeVar, cast
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -27,6 +27,7 @@ from alla.utils.text_normalization import canonicalize_kb_error_example
 
 if TYPE_CHECKING:
     from alla.config import Settings
+    from alla.knowledge.models import KBEntry
     from alla.knowledge.postgres_feedback import PostgresFeedbackStore
     from alla.knowledge.merge_rules_store import PostgresMergeRulesStore
     from alla.orchestrator import AnalysisResult
@@ -766,7 +767,7 @@ def _make_slug(title: str, error_example: str, step_path: str | None = None) -> 
 
 
 @app.post("/api/v1/kb/entries", status_code=201)
-def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
+def create_kb_entry(response: Response, request: dict[str, Any]) -> dict[str, Any]:
     """Создать новую запись KB из HTML-отчёта."""
     store = _require_feedback_store("KB entry creation requires postgres backend")
 
@@ -781,15 +782,15 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
         req.step_path = None
 
     # Авто-генерация title и id если не указаны
-    if not req.title:
+    title = req.title or ""
+    if not title:
         first_line = (req.error_example or "").splitlines()[0][:100] if req.error_example else ""
-        req.title = first_line or "KB Entry"
-    if not req.id:
-        req.id = _make_slug(req.title, req.error_example or "", req.step_path)
+        title = first_line or "KB Entry"
+    slug = req.id or _make_slug(title, req.error_example or "", req.step_path)
 
     entry = KBEntry(
-        id=req.id,
-        title=req.title,
+        id=slug,
+        title=title,
         description=req.description,
         error_example=req.error_example,
         step_path=req.step_path,
@@ -805,29 +806,27 @@ def create_kb_entry(request: dict[str, Any]) -> dict[str, Any]:
         # Если payload совпадает с существующей записью — возвращаем её id как
         # идемпотентный успех. Если payload отличается — это настоящий конфликт.
         existing = _run_kb_action(
-            lambda: store.find_kb_entry_by_slug(req.id, req.project_id)
+            lambda: store.find_kb_entry_by_slug(slug, req.project_id)
         )
         if existing is not None and _kb_entry_matches(existing, entry):
-            return JSONResponse(
-                status_code=200,
-                content=CreateKBEntryResponse(
-                    entry_id=existing.entry_id or 0,
-                    id=existing.id,
-                    title=existing.title,
-                    category=existing.category,
-                    created=False,
-                ).model_dump(),
-            )
+            response.status_code = 200
+            return CreateKBEntryResponse(
+                entry_id=existing.entry_id or 0,
+                id=existing.id,
+                title=existing.title,
+                category=existing.category,
+                created=False,
+            ).model_dump()
         raise HTTPException(
             status_code=409,
-            detail=f"KB entry with slug '{req.id}' already exists "
+            detail=f"KB entry with slug '{slug}' already exists "
             f"for project_id={req.project_id}",
         )
 
     resp = CreateKBEntryResponse(
         entry_id=entry_id,
-        id=req.id,
-        title=req.title,
+        id=slug,
+        title=title,
         category=req.category,
         created=True,
     )

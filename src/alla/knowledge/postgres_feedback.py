@@ -218,7 +218,7 @@ class PostgresFeedbackStore:
         """SELECT существующую запись по (id, project_id). NULL project_id → глобальная."""
         if project_id is None:
             where = "id = %s AND project_id IS NULL"
-            params: tuple = (slug,)
+            params: tuple[object, ...] = (slug,)
         else:
             where = "id = %s AND project_id = %s"
             params = (slug, project_id)
