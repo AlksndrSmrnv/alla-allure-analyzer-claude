@@ -535,6 +535,91 @@ async def test_create_kb_entry_canonicalizes_error_example_before_save(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_create_kb_entry_is_idempotent_on_retry_with_matching_payload(
+    monkeypatch, _http_client
+) -> None:
+    """Повтор create с тем же payload (ретрай после потерянного ответа) — 200, created=False."""
+    from alla.knowledge.models import KBEntry, RootCauseCategory
+
+    payload = {
+        "title": "Gateway timeout",
+        "description": "desc",
+        "error_example": "timeout while saving order",
+        "category": "service",
+        "resolution_steps": ["step 1"],
+        "project_id": 42,
+    }
+
+    class _Store:
+        def create_kb_entry(self, entry, project_id):
+            return None  # симулируем ON CONFLICT DO NOTHING
+
+        def find_kb_entry_by_slug(self, slug, project_id):
+            return KBEntry(
+                entry_id=99,
+                id=slug,
+                title=payload["title"],
+                description=payload["description"],
+                error_example=payload["error_example"],
+                step_path=None,
+                category=RootCauseCategory.SERVICE,
+                resolution_steps=list(payload["resolution_steps"]),
+                project_id=project_id,
+            )
+
+    monkeypatch.setattr("alla.server._get_feedback_store", lambda: _Store())
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/kb/entries", json=payload)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["entry_id"] == 99
+    assert data["created"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_kb_entry_returns_409_when_slug_collides_with_different_payload(
+    monkeypatch, _http_client
+) -> None:
+    """Slug collide с другим содержимым — реальный конфликт, 409."""
+    from alla.knowledge.models import KBEntry, RootCauseCategory
+
+    class _Store:
+        def create_kb_entry(self, entry, project_id):
+            return None
+
+        def find_kb_entry_by_slug(self, slug, project_id):
+            return KBEntry(
+                entry_id=99,
+                id=slug,
+                title="Совсем другая запись",
+                description="другое",
+                error_example="другая ошибка",
+                step_path=None,
+                category=RootCauseCategory.TEST,
+                resolution_steps=["другой шаг"],
+                project_id=project_id,
+            )
+
+    monkeypatch.setattr("alla.server._get_feedback_store", lambda: _Store())
+
+    payload = {
+        "title": "Gateway timeout",
+        "description": "desc",
+        "error_example": "timeout while saving order",
+        "category": "service",
+        "resolution_steps": ["step 1"],
+        "project_id": 42,
+    }
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/kb/entries", json=payload)
+
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_submit_feedback_uses_exact_signature_payload(monkeypatch, _http_client) -> None:
     """POST /api/v1/kb/feedback передаёт stable issue signature в store."""
     captured: dict[str, Any] = {}

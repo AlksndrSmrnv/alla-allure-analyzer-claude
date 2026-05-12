@@ -197,6 +197,23 @@ def test_html_report_embeds_exact_feedback_payload() -> None:
     assert "CLUSTER_FEEDBACK_CONTEXTS" in html
     assert "issue_signature_hash" in html
 
+
+def test_html_report_feedback_fetches_go_through_retry_wrapper() -> None:
+    """Все feedback/KB fetch проходят через fetchWithRetry — лечит протухший TCP-пул."""
+    result = AnalysisResult(
+        triage_report=make_triage_report(),
+        clustering_report=make_clustering_report(),
+    )
+
+    html = generate_html_report(result, feedback_api_url="http://feedback.local")
+
+    assert "function fetchWithRetry" in html
+    # Все feedback/KB вызовы внутри _build_feedback_js должны идти через
+    # fetchWithRetry. Регулярка устойчива к пробелам и любому хвосту URL.
+    assert not re.search(r"\bfetch\s*\(\s*FEEDBACK_API_URL\b", html)
+    assert not re.search(r"\bfetch\s*\(\s*apiUrl\b", html)
+
+
 def test_html_report_renders_http_section_separately() -> None:
     """HTTP-секция выводится как отдельный блок, а не как сырой заголовок в pre."""
     cluster = make_failure_cluster(

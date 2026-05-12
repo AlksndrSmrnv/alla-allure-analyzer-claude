@@ -212,6 +212,44 @@ class PostgresFeedbackStore:
                 f"Ошибка создания KB-записи: {exc}"
             ) from exc
 
+    def find_kb_entry_by_slug(
+        self, slug: str, project_id: int | None
+    ) -> KBEntry | None:
+        """SELECT существующую запись по (id, project_id). NULL project_id → глобальная."""
+        if project_id is None:
+            where = "id = %s AND project_id IS NULL"
+            params: tuple[object, ...] = (slug,)
+        else:
+            where = "id = %s AND project_id = %s"
+            params = (slug, project_id)
+        query = (
+            "SELECT entry_id, id, title, description, error_example, step_path, "
+            "category, resolution_steps, project_id FROM alla.kb_entry "
+            f"WHERE {where} LIMIT 1"
+        )
+        try:
+            with psycopg.connect(self._dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                    row = cur.fetchone()
+                    if row is None:
+                        return None
+                    return KBEntry(
+                        entry_id=row[0],
+                        id=row[1],
+                        title=row[2],
+                        description=row[3] or "",
+                        error_example=row[4],
+                        step_path=row[5],
+                        category=row[6],
+                        resolution_steps=list(row[7] or []),
+                        project_id=row[8],
+                    )
+        except Exception as exc:
+            raise KnowledgeBaseError(
+                f"Ошибка чтения записи базы знаний по slug: {exc}"
+            ) from exc
+
     def update_kb_entry(self, entry_id: int, fields: dict[str, Any]) -> bool:
         """UPDATE запись в alla.kb_entry по entry_id."""
         allowed = {
