@@ -488,8 +488,10 @@ class AllureTestOpsClient:
         ``(chunks, total_bytes, capped, status_code, body_preview)``.
 
         ``httpx.RequestError`` транслируется в ``AllureApiError(0, ...)``.
-        Для статусов 4xx/5xx тело читается целиком в ``body_preview`` (≤500 байт)
-        для понятного сообщения об ошибке.
+        Для статусов 4xx/5xx тело **не** читается целиком: берётся первые
+        ~1 KiB (см. ``ERROR_BODY_PREVIEW_BYTES``), декодируется и режется
+        до ≤500 символов в ``body_preview``. Так error-путь не обходит
+        memory cap, действующий для успешного ответа.
         """
         # Маленький cap на тело ошибки. Прокси/балансировщики или сам TestOps
         # могут отдать огромную HTML-страницу/JSON на 5xx; нельзя позволить
