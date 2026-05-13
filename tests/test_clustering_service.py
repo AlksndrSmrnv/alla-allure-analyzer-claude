@@ -495,6 +495,7 @@ def test_cluster_uses_representative_correlation_hint() -> None:
 
     assert report.cluster_count == 1
     assert report.clusters[0].example_correlation == "operUID=op-1, rqUID=req-1"
+    assert report.clusters[0].example_correlation_test_id == 70
 
 
 def test_cluster_falls_back_to_member_correlation_when_representative_has_none() -> None:
@@ -515,6 +516,7 @@ def test_cluster_falls_back_to_member_correlation_when_representative_has_none()
 
     assert report.cluster_count == 1
     assert report.clusters[0].example_correlation == "operUID=op-73, rqUID=req-73"
+    assert report.clusters[0].example_correlation_test_id == 73
 
 
 def test_cluster_reads_correlation_from_old_http_log_sections() -> None:
@@ -534,6 +536,7 @@ def test_cluster_reads_correlation_from_old_http_log_sections() -> None:
 
     assert report.cluster_count == 1
     assert report.clusters[0].example_correlation == "operUID=op-74, rqUID=req-74"
+    assert report.clusters[0].example_correlation_test_id == 74
 
 
 # ---------------------------------------------------------------------------

@@ -137,4 +137,5 @@ def _merge_cluster_group(
         example_trace_snippet=representative.example_trace_snippet,
         example_step_path=representative.example_step_path,
         example_correlation=representative.example_correlation,
+        example_correlation_test_id=representative.example_correlation_test_id,
     )

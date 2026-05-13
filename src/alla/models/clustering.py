@@ -26,6 +26,7 @@ class FailureCluster(BaseModel):
     example_trace_snippet: str | None = None
     example_step_path: str | None = None
     example_correlation: str | None = None
+    example_correlation_test_id: int | None = None
 
 
 class ClusteringReport(BaseModel):

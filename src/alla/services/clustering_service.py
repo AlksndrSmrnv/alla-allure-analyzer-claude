@@ -232,8 +232,8 @@ def _select_cluster_correlation(
     representative: FailedTestSummary,
     group_failures: list[FailedTestSummary],
     member_ids: list[int],
-) -> str | None:
-    """Выбрать одну correlation-строку на кластер.
+) -> tuple[str, int] | None:
+    """Выбрать одну correlation-строку на кластер вместе с тестом-источником.
 
     Приоритет:
     1. representative test
@@ -241,7 +241,7 @@ def _select_cluster_correlation(
     """
     representative_correlation = _get_failure_correlation(representative)
     if representative_correlation is not None:
-        return representative_correlation
+        return representative_correlation, representative.test_result_id
 
     failures_by_id = {failure.test_result_id: failure for failure in group_failures}
     for test_id in member_ids:
@@ -250,7 +250,7 @@ def _select_cluster_correlation(
         failure = failures_by_id[test_id]
         correlation = _get_failure_correlation(failure)
         if correlation is not None:
-            return correlation
+            return correlation, failure.test_result_id
     return None
 
 
@@ -635,11 +635,15 @@ class ClusteringService:
         )
 
         label = self._generate_label(representative)
-        example_correlation = _select_cluster_correlation(
+        correlation_selection = _select_cluster_correlation(
             representative,
             group_failures,
             member_ids,
         )
+        example_correlation: str | None = None
+        example_correlation_test_id: int | None = None
+        if correlation_selection is not None:
+            example_correlation, example_correlation_test_id = correlation_selection
 
         return FailureCluster(
             cluster_id=self._generate_cluster_id(signature, member_ids),
@@ -655,6 +659,7 @@ class ClusteringService:
             ),
             example_step_path=representative.failed_step_path,
             example_correlation=example_correlation,
+            example_correlation_test_id=example_correlation_test_id,
         )
 
     def _generate_label(self, representative: FailedTestSummary) -> str:

@@ -259,12 +259,15 @@ def test_html_report_renders_cluster_correlation_separately_from_log() -> None:
         member_test_ids=[1],
         member_count=1,
         example_correlation="operUID=239482348, rqUID=324234523420",
+        example_correlation_test_id=1,
     )
     result = AnalysisResult(
         triage_report=make_triage_report(
             failed_tests=[
                 make_failed_test_summary(
                     test_result_id=1,
+                    name="test_order_save",
+                    link="https://allure.example/launch/1/testresult/1",
                     log_snippet=(
                         "--- [файл: app.log] ---\n"
                         "retry budget exhausted while saving order\n"
@@ -284,6 +287,41 @@ def test_html_report_renders_cluster_correlation_separately_from_log() -> None:
     assert "Корреляция" in html
     assert "operUID=239482348, rqUID=324234523420" in html
     assert "Лог приложения" in html
+    assert 'class="correlation-source"' in html
+    assert "https://allure.example/launch/1/errors/1" in html
+    assert "test_order_save" in html
+
+
+def test_html_report_correlation_without_source_link_skips_anchor() -> None:
+    cluster = make_failure_cluster(
+        cluster_id="c-corr-nolink",
+        representative_test_id=2,
+        member_test_ids=[2],
+        member_count=1,
+        example_correlation="operUID=op-x, rqUID=req-x",
+        example_correlation_test_id=2,
+    )
+    result = AnalysisResult(
+        triage_report=make_triage_report(
+            failed_tests=[
+                make_failed_test_summary(
+                    test_result_id=2,
+                    name="test_no_link",
+                    link=None,
+                )
+            ]
+        ),
+        clustering_report=make_clustering_report(
+            clusters=[cluster],
+            cluster_count=1,
+            total_failures=1,
+        ),
+    )
+
+    html = generate_html_report(result)
+
+    assert "operUID=op-x, rqUID=req-x" in html
+    assert 'class="correlation-source"' not in html
 
 
 def test_html_report_renders_merge_controls_only_for_mergeable_clusters() -> None:
