@@ -268,11 +268,17 @@ class TriageService:
         steps: list[ExecutionStep],
         _ancestors: list[str] | None = None,
     ) -> tuple[str | None, str | None, str | None]:
-        """Рекурсивно найти первый упавший шаг и извлечь message/trace/breadcrumb.
+        """Рекурсивно найти самый глубокий упавший шаг и извлечь message/trace/breadcrumb.
 
-        Обходит дерево шагов в глубину. Возвращает (message, trace, step_path) из
-        первого шага со статусом failed/broken. ``step_path`` — хлебные крошки
-        из имён всех предшествующих шагов и самого упавшего шага, разделённые « → ».
+        Обходит дерево шагов в глубину. Возвращает (message, trace, step_path) для
+        самого глубокого failed/broken-шага в цепочке: попав в failed-узел, всегда
+        пытается спуститься во вложенные failed-шаги и возвращает текущий только
+        если глубже падений нет. ``step_path`` — хлебные крошки из имён всех
+        предшествующих шагов (включая не-failed-родителей) и самого глубокого
+        упавшего шага, разделённые « → ».
+
+        Если у самого глубокого failed-шага нет своего message/trace, они
+        подтягиваются с ближайшего failed-предка.
 
         Если явного статуса нет (корневой execution-объект), но есть
         данные об ошибке — тоже извлекает.
@@ -285,17 +291,35 @@ class TriageService:
         # Первый проход: шаги с явным failure-статусом (приоритет)
         for step in steps:
             current_path = [*ancestors, step.name] if step.name else list(ancestors)
-            if step.status and step.status.lower() in failure_statuses:
-                message, trace = TriageService._extract_error_from_step(step)
-                if message or trace:
-                    breadcrumb = " → ".join(current_path) if current_path else None
-                    return message, trace, breadcrumb
-            # Рекурсия во вложенные шаги
-            if step.steps:
+            is_failed = bool(step.status and step.status.lower() in failure_statuses)
+
+            if is_failed:
+                own_message, own_trace = TriageService._extract_error_from_step(step)
+                own_breadcrumb = " → ".join(current_path) if current_path else None
+
+                # Сначала ищем более глубокий failed-шаг внутри текущего
+                if step.steps:
+                    deeper_msg, deeper_trace, deeper_breadcrumb = (
+                        TriageService._find_failure_details_in_steps(
+                            step.steps, current_path,
+                        )
+                    )
+                    if deeper_breadcrumb is not None:
+                        return (
+                            deeper_msg or own_message,
+                            deeper_trace or own_trace,
+                            deeper_breadcrumb,
+                        )
+
+                # Глубже failed-шагов нет — возвращаем текущий
+                if own_message or own_trace or own_breadcrumb:
+                    return own_message, own_trace, own_breadcrumb
+            elif step.steps:
+                # Не-failed родитель: рекурсия с включением имени в путь
                 message, trace, breadcrumb = TriageService._find_failure_details_in_steps(
                     step.steps, current_path,
                 )
-                if message or trace:
+                if breadcrumb is not None:
                     return message, trace, breadcrumb
 
         # Второй проход: шаги без статуса, но с данными об ошибке
