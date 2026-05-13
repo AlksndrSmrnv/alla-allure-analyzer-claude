@@ -51,6 +51,30 @@ def test_html_report_rerun_button_opens_attached_new_report() -> None:
     assert "document.write(result.html)" in html
 
 
+def test_clusters_collapsed_by_default_and_toggle_all_button() -> None:
+    """Кластеры свёрнуты по умолчанию, и есть глобальная кнопка toggle-all."""
+    cluster = make_failure_cluster(cluster_id="c1", label="Some failure", member_count=2)
+    result = AnalysisResult(
+        triage_report=make_triage_report(launch_id=777),
+        clustering_report=make_clustering_report(
+            clusters=[cluster],
+            cluster_count=1,
+            total_failures=2,
+        ),
+    )
+
+    html = generate_html_report(result)
+
+    assert 'class="cluster collapsed"' in html
+    assert 'aria-expanded="false"' in html
+    assert 'class="cluster-body" hidden' in html
+    assert '.cluster-body[hidden]' in html
+    assert 'clusters-toggle-all' in html
+    assert "Развернуть все кластеры" in html
+    assert "Свернуть все кластеры" in html
+    assert "cluster-chevron" in html
+
+
 def test_guided_onboarding_uses_project_learning_flow() -> None:
     """Guided mode показывает действия обучения проекта вместо обычного KB-блока."""
     cluster = make_failure_cluster(cluster_id="c1", label="Payment timeout", member_count=5)
