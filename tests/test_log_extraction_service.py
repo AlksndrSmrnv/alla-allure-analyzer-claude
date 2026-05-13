@@ -595,3 +595,37 @@ class TestLogExtractionServiceIntegration:
         assert _json.loads(body) == items
         # correlation hint извлечён из rqUID
         assert summary.correlation_hint == "rqUID=req-abc-1"
+
+    @pytest.mark.asyncio
+    async def test_log_snippet_is_truncated_when_exceeds_max_chars(self):
+        """``max_snippet_chars`` обрезает финальный log_snippet с маркером."""
+        # Лог с большим [ERROR]-блоком, расширяемый stack trace-ом.
+        big_trace = "\n".join(
+            f"    at com.example.deep.Frame{i}.call(Frame{i}.java:{i})"
+            for i in range(500)
+        )
+        content = (
+            f"2026-02-09 10:23:45,123 [ERROR] BoomException\n{big_trace}"
+        ).encode("utf-8")
+        att = AttachmentMeta(id=11, name="big.log", type="text/plain")
+        provider = FakeAttachmentProvider([att], {11: content})
+        service = LogExtractionService(
+            provider,
+            LogExtractionConfig(concurrency=1, max_snippet_chars=500),
+        )
+        summary = make_summary()
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.log_snippet is not None
+        # Полная склейка ушла бы в десятки тысяч символов; обрезка должна
+        # удержать тело в пределах max_chars + длина маркера.
+        assert "обрезано" in summary.log_snippet
+        # Сам маркер фиксированной длины; основное тело должно начинаться с
+        # 500 символов оригинального текста.
+        assert summary.log_snippet.startswith("--- [")
+        body, _, marker = summary.log_snippet.partition("\n\n[... обрезано")
+        assert len(body) == 500
+        assert marker.endswith("...]")

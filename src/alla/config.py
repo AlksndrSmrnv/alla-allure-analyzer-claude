@@ -102,6 +102,25 @@ class Settings(BaseSettings):
         ge=0.0, le=1.0,
         description="Вес лог-канала в кластеризации. Лог участвует в сравнении когда доступен; при отсутствии лога вес перераспределяется на message",
     )
+    logs_max_attachment_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        description=(
+            "Максимум байт, читаемых из одного аттачмента (ALLURE_LOGS_MAX_ATTACHMENT_BYTES). "
+            "Скачивание идёт чанками; при превышении остаток отбрасывается. "
+            "Защищает память пода от огромных логов."
+        ),
+    )
+    logs_max_snippet_chars: int = Field(
+        default=64 * 1024,
+        ge=1000,
+        description=(
+            "Максимум символов в итоговом log_snippet одного теста "
+            "(ALLURE_LOGS_MAX_SNIPPET_CHARS). Применяется ПОСЛЕ извлечения "
+            "ошибок из аттачментов, перед сохранением в FailedTestSummary, "
+            "чтобы лог не доживал до HTML-отчёта целиком."
+        ),
+    )
 
     gigachat_base_url: str = Field(
         default="",

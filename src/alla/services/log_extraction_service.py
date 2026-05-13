@@ -354,8 +354,14 @@ def _detect_and_extract_http(
 class LogExtractionConfig:
     """Параметры извлечения логов из аттачментов."""
 
-    def __init__(self, *, concurrency: int = 5) -> None:
+    def __init__(
+        self,
+        *,
+        concurrency: int = 5,
+        max_snippet_chars: int = 64 * 1024,
+    ) -> None:
         self.concurrency = concurrency
+        self.max_snippet_chars = max_snippet_chars
 
 
 _PROCESSABLE_MIME_EXACT = frozenset({
@@ -496,7 +502,14 @@ class LogExtractionService:
             if not processable:
                 return
 
-            all_sections: list[str] = []
+            # Бюджетируем log_snippet ПО МЕРЕ накопления, а не после join:
+            # full combined в памяти не строится, лишние секции не удерживаются.
+            max_chars = self._config.max_snippet_chars
+            budget = max_chars if max_chars and max_chars > 0 else None
+            kept_sections: list[str] = []
+            kept_total = 0  # уже занятый бюджет (с учётом разделителей "\n\n")
+            original_total = 0  # сколько символов было бы без обрезки
+            truncated = False
             correlation_hint: str | None = None
 
             for att in processable:
@@ -534,40 +547,82 @@ class LogExtractionService:
                     decoded_text=decoded_text,
                 )
 
-                for handler in self._handlers:
-                    try:
-                        result = handler.handle(ctx)
-                    except Exception as exc:
-                        logger.warning(
-                            "Логи: handler %s упал на аттачменте %d (%s) теста %d: %s",
-                            handler.name,
-                            att.id,
-                            att.name,
-                            summary.test_result_id,
-                            exc,
-                        )
-                        continue
-                    if result is None:
-                        continue
-                    if result.correlation_hint and correlation_hint is None:
-                        correlation_hint = result.correlation_hint
-                    if result.section.strip():
-                        all_sections.append(
-                            f"--- [{result.label}: {att_name}] ---\n{result.section}"
-                        )
-                    if result.consumed:
-                        break
+                try:
+                    for handler in self._handlers:
+                        try:
+                            result = handler.handle(ctx)
+                        except Exception as exc:
+                            logger.warning(
+                                "Логи: handler %s упал на аттачменте %d (%s) теста %d: %s",
+                                handler.name,
+                                att.id,
+                                att.name,
+                                summary.test_result_id,
+                                exc,
+                            )
+                            continue
+                        if result is None:
+                            continue
+                        if result.correlation_hint and correlation_hint is None:
+                            correlation_hint = result.correlation_hint
+                        if result.section.strip():
+                            section_text = (
+                                f"--- [{result.label}: {att_name}] ---\n{result.section}"
+                            )
+                            sep_len = 2 if kept_sections else 0  # "\n\n"
+                            original_total += sep_len + len(section_text)
+
+                            if budget is None:
+                                kept_sections.append(section_text)
+                            elif not truncated:
+                                if sep_len + len(section_text) <= budget - kept_total:
+                                    kept_sections.append(section_text)
+                                    kept_total += sep_len + len(section_text)
+                                else:
+                                    # Помещается только часть секции — режем её,
+                                    # ставим флаг и больше ничего не копим.
+                                    available = budget - kept_total - sep_len
+                                    if available > 0:
+                                        kept_sections.append(section_text[:available])
+                                        kept_total += sep_len + available
+                                    truncated = True
+                            # else: bucket исчерпан — original_total продолжаем
+                            # считать, но в память больше ничего не складываем.
+                            section_text = ""  # noqa: F841 — освобождаем ссылку
+                        if result.consumed:
+                            break
+                finally:
+                    # Освобождаем сырые байты и декодированный текст сразу после
+                    # обработки handler-ами, чтобы не держать их в памяти до
+                    # следующей итерации (важно при большом числе/размере
+                    # аттачментов под памятным лимитом).
+                    ctx.content = b""
+                    ctx.decoded_text = None
+                    content_bytes = b""
+                    decoded_text = None
 
             summary.correlation_hint = correlation_hint
-            if all_sections:
-                combined = "\n\n".join(all_sections)
+            if kept_sections:
+                combined = "\n\n".join(kept_sections)
+                if truncated:
+                    combined += (
+                        f"\n\n[... обрезано: было {original_total} символов, "
+                        f"оставлено {max_chars} ...]"
+                    )
+                    logger.debug(
+                        "Логи: тест %d — log_snippet обрезан до %d символов "
+                        "(полный размер был бы %d)",
+                        summary.test_result_id,
+                        max_chars,
+                        original_total,
+                    )
                 summary.log_snippet = combined
 
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "Логи: тест %d — секций: %d, общий размер: %d символов",
                         summary.test_result_id,
-                        len(all_sections),
+                        len(kept_sections),
                         len(combined),
                     )
             elif logger.isEnabledFor(logging.DEBUG) and correlation_hint is not None:

@@ -34,6 +34,7 @@ class AllureTestOpsClient:
         self._auth = auth_manager
         self._page_size = settings.page_size
         self._max_pages = settings.max_pages
+        self._max_attachment_bytes = settings.logs_max_attachment_bytes
         self._http = httpx.AsyncClient(
             timeout=settings.request_timeout,
             verify=settings.ssl_verify,
@@ -368,11 +369,15 @@ class AllureTestOpsClient:
         """Скачать бинарное содержимое аттачмента.
 
         ``GET /api/testresult/attachment/{id}/content``
+
+        Контент стримится чанками и обрезается на ``logs_max_attachment_bytes``,
+        чтобы под не падал с OOM при больших логах.
         """
         logger.debug("Скачивание аттачмента %d", attachment_id)
         return await self._request_raw(
             "GET",
             f"{self.ATTACHMENT_ENDPOINT}/{attachment_id}/content",
+            max_bytes=self._max_attachment_bytes,
         )
 
     # --- Внутренний HTTP ---
@@ -422,15 +427,36 @@ class AllureTestOpsClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        max_bytes: int | None = None,
     ) -> bytes:
         """Выполнить аутентифицированный HTTP-запрос, возвращая сырые байты.
 
         Используется для скачивания аттачментов (бинарные файлы, текстовые логи).
+        Ответ читается чанками; если задан ``max_bytes`` и контент превышает
+        лимит — лишнее отбрасывается, в лог пишется warning. Это защищает
+        память пода от очень больших логов.
         """
-        logger.debug("HTTP raw запрос: %s %s%s", method, self._endpoint, path)
-        resp = await self._send_with_auth_retry(method, path, params=params)
+        logger.debug(
+            "HTTP raw запрос (stream): %s %s%s max_bytes=%s",
+            method, self._endpoint, path, max_bytes,
+        )
+        url = f"{self._endpoint}{path}"
+        auth_header = await self._auth.get_auth_header()
 
-        if resp.status_code == 404:
+        chunks, total, capped, status, body_preview = await self._stream_attempt(
+            method, url, params, auth_header, max_bytes, path,
+        )
+
+        if status == 401:
+            logger.debug("Получен 401 (stream), reauth и повтор")
+            failed_token = auth_header.get("Authorization", "").removeprefix("Bearer ")
+            self._auth.invalidate(failed_token=failed_token)
+            auth_header = await self._auth.get_auth_header()
+            chunks, total, capped, status, body_preview = await self._stream_attempt(
+                method, url, params, auth_header, max_bytes, path,
+            )
+
+        if status == 404:
             raise AllureApiError(
                 404,
                 f"Аттачмент не найден. Проверьте Swagger UI: "
@@ -438,10 +464,75 @@ class AllureTestOpsClient:
                 path,
             )
 
-        if resp.status_code >= 400:
-            raise AllureApiError(resp.status_code, resp.text[:500], path)
+        if status >= 400:
+            raise AllureApiError(status, body_preview, path)
 
-        return resp.content
+        if capped:
+            logger.warning(
+                "Аттачмент %s обрезан: прочитано %d байт, превышен лимит %d",
+                path, total, max_bytes,
+            )
+
+        return b"".join(chunks)
+
+    async def _stream_attempt(
+        self,
+        method: str,
+        url: str,
+        params: dict[str, Any] | None,
+        headers: dict[str, str],
+        max_bytes: int | None,
+        path: str,
+    ) -> tuple[list[bytes], int, bool, int, str]:
+        """Одна попытка streaming-запроса. Возвращает кортеж
+        ``(chunks, total_bytes, capped, status_code, body_preview)``.
+
+        ``httpx.RequestError`` транслируется в ``AllureApiError(0, ...)``.
+        Для статусов 4xx/5xx тело **не** читается целиком: берётся первые
+        ~1 KiB (см. ``ERROR_BODY_PREVIEW_BYTES``), декодируется и режется
+        до ≤500 символов в ``body_preview``. Так error-путь не обходит
+        memory cap, действующий для успешного ответа.
+        """
+        # Маленький cap на тело ошибки. Прокси/балансировщики или сам TestOps
+        # могут отдать огромную HTML-страницу/JSON на 5xx; нельзя позволить
+        # error-пути обойти memory cap, который мы только что ввели для успешного.
+        # 1 KiB более чем достаточно для понятного сообщения об ошибке
+        # (decode → срез ≤500 символов далее).
+        ERROR_BODY_PREVIEW_BYTES = 1024
+
+        try:
+            async with self._http.stream(
+                method, url, params=params, headers=headers,
+            ) as resp:
+                status = resp.status_code
+                if status >= 400:
+                    preview_buf = bytearray()
+                    async for chunk in resp.aiter_bytes():
+                        remaining = ERROR_BODY_PREVIEW_BYTES - len(preview_buf)
+                        if remaining <= 0:
+                            break
+                        preview_buf.extend(chunk[:remaining])
+                        if len(preview_buf) >= ERROR_BODY_PREVIEW_BYTES:
+                            break
+                    preview = bytes(preview_buf).decode("utf-8", errors="replace")[:500]
+                    return [], 0, False, status, preview
+
+                chunks: list[bytes] = []
+                total = 0
+                capped = False
+                async for chunk in resp.aiter_bytes():
+                    if max_bytes is not None and total + len(chunk) > max_bytes:
+                        remaining = max_bytes - total
+                        if remaining > 0:
+                            chunks.append(chunk[:remaining])
+                            total += remaining
+                        capped = True
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                return chunks, total, capped, status, ""
+        except httpx.RequestError as exc:
+            raise AllureApiError(0, str(exc), path) from exc
 
     async def _request(
         self,
