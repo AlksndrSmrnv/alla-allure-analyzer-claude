@@ -354,8 +354,14 @@ def _detect_and_extract_http(
 class LogExtractionConfig:
     """Параметры извлечения логов из аттачментов."""
 
-    def __init__(self, *, concurrency: int = 5) -> None:
+    def __init__(
+        self,
+        *,
+        concurrency: int = 5,
+        max_snippet_chars: int = 64 * 1024,
+    ) -> None:
         self.concurrency = concurrency
+        self.max_snippet_chars = max_snippet_chars
 
 
 _PROCESSABLE_MIME_EXACT = frozenset({
@@ -534,33 +540,55 @@ class LogExtractionService:
                     decoded_text=decoded_text,
                 )
 
-                for handler in self._handlers:
-                    try:
-                        result = handler.handle(ctx)
-                    except Exception as exc:
-                        logger.warning(
-                            "Логи: handler %s упал на аттачменте %d (%s) теста %d: %s",
-                            handler.name,
-                            att.id,
-                            att.name,
-                            summary.test_result_id,
-                            exc,
-                        )
-                        continue
-                    if result is None:
-                        continue
-                    if result.correlation_hint and correlation_hint is None:
-                        correlation_hint = result.correlation_hint
-                    if result.section.strip():
-                        all_sections.append(
-                            f"--- [{result.label}: {att_name}] ---\n{result.section}"
-                        )
-                    if result.consumed:
-                        break
+                try:
+                    for handler in self._handlers:
+                        try:
+                            result = handler.handle(ctx)
+                        except Exception as exc:
+                            logger.warning(
+                                "Логи: handler %s упал на аттачменте %d (%s) теста %d: %s",
+                                handler.name,
+                                att.id,
+                                att.name,
+                                summary.test_result_id,
+                                exc,
+                            )
+                            continue
+                        if result is None:
+                            continue
+                        if result.correlation_hint and correlation_hint is None:
+                            correlation_hint = result.correlation_hint
+                        if result.section.strip():
+                            all_sections.append(
+                                f"--- [{result.label}: {att_name}] ---\n{result.section}"
+                            )
+                        if result.consumed:
+                            break
+                finally:
+                    # Освобождаем сырые байты и декодированный текст сразу после
+                    # обработки handler-ами, чтобы не держать их в памяти до
+                    # следующей итерации (важно при большом числе/размере
+                    # аттачментов под памятным лимитом).
+                    ctx.content = b""
+                    ctx.decoded_text = None
+                    content_bytes = b""
+                    decoded_text = None
 
             summary.correlation_hint = correlation_hint
             if all_sections:
                 combined = "\n\n".join(all_sections)
+                max_chars = self._config.max_snippet_chars
+                if max_chars > 0 and len(combined) > max_chars:
+                    truncated_marker = (
+                        f"\n\n[... обрезано: было {len(combined)} символов, "
+                        f"оставлено {max_chars} ...]"
+                    )
+                    combined = combined[:max_chars] + truncated_marker
+                    logger.debug(
+                        "Логи: тест %d — log_snippet обрезан до %d символов",
+                        summary.test_result_id,
+                        max_chars,
+                    )
                 summary.log_snippet = combined
 
                 if logger.isEnabledFor(logging.DEBUG):

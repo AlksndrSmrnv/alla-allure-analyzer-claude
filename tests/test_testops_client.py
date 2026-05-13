@@ -39,7 +39,17 @@ async def _make_client(monkeypatch, tmp_path) -> tuple[AllureTestOpsClient, Magi
 
 
 class _ScriptedHttp:
-    """httpx-замена, отдающая по очереди заранее прописанные реакции."""
+    """httpx-замена, отдающая по очереди заранее прописанные реакции.
+
+    Поддерживает два режима:
+
+    - ``request(...)`` — для JSON-запросов; возвращает следующий элемент из
+      очереди (либо raises, если элемент — Exception).
+    - ``stream(...)`` — для бинарных/raw-запросов; возвращает async-context
+      manager поверх следующего элемента очереди. Если элемент — Exception,
+      исключение поднимается при входе в ``async with`` (это эквивалент
+      ``httpx.RequestError`` из реального клиента).
+    """
 
     def __init__(self, responses: list[object]) -> None:
         self._responses = list(responses)
@@ -56,8 +66,67 @@ class _ScriptedHttp:
             raise item
         return item
 
+    def stream(self, method, url, *, params=None, headers=None):
+        self.calls.append(
+            {"method": method, "url": url, "params": params, "headers": headers, "stream": True},
+        )
+        if not self._responses:
+            raise AssertionError("Неожиданный stream-запрос — сценарий исчерпан")
+        item = self._responses.pop(0)
+        return _StreamCtx(item)
+
     async def aclose(self) -> None:
         pass
+
+
+class _StreamCtx:
+    """Async context manager поверх scripted-элемента для ``_ScriptedHttp.stream``."""
+
+    def __init__(self, item: object) -> None:
+        self._item = item
+
+    async def __aenter__(self):
+        if isinstance(self._item, Exception):
+            raise self._item
+        return self._item
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        return None
+
+
+class _StreamResponse:
+    """Лёгкий аналог ``httpx.Response`` для streaming-тестов.
+
+    Для статуса < 400 ``aiter_bytes()`` отдаёт чанки из ``chunks``.
+    Для >= 400 ``aread()`` отдаёт ``error_body``.
+    """
+
+    def __init__(
+        self,
+        status_code: int,
+        *,
+        chunks: list[bytes] | None = None,
+        error_body: bytes = b"",
+    ) -> None:
+        self.status_code = status_code
+        self._chunks = list(chunks or [])
+        self._error_body = error_body
+
+    async def aiter_bytes(self):
+        for c in self._chunks:
+            yield c
+
+    async def aread(self) -> bytes:
+        return self._error_body
+
+
+def _make_stream_response(
+    status_code: int,
+    *,
+    chunks: list[bytes] | None = None,
+    error_body: bytes = b"",
+) -> _StreamResponse:
+    return _StreamResponse(status_code, chunks=chunks, error_body=error_body)
 
 
 def _make_response(status_code: int, *, body: bytes = b"", text: str = "") -> MagicMock:
@@ -175,8 +244,8 @@ async def test_request_raw_retries_on_401_and_returns_bytes(monkeypatch, tmp_pat
     payload = b"\x89PNG\r\n\x1a\nbinary"
     client._http = _ScriptedHttp(
         [
-            _make_response(401, text="expired"),
-            _make_response(200, body=payload),
+            _make_stream_response(401, error_body=b"expired"),
+            _make_stream_response(200, chunks=[payload]),
         ]
     )
 
@@ -204,7 +273,7 @@ async def test_request_raw_translates_request_error_on_retry(monkeypatch, tmp_pa
     client, _ = await _make_client(monkeypatch, tmp_path)
     client._http = _ScriptedHttp(
         [
-            _make_response(401, text="expired"),
+            _make_stream_response(401, error_body=b"expired"),
             httpx.ReadTimeout("retry timeout"),
         ]
     )
@@ -213,3 +282,61 @@ async def test_request_raw_translates_request_error_on_retry(monkeypatch, tmp_pa
         await client._request_raw("GET", "/api/testresult/attachment/1/content")
 
     assert exc_info.value.status_code == 0
+
+
+@pytest.mark.asyncio
+async def test_request_raw_streams_multiple_chunks(monkeypatch, tmp_path) -> None:
+    """Без max_bytes: все чанки склеиваются в полный bytes-результат."""
+    client, _ = await _make_client(monkeypatch, tmp_path)
+    chunks = [b"AAAA", b"BBBB", b"CCCC"]
+    client._http = _ScriptedHttp([_make_stream_response(200, chunks=chunks)])
+
+    result = await client._request_raw(
+        "GET", "/api/testresult/attachment/1/content",
+    )
+
+    assert result == b"AAAABBBBCCCC"
+
+
+@pytest.mark.asyncio
+async def test_request_raw_caps_at_max_bytes(monkeypatch, tmp_path) -> None:
+    """С max_bytes: чтение прерывается, лишние чанки отбрасываются."""
+    client, _ = await _make_client(monkeypatch, tmp_path)
+    # 3 чанка по 4 байта = 12 байт; max_bytes=6 — должен забрать ровно 6.
+    chunks = [b"AAAA", b"BBBB", b"CCCC"]
+    client._http = _ScriptedHttp([_make_stream_response(200, chunks=chunks)])
+
+    result = await client._request_raw(
+        "GET",
+        "/api/testresult/attachment/1/content",
+        max_bytes=6,
+    )
+
+    assert result == b"AAAABB"
+    assert len(result) == 6
+
+
+@pytest.mark.asyncio
+async def test_request_raw_404_carries_swagger_hint(monkeypatch, tmp_path) -> None:
+    """404 на streaming-запросе даёт подсказку про Swagger."""
+    client, _ = await _make_client(monkeypatch, tmp_path)
+    client._http = _ScriptedHttp([_make_stream_response(404, error_body=b"missing")])
+
+    with pytest.raises(AllureApiError) as exc_info:
+        await client._request_raw("GET", "/api/testresult/attachment/1/content")
+
+    assert exc_info.value.status_code == 404
+    assert "swagger-ui" in str(exc_info.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_get_attachment_content_applies_settings_cap(monkeypatch, tmp_path) -> None:
+    """``get_attachment_content`` передаёт ``logs_max_attachment_bytes`` в raw."""
+    client, _ = await _make_client(monkeypatch, tmp_path)
+    client._max_attachment_bytes = 5
+    chunks = [b"hello", b"world!!!!"]
+    client._http = _ScriptedHttp([_make_stream_response(200, chunks=chunks)])
+
+    result = await client.get_attachment_content(42)
+
+    assert result == b"hello"

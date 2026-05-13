@@ -135,7 +135,10 @@ async def _enrich_with_logs(
 
     log_service = LogExtractionService(
         client,
-        LogExtractionConfig(concurrency=settings.logs_concurrency),
+        LogExtractionConfig(
+            concurrency=settings.logs_concurrency,
+            max_snippet_chars=settings.logs_max_snippet_chars,
+        ),
     )
     try:
         await log_service.enrich_with_logs(report.failed_tests)
