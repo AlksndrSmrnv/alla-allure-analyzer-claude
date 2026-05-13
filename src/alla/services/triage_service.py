@@ -270,15 +270,17 @@ class TriageService:
     ) -> tuple[str | None, str | None, str | None]:
         """Рекурсивно найти самый глубокий упавший шаг и извлечь message/trace/breadcrumb.
 
-        Обходит дерево шагов в глубину. Возвращает (message, trace, step_path) для
-        самого глубокого failed/broken-шага в цепочке: попав в failed-узел, всегда
-        пытается спуститься во вложенные failed-шаги и возвращает текущий только
-        если глубже падений нет. ``step_path`` — хлебные крошки из имён всех
-        предшествующих шагов (включая не-failed-родителей) и самого глубокого
-        упавшего шага, разделённые « → ».
+        Стратегия — depth-first по первой найденной failure-цепочке: попав в
+        failed/broken-узел, функция всегда пытается спуститься в его вложенные
+        шаги; внутри возвращается самый глубокий failed-узел этой ветки.
+        Соседние ветки на уровне выше не сравниваются по глубине — побеждает
+        первая встреченная failed-цепочка. ``step_path`` — хлебные крошки из
+        имён всех предшествующих шагов (включая не-failed-родителей) и самого
+        глубокого упавшего шага этой ветки, разделённые « → ».
 
         Если у самого глубокого failed-шага нет своего message/trace, они
-        подтягиваются с ближайшего failed-предка.
+        подтягиваются с ближайшего предка с error-details (failed-предок или
+        statusless wrapper с ``statusDetails``).
 
         Если явного статуса нет (корневой execution-объект), но есть
         данные об ошибке — тоже извлекает.
@@ -315,11 +317,19 @@ class TriageService:
                 if own_message or own_trace or own_breadcrumb:
                     return own_message, own_trace, own_breadcrumb
             elif step.steps:
-                # Не-failed родитель: рекурсия с включением имени в путь
+                # Не-failed родитель: рекурсия с включением имени в путь.
+                # Если вложенный failed-шаг вернул только breadcrumb (без
+                # own message/trace), подтягиваем error-details с самого
+                # родителя — он может быть statusless wrapper с
+                # statusDetails, в котором лежит фактическая ошибка.
                 message, trace, breadcrumb = TriageService._find_failure_details_in_steps(
                     step.steps, current_path,
                 )
                 if breadcrumb is not None:
+                    if not message and not trace:
+                        own_message, own_trace = TriageService._extract_error_from_step(step)
+                        if own_message or own_trace:
+                            return own_message, own_trace, breadcrumb
                     return message, trace, breadcrumb
 
         # Второй проход: шаги без статуса, но с данными об ошибке
