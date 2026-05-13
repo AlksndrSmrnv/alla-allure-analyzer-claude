@@ -472,8 +472,27 @@ def _render_cluster(
             )
 
         if cluster.example_correlation:
+            source_link_html = ""
+            source_test = (
+                test_by_id.get(cluster.example_correlation_test_id)
+                if cluster.example_correlation_test_id is not None
+                else None
+            )
+            if source_test and source_test.link:
+                source_href = _e(
+                    source_test.link.replace("/testresult/", "/errors/")
+                )
+                source_label = _e(source_test.name) if source_test.name else _e(
+                    str(source_test.test_result_id)
+                )
+                source_link_html = (
+                    f' <a href="{source_href}" target="_blank" '
+                    f'class="correlation-source" title="Тест-источник">'
+                    f'из теста: {source_label}</a>'
+                )
             error_parts.append(
-                '<div class="block-title" style="margin-top: 0.75rem;">Корреляция</div>'
+                '<div class="block-title" style="margin-top: 0.75rem;">'
+                f"Корреляция{source_link_html}</div>"
                 '<div class="error-block">'
                 f"<pre>{_e(cluster.example_correlation)}</pre>"
                 "</div>"
@@ -1538,6 +1557,19 @@ _CSS = """
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: var(--text-muted);
+    }
+    .correlation-source {
+      margin-left: 0.5rem;
+      font-size: 0.7rem;
+      font-weight: 500;
+      text-transform: none;
+      letter-spacing: normal;
+      color: var(--text-muted);
+      text-decoration: underline dotted;
+      text-underline-offset: 2px;
+    }
+    .correlation-source:hover {
+      color: var(--accent, #2563eb);
     }
 
     /* ---- Step Path ---- */
