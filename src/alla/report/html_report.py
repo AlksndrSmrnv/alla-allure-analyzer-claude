@@ -1532,15 +1532,15 @@ _CSS = """
     }
     .cluster {
       background: var(--surface);
-      border: 1px solid #cbd5e1;
+      border: 2px solid #94a3b8;
       border-radius: var(--radius);
       margin-bottom: 1rem;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.06);
       overflow: hidden;
       transition: box-shadow 0.15s ease;
     }
     .cluster:hover {
-      box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+      box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12), 0 2px 4px rgba(15, 23, 42, 0.08);
     }
     .cluster-header-row {
       display: flex;
@@ -1549,7 +1549,7 @@ _CSS = """
       border-bottom: 1px solid var(--border);
     }
     .cluster-header-row > .cluster-merge-toggle {
-      margin-left: 1rem;
+      margin-left: 0.6rem;
       flex-shrink: 0;
     }
     .cluster.collapsed .cluster-header-row {
@@ -1559,10 +1559,10 @@ _CSS = """
       flex: 1;
       background: transparent;
       border: 0;
-      padding: 1rem 1.5rem;
+      padding: 0.6rem 1rem;
       display: flex;
       align-items: center;
-      gap: 1rem;
+      gap: 0.6rem;
       flex-wrap: wrap;
       width: 100%;
       text-align: left;
@@ -1575,12 +1575,12 @@ _CSS = """
     }
     .cluster-header:focus-visible {
       outline: 2px solid var(--primary);
-      outline-offset: -2px;
+      outline-offset: -3px;
     }
     .cluster-chevron {
       margin-left: auto;
       display: inline-block;
-      font-size: 0.95rem;
+      font-size: 0.8rem;
       color: var(--text-muted);
       transition: transform 0.15s ease;
     }
@@ -1591,23 +1591,24 @@ _CSS = """
       background: var(--primary-light);
       color: var(--primary);
       font-weight: 700;
-      font-size: 0.875rem;
-      padding: 0.25rem 0.75rem;
+      font-size: 0.75rem;
+      padding: 0.15rem 0.55rem;
       border-radius: 9999px;
     }
     .cluster-label {
       font-weight: 600;
-      font-size: 1.125rem;
+      font-size: 0.95rem;
+      line-height: 1.35;
       flex: 1;
-      min-width: 200px;
+      min-width: 0;
       word-break: break-word;
     }
     .cluster-count {
       background: var(--border);
       color: var(--text);
-      font-size: 0.875rem;
+      font-size: 0.75rem;
       font-weight: 600;
-      padding: 0.25rem 0.75rem;
+      padding: 0.15rem 0.55rem;
       border-radius: 9999px;
     }
     .cluster-body {
