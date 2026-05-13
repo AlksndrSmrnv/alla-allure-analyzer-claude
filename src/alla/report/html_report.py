@@ -184,7 +184,7 @@ def generate_html_report(
 
   </div>
 
-{feedback_data_js}{feedback_js}{rerun_script}{_TEST_EXPAND_SCRIPT}
+{feedback_data_js}{feedback_js}{rerun_script}{_TEST_EXPAND_SCRIPT}{_CLUSTER_COLLAPSE_SCRIPT}
 </body>
 </html>"""
 
@@ -348,9 +348,21 @@ def _render_clusters(
         for i, cluster in enumerate(clustering.clusters, 1)
     )
 
+    toggle_all_html = (
+        '<div class="clusters-controls">'
+        '<button type="button" class="clusters-toggle-all" '
+        'data-state="collapsed" '
+        'data-label-expand="Развернуть все кластеры" '
+        'data-label-collapse="Свернуть все кластеры">'
+        'Развернуть все кластеры'
+        '</button>'
+        '</div>'
+    )
+
     return (
         '<div class="section">'
         f'<div class="section-title">{_e(title)}</div>'
+        f"{toggle_all_html}"
         f"{merge_toolbar_html}"
         f'<div class="clusters-list">{body}</div>'
         "</div>"
@@ -729,7 +741,7 @@ def _render_cluster(
     else:
         body_parts.extend([llm_html, step_path_html, error_html, kb_html, create_kb_html, tests_html])
 
-    cluster_cls = "cluster guided-cluster" if guided_mode else "cluster"
+    base_cls = "cluster guided-cluster collapsed" if guided_mode else "cluster collapsed"
     merge_checkbox_html = ""
     if (
         feedback_api_url
@@ -744,14 +756,17 @@ def _render_cluster(
             '</label>'
         )
     return (
-        f'<div class="{cluster_cls}" data-cluster-card-id="{_e(cluster.cluster_id)}">'
-        '<div class="cluster-header">'
+        f'<div class="{base_cls}" data-cluster-card-id="{_e(cluster.cluster_id)}">'
+        '<div class="cluster-header-row">'
         f"{merge_checkbox_html}"
+        '<button type="button" class="cluster-header" aria-expanded="false">'
         f'<span class="cluster-num">#{idx}</span>'
         f'<span class="cluster-label">{_e(cluster.label)}</span>'
         f'<span class="cluster-count">{cluster.member_count} тест(ов)</span>'
-        "</div>"
-        '<div class="cluster-body">'
+        '<span class="cluster-chevron" aria-hidden="true">▸</span>'
+        '</button>'
+        '</div>'
+        '<div class="cluster-body" hidden>'
         f'{"".join(part for part in body_parts if part)}'
         "</div>"
         "</div>"
@@ -1494,22 +1509,83 @@ _CSS = """
     }
 
     /* ---- Кластеры ---- */
+    .clusters-controls {
+      margin-bottom: 1rem;
+    }
+    .clusters-toggle-all {
+      background: var(--surface);
+      border: 1px solid #cbd5e1;
+      border-radius: var(--radius);
+      padding: 0.45rem 0.95rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--text);
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .clusters-toggle-all:hover {
+      background: #f1f5f9;
+    }
+    .clusters-toggle-all:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
     .cluster {
       background: var(--surface);
-      border: 1px solid var(--border);
+      border: 1px solid #cbd5e1;
       border-radius: var(--radius);
-      margin-bottom: 1.5rem;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      margin-bottom: 1rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
       overflow: hidden;
+      transition: box-shadow 0.15s ease;
     }
-    .cluster-header {
+    .cluster:hover {
+      box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+    }
+    .cluster-header-row {
+      display: flex;
+      align-items: center;
       background: #f8fafc;
       border-bottom: 1px solid var(--border);
+    }
+    .cluster-header-row > .cluster-merge-toggle {
+      margin-left: 1rem;
+      flex-shrink: 0;
+    }
+    .cluster.collapsed .cluster-header-row {
+      border-bottom: 0;
+    }
+    .cluster-header {
+      flex: 1;
+      background: transparent;
+      border: 0;
       padding: 1rem 1.5rem;
       display: flex;
       align-items: center;
       gap: 1rem;
       flex-wrap: wrap;
+      width: 100%;
+      text-align: left;
+      cursor: pointer;
+      font: inherit;
+      color: inherit;
+    }
+    .cluster-header:hover {
+      background: #f1f5f9;
+    }
+    .cluster-header:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: -2px;
+    }
+    .cluster-chevron {
+      margin-left: auto;
+      display: inline-block;
+      font-size: 0.95rem;
+      color: var(--text-muted);
+      transition: transform 0.15s ease;
+    }
+    .cluster:not(.collapsed) .cluster-chevron {
+      transform: rotate(90deg);
     }
     .cluster-num {
       background: var(--primary-light);
@@ -1996,6 +2072,54 @@ _TEST_EXPAND_SCRIPT = """
     list.classList.toggle('expanded', !expanded);
     btn.dataset.expanded = expanded ? 'false' : 'true';
     btn.textContent = expanded ? btn.dataset.labelShow : btn.dataset.labelHide;
+  });
+})();
+</script>
+"""
+
+
+_CLUSTER_COLLAPSE_SCRIPT = """
+<script>
+(function () {
+  function setCluster(card, expanded) {
+    card.classList.toggle('collapsed', !expanded);
+    var header = card.querySelector('.cluster-header');
+    var body = card.querySelector('.cluster-body');
+    if (header) header.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    if (body) {
+      if (expanded) body.removeAttribute('hidden');
+      else body.setAttribute('hidden', '');
+    }
+  }
+  function syncToggleAll() {
+    var btn = document.querySelector('.clusters-toggle-all');
+    if (!btn) return;
+    var cards = document.querySelectorAll('.cluster');
+    if (!cards.length) return;
+    var anyCollapsed = Array.prototype.some.call(cards, function (c) {
+      return c.classList.contains('collapsed');
+    });
+    btn.dataset.state = anyCollapsed ? 'collapsed' : 'expanded';
+    btn.textContent = anyCollapsed ? btn.dataset.labelExpand : btn.dataset.labelCollapse;
+  }
+  document.addEventListener('click', function (event) {
+    var toggleAllBtn = event.target.closest('.clusters-toggle-all');
+    if (toggleAllBtn) {
+      var expand = toggleAllBtn.dataset.state !== 'expanded';
+      document.querySelectorAll('.cluster').forEach(function (card) {
+        setCluster(card, expand);
+      });
+      syncToggleAll();
+      return;
+    }
+    if (event.target.closest('.cluster-merge-toggle')) return;
+    var header = event.target.closest('.cluster-header');
+    if (!header) return;
+    var card = header.closest('.cluster');
+    if (!card) return;
+    var willExpand = card.classList.contains('collapsed');
+    setCluster(card, willExpand);
+    syncToggleAll();
   });
 })();
 </script>
