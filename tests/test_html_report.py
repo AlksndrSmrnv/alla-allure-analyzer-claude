@@ -68,6 +68,7 @@ def test_clusters_collapsed_by_default_and_toggle_all_button() -> None:
     assert 'class="cluster collapsed"' in html
     assert 'aria-expanded="false"' in html
     assert 'class="cluster-body" hidden' in html
+    assert '.cluster-body[hidden]' in html
     assert 'clusters-toggle-all' in html
     assert "Развернуть все кластеры" in html
     assert "Свернуть все кластеры" in html

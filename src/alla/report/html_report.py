@@ -1616,6 +1616,9 @@ _CSS = """
       flex-direction: column;
       gap: 1.5rem;
     }
+    .cluster-body[hidden] {
+      display: none;
+    }
     .guided-cluster {
       border-color: #fdba74;
       box-shadow: 0 10px 24px rgba(249, 115, 22, 0.08);
