@@ -117,6 +117,145 @@ async def test_analyze_launch_fills_trace_from_detail_fallback(
 
 
 @pytest.mark.asyncio
+async def test_step_path_reaches_deepest_failed_leaf(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Step path должен спускаться до самого глубокого failed-узла в цепочке."""
+    settings = _make_settings(monkeypatch, tmp_path)
+    result = _make_failed_result(id=10)
+    client = _Client(
+        results=[result],
+        execution_by_id={
+            10: [
+                make_execution_step(
+                    name="outer",
+                    status="failed",
+                    message="outer msg",
+                    steps=[
+                        make_execution_step(
+                            name="inner",
+                            status="failed",
+                            message="inner msg",
+                            steps=[
+                                make_execution_step(name="leaf", status="passed"),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        },
+    )
+
+    report = await TriageService(client, settings).analyze_launch(123)
+
+    assert report.failed_tests[0].failed_step_path == "outer → inner"
+    assert report.failed_tests[0].status_message == "inner msg"
+
+
+@pytest.mark.asyncio
+async def test_step_path_falls_back_to_outer_message_when_leaf_has_none(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Если у самого глубокого failed-шага нет своего message — берём с failed-предка."""
+    settings = _make_settings(monkeypatch, tmp_path)
+    result = _make_failed_result(id=11)
+    client = _Client(
+        results=[result],
+        execution_by_id={
+            11: [
+                make_execution_step(
+                    name="outer",
+                    status="failed",
+                    message="outer msg",
+                    trace="outer trace",
+                    steps=[
+                        make_execution_step(name="inner", status="failed"),
+                    ],
+                ),
+            ],
+        },
+    )
+
+    report = await TriageService(client, settings).analyze_launch(123)
+
+    assert report.failed_tests[0].failed_step_path == "outer → inner"
+    assert report.failed_tests[0].status_message == "outer msg"
+    assert report.failed_tests[0].status_trace == "outer trace"
+
+
+@pytest.mark.asyncio
+async def test_step_path_picks_up_statusless_wrapper_status_details(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Statusless wrapper с statusDetails + вложенный failed без error — error берём с wrapper."""
+    settings = _make_settings(monkeypatch, tmp_path)
+    result = _make_failed_result(id=12)
+    client = _Client(
+        results=[result],
+        execution_by_id={
+            12: [
+                make_execution_step(
+                    name="wrapper",
+                    status_details={
+                        "message": "wrapper msg",
+                        "trace": "wrapper trace",
+                    },
+                    steps=[
+                        make_execution_step(name="leaf", status="failed"),
+                    ],
+                ),
+            ],
+        },
+    )
+
+    report = await TriageService(client, settings).analyze_launch(123)
+
+    assert report.failed_tests[0].failed_step_path == "wrapper → leaf"
+    assert report.failed_tests[0].status_message == "wrapper msg"
+    assert report.failed_tests[0].status_trace == "wrapper trace"
+
+
+@pytest.mark.asyncio
+async def test_step_path_fills_trace_from_wrapper_when_leaf_has_only_message(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Wrapper-trace дозаполняется даже если у leaf уже есть свой message."""
+    settings = _make_settings(monkeypatch, tmp_path)
+    result = _make_failed_result(id=13)
+    client = _Client(
+        results=[result],
+        execution_by_id={
+            13: [
+                make_execution_step(
+                    name="wrapper",
+                    status_details={
+                        "message": "wrapper msg",
+                        "trace": "wrapper trace",
+                    },
+                    steps=[
+                        make_execution_step(
+                            name="leaf",
+                            status="failed",
+                            message="leaf msg",
+                        ),
+                    ],
+                ),
+            ],
+        },
+    )
+
+    report = await TriageService(client, settings).analyze_launch(123)
+
+    assert report.failed_tests[0].failed_step_path == "wrapper → leaf"
+    assert report.failed_tests[0].status_message == "leaf msg"
+    assert report.failed_tests[0].status_trace == "wrapper trace"
+
+
+@pytest.mark.asyncio
 async def test_analyze_launch_ignores_detail_fetch_error(
     monkeypatch,
     tmp_path,
