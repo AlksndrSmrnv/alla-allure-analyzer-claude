@@ -318,18 +318,17 @@ class TriageService:
                     return own_message, own_trace, own_breadcrumb
             elif step.steps:
                 # Не-failed родитель: рекурсия с включением имени в путь.
-                # Если вложенный failed-шаг вернул только breadcrumb (без
-                # own message/trace), подтягиваем error-details с самого
-                # родителя — он может быть statusless wrapper с
-                # statusDetails, в котором лежит фактическая ошибка.
+                # Если у вложенного failed-шага нет своего message или trace,
+                # каждый из них независимо подтягивается с этого родителя —
+                # он может быть statusless wrapper с statusDetails. Логика
+                # симметрична с failed-веткой выше.
                 message, trace, breadcrumb = TriageService._find_failure_details_in_steps(
                     step.steps, current_path,
                 )
                 if breadcrumb is not None:
-                    if not message and not trace:
+                    if not message or not trace:
                         own_message, own_trace = TriageService._extract_error_from_step(step)
-                        if own_message or own_trace:
-                            return own_message, own_trace, breadcrumb
+                        return message or own_message, trace or own_trace, breadcrumb
                     return message, trace, breadcrumb
 
         # Второй проход: шаги без статуса, но с данными об ошибке

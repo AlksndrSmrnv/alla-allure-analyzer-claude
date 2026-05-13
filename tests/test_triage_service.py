@@ -219,6 +219,43 @@ async def test_step_path_picks_up_statusless_wrapper_status_details(
 
 
 @pytest.mark.asyncio
+async def test_step_path_fills_trace_from_wrapper_when_leaf_has_only_message(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Wrapper-trace дозаполняется даже если у leaf уже есть свой message."""
+    settings = _make_settings(monkeypatch, tmp_path)
+    result = _make_failed_result(id=13)
+    client = _Client(
+        results=[result],
+        execution_by_id={
+            13: [
+                make_execution_step(
+                    name="wrapper",
+                    status_details={
+                        "message": "wrapper msg",
+                        "trace": "wrapper trace",
+                    },
+                    steps=[
+                        make_execution_step(
+                            name="leaf",
+                            status="failed",
+                            message="leaf msg",
+                        ),
+                    ],
+                ),
+            ],
+        },
+    )
+
+    report = await TriageService(client, settings).analyze_launch(123)
+
+    assert report.failed_tests[0].failed_step_path == "wrapper → leaf"
+    assert report.failed_tests[0].status_message == "leaf msg"
+    assert report.failed_tests[0].status_trace == "wrapper trace"
+
+
+@pytest.mark.asyncio
 async def test_analyze_launch_ignores_detail_fetch_error(
     monkeypatch,
     tmp_path,
