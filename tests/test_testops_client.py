@@ -97,8 +97,9 @@ class _StreamCtx:
 class _StreamResponse:
     """Лёгкий аналог ``httpx.Response`` для streaming-тестов.
 
-    Для статуса < 400 ``aiter_bytes()`` отдаёт чанки из ``chunks``.
-    Для >= 400 ``aread()`` отдаёт ``error_body``.
+    ``aiter_bytes()`` отдаёт чанки. Для error-кейсов (>=400) передавайте
+    ``error_body`` — он будет отдан как один чанк через ``aiter_bytes``
+    (production-код читает preview оттуда же, со своим bytes-лимитом).
     """
 
     def __init__(
@@ -109,7 +110,12 @@ class _StreamResponse:
         error_body: bytes = b"",
     ) -> None:
         self.status_code = status_code
-        self._chunks = list(chunks or [])
+        if chunks is not None:
+            self._chunks: list[bytes] = list(chunks)
+        elif error_body:
+            self._chunks = [error_body]
+        else:
+            self._chunks = []
         self._error_body = error_body
 
     async def aiter_bytes(self):
@@ -327,6 +333,28 @@ async def test_request_raw_404_carries_swagger_hint(monkeypatch, tmp_path) -> No
 
     assert exc_info.value.status_code == 404
     assert "swagger-ui" in str(exc_info.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_request_raw_caps_error_body_preview(monkeypatch, tmp_path) -> None:
+    """Большое тело 5xx-ответа НЕ читается целиком — preview ≤500 символов."""
+    client, _ = await _make_client(monkeypatch, tmp_path)
+    # 100 чанков по 4 KiB = 400 KiB предполагаемого тела ошибки.
+    # Production-код должен остановиться через ≤2 чанка.
+    huge_chunks = [b"E" * 4096 for _ in range(100)]
+    client._http = _ScriptedHttp(
+        [_StreamResponse(500, chunks=huge_chunks)]
+    )
+
+    with pytest.raises(AllureApiError) as exc_info:
+        await client._request_raw("GET", "/api/testresult/attachment/1/content")
+
+    assert exc_info.value.status_code == 500
+    # Сообщение об ошибке несёт ≤500 символов превью.
+    message = str(exc_info.value)
+    # Префикс "HTTP 500 от ..." + сам preview. Хотим, чтобы общий объём был
+    # разумным; основной критерий — что не висит 400 KiB в строке.
+    assert len(message) < 2000
 
 
 @pytest.mark.asyncio

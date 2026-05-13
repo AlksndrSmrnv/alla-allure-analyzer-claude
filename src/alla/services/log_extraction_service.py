@@ -502,7 +502,14 @@ class LogExtractionService:
             if not processable:
                 return
 
-            all_sections: list[str] = []
+            # Бюджетируем log_snippet ПО МЕРЕ накопления, а не после join:
+            # full combined в памяти не строится, лишние секции не удерживаются.
+            max_chars = self._config.max_snippet_chars
+            budget = max_chars if max_chars and max_chars > 0 else None
+            kept_sections: list[str] = []
+            kept_total = 0  # уже занятый бюджет (с учётом разделителей "\n\n")
+            original_total = 0  # сколько символов было бы без обрезки
+            truncated = False
             correlation_hint: str | None = None
 
             for att in processable:
@@ -559,9 +566,29 @@ class LogExtractionService:
                         if result.correlation_hint and correlation_hint is None:
                             correlation_hint = result.correlation_hint
                         if result.section.strip():
-                            all_sections.append(
+                            section_text = (
                                 f"--- [{result.label}: {att_name}] ---\n{result.section}"
                             )
+                            sep_len = 2 if kept_sections else 0  # "\n\n"
+                            original_total += sep_len + len(section_text)
+
+                            if budget is None:
+                                kept_sections.append(section_text)
+                            elif not truncated:
+                                if sep_len + len(section_text) <= budget - kept_total:
+                                    kept_sections.append(section_text)
+                                    kept_total += sep_len + len(section_text)
+                                else:
+                                    # Помещается только часть секции — режем её,
+                                    # ставим флаг и больше ничего не копим.
+                                    available = budget - kept_total - sep_len
+                                    if available > 0:
+                                        kept_sections.append(section_text[:available])
+                                        kept_total += sep_len + available
+                                    truncated = True
+                            # else: bucket исчерпан — original_total продолжаем
+                            # считать, но в память больше ничего не складываем.
+                            section_text = ""  # noqa: F841 — освобождаем ссылку
                         if result.consumed:
                             break
                 finally:
@@ -575,19 +602,19 @@ class LogExtractionService:
                     decoded_text = None
 
             summary.correlation_hint = correlation_hint
-            if all_sections:
-                combined = "\n\n".join(all_sections)
-                max_chars = self._config.max_snippet_chars
-                if max_chars > 0 and len(combined) > max_chars:
-                    truncated_marker = (
-                        f"\n\n[... обрезано: было {len(combined)} символов, "
+            if kept_sections:
+                combined = "\n\n".join(kept_sections)
+                if truncated:
+                    combined += (
+                        f"\n\n[... обрезано: было {original_total} символов, "
                         f"оставлено {max_chars} ...]"
                     )
-                    combined = combined[:max_chars] + truncated_marker
                     logger.debug(
-                        "Логи: тест %d — log_snippet обрезан до %d символов",
+                        "Логи: тест %d — log_snippet обрезан до %d символов "
+                        "(полный размер был бы %d)",
                         summary.test_result_id,
                         max_chars,
+                        original_total,
                     )
                 summary.log_snippet = combined
 
@@ -595,7 +622,7 @@ class LogExtractionService:
                     logger.debug(
                         "Логи: тест %d — секций: %d, общий размер: %d символов",
                         summary.test_result_id,
-                        len(all_sections),
+                        len(kept_sections),
                         len(combined),
                     )
             elif logger.isEnabledFor(logging.DEBUG) and correlation_hint is not None:

@@ -491,14 +491,28 @@ class AllureTestOpsClient:
         Для статусов 4xx/5xx тело читается целиком в ``body_preview`` (≤500 байт)
         для понятного сообщения об ошибке.
         """
+        # Маленький cap на тело ошибки. Прокси/балансировщики или сам TestOps
+        # могут отдать огромную HTML-страницу/JSON на 5xx; нельзя позволить
+        # error-пути обойти memory cap, который мы только что ввели для успешного.
+        # 1 KiB более чем достаточно для понятного сообщения об ошибке
+        # (decode → срез ≤500 символов далее).
+        ERROR_BODY_PREVIEW_BYTES = 1024
+
         try:
             async with self._http.stream(
                 method, url, params=params, headers=headers,
             ) as resp:
                 status = resp.status_code
                 if status >= 400:
-                    body = await resp.aread()
-                    preview = body.decode("utf-8", errors="replace")[:500]
+                    preview_buf = bytearray()
+                    async for chunk in resp.aiter_bytes():
+                        remaining = ERROR_BODY_PREVIEW_BYTES - len(preview_buf)
+                        if remaining <= 0:
+                            break
+                        preview_buf.extend(chunk[:remaining])
+                        if len(preview_buf) >= ERROR_BODY_PREVIEW_BYTES:
+                            break
+                    preview = bytes(preview_buf).decode("utf-8", errors="replace")[:500]
                     return [], 0, False, status, preview
 
                 chunks: list[bytes] = []
