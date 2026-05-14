@@ -268,19 +268,20 @@ class TriageService:
         steps: list[ExecutionStep],
         _ancestors: list[str] | None = None,
     ) -> tuple[str | None, str | None, str | None]:
-        """Рекурсивно найти самый глубокий упавший шаг и извлечь message/trace/breadcrumb.
+        """Рекурсивно найти упавшую цепочку и извлечь message/trace/breadcrumb.
 
-        Стратегия — depth-first по первой найденной failure-цепочке: попав в
-        failed/broken-узел, функция всегда пытается спуститься в его вложенные
-        шаги; внутри возвращается самый глубокий failed-узел этой ветки.
-        Соседние ветки на уровне выше не сравниваются по глубине — побеждает
-        первая встреченная failed-цепочка. ``step_path`` — хлебные крошки из
-        имён всех предшествующих шагов (включая не-failed-родителей) и самого
-        глубокого упавшего шага этой ветки, разделённые « → ».
+        Стратегия — depth-first по первой найденной failure-цепочке.
+        ``step_path`` — хлебные крошки до **самого глубокого** failed/broken-узла
+        этой ветки, разделённые « → ». А вот ``message``/``trace`` берутся с
+        **ближайшего внешнего** failed-шага, у которого они есть: внешний
+        обычно содержит полную ошибку (assertion-префикс), а вложенные —
+        обрезанный фрагмент того же сообщения. Если у внешнего failed-шага
+        своих message/trace нет — каждое из них независимо подтягивается с
+        глубокого failed-узла.
 
-        Если у самого глубокого failed-шага нет своего message/trace, они
-        подтягиваются с ближайшего предка с error-details (failed-предок или
-        statusless wrapper с ``statusDetails``).
+        Если самый глубокий failed-узел сам без message/trace, они также
+        могут подтянуться со statusless-обёртки с ``statusDetails`` (см. ветку
+        не-failed-родителя ниже).
 
         Если явного статуса нет (корневой execution-объект), но есть
         данные об ошибке — тоже извлекает.
@@ -299,7 +300,11 @@ class TriageService:
                 own_message, own_trace = TriageService._extract_error_from_step(step)
                 own_breadcrumb = " → ".join(current_path) if current_path else None
 
-                # Сначала ищем более глубокий failed-шаг внутри текущего
+                # Сначала ищем более глубокий failed-шаг внутри текущего —
+                # это нужно, чтобы step_path вёл до самого вложенного падения.
+                # Но сам message/trace предпочитаем брать с внешнего failed-шага:
+                # вложенные часто содержат лишь урезанный фрагмент той же ошибки
+                # без assertion-префикса, что портит «Пример ошибки» в отчёте.
                 if step.steps:
                     deeper_msg, deeper_trace, deeper_breadcrumb = (
                         TriageService._find_failure_details_in_steps(
@@ -308,8 +313,8 @@ class TriageService:
                     )
                     if deeper_breadcrumb is not None:
                         return (
-                            deeper_msg or own_message,
-                            deeper_trace or own_trace,
+                            own_message or deeper_msg,
+                            own_trace or deeper_trace,
                             deeper_breadcrumb,
                         )
 

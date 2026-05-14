@@ -117,11 +117,16 @@ async def test_analyze_launch_fills_trace_from_detail_fallback(
 
 
 @pytest.mark.asyncio
-async def test_step_path_reaches_deepest_failed_leaf(
+async def test_step_path_reaches_deepest_but_message_stays_at_outer_failed_step(
     monkeypatch,
     tmp_path,
 ) -> None:
-    """Step path должен спускаться до самого глубокого failed-узла в цепочке."""
+    """Step path спускается до глубокого failed-узла, а message — с внешнего failed-шага.
+
+    У внешнего failed-шага обычно полный assertion-префикс, у вложенного —
+    его обрезанный фрагмент. Берём message внешнего, чтобы «Пример ошибки» в
+    отчёте содержал начало строки.
+    """
     settings = _make_settings(monkeypatch, tmp_path)
     result = _make_failed_result(id=10)
     client = _Client(
@@ -150,7 +155,7 @@ async def test_step_path_reaches_deepest_failed_leaf(
     report = await TriageService(client, settings).analyze_launch(123)
 
     assert report.failed_tests[0].failed_step_path == "outer → inner"
-    assert report.failed_tests[0].status_message == "inner msg"
+    assert report.failed_tests[0].status_message == "outer msg"
 
 
 @pytest.mark.asyncio
