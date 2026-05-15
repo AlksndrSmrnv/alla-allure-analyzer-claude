@@ -85,9 +85,21 @@ SELECT
   (SELECT COALESCE(SUM(llm_total_tokens), 0) FROM alla.report
      WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
        AND llm_total_tokens IS NOT NULL)                                                                      AS llm_total_tokens,
+  (SELECT COALESCE(SUM(llm_prompt_tokens), 0) FROM alla.report
+     WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
+       AND llm_prompt_tokens IS NOT NULL)                                                                     AS llm_prompt_tokens,
+  (SELECT COALESCE(SUM(llm_completion_tokens), 0) FROM alla.report
+     WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
+       AND llm_completion_tokens IS NOT NULL)                                                                 AS llm_completion_tokens,
   (SELECT COALESCE(ROUND(AVG(llm_total_tokens))::bigint, 0) FROM alla.report
      WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
        AND llm_total_tokens IS NOT NULL)                                                                      AS llm_avg_tokens_per_run,
+  (SELECT COALESCE(ROUND(AVG(llm_prompt_tokens))::bigint, 0) FROM alla.report
+     WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
+       AND llm_prompt_tokens IS NOT NULL)                                                                     AS llm_avg_prompt_tokens_per_run,
+  (SELECT COALESCE(ROUND(AVG(llm_completion_tokens))::bigint, 0) FROM alla.report
+     WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
+       AND llm_completion_tokens IS NOT NULL)                                                                 AS llm_avg_completion_tokens_per_run,
   (SELECT COUNT(llm_total_tokens) FROM alla.report
      WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s)                                            AS llm_reports_with_usage,
   (SELECT ROUND(AVG(analysis_duration_ms))::bigint FROM alla.report
@@ -103,7 +115,11 @@ WITH r AS (
   SELECT project_id,
          COUNT(*) AS reports,
          SUM(llm_total_tokens) FILTER (WHERE llm_total_tokens IS NOT NULL) AS llm_total_tokens,
+         SUM(llm_prompt_tokens) FILTER (WHERE llm_prompt_tokens IS NOT NULL) AS llm_prompt_tokens,
+         SUM(llm_completion_tokens) FILTER (WHERE llm_completion_tokens IS NOT NULL) AS llm_completion_tokens,
          ROUND(AVG(llm_total_tokens))::bigint AS llm_avg_tokens_per_run,
+         ROUND(AVG(llm_prompt_tokens))::bigint AS llm_avg_prompt_tokens_per_run,
+         ROUND(AVG(llm_completion_tokens))::bigint AS llm_avg_completion_tokens_per_run,
          COUNT(llm_total_tokens) AS llm_reports_with_usage,
          ROUND(AVG(analysis_duration_ms))::bigint AS avg_analysis_duration_ms,
          MAX(created_at) AS last_report
@@ -132,9 +148,13 @@ SELECT ids.project_id,
        COALESCE(r.reports, 0)      AS reports,
        COALESCE(k.kb_entries, 0)   AS kb_entries,
        COALESCE(mr.merge_rules, 0) AS merge_rules,
-       COALESCE(r.llm_total_tokens, 0)        AS llm_total_tokens,
-       COALESCE(r.llm_avg_tokens_per_run, 0)  AS llm_avg_tokens_per_run,
-       COALESCE(r.llm_reports_with_usage, 0)  AS llm_reports_with_usage,
+       COALESCE(r.llm_total_tokens, 0)                  AS llm_total_tokens,
+       COALESCE(r.llm_prompt_tokens, 0)                 AS llm_prompt_tokens,
+       COALESCE(r.llm_completion_tokens, 0)             AS llm_completion_tokens,
+       COALESCE(r.llm_avg_tokens_per_run, 0)            AS llm_avg_tokens_per_run,
+       COALESCE(r.llm_avg_prompt_tokens_per_run, 0)     AS llm_avg_prompt_tokens_per_run,
+       COALESCE(r.llm_avg_completion_tokens_per_run, 0) AS llm_avg_completion_tokens_per_run,
+       COALESCE(r.llm_reports_with_usage, 0)            AS llm_reports_with_usage,
        r.avg_analysis_duration_ms             AS avg_analysis_duration_ms,
        GREATEST(
          COALESCE(r.last_report,    'epoch'::timestamptz),
@@ -158,7 +178,9 @@ GROUP BY 1 ORDER BY 1;
 
 
 _REPORTS_FOR_PROJECT_SQL = """\
-SELECT filename, launch_id, created_at, llm_total_tokens, analysis_duration_ms
+SELECT filename, launch_id, created_at,
+       llm_prompt_tokens, llm_completion_tokens, llm_total_tokens,
+       analysis_duration_ms
 FROM alla.report
 WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
   AND project_id IS NOT DISTINCT FROM %(project_id)s
@@ -199,13 +221,17 @@ class DashboardStatsStore:
                 "active_projects": 0,
                 "unique_launches": 0,
                 "llm_total_tokens": 0,
+                "llm_prompt_tokens": 0,
+                "llm_completion_tokens": 0,
                 "llm_avg_tokens_per_run": 0,
+                "llm_avg_prompt_tokens_per_run": 0,
+                "llm_avg_completion_tokens_per_run": 0,
                 "llm_reports_with_usage": 0,
                 "avg_analysis_duration_ms": None,
                 "peak_day": None,
                 "peak_day_count": 0,
             }
-        peak_day_value = row[9].isoformat() if row[9] is not None else None
+        peak_day_value = row[13].isoformat() if row[13] is not None else None
         return {
             "total_reports": int(row[0] or 0),
             "total_kb_entries": int(row[1] or 0),
@@ -213,11 +239,15 @@ class DashboardStatsStore:
             "active_projects": int(row[3] or 0),
             "unique_launches": int(row[4] or 0),
             "llm_total_tokens": int(row[5] or 0),
-            "llm_avg_tokens_per_run": int(row[6] or 0),
-            "llm_reports_with_usage": int(row[7] or 0),
-            "avg_analysis_duration_ms": int(row[8]) if row[8] is not None else None,
+            "llm_prompt_tokens": int(row[6] or 0),
+            "llm_completion_tokens": int(row[7] or 0),
+            "llm_avg_tokens_per_run": int(row[8] or 0),
+            "llm_avg_prompt_tokens_per_run": int(row[9] or 0),
+            "llm_avg_completion_tokens_per_run": int(row[10] or 0),
+            "llm_reports_with_usage": int(row[11] or 0),
+            "avg_analysis_duration_ms": int(row[12]) if row[12] is not None else None,
             "peak_day": peak_day_value,
-            "peak_day_count": int(row[10] or 0),
+            "peak_day_count": int(row[14] or 0),
         }
 
     def per_project_rollup(self, *, window: DateWindow) -> list[dict[str, Any]]:
@@ -233,7 +263,11 @@ class DashboardStatsStore:
                 kb_entries,
                 merge_rules,
                 llm_total_tokens,
+                llm_prompt_tokens,
+                llm_completion_tokens,
                 llm_avg_tokens_per_run,
+                llm_avg_prompt_tokens_per_run,
+                llm_avg_completion_tokens_per_run,
                 llm_reports_with_usage,
                 avg_analysis_duration_ms,
                 last_activity,
@@ -247,7 +281,11 @@ class DashboardStatsStore:
                 "kb_entries": int(kb_entries or 0),
                 "merge_rules": int(merge_rules or 0),
                 "llm_total_tokens": int(llm_total_tokens or 0),
+                "llm_prompt_tokens": int(llm_prompt_tokens or 0),
+                "llm_completion_tokens": int(llm_completion_tokens or 0),
                 "llm_avg_tokens_per_run": int(llm_avg_tokens_per_run or 0),
+                "llm_avg_prompt_tokens_per_run": int(llm_avg_prompt_tokens_per_run or 0),
+                "llm_avg_completion_tokens_per_run": int(llm_avg_completion_tokens_per_run or 0),
                 "llm_reports_with_usage": int(llm_reports_with_usage or 0),
                 "avg_analysis_duration_ms": (
                     int(avg_analysis_duration_ms)
@@ -283,11 +321,25 @@ class DashboardStatsStore:
                 rows = cur.fetchall()
         out: list[dict[str, Any]] = []
         for row in rows:
-            filename, launch_id, created_at, llm_total_tokens, analysis_duration_ms = row
+            (
+                filename,
+                launch_id,
+                created_at,
+                llm_prompt_tokens,
+                llm_completion_tokens,
+                llm_total_tokens,
+                analysis_duration_ms,
+            ) = row
             out.append({
                 "filename": str(filename),
                 "launch_id": int(launch_id) if launch_id is not None else None,
                 "created_at": created_at.isoformat() if created_at is not None else None,
+                "llm_prompt_tokens": (
+                    int(llm_prompt_tokens) if llm_prompt_tokens is not None else None
+                ),
+                "llm_completion_tokens": (
+                    int(llm_completion_tokens) if llm_completion_tokens is not None else None
+                ),
                 "llm_total_tokens": (
                     int(llm_total_tokens) if llm_total_tokens is not None else None
                 ),
