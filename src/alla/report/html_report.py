@@ -218,6 +218,15 @@ def _render_stats(
     return f'<div class="stats">{cards_html}</div>'
 
 
+_AI_BADGE_HTML = (
+    '<span class="ai-badge" aria-label="AI-сгенерировано">'
+    '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">'
+    '<path fill="currentColor" d="M12 2l1.7 5.3L19 9l-5.3 1.7L12 16l-1.7-5.3'
+    'L5 9l5.3-1.7z M19 14l.9 2.6 2.6.9-2.6.9L19 21l-.9-2.6L15.5 17.5l2.6-.9z"/>'
+    '</svg>AI</span>'
+)
+
+
 def _render_launch_summary(llm_summary: "LLMLaunchSummary | None") -> str:
     if not llm_summary or not llm_summary.summary_text:
         return ""
@@ -225,8 +234,8 @@ def _render_launch_summary(llm_summary: "LLMLaunchSummary | None") -> str:
     content = _render_llm_text(llm_summary.summary_text)
     return (
         '<div class="section">'
-        '<div class="section-title">Итоговый анализ прогона</div>'
-        f'<div class="llm-summary">{content}</div>'
+        f'<div class="section-title">Итоговый анализ прогона{_AI_BADGE_HTML}</div>'
+        f'<div class="llm-summary ai-card">{content}</div>'
         "</div>"
     )
 
@@ -427,8 +436,8 @@ def _render_cluster(
         content = _render_llm_text(llm_text)
         llm_html = (
             '<div class="block">'
-            '<div class="block-title">AI Анализ</div>'
-            f'<div class="llm-analysis">{content}</div>'
+            f'<div class="block-title">AI Анализ{_AI_BADGE_HTML}</div>'
+            f'<div class="llm-analysis ai-card">{content}</div>'
             "</div>"
         )
 
@@ -1248,6 +1257,12 @@ _CSS = """
       --info-light: #f0f9ff;
       --radius: 12px;
       --radius-sm: 8px;
+      --ai-tint-50: #f5f3ff;
+      --ai-accent: #7c3aed;
+      --ai-accent-soft: rgba(124, 58, 237, 0.18);
+      --ai-glow: 0 0 0 1px rgba(124, 58, 237, 0.22),
+                 0 10px 28px rgba(124, 58, 237, 0.14),
+                 0 2px 6px rgba(37, 99, 235, 0.08);
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1500,13 +1515,47 @@ _CSS = """
 
     /* ---- LLM-сводка ---- */
     .llm-summary {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-left: 4px solid var(--primary);
-      border-radius: var(--radius);
       padding: 1.5rem 2rem;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
+
+    /* ---- Общий AI-карточный стиль ---- */
+    .ai-card {
+      position: relative;
+      background:
+        linear-gradient(135deg, var(--ai-tint-50) 0%, #ffffff 55%, var(--info-light) 100%);
+      border: 1px solid var(--ai-accent-soft);
+      border-radius: var(--radius);
+      box-shadow: var(--ai-glow);
+    }
+    .ai-card::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      border-radius: var(--radius) var(--radius) 0 0;
+      background: linear-gradient(90deg, var(--primary) 0%, var(--ai-accent) 50%, #06b6d4 100%);
+      opacity: 0.85;
+    }
+
+    .ai-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.15rem 0.55rem;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: #fff;
+      background: linear-gradient(135deg, var(--ai-accent) 0%, var(--primary) 100%);
+      border-radius: 9999px;
+      box-shadow: 0 1px 4px rgba(124, 58, 237, 0.35);
+      vertical-align: middle;
+    }
+    .ai-badge svg { display: block; }
+    .section-title .ai-badge,
+    .block-title .ai-badge { margin-left: 0.5rem; }
 
     /* ---- Кластеры ---- */
     .clusters-controls {
@@ -1723,10 +1772,11 @@ _CSS = """
 
     /* ---- LLM-анализ ---- */
     .llm-analysis {
-      background: var(--info-light);
-      border: 1px solid #bae6fd;
-      border-radius: var(--radius-sm);
       padding: 1.25rem 1.5rem;
+    }
+    .llm-analysis.ai-card { border-radius: var(--radius-sm); }
+    .llm-analysis.ai-card::before {
+      border-radius: var(--radius-sm) var(--radius-sm) 0 0;
     }
 
     /* ---- Совпадения базы знаний ---- */
