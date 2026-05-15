@@ -67,7 +67,11 @@ class _StubStatsStore:
             "active_projects": 1,
             "unique_launches": 4,
             "llm_total_tokens": 900,
+            "llm_prompt_tokens": 700,
+            "llm_completion_tokens": 200,
             "llm_avg_tokens_per_run": 450,
+            "llm_avg_prompt_tokens_per_run": 350,
+            "llm_avg_completion_tokens_per_run": 100,
             "llm_reports_with_usage": 2,
             "avg_analysis_duration_ms": 75000,
             "peak_day": "2026-04-27",
@@ -80,7 +84,11 @@ class _StubStatsStore:
                 "kb_entries": 3,
                 "merge_rules": 0,
                 "llm_total_tokens": 900,
+                "llm_prompt_tokens": 700,
+                "llm_completion_tokens": 200,
                 "llm_avg_tokens_per_run": 450,
+                "llm_avg_prompt_tokens_per_run": 350,
+                "llm_avg_completion_tokens_per_run": 100,
                 "llm_reports_with_usage": 2,
                 "avg_analysis_duration_ms": 75000,
                 "last_activity": "2026-04-27T10:00:00+00:00",
@@ -91,7 +99,11 @@ class _StubStatsStore:
                 "kb_entries": 0,
                 "merge_rules": 0,
                 "llm_total_tokens": 0,
+                "llm_prompt_tokens": 0,
+                "llm_completion_tokens": 0,
                 "llm_avg_tokens_per_run": 0,
+                "llm_avg_prompt_tokens_per_run": 0,
+                "llm_avg_completion_tokens_per_run": 0,
                 "llm_reports_with_usage": 0,
                 "avg_analysis_duration_ms": None,
                 "last_activity": None,
@@ -117,6 +129,8 @@ class _StubStatsStore:
                 "filename": "42_x.html",
                 "launch_id": 42,
                 "created_at": "2026-04-27T10:00:00+00:00",
+                "llm_prompt_tokens": 120,
+                "llm_completion_tokens": 30,
                 "llm_total_tokens": 150,
                 "analysis_duration_ms": 60000,
             }
@@ -236,6 +250,18 @@ def test_dashboard_sql_aggregates_llm_tokens_without_old_reports() -> None:
     assert "COUNT(llm_total_tokens) AS llm_reports_with_usage" in _PER_PROJECT_SQL
 
 
+def test_dashboard_sql_splits_prompt_and_completion_tokens() -> None:
+    """KPI и per-project запросы возвращают prompt/completion отдельно от total."""
+    assert "AS llm_prompt_tokens" in _KPI_SQL
+    assert "AS llm_completion_tokens" in _KPI_SQL
+    assert "AS llm_avg_prompt_tokens_per_run" in _KPI_SQL
+    assert "AS llm_avg_completion_tokens_per_run" in _KPI_SQL
+    assert "AS llm_prompt_tokens" in _PER_PROJECT_SQL
+    assert "AS llm_completion_tokens" in _PER_PROJECT_SQL
+    assert "AS llm_avg_prompt_tokens_per_run" in _PER_PROJECT_SQL
+    assert "AS llm_avg_completion_tokens_per_run" in _PER_PROJECT_SQL
+
+
 def test_dashboard_sql_includes_new_metrics() -> None:
     """KPI-запрос содержит метрики длительности, уникальных запусков и пика."""
     assert "AVG(analysis_duration_ms)" in _KPI_SQL
@@ -284,6 +310,11 @@ def test_dashboard_html_has_required_elements() -> None:
         assert marker in html, f"missing {marker}"
     for label in [
         "Токены за период",
+        "Входные за период",
+        "Выходные за период",
+        "Токены / прогон",
+        "Входные / прогон",
+        "Выходные / прогон",
         "Среднее время анализа",
         "Уникальных запусков",
         "Среднее отчётов / день",
@@ -378,10 +409,18 @@ async def test_dashboard_stats_falls_back_when_testops_unavailable(
     assert rows_by_pid[None]["project_name"] == "Без привязки к проекту"
     assert data["kpis"]["total_reports"] == 5
     assert data["kpis"]["llm_total_tokens"] == 900
+    assert data["kpis"]["llm_prompt_tokens"] == 700
+    assert data["kpis"]["llm_completion_tokens"] == 200
     assert data["kpis"]["llm_avg_tokens_per_run"] == 450
+    assert data["kpis"]["llm_avg_prompt_tokens_per_run"] == 350
+    assert data["kpis"]["llm_avg_completion_tokens_per_run"] == 100
     assert data["kpis"]["llm_reports_with_usage"] == 2
     assert rows_by_pid[7]["llm_total_tokens"] == 900
+    assert rows_by_pid[7]["llm_prompt_tokens"] == 700
+    assert rows_by_pid[7]["llm_completion_tokens"] == 200
     assert rows_by_pid[7]["llm_avg_tokens_per_run"] == 450
+    assert rows_by_pid[7]["llm_avg_prompt_tokens_per_run"] == 350
+    assert rows_by_pid[7]["llm_avg_completion_tokens_per_run"] == 100
     assert rows_by_pid[7]["llm_reports_with_usage"] == 2
 
 

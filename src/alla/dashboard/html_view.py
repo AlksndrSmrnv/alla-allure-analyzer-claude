@@ -272,7 +272,11 @@ _DASHBOARD_JS = """
       ['',         'Merge rules',             fmt(kpis.total_merge_rules)],
       ['',         'Активных проектов',       fmt(kpis.active_projects)],
       ['tokens',   'Токены за период',        fmt(kpis.llm_total_tokens)],
+      ['tokens',   'Входные за период',       fmt(kpis.llm_prompt_tokens)],
+      ['tokens',   'Выходные за период',      fmt(kpis.llm_completion_tokens)],
       ['tokens',   'Токены / прогон',         fmt(kpis.llm_avg_tokens_per_run)],
+      ['tokens',   'Входные / прогон',        fmt(kpis.llm_avg_prompt_tokens_per_run)],
+      ['tokens',   'Выходные / прогон',       fmt(kpis.llm_avg_completion_tokens_per_run)],
       ['',         'Среднее отчётов / день',  fmt(avgPerDay(kpis))],
     ];
     for (const [cls, label, value] of cards) {
@@ -333,7 +337,7 @@ _DASHBOARD_JS = """
     const ordered = named.concat(unattributed);
     if (ordered.length === 0) {
       tbody.appendChild(el('tr', {}, [
-        el('td', { colSpan: 8, class: 'muted', text: 'Нет данных за период' }),
+        el('td', { colSpan: 10, class: 'muted', text: 'Нет данных за период' }),
       ]));
       return;
     }
@@ -351,6 +355,8 @@ _DASHBOARD_JS = """
         el('td', { class: 'num', text: fmt(r.kb_entries) }),
         el('td', { class: 'num', text: fmt(r.merge_rules) }),
         el('td', { class: 'num', text: fmt(r.llm_total_tokens) }),
+        el('td', { class: 'num', text: fmt(r.llm_prompt_tokens) }),
+        el('td', { class: 'num', text: fmt(r.llm_completion_tokens) }),
         el('td', { class: 'num', text: fmt(r.llm_avg_tokens_per_run) }),
         el('td', { class: 'num', text: fmtDuration(r.avg_analysis_duration_ms) }),
         el('td', { class: 'muted', text: fmtDate(r.last_activity) }),
@@ -419,6 +425,8 @@ _DASHBOARD_JS = """
       el('tr', {}, [
         el('th', { text: 'Создан' }),
         el('th', { text: 'Launch' }),
+        el('th', { class: 'num', text: 'Входные' }),
+        el('th', { class: 'num', text: 'Выходные' }),
         el('th', { class: 'num', text: 'Токены' }),
         el('th', { class: 'num', text: 'Длительность' }),
         el('th', { text: 'Отчёт' }),
@@ -436,6 +444,8 @@ _DASHBOARD_JS = """
       tb.appendChild(el('tr', {}, [
         el('td', { text: fmtDate(rep.created_at) }),
         el('td', { text: launchText }),
+        el('td', { class: 'num', text: fmt(rep.llm_prompt_tokens) }),
+        el('td', { class: 'num', text: fmt(rep.llm_completion_tokens) }),
         el('td', { class: 'num', text: fmt(rep.llm_total_tokens) }),
         el('td', { class: 'num', text: fmtDuration(rep.analysis_duration_ms) }),
         el('td', {}, [link]),
@@ -598,6 +608,8 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
               <th data-col="kb_entries"  class="num">База знаний</th>
               <th data-col="merge_rules" class="num">Merge rules</th>
               <th data-col="llm_total_tokens" class="num">Токены</th>
+              <th data-col="llm_prompt_tokens" class="num">Входные</th>
+              <th data-col="llm_completion_tokens" class="num">Выходные</th>
               <th data-col="llm_avg_tokens_per_run" class="num">Токены/прогон</th>
               <th data-col="avg_analysis_duration_ms" class="num">Время анализа</th>
               <th data-col="last_activity">Последняя активность</th>
