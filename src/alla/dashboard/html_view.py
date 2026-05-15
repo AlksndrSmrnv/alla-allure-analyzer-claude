@@ -385,7 +385,7 @@ _DASHBOARD_JS = """
 
     tr.classList.add('expanded');
     const expandTr = el('tr', { class: 'expand-row', 'data-key': tr.dataset.key });
-    const td = el('td', { colSpan: 8 });
+    const td = el('td', { colSpan: 10 });
     const inner = el('div', { class: 'expand-inner' });
     inner.innerHTML = '<span class="spinner"></span>Загрузка отчётов…';
     td.appendChild(inner);
