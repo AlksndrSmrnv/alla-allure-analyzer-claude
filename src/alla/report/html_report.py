@@ -1258,7 +1258,6 @@ _CSS = """
       --radius: 12px;
       --radius-sm: 8px;
       --ai-tint-50: #f5f3ff;
-      --ai-tint-100: #ede9fe;
       --ai-accent: #7c3aed;
       --ai-accent-soft: rgba(124, 58, 237, 0.18);
       --ai-glow: 0 0 0 1px rgba(124, 58, 237, 0.22),
@@ -1536,7 +1535,7 @@ _CSS = """
       right: 0;
       height: 2px;
       border-radius: var(--radius) var(--radius) 0 0;
-      background: linear-gradient(90deg, #2563eb 0%, #7c3aed 50%, #06b6d4 100%);
+      background: linear-gradient(90deg, var(--primary) 0%, var(--ai-accent) 50%, #06b6d4 100%);
       opacity: 0.85;
     }
 
@@ -1549,7 +1548,7 @@ _CSS = """
       font-weight: 700;
       letter-spacing: 0.06em;
       color: #fff;
-      background: linear-gradient(135deg, #7c3aed 0%, #2563eb 100%);
+      background: linear-gradient(135deg, var(--ai-accent) 0%, var(--primary) 100%);
       border-radius: 9999px;
       box-shadow: 0 1px 4px rgba(124, 58, 237, 0.35);
       vertical-align: middle;
