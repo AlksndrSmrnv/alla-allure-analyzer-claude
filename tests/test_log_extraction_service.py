@@ -543,6 +543,50 @@ class TestLogExtractionServiceIntegration:
         assert summary.correlation_hint == "operUID=239482348, rqUID=324234523420"
 
     @pytest.mark.asyncio
+    async def test_enrich_falls_back_to_status_trace_when_attachments_have_no_correlation(self):
+        content = b"2026-01-01 10:00:00 [ERROR] Assertion failed"
+        att = AttachmentMeta(id=40, name="test.log", type="text/plain")
+        provider = FakeAttachmentProvider([att], {40: content})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+        summary.status_trace = "Caused by: HttpError: RqUID=abc-xyz not found"
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.correlation_hint == "rqUID=abc-xyz"
+
+    @pytest.mark.asyncio
+    async def test_enrich_prefers_attachment_correlation_over_status_trace(self):
+        content = b"OperUID=op-a\nHTTP/1.1 500 Internal Server Error"
+        att = AttachmentMeta(id=41, name="response.txt", type="text/plain")
+        provider = FakeAttachmentProvider([att], {41: content})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+        summary.status_trace = "OperUID=op-b"
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.correlation_hint == "operUID=op-a"
+
+    @pytest.mark.asyncio
+    async def test_enrich_keeps_none_when_both_sources_empty(self):
+        content = b"2026-01-01 10:00:00 [ERROR] Assertion failed"
+        att = AttachmentMeta(id=42, name="test.log", type="text/plain")
+        provider = FakeAttachmentProvider([att], {42: content})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.correlation_hint is None
+
+    @pytest.mark.asyncio
     async def test_structured_journal_attachment_extracted_in_full(self):
         """text/plain вложение с JSON-массивом структурированных лог-записей.
 

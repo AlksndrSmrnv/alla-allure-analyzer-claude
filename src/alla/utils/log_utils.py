@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Mapping
+from typing import Any
 
 # Паттерны явных ошибок в логах приложения
 _LOG_ERROR_RE = re.compile(
@@ -28,6 +29,10 @@ _CORRELATION_LINE_RE = re.compile(
 _CORRELATION_PAIR_RE = re.compile(
     r"(?P<key>[A-Za-z][A-Za-z0-9]*)\s*=\s*(?P<value>[^,\s][^,]*?)(?=\s*(?:,|$))"
 )
+# Единый реестр correlation-ключей: новая запись lowercase -> display
+# автоматически подхватывается regex-ами, JSON-recursion и сортировкой.
+# При расширении списка проверьте также feedback_signature.py:_GENERIC_LOG_WORDS,
+# где похожие токены фильтруются для другой, независимой логики.
 _CANONICAL_CORRELATION_KEYS = {
     "operuid": "operUID",
     "rquid": "rqUID",
@@ -36,12 +41,26 @@ _CANONICAL_CORRELATION_KEYS = {
     "traceid": "traceId",
 }
 _CORRELATION_KEY_PRIORITY = {
-    "operuid": 0,
-    "rquid": 1,
-    "requestid": 2,
-    "correlationid": 3,
-    "traceid": 4,
+    key: index for index, key in enumerate(_CANONICAL_CORRELATION_KEYS)
 }
+_CORRELATION_KEYS_LOWER: frozenset[str] = frozenset(_CANONICAL_CORRELATION_KEYS)
+_CORRELATION_VALUE_PATTERN = r"[A-Za-z0-9\-_.]{4,64}"
+_KEY_ALTERNATION = "|".join(re.escape(key) for key in _CANONICAL_CORRELATION_KEYS)
+_CORR_ID_JSON_RE = re.compile(
+    rf"\"(?P<key>{_KEY_ALTERNATION})\"\s*:\s*\"(?P<value>{_CORRELATION_VALUE_PATTERN})\"",
+    re.IGNORECASE,
+)
+_CORR_ID_KV_RE = re.compile(
+    rf"\b(?P<key>{_KEY_ALTERNATION})\b"
+    rf"\s*[=:]\s*\"?(?P<value>{_CORRELATION_VALUE_PATTERN})",
+    re.IGNORECASE,
+)
+_CORR_ID_XML_RE = re.compile(
+    rf"<(?P<key>{_KEY_ALTERNATION})>"
+    rf"(?P<value>{_CORRELATION_VALUE_PATTERN})"
+    rf"</(?:{_KEY_ALTERNATION})>",
+    re.IGNORECASE,
+)
 
 
 def has_explicit_errors(log_snippet: str | None) -> bool:
@@ -69,6 +88,79 @@ def parse_correlation_line(line: str) -> dict[str, str]:
             continue
         display_key = _CANONICAL_CORRELATION_KEYS.get(raw_key.lower(), raw_key)
         pairs.setdefault(display_key, raw_value)
+    return pairs
+
+
+def extract_correlation_pairs_from_text(text: str) -> dict[str, str]:
+    """Извлечь correlation ID пары из произвольного текста.
+
+    Применяет JSON/KV/XML regex-ы. Ключи возвращаются как в исходном тексте;
+    нормализация display-вида выполняется в ``format_correlation_pairs``.
+    Первое встретившееся значение для ключа выигрывает.
+    """
+    if not text:
+        return {}
+
+    matches: list[tuple[int, int, str, str]] = []
+    for order, regex in enumerate((_CORR_ID_JSON_RE, _CORR_ID_KV_RE, _CORR_ID_XML_RE)):
+        for match in regex.finditer(text):
+            matches.append(
+                (
+                    match.start(),
+                    order,
+                    match.group("key"),
+                    match.group("value"),
+                )
+            )
+
+    pairs: dict[str, str] = {}
+    seen_keys: set[str] = set()
+    for _start, _order, raw_key, raw_value in sorted(matches):
+        key_lower = raw_key.lower()
+        if key_lower in seen_keys:
+            continue
+        value = raw_value.strip()
+        if not value:
+            continue
+        pairs[raw_key] = value
+        seen_keys.add(key_lower)
+    return pairs
+
+
+def extract_correlation_pairs_from_json(
+    obj: Any,
+    *,
+    max_depth: int = 10,
+) -> dict[str, str]:
+    """Рекурсивно собрать correlation ID пары из JSON-like объекта.
+
+    Обходит dict/list до ``max_depth`` включительно. Учитываются только scalar
+    values ``str``/``int``; значения обрезаются до 64 символов. Ключи
+    возвращаются как в исходном объекте.
+    """
+    pairs: dict[str, str] = {}
+    seen_keys: set[str] = set()
+
+    def visit(value: Any, depth: int) -> None:
+        if depth > max_depth:
+            return
+        if isinstance(value, dict):
+            for raw_key, raw_value in value.items():
+                key = str(raw_key)
+                key_lower = key.lower()
+                if key_lower in _CORRELATION_KEYS_LOWER:
+                    if isinstance(raw_value, (str, int)):
+                        normalized_value = str(raw_value).strip()
+                        if normalized_value and key_lower not in seen_keys:
+                            pairs[key] = normalized_value[:64]
+                            seen_keys.add(key_lower)
+                            continue
+                visit(raw_value, depth + 1)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item, depth + 1)
+
+    visit(obj, 0)
     return pairs
 
 
