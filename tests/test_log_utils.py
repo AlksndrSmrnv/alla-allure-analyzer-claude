@@ -1,9 +1,9 @@
 """Тесты для утилит разбора лог-секций."""
 
 from alla.utils.log_utils import (
+    extract_correlation_from_log,
     extract_correlation_pairs_from_json,
     extract_correlation_pairs_from_text,
-    extract_correlation_from_log,
     parse_correlation_line,
     parse_log_sections,
 )

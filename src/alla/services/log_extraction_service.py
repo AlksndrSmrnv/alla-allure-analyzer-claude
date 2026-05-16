@@ -361,6 +361,24 @@ def _extract_status_details_correlation_hint(
     return format_correlation_pairs(extract_correlation_pairs_from_text(trace_text))
 
 
+def _apply_status_details_correlation_fallback(
+    summary: FailedTestSummary,
+    correlation_hint: str | None,
+) -> str | None:
+    """Вернуть attachment correlation или fallback из statusDetails."""
+    if correlation_hint is not None:
+        return correlation_hint
+
+    fallback = _extract_status_details_correlation_hint(summary)
+    if fallback is not None and logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Логи: тест %d — correlation_hint извлечён из statusDetails: %s",
+            summary.test_result_id,
+            fallback,
+        )
+    return fallback
+
+
 class LogExtractionConfig:
     """Параметры извлечения логов из аттачментов."""
 
@@ -510,15 +528,10 @@ class LogExtractionService:
                 if self._is_processable_attachment(att)
             ]
             if not processable:
-                correlation_hint = _extract_status_details_correlation_hint(summary)
-                if correlation_hint is not None:
-                    summary.correlation_hint = correlation_hint
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(
-                            "Логи: тест %d — correlation_hint извлечён из statusDetails: %s",
-                            summary.test_result_id,
-                            correlation_hint,
-                        )
+                summary.correlation_hint = _apply_status_details_correlation_fallback(
+                    summary,
+                    None,
+                )
                 return
 
             # Бюджетируем log_snippet ПО МЕРЕ накопления, а не после join:
@@ -620,15 +633,10 @@ class LogExtractionService:
                     content_bytes = b""
                     decoded_text = None
 
-            if correlation_hint is None:
-                correlation_hint = _extract_status_details_correlation_hint(summary)
-                if correlation_hint is not None and logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(
-                        "Логи: тест %d — correlation_hint извлечён из statusDetails: %s",
-                        summary.test_result_id,
-                        correlation_hint,
-                    )
-
+            correlation_hint = _apply_status_details_correlation_fallback(
+                summary,
+                correlation_hint,
+            )
             summary.correlation_hint = correlation_hint
             if kept_sections:
                 combined = "\n\n".join(kept_sections)

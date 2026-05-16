@@ -472,6 +472,27 @@ class TestLogExtractionServiceIntegration:
         assert summary.correlation_hint is None
 
     @pytest.mark.asyncio
+    async def test_enrich_falls_back_to_status_trace_when_no_processable_attachments(self):
+        att = AttachmentMeta(id=40, name="screenshot.png", type="image/png")
+        download_called = []
+
+        class TrackingProvider(FakeAttachmentProvider):
+            async def get_attachment_content(self, attachment_id: int) -> bytes:
+                download_called.append(attachment_id)
+                return b""
+
+        provider = TrackingProvider([att], {})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+        summary.status_trace = "AssertionError: request failed with RqUID=trace-only"
+
+        await service.enrich_with_logs([summary])
+
+        assert len(download_called) == 0
+        assert summary.log_snippet is None
+        assert summary.correlation_hint == "rqUID=trace-only"
+
+    @pytest.mark.asyncio
     async def test_multiple_json_attachments_combined(self):
         content1 = b'{"RqUID": "first", "error": "step1 failed"}'
         content2 = b'{"RqUID": "second", "statusCode": 500, "error": "step2 failed"}'
