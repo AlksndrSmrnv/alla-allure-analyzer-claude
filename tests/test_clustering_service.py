@@ -338,6 +338,43 @@ class TestNormalizeDateFormats:
         assert "<TS>" in result
 
 
+class TestNormalizeAssertionValues:
+    """Длинные числа в assertion-форматах сохраняются для специфичности KB."""
+
+    def test_long_number_in_double_quotes_preserved(self) -> None:
+        assert normalize_text('was "-1001"') == 'was "-1001"'
+
+    def test_long_number_in_single_quotes_preserved(self) -> None:
+        assert normalize_text("was '1001'") == "was '1001'"
+
+    def test_long_number_in_angle_brackets_preserved(self) -> None:
+        assert normalize_text("but was: <12345>") == "but was: <12345>"
+
+    def test_long_number_in_square_brackets_preserved(self) -> None:
+        assert normalize_text("but was [123456]") == "but was [123456]"
+
+    def test_full_hamcrest_message_preserved(self) -> None:
+        msg = 'Expected: "-2206" but: was "-1001"'
+        assert normalize_text(msg) == msg
+
+    def test_negative_long_number_in_angle_brackets_preserved(self) -> None:
+        assert (
+            normalize_text("expected: <-2206> but was: <-1001>")
+            == "expected: <-2206> but was: <-1001>"
+        )
+
+    def test_unquoted_long_number_still_replaced(self) -> None:
+        assert normalize_text("job 123456") == "job <NUM>"
+
+    def test_mixed_quoted_and_unquoted(self) -> None:
+        # "1234" защищено; 567890 — нет.
+        assert normalize_text('id="1234" count 567890') == 'id="1234" count <NUM>'
+
+    def test_asymmetric_delimiter_also_protects(self) -> None:
+        # OR-семантика: достаточно одного delimiter-символа с любой стороны.
+        assert normalize_text("value <1001 end") == "value <1001 end"
+
+
 # ---------------------------------------------------------------------------
 # Интеграционный тест: кластеризация ошибок с разными форматами дат
 # ---------------------------------------------------------------------------
@@ -563,6 +600,17 @@ def test_different_assertion_actuals_are_not_merged() -> None:
     assert report.cluster_count == 2
     member_sets = sorted(tuple(c.member_test_ids) for c in report.clusters)
     assert member_sets == [(60,), (61,)]
+
+
+def test_different_long_assertion_actuals_are_not_merged() -> None:
+    """Длинные assertion-числа в скобках теперь различают кластеры."""
+    failures = [
+        _failure(62, status_message="expected: <0> but was: <12345>"),
+        _failure(63, status_message="expected: <0> but was: <99999>"),
+    ]
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+    assert report.cluster_count == 2
 
 
 def test_same_actual_different_expected_still_merged() -> None:

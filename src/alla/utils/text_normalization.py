@@ -63,7 +63,11 @@ _TIME_ONLY_RE = re.compile(
     r"(?<!\d[.:])\b\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?\b"
 )
 
-_LONG_NUMBER_RE = re.compile(r"\b\d{4,}\b")
+# Защита assertion-значений: числа, граничащие с " ' < [ слева ИЛИ " ' > ] справа,
+# сохраняются. Покрывает Hamcrest/JUnit/AssertJ форматы ("-1001", <33>, [404])
+# и quoted идентификаторы в JSON-логах. Asymmetric delimiters тоже защищают
+# (OR-семантика lookbehind/lookahead).
+_LONG_NUMBER_RE = re.compile(r"(?<![\"'<\[])\b\d{4,}\b(?![\"'>\]])")
 _IP_RE = re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
 _REPORT_LOG_MARKER_RE = re.compile(r"^\s*---\s*Лог приложения\s*---\s*$")
 
