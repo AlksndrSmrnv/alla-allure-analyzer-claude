@@ -214,7 +214,9 @@ def _extract_error_detail(payload: Any) -> str:
         detail = payload.get("detail", payload)
         if isinstance(detail, str):
             return detail
-        if isinstance(detail, dict) and isinstance(detail.get("detail"), str):
-            return detail["detail"]
+        if isinstance(detail, dict):
+            nested_detail = detail.get("detail")
+            if isinstance(nested_detail, str):
+                return nested_detail
         return str(detail)
     return str(payload)
