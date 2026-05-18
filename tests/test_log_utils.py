@@ -59,6 +59,18 @@ def test_parse_correlation_line_normalizes_keys_and_keeps_first_value() -> None:
     }
 
 
+def test_parse_correlation_line_drops_type_name_placeholders() -> None:
+    line = "Корреляция: operUID=String, rqUID=String"
+
+    assert parse_correlation_line(line) == {}
+
+
+def test_parse_correlation_line_picks_real_value_after_placeholder() -> None:
+    line = "Корреляция: operUID=String, operUID=ab12cd34"
+
+    assert parse_correlation_line(line) == {"operUID": "ab12cd34"}
+
+
 def test_extract_correlation_from_log_reads_first_http_section() -> None:
     log_snippet = (
         "--- [файл: app.log] ---\n"
@@ -82,6 +94,12 @@ def test_extract_correlation_pairs_from_text_json_format() -> None:
     assert extract_correlation_pairs_from_text(text) == {"RqUID": "abc-123"}
 
 
+def test_extract_correlation_pairs_from_text_drops_placeholder_json() -> None:
+    text = '{"rqUID": "String", "OperUID": "12345abc"}'
+
+    assert extract_correlation_pairs_from_text(text) == {"OperUID": "12345abc"}
+
+
 def test_extract_correlation_pairs_from_text_kv_format() -> None:
     text = "OperUID=op-1\nrequestId: req-1"
 
@@ -89,6 +107,18 @@ def test_extract_correlation_pairs_from_text_kv_format() -> None:
         "OperUID": "op-1",
         "requestId": "req-1",
     }
+
+
+def test_extract_correlation_pairs_from_text_drops_placeholder_kv() -> None:
+    text = "RqUID: String\nRqUID: 12345abc"
+
+    assert extract_correlation_pairs_from_text(text) == {"RqUID": "12345abc"}
+
+
+def test_extract_correlation_pairs_from_text_drops_common_type_names() -> None:
+    text = "rqUID=Long\noperUID=Integer\ntraceId: real-trace-42"
+
+    assert extract_correlation_pairs_from_text(text) == {"traceId": "real-trace-42"}
 
 
 def test_extract_correlation_pairs_from_text_xml_format() -> None:
@@ -139,6 +169,12 @@ def test_extract_correlation_pairs_from_json_top_level() -> None:
     obj = {"RqUID": "abc-123", "statusCode": 500}
 
     assert extract_correlation_pairs_from_json(obj) == {"RqUID": "abc-123"}
+
+
+def test_extract_correlation_pairs_from_json_drops_top_level_placeholder() -> None:
+    obj = {"RqUID": "String", "headers": {"OperUID": "real-id-123"}}
+
+    assert extract_correlation_pairs_from_json(obj) == {"OperUID": "real-id-123"}
 
 
 def test_extract_correlation_pairs_from_json_nested_dict() -> None:
