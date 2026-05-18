@@ -22,14 +22,7 @@ _LOG_SECTION_RE = re.compile(
     r"^--- \[(?P<section_type>[^\]:\s][^\]:]*?): (?P<section_name>.+?)\] ---$",
     re.MULTILINE,
 )
-_CORRELATION_LINE_RE = re.compile(
-    r"^\s*Корреляция:\s*(?P<pairs>.+?)\s*$",
-    re.IGNORECASE,
-)
-_CORRELATION_VALUE_PATTERN = r"[A-Za-z0-9\-_.]{4,64}"
-_CORRELATION_PAIR_RE = re.compile(
-    rf"(?P<key>[A-Za-z][A-Za-z0-9]*)\s*=\s*(?P<value>{_CORRELATION_VALUE_PATTERN})"
-)
+
 # Единый реестр correlation-ключей: новая запись lowercase -> display
 # автоматически подхватывается regex-ами, JSON-recursion и сортировкой.
 # При расширении списка проверьте также feedback_signature.py:_GENERIC_LOG_WORDS,
@@ -45,6 +38,7 @@ _CORRELATION_KEY_PRIORITY = {
     key: index for index, key in enumerate(_CANONICAL_CORRELATION_KEYS)
 }
 _CORRELATION_KEYS_LOWER: frozenset[str] = frozenset(_CANONICAL_CORRELATION_KEYS)
+_CORRELATION_VALUE_PATTERN = r"[A-Za-z0-9\-_.]{4,64}"
 _PLACEHOLDER_VALUES: frozenset[str] = frozenset(
     {
         "string",
@@ -86,6 +80,13 @@ _PLACEHOLDER_VALUES: frozenset[str] = frozenset(
     }
 )
 _KEY_ALTERNATION = "|".join(re.escape(key) for key in _CANONICAL_CORRELATION_KEYS)
+_CORRELATION_LINE_RE = re.compile(
+    r"^\s*Корреляция:\s*(?P<pairs>.+?)\s*$",
+    re.IGNORECASE,
+)
+_CORRELATION_PAIR_RE = re.compile(
+    rf"(?P<key>[A-Za-z][A-Za-z0-9]*)\s*=\s*(?P<value>{_CORRELATION_VALUE_PATTERN})"
+)
 _CORR_ID_JSON_RE = re.compile(
     rf"\"(?P<key>{_KEY_ALTERNATION})\"\s*:\s*\"(?P<value>{_CORRELATION_VALUE_PATTERN})\"",
     re.IGNORECASE,
@@ -192,17 +193,19 @@ def extract_correlation_pairs_from_json(
             for raw_key, raw_value in value.items():
                 key = str(raw_key)
                 key_lower = key.lower()
-                if key_lower in _CORRELATION_KEYS_LOWER:
-                    if isinstance(raw_value, (str, int)):
-                        normalized_value = str(raw_value).strip()
-                        if (
-                            normalized_value
-                            and not _is_placeholder_value(normalized_value)
-                            and key_lower not in seen_keys
-                        ):
-                            pairs[key] = normalized_value[:64]
-                            seen_keys.add(key_lower)
-                            continue
+                if (
+                    key_lower in _CORRELATION_KEYS_LOWER
+                    and isinstance(raw_value, (str, int))
+                ):
+                    normalized_value = str(raw_value).strip()
+                    if (
+                        normalized_value
+                        and not _is_placeholder_value(normalized_value)
+                        and key_lower not in seen_keys
+                    ):
+                        pairs[key] = normalized_value[:64]
+                        seen_keys.add(key_lower)
+                    continue
                 visit(raw_value, depth + 1)
         elif isinstance(value, list):
             for item in value:
