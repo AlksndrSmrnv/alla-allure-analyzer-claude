@@ -2,6 +2,8 @@
 
 from alla.utils.log_utils import (
     extract_correlation_from_log,
+    extract_correlation_pairs_from_json,
+    extract_correlation_pairs_from_text,
     parse_correlation_line,
     parse_log_sections,
 )
@@ -72,3 +74,98 @@ def test_extract_correlation_from_log_reads_first_http_section() -> None:
     )
 
     assert extract_correlation_from_log(log_snippet) == "operUID=op-1, rqUID=req-1"
+
+
+def test_extract_correlation_pairs_from_text_json_format() -> None:
+    text = '{"RqUID": "abc-123", "message": "failed"}'
+
+    assert extract_correlation_pairs_from_text(text) == {"RqUID": "abc-123"}
+
+
+def test_extract_correlation_pairs_from_text_kv_format() -> None:
+    text = "OperUID=op-1\nrequestId: req-1"
+
+    assert extract_correlation_pairs_from_text(text) == {
+        "OperUID": "op-1",
+        "requestId": "req-1",
+    }
+
+
+def test_extract_correlation_pairs_from_text_xml_format() -> None:
+    text = "<traceId>tr-1</traceId>"
+
+    assert extract_correlation_pairs_from_text(text) == {"traceId": "tr-1"}
+
+
+def test_extract_correlation_pairs_from_text_mixed_in_one_blob() -> None:
+    text = (
+        'Caused by: HttpError("RqUID":"abc-1")\n'
+        "OperUID=op-1 not found\n"
+        "<traceId>tr-1</traceId>"
+    )
+
+    assert extract_correlation_pairs_from_text(text) == {
+        "RqUID": "abc-1",
+        "OperUID": "op-1",
+        "traceId": "tr-1",
+    }
+
+
+def test_extract_correlation_pairs_from_text_empty_and_no_match() -> None:
+    assert extract_correlation_pairs_from_text("") == {}
+    assert extract_correlation_pairs_from_text("plain exception text") == {}
+
+
+def test_extract_correlation_pairs_from_text_case_insensitive() -> None:
+    text = "RQUID=req-1\noperuid=op-1\ntraceId: tr-1"
+
+    assert extract_correlation_pairs_from_text(text) == {
+        "RQUID": "req-1",
+        "operuid": "op-1",
+        "traceId": "tr-1",
+    }
+
+
+def test_extract_correlation_pairs_from_text_first_wins_on_duplicate() -> None:
+    text = "RqUID=first\nRqUID=second\nrequestId=req-1"
+
+    assert extract_correlation_pairs_from_text(text) == {
+        "RqUID": "first",
+        "requestId": "req-1",
+    }
+
+
+def test_extract_correlation_pairs_from_json_top_level() -> None:
+    obj = {"RqUID": "abc-123", "statusCode": 500}
+
+    assert extract_correlation_pairs_from_json(obj) == {"RqUID": "abc-123"}
+
+
+def test_extract_correlation_pairs_from_json_nested_dict() -> None:
+    obj = {"headers": {"OperUID": "op-1"}}
+
+    assert extract_correlation_pairs_from_json(obj) == {"OperUID": "op-1"}
+
+
+def test_extract_correlation_pairs_from_json_in_list_of_dicts() -> None:
+    obj = [{"message": "first"}, {"traceId": "tr-1"}]
+
+    assert extract_correlation_pairs_from_json(obj) == {"traceId": "tr-1"}
+
+
+def test_extract_correlation_pairs_from_json_respects_max_depth() -> None:
+    obj: dict[str, object] = {}
+    current = obj
+    for index in range(11):
+        child: dict[str, object] = {}
+        current[f"level{index}"] = child
+        current = child
+    current["RqUID"] = "too-deep"
+
+    assert extract_correlation_pairs_from_json(obj, max_depth=10) == {}
+
+
+def test_extract_correlation_pairs_from_json_ignores_non_scalar_values() -> None:
+    obj = {"RqUID": {"value": "nested"}, "OperUID": ["op-1"], "traceId": "tr-1"}
+
+    assert extract_correlation_pairs_from_json(obj) == {"traceId": "tr-1"}

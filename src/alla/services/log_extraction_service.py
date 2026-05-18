@@ -22,7 +22,11 @@ from alla.services.attachment_handlers import (
     AttachmentHandler,
     default_handlers,
 )
-from alla.utils.log_utils import format_correlation_pairs
+from alla.utils.log_utils import (
+    extract_correlation_pairs_from_json,
+    extract_correlation_pairs_from_text,
+    format_correlation_pairs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,21 +90,6 @@ def _decode_text(content: bytes) -> str | None:
 
 
 # Regex-паттерны для HTTP-детекции в тексте
-_CORR_ID_JSON_RE = re.compile(
-    r"\"(?P<key>RqUID|OperUID|requestId|correlationId|traceId)\"\s*:\s*\"(?P<value>[A-Za-z0-9\-_.]{4,64})\"",
-    re.IGNORECASE,
-)
-_CORR_ID_KV_RE = re.compile(
-    r"(?P<key>RqUID|OperUID|requestId|correlationId|traceId)"
-    r"\s*[=:]\s*\"?(?P<value>[A-Za-z0-9\-_.]{4,64})",
-    re.IGNORECASE,
-)
-_CORR_ID_XML_RE = re.compile(
-    r"<(?P<key>RqUID|OperUID|requestId|correlationId|traceId)>"
-    r"(?P<value>[A-Za-z0-9\-_.]{4,64})"
-    r"</(?:RqUID|OperUID|requestId|correlationId|traceId)>",
-    re.IGNORECASE,
-)
 _HTTP_STATUS_RE = re.compile(r"HTTP/[12](?:\.\d)?\s+(4\d\d|5\d\d)\b")
 _STATUS_CODE_RE = re.compile(
     r"\"(?P<key>statusCode|status|code)\"\s*:\s*(?P<value>[45]\d{2})",
@@ -165,12 +154,8 @@ def _collect_text_http_signals(text: str) -> _HttpSignals:
     """Собрать HTTP-сигналы из сырого текста через regex."""
     signals = _HttpSignals()
 
-    for match in _CORR_ID_JSON_RE.finditer(text):
-        signals.corr_ids.setdefault(match.group("key"), match.group("value"))
-    for match in _CORR_ID_KV_RE.finditer(text):
-        signals.corr_ids.setdefault(match.group("key"), match.group("value"))
-    for match in _CORR_ID_XML_RE.finditer(text):
-        signals.corr_ids.setdefault(match.group("key"), match.group("value"))
+    for key, value in extract_correlation_pairs_from_text(text).items():
+        signals.corr_ids.setdefault(key, value)
 
     for match in _HTTP_STATUS_RE.finditer(text):
         status = match.group(1)
@@ -212,7 +197,6 @@ def _extract_text_http_info(text: str) -> str:
 # Сканирование JSON для HTTP-информации
 # ---------------------------------------------------------------------------
 
-_JSON_CORR_KEYS = frozenset({"rquid", "operuid", "requestid", "correlationid", "traceid"})
 _JSON_STATUS_KEYS = frozenset({"status", "statuscode", "httpstatus", "responsestatus"})
 _JSON_ERROR_KEYS = frozenset({
     "error", "errorcode", "errormessage",
@@ -226,7 +210,6 @@ _JSON_VALUE_MAX_CHARS = 300
 
 def _collect_json_signals(
     obj: Any,
-    corr_ids: dict[str, str],
     http_statuses: list[str],
     error_fields: dict[str, str],
     context_fields: dict[str, str],
@@ -238,10 +221,7 @@ def _collect_json_signals(
     if isinstance(obj, dict):
         for k, v in obj.items():
             kl = str(k).lower()
-            if kl in _JSON_CORR_KEYS:
-                if isinstance(v, (str, int)) and str(v).strip():
-                    corr_ids.setdefault(str(k), str(v)[:64])
-            elif kl in _JSON_STATUS_KEYS:
+            if kl in _JSON_STATUS_KEYS:
                 if isinstance(v, int) and 400 <= v <= 599:
                     status = str(v)
                     if status not in http_statuses:
@@ -250,25 +230,43 @@ def _collect_json_signals(
                 if isinstance(v, str) and v.strip():
                     error_fields.setdefault(str(k), v[:_JSON_VALUE_MAX_CHARS])
                 else:
-                    _collect_json_signals(v, corr_ids, http_statuses, error_fields, context_fields, depth + 1)
+                    _collect_json_signals(
+                        v,
+                        http_statuses,
+                        error_fields,
+                        context_fields,
+                        depth + 1,
+                    )
             elif kl in _JSON_CONTEXT_KEYS:
                 if isinstance(v, str) and v.strip():
                     context_fields.setdefault(str(k), v[:_JSON_VALUE_MAX_CHARS])
             else:
-                _collect_json_signals(v, corr_ids, http_statuses, error_fields, context_fields, depth + 1)
+                _collect_json_signals(
+                    v,
+                    http_statuses,
+                    error_fields,
+                    context_fields,
+                    depth + 1,
+                )
     elif isinstance(obj, list):
         for item in obj:
-            _collect_json_signals(item, corr_ids, http_statuses, error_fields, context_fields, depth + 1)
+            _collect_json_signals(
+                item,
+                http_statuses,
+                error_fields,
+                context_fields,
+                depth + 1,
+            )
 
 
 def _scan_json_for_http_signals(obj: Any) -> _HttpSignals:
     """Собрать HTTP-сигналы из распарсенного JSON-объекта."""
-    corr_ids: dict[str, str] = {}
+    corr_ids = extract_correlation_pairs_from_json(obj, max_depth=_JSON_MAX_DEPTH)
     http_statuses: list[str] = []
     error_fields: dict[str, str] = {}
     context_fields: dict[str, str] = {}
 
-    _collect_json_signals(obj, corr_ids, http_statuses, error_fields, context_fields, 0)
+    _collect_json_signals(obj, http_statuses, error_fields, context_fields, 0)
     return _HttpSignals(
         corr_ids=corr_ids,
         http_statuses=http_statuses,
@@ -349,6 +347,36 @@ def _detect_and_extract_http(
         text=text,
     )
     return http_info
+
+
+def _extract_status_details_correlation_hint(
+    summary: FailedTestSummary,
+) -> str | None:
+    """Извлечь correlation hint из status_message/status_trace теста."""
+    trace_text = "\n".join(
+        part for part in (summary.status_message, summary.status_trace) if part
+    )
+    if not trace_text:
+        return None
+    return format_correlation_pairs(extract_correlation_pairs_from_text(trace_text))
+
+
+def _apply_status_details_correlation_fallback(
+    summary: FailedTestSummary,
+    correlation_hint: str | None,
+) -> str | None:
+    """Вернуть attachment correlation или fallback из statusDetails."""
+    if correlation_hint is not None:
+        return correlation_hint
+
+    fallback = _extract_status_details_correlation_hint(summary)
+    if fallback is not None and logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Логи: тест %d — correlation_hint извлечён из statusDetails: %s",
+            summary.test_result_id,
+            fallback,
+        )
+    return fallback
 
 
 class LogExtractionConfig:
@@ -500,6 +528,10 @@ class LogExtractionService:
                 if self._is_processable_attachment(att)
             ]
             if not processable:
+                summary.correlation_hint = _apply_status_details_correlation_fallback(
+                    summary,
+                    None,
+                )
                 return
 
             # Бюджетируем log_snippet ПО МЕРЕ накопления, а не после join:
@@ -601,6 +633,10 @@ class LogExtractionService:
                     content_bytes = b""
                     decoded_text = None
 
+            correlation_hint = _apply_status_details_correlation_fallback(
+                summary,
+                correlation_hint,
+            )
             summary.correlation_hint = correlation_hint
             if kept_sections:
                 combined = "\n\n".join(kept_sections)

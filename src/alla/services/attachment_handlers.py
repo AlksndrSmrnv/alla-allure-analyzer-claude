@@ -22,7 +22,10 @@ from typing import Any, Protocol, runtime_checkable
 import ijson
 
 from alla.models.testops import AttachmentMeta
-from alla.utils.log_utils import format_correlation_pairs
+from alla.utils.log_utils import (
+    extract_correlation_pairs_from_json,
+    format_correlation_pairs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,16 +83,6 @@ _STRUCTURED_LOG_REQUIRED_KEYS: frozenset[str] = frozenset({
 # обязательные ключи, чтобы файл был признан структурированным журналом.
 _STRUCTURED_LOG_MATCH_RATIO = 0.6
 # =====================================================================
-
-# Ключи для извлечения correlation-IDs (lowercased).
-_STRUCTURED_LOG_CORR_KEYS = frozenset({
-    "rquid",
-    "operuid",
-    "requestid",
-    "correlationid",
-    "traceid",
-})
-
 
 # Максимальная глубина обхода JSON при поиске вложенного массива-журнала.
 _STRUCTURED_LOG_SEARCH_MAX_DEPTH = 10
@@ -164,29 +157,6 @@ def _looks_like_structured_log(items: list[Any]) -> bool:
     return matched / len(items) >= _STRUCTURED_LOG_MATCH_RATIO
 
 
-_STRUCTURED_LOG_CORR_MAX_DEPTH = 10
-
-
-def _collect_corr_ids_recursive(
-    obj: Any,
-    pairs: dict[str, str],
-    depth: int = 0,
-) -> None:
-    """Рекурсивно собрать correlation-IDs из вложенных dict/list."""
-    if depth > _STRUCTURED_LOG_CORR_MAX_DEPTH:
-        return
-    if isinstance(obj, dict):
-        for raw_key, raw_value in obj.items():
-            if str(raw_key).lower() in _STRUCTURED_LOG_CORR_KEYS:
-                if isinstance(raw_value, (str, int)) and str(raw_value).strip():
-                    pairs.setdefault(str(raw_key), str(raw_value))
-                    continue
-            _collect_corr_ids_recursive(raw_value, pairs, depth + 1)
-    elif isinstance(obj, list):
-        for item in obj:
-            _collect_corr_ids_recursive(item, pairs, depth + 1)
-
-
 def _extract_structured_correlation(items: list[Any]) -> str | None:
     """Найти первый объект с correlation-полями (любой вложенности).
 
@@ -196,8 +166,7 @@ def _extract_structured_correlation(items: list[Any]) -> str | None:
     for entry in items:
         if not isinstance(entry, dict):
             continue
-        pairs: dict[str, str] = {}
-        _collect_corr_ids_recursive(entry, pairs)
+        pairs = extract_correlation_pairs_from_json(entry)
         formatted = format_correlation_pairs(pairs)
         if formatted is not None:
             return formatted

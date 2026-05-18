@@ -472,6 +472,27 @@ class TestLogExtractionServiceIntegration:
         assert summary.correlation_hint is None
 
     @pytest.mark.asyncio
+    async def test_enrich_falls_back_to_status_trace_when_no_processable_attachments(self):
+        att = AttachmentMeta(id=40, name="screenshot.png", type="image/png")
+        download_called = []
+
+        class TrackingProvider(FakeAttachmentProvider):
+            async def get_attachment_content(self, attachment_id: int) -> bytes:
+                download_called.append(attachment_id)
+                return b""
+
+        provider = TrackingProvider([att], {})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+        summary.status_trace = "AssertionError: request failed with RqUID=trace-only"
+
+        await service.enrich_with_logs([summary])
+
+        assert len(download_called) == 0
+        assert summary.log_snippet is None
+        assert summary.correlation_hint == "rqUID=trace-only"
+
+    @pytest.mark.asyncio
     async def test_multiple_json_attachments_combined(self):
         content1 = b'{"RqUID": "first", "error": "step1 failed"}'
         content2 = b'{"RqUID": "second", "statusCode": 500, "error": "step2 failed"}'
@@ -541,6 +562,50 @@ class TestLogExtractionServiceIntegration:
 
         assert summary.log_snippet is None
         assert summary.correlation_hint == "operUID=239482348, rqUID=324234523420"
+
+    @pytest.mark.asyncio
+    async def test_enrich_falls_back_to_status_trace_when_attachments_have_no_correlation(self):
+        content = b"2026-01-01 10:00:00 [ERROR] Assertion failed"
+        att = AttachmentMeta(id=40, name="test.log", type="text/plain")
+        provider = FakeAttachmentProvider([att], {40: content})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+        summary.status_trace = "Caused by: HttpError: RqUID=abc-xyz not found"
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.correlation_hint == "rqUID=abc-xyz"
+
+    @pytest.mark.asyncio
+    async def test_enrich_prefers_attachment_correlation_over_status_trace(self):
+        content = b"OperUID=op-a\nHTTP/1.1 500 Internal Server Error"
+        att = AttachmentMeta(id=41, name="response.txt", type="text/plain")
+        provider = FakeAttachmentProvider([att], {41: content})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+        summary.status_trace = "OperUID=op-b"
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.correlation_hint == "operUID=op-a"
+
+    @pytest.mark.asyncio
+    async def test_enrich_keeps_none_when_both_sources_empty(self):
+        content = b"2026-01-01 10:00:00 [ERROR] Assertion failed"
+        att = AttachmentMeta(id=42, name="test.log", type="text/plain")
+        provider = FakeAttachmentProvider([att], {42: content})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.correlation_hint is None
 
     @pytest.mark.asyncio
     async def test_structured_journal_attachment_extracted_in_full(self):
