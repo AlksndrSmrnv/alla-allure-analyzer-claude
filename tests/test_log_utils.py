@@ -1,5 +1,7 @@
 """Тесты для утилит разбора лог-секций."""
 
+import pytest
+
 from alla.utils.log_utils import (
     extract_correlation_from_log,
     extract_correlation_pairs_from_json,
@@ -71,6 +73,15 @@ def test_parse_correlation_line_picks_real_value_after_placeholder() -> None:
     assert parse_correlation_line(line) == {"operUID": "ab12cd34"}
 
 
+@pytest.mark.parametrize("placeholder", ["string", "STRING", "String", " String "])
+def test_parse_correlation_line_drops_placeholders_case_insensitive(
+    placeholder: str,
+) -> None:
+    line = f"Корреляция: rqUID={placeholder}, rqUID=real-id-123"
+
+    assert parse_correlation_line(line) == {"rqUID": "real-id-123"}
+
+
 def test_extract_correlation_from_log_reads_first_http_section() -> None:
     log_snippet = (
         "--- [файл: app.log] ---\n"
@@ -86,6 +97,17 @@ def test_extract_correlation_from_log_reads_first_http_section() -> None:
     )
 
     assert extract_correlation_from_log(log_snippet) == "operUID=op-1, rqUID=req-1"
+
+
+def test_extract_correlation_from_log_skips_placeholder_line() -> None:
+    log_snippet = (
+        "--- [HTTP: response.json] ---\n"
+        "Корреляция: operUID=String, rqUID=String\n"
+        "Корреляция: rqUID=real-id-12345\n"
+        "HTTP статус: 503"
+    )
+
+    assert extract_correlation_from_log(log_snippet) == "rqUID=real-id-12345"
 
 
 def test_extract_correlation_pairs_from_text_json_format() -> None:
