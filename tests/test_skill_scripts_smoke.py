@@ -80,6 +80,12 @@ def test_serve_parser_accepts_overrides() -> None:
     assert args.log_level == "debug"
 
 
+def test_manage_kb_does_not_define_local_slugify() -> None:
+    import manage_kb
+
+    assert not hasattr(manage_kb, "_slugify")
+
+
 def test_serve_mask_dsn_strips_credentials() -> None:
     import serve
 

@@ -12,12 +12,13 @@ import sys
 
 from _common import (
     EXIT_CONFIG,
-    EXIT_ERROR,
     EXIT_NOT_FOUND,
     EXIT_VALIDATION,
+    build_alla_client,
     error_envelope,
     exit_with_error,
     get_pg_dsn,
+    handle_api_error,
     load_settings,
     print_json,
 )
@@ -49,8 +50,8 @@ def main(argv: list[str] | None = None) -> None:
         exit_with_error(error_envelope(f"Ошибка конфигурации: {exc}"), EXIT_CONFIG)
         return
 
+    from alla.clients.alla_api_client import AllaApiError
     from alla.knowledge.feedback_models import FeedbackRequest, FeedbackVote
-    from alla.knowledge.postgres_feedback import PostgresFeedbackStore
     from alla.services.skill_state_service import SkillStateError, load_run
 
     dsn = get_pg_dsn(settings)
@@ -101,12 +102,11 @@ def main(argv: list[str] | None = None) -> None:
         cluster_id=args.cluster_id,
     )
 
-    store = PostgresFeedbackStore(dsn=dsn)
     try:
-        response = store.record_vote(request)
-    except Exception as exc:
-        exit_with_error(error_envelope(f"INSERT/UPDATE упал: {exc}"), EXIT_ERROR)
-        return
+        with build_alla_client(settings) as client:
+            response = client.submit_feedback(request)
+    except AllaApiError as exc:
+        handle_api_error(exc)
 
     print_json(
         {

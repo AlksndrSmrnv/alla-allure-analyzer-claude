@@ -14,6 +14,7 @@ from alla.knowledge.feedback_models import (
     FeedbackVote,
 )
 from alla.knowledge.models import KBEntry
+from alla.knowledge.models import RootCauseCategory
 
 logger = logging.getLogger(__name__)
 
@@ -286,3 +287,83 @@ class PostgresFeedbackStore:
             raise KnowledgeBaseError(
                 f"Ошибка обновления записи базы знаний: {exc}"
             ) from exc
+
+    def delete_kb_entry(self, entry_id: int) -> bool:
+        """DELETE запись из alla.kb_entry по entry_id."""
+        query = """
+            DELETE FROM alla.kb_entry
+            WHERE entry_id = %s
+            RETURNING entry_id
+        """
+        try:
+            with psycopg.connect(self._dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (entry_id,))
+                    row = cur.fetchone()
+                    conn.commit()
+                    return row is not None
+        except Exception as exc:
+            raise KnowledgeBaseError(
+                f"Ошибка удаления записи базы знаний: {exc}"
+            ) from exc
+
+    def count_feedback_for_entry(self, entry_id: int) -> int:
+        """Посчитать feedback-голоса, связанные с KB-записью."""
+        query = "SELECT COUNT(*) FROM alla.kb_feedback WHERE kb_entry_id = %s"
+        try:
+            with psycopg.connect(self._dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (entry_id,))
+                    row = cur.fetchone()
+                    return int(row[0]) if row else 0
+        except Exception as exc:
+            raise KnowledgeBaseError(
+                f"Ошибка подсчёта feedback для KB-записи: {exc}"
+            ) from exc
+
+    def list_kb_entries(self, project_id: int | None = None) -> list[KBEntry]:
+        """Вернуть KB-записи для CLI/API list."""
+        if project_id is None:
+            query = """
+                SELECT entry_id, id, title, description, error_example,
+                       step_path, category, resolution_steps, project_id
+                FROM alla.kb_entry
+                ORDER BY project_id NULLS FIRST, id
+            """
+            params: tuple[Any, ...] = ()
+        else:
+            query = """
+                SELECT entry_id, id, title, description, error_example,
+                       step_path, category, resolution_steps, project_id
+                FROM alla.kb_entry
+                WHERE project_id IS NULL OR project_id = %s
+                ORDER BY project_id NULLS FIRST, id
+            """
+            params = (project_id,)
+
+        try:
+            with psycopg.connect(self._dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                    rows = cur.fetchall()
+        except Exception as exc:
+            raise KnowledgeBaseError(
+                f"Ошибка чтения списка KB-записей: {exc}"
+            ) from exc
+
+        entries: list[KBEntry] = []
+        for row in rows:
+            entries.append(
+                KBEntry(
+                    entry_id=row[0],
+                    id=row[1],
+                    title=row[2],
+                    description=row[3] or "",
+                    error_example=row[4] or "",
+                    step_path=row[5],
+                    category=RootCauseCategory(row[6]),
+                    resolution_steps=list(row[7] or []),
+                    project_id=row[8],
+                )
+            )
+        return entries

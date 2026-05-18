@@ -10,6 +10,7 @@ import pytest
 
 import alla
 from alla.knowledge.feedback_models import FeedbackResponse, FeedbackVote
+from alla.knowledge.slug import make_kb_slug
 from alla.knowledge.merge_rules_models import MergeRule
 from alla.exceptions import (
     AllureApiError,
@@ -25,7 +26,7 @@ from alla.models.testops import (
     TriageReport,
 )
 from alla.orchestrator import AnalysisResult
-from alla.server import _McpNoSlashRedirectMiddleware, _make_slug, app
+from alla.server import _McpNoSlashRedirectMiddleware, app
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +531,7 @@ async def test_create_kb_entry_canonicalizes_error_example_before_save(monkeypat
     assert "--- Лог приложения ---" not in entry.error_example
     assert "123e4567-e89b-12d3-a456-426614174000" not in entry.error_example
     assert "2026-02-10 12:00:00" not in entry.error_example
-    assert data["id"] == _make_slug("Gateway timeout", entry.error_example)
+    assert data["id"] == make_kb_slug("Gateway timeout", entry.error_example)
     assert entry.id == data["id"]
 
 
@@ -617,6 +618,118 @@ async def test_create_kb_entry_returns_409_when_slug_collides_with_different_pay
         resp = await client.post("/api/v1/kb/entries", json=payload)
 
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_list_kb_entries_returns_entries_with_computed_counts(
+    monkeypatch, _http_client
+) -> None:
+    """GET /api/v1/kb/entries возвращает KBEntry плюс lightweight counters."""
+    from alla.knowledge.models import KBEntry, RootCauseCategory
+
+    captured: dict[str, Any] = {}
+
+    class _Store:
+        def list_kb_entries(self, project_id):
+            captured["project_id"] = project_id
+            return [
+                KBEntry(
+                    entry_id=10,
+                    id="gateway_timeout_abc12345",
+                    title="Gateway timeout",
+                    description="desc",
+                    error_example="line 1\nline 2",
+                    step_path="login -> submit",
+                    category=RootCauseCategory.SERVICE,
+                    resolution_steps=["restart", "retry"],
+                    project_id=42,
+                )
+            ]
+
+    monkeypatch.setattr("alla.server._get_feedback_store", lambda: _Store())
+
+    async with _http_client as client:
+        resp = await client.get("/api/v1/kb/entries", params={"project_id": 42})
+
+    assert resp.status_code == 200
+    assert captured["project_id"] == 42
+    data = resp.json()
+    assert data["count"] == 1
+    assert data["entries"][0]["id"] == "gateway_timeout_abc12345"
+    assert data["entries"][0]["error_example_chars"] == len("line 1\nline 2")
+    assert data["entries"][0]["resolution_steps_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_kb_entry_returns_409_when_feedback_exists(
+    monkeypatch, _http_client
+) -> None:
+    """DELETE без force защищает записи, на которые уже есть feedback."""
+
+    class _Store:
+        def count_feedback_for_entry(self, entry_id):
+            assert entry_id == 10
+            return 3
+
+        def delete_kb_entry(self, entry_id):  # pragma: no cover - не должен вызываться
+            raise AssertionError("delete_kb_entry must not run without force")
+
+    monkeypatch.setattr("alla.server._get_feedback_store", lambda: _Store())
+
+    async with _http_client as client:
+        resp = await client.delete("/api/v1/kb/entries/10")
+
+    assert resp.status_code == 409
+    assert resp.headers["x-feedback-count"] == "3"
+    assert resp.json() == {
+        "detail": "Cannot delete: kb_entry has 3 feedback votes. Pass force=true to cascade.",
+        "feedback_count": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_delete_kb_entry_force_deletes_with_feedback(monkeypatch, _http_client) -> None:
+    """DELETE с force=true вызывает store.delete_kb_entry даже при feedback."""
+    captured: dict[str, Any] = {}
+
+    class _Store:
+        def count_feedback_for_entry(self, entry_id):
+            captured["count_entry_id"] = entry_id
+            return 3
+
+        def delete_kb_entry(self, entry_id):
+            captured["delete_entry_id"] = entry_id
+            return True
+
+    monkeypatch.setattr("alla.server._get_feedback_store", lambda: _Store())
+
+    async with _http_client as client:
+        resp = await client.delete("/api/v1/kb/entries/10", params={"force": "true"})
+
+    assert resp.status_code == 200
+    assert captured == {"count_entry_id": 10, "delete_entry_id": 10}
+    assert resp.json() == {"entry_id": 10, "deleted": True}
+
+
+@pytest.mark.asyncio
+async def test_delete_kb_entry_returns_404_when_missing(monkeypatch, _http_client) -> None:
+    """DELETE /api/v1/kb/entries/{id} → 404, если запись не найдена."""
+
+    class _Store:
+        def count_feedback_for_entry(self, entry_id):
+            return 0
+
+        def delete_kb_entry(self, entry_id):
+            assert entry_id == 99
+            return False
+
+    monkeypatch.setattr("alla.server._get_feedback_store", lambda: _Store())
+
+    async with _http_client as client:
+        resp = await client.delete("/api/v1/kb/entries/99")
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Entry 99 not found"
 
 
 @pytest.mark.asyncio

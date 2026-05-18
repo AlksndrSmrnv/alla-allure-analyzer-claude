@@ -54,3 +54,15 @@ class FeedbackStore(Protocol):
     def update_kb_entry(self, entry_id: int, fields: dict[str, Any]) -> bool:
         """Обновить существующую запись базы знаний."""
         ...
+
+    def delete_kb_entry(self, entry_id: int) -> bool:
+        """Удалить существующую запись базы знаний."""
+        ...
+
+    def count_feedback_for_entry(self, entry_id: int) -> int:
+        """Посчитать голоса feedback для записи базы знаний."""
+        ...
+
+    def list_kb_entries(self, project_id: int | None = None) -> list[KBEntry]:
+        """Вернуть записи базы знаний, видимые для project_id."""
+        ...

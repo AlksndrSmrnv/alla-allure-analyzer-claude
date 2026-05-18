@@ -22,7 +22,7 @@ import json
 import logging
 import pathlib
 import sys
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, NoReturn
 
 logger = logging.getLogger("alla.skill")
 
@@ -41,11 +41,16 @@ EXIT_CONFIG = 5
 # ---------------------------------------------------------------------------
 
 
-def load_settings() -> Any:
+def load_settings(
+    *,
+    require_kb_dsn: bool = True,
+    validate_testops: bool = True,
+) -> Any:
     """Загрузить :class:`alla.config.Settings` из ``alla-skill/.env``.
 
-    PostgreSQL обязателен для скилл-режима — все артефакты pipeline
-    хранятся в ``alla.skill_run`` и ``alla.report``. Без DSN — exit 5.
+    По умолчанию PostgreSQL обязателен для pipeline-скриптов skill-режима:
+    все артефакты pipeline хранятся в ``alla.skill_run`` и ``alla.report``.
+    REST-only операции KB/feedback/merge_rules могут отключить эту проверку.
     """
     from alla.config import Settings  # local import чтобы не тянуть в момент help'а
     from alla.exceptions import ConfigurationError
@@ -57,14 +62,82 @@ def load_settings() -> Any:
 
     settings = Settings(_env_file=str(ENV_PATH))
     settings.resolve_secrets()
-    settings.validate_required()
-    if not settings.kb_active:
+    if validate_testops:
+        settings.validate_required()
+    if require_kb_dsn and not settings.kb_active:
         raise ConfigurationError(
             "ALLURE_KB_POSTGRES_DSN обязателен для skill-режима — "
             "все артефакты pipeline хранятся в PostgreSQL."
         )
     _configure_logging(settings.log_level)
     return settings
+
+
+def get_feedback_server_url(settings: Any) -> str:
+    """Вернуть base URL REST-сервера alla для KB/feedback операций."""
+    url = str(getattr(settings, "feedback_server_url", "") or "").strip().rstrip("/")
+    if not url:
+        exit_with_error(
+            error_envelope(
+                "ALLURE_FEEDBACK_SERVER_URL не задан. "
+                "Запусти 'python alla-skill/scripts/serve.py' и пропиши "
+                "ALLURE_FEEDBACK_SERVER_URL=http://127.0.0.1:8090 в alla-skill/.env."
+            ),
+            EXIT_CONFIG,
+        )
+    return url
+
+
+def build_alla_client(settings: Any) -> Any:
+    """Собрать REST-клиент alla-server из настроек skill."""
+    from alla.clients.alla_api_client import AllaApiClient
+
+    return AllaApiClient(
+        get_feedback_server_url(settings),
+        timeout=float(getattr(settings, "request_timeout", 30)),
+        ssl_verify=bool(getattr(settings, "ssl_verify", True)),
+    )
+
+
+def handle_api_error(exc: Any) -> NoReturn:
+    """Преобразовать ошибки AllaApiClient в skill JSON-envelope + exit code."""
+    from alla.clients.alla_api_client import (
+        AllaApiConflictError,
+        AllaApiConnectionError,
+        AllaApiHTTPError,
+        AllaApiNotFoundError,
+        AllaApiValidationError,
+    )
+
+    if isinstance(exc, AllaApiConnectionError):
+        exit_with_error(
+            error_envelope(
+                f"{exc}. Запусти `python alla-skill/scripts/serve.py` или укажи "
+                "рабочий `ALLURE_FEEDBACK_SERVER_URL`."
+            ),
+            EXIT_CONFIG,
+        )
+    if isinstance(exc, AllaApiValidationError):
+        exit_with_error(
+            error_envelope(exc.detail, status_code=exc.status_code, payload=exc.payload),
+            EXIT_VALIDATION,
+        )
+    if isinstance(exc, AllaApiNotFoundError):
+        exit_with_error(
+            error_envelope(exc.detail, status_code=exc.status_code, payload=exc.payload),
+            EXIT_NOT_FOUND,
+        )
+    if isinstance(exc, AllaApiConflictError):
+        exit_with_error(
+            error_envelope(exc.detail, status_code=exc.status_code, payload=exc.payload),
+            EXIT_ERROR,
+        )
+    if isinstance(exc, AllaApiHTTPError):
+        exit_with_error(
+            error_envelope(exc.detail, status_code=exc.status_code, payload=exc.payload),
+            EXIT_ERROR,
+        )
+    exit_with_error(error_envelope(str(exc)), EXIT_ERROR)
 
 
 def _configure_logging(level: str) -> None:
