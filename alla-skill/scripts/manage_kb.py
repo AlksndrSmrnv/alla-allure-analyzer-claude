@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""CRUD KB-записей в ``alla.kb_entry``.
-
-Subcommands:
-
-* ``list`` — все записи (опционально по project_id).
-* ``create`` — INSERT новой записи (JSON через ``--json -`` или файл).
-* ``update`` — UPDATE существующей записи по ``--entry-id``.
-* ``delete`` — DELETE записи по ``--entry-id``.
-"""
+"""CRUD KB-записей через REST API alla-server."""
 
 from __future__ import annotations
 
@@ -16,16 +8,14 @@ import json
 import sys
 from typing import Any
 
-import psycopg
-
 from _common import (
     EXIT_CONFIG,
     EXIT_ERROR,
-    EXIT_NOT_FOUND,
     EXIT_VALIDATION,
+    build_alla_client,
     error_envelope,
     exit_with_error,
-    get_pg_dsn,
+    handle_api_error,
     load_settings,
     parse_stdin_json,
     print_json,
@@ -34,28 +24,33 @@ from _common import (
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="CRUD KB-записей для skill-режима.",
+        description="CRUD KB-записей через REST API alla-server.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_list = sub.add_parser("list", help="Показать все записи")
     p_list.add_argument("--project-id", type=int, default=None)
 
-    p_create = sub.add_parser("create", help="INSERT новой записи")
+    p_create = sub.add_parser("create", help="Создать новую запись")
     p_create.add_argument(
         "--json", default="-",
         help="Путь к JSON-файлу или '-' для stdin (default '-').",
     )
 
-    p_update = sub.add_parser("update", help="UPDATE записи")
+    p_update = sub.add_parser("update", help="Обновить запись")
     p_update.add_argument("--entry-id", required=True, type=int)
     p_update.add_argument(
         "--json", default="-",
         help="Путь к JSON-патчу или '-' для stdin (default '-').",
     )
 
-    p_delete = sub.add_parser("delete", help="DELETE записи")
+    p_delete = sub.add_parser("delete", help="Удалить запись")
     p_delete.add_argument("--entry-id", required=True, type=int)
+    p_delete.add_argument(
+        "--force",
+        action="store_true",
+        help="Удалить запись даже если на неё есть feedback-голоса.",
+    )
 
     return parser
 
@@ -67,49 +62,27 @@ def _read_payload(source: str) -> Any:
         return json.load(fh)
 
 
-def _cmd_list(dsn: str, project_id: int | None) -> None:
-    if project_id is None:
-        query = (
-            "SELECT entry_id, id, title, category, project_id, "
-            "step_path, length(error_example) AS example_chars, "
-            "array_length(resolution_steps, 1) AS resolution_steps_count "
-            "FROM alla.kb_entry ORDER BY project_id NULLS FIRST, id"
-        )
-        params: tuple[Any, ...] = ()
-    else:
-        query = (
-            "SELECT entry_id, id, title, category, project_id, "
-            "step_path, length(error_example) AS example_chars, "
-            "array_length(resolution_steps, 1) AS resolution_steps_count "
-            "FROM alla.kb_entry "
-            "WHERE project_id IS NULL OR project_id = %s "
-            "ORDER BY project_id NULLS FIRST, id"
-        )
-        params = (project_id,)
-    with psycopg.connect(dsn) as conn:
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            rows = cur.fetchall()
+def _cmd_list(client: Any, project_id: int | None) -> None:
+    entries = client.list_kb_entries(project_id)
     payload = [
         {
-            "entry_id": row[0],
-            "id": row[1],
-            "title": row[2],
-            "category": row[3],
-            "project_id": row[4],
-            "step_path": row[5],
-            "error_example_chars": row[6],
-            "resolution_steps_count": row[7] or 0,
+            "entry_id": entry.entry_id,
+            "id": entry.id,
+            "title": entry.title,
+            "category": entry.category.value,
+            "project_id": entry.project_id,
+            "step_path": entry.step_path,
+            "error_example_chars": len(entry.error_example or ""),
+            "resolution_steps_count": len(entry.resolution_steps),
         }
-        for row in rows
+        for entry in entries
     ]
     print_json({"ok": True, "count": len(payload), "entries": payload})
 
 
-def _cmd_create(dsn: str, payload: dict[str, Any]) -> None:
+def _cmd_create(client: Any, payload: dict[str, Any]) -> None:
+    from alla.clients.alla_api_client import AllaApiError
     from alla.knowledge.feedback_models import CreateKBEntryRequest
-    from alla.knowledge.models import KBEntry, RootCauseCategory
-    from alla.knowledge.postgres_feedback import PostgresFeedbackStore
 
     try:
         request = CreateKBEntryRequest.model_validate(payload)
@@ -117,120 +90,99 @@ def _cmd_create(dsn: str, payload: dict[str, Any]) -> None:
         exit_with_error(error_envelope(f"Невалидный payload: {exc}"), EXIT_VALIDATION)
         return
 
-    slug = request.id or _slugify(request.title or request.error_example or "kb-entry")
-    title = request.title or _short_title(request.error_example) or slug
-
-    entry = KBEntry(
-        id=slug,
-        title=title,
-        description=request.description,
-        error_example=request.error_example,
-        step_path=request.step_path,
-        category=request.category or RootCauseCategory.SERVICE,
-        resolution_steps=list(request.resolution_steps),
-    )
-    store = PostgresFeedbackStore(dsn=dsn)
     try:
-        entry_id = store.create_kb_entry(entry, request.project_id)
-    except Exception as exc:
-        exit_with_error(error_envelope(f"INSERT упал: {exc}"), EXIT_ERROR)
-        return
+        response, created = client.create_kb_entry(request)
+    except AllaApiError as exc:
+        handle_api_error(exc)
 
-    print_json(
-        {
-            "ok": True,
-            "entry_id": entry_id,
-            "id": slug,
-            "title": title,
-            "category": entry.category.value,
-            "created": entry_id is not None,
-        }
-    )
+    out = response.model_dump(mode="json")
+    out["created"] = created
+    print_json({"ok": True, **out})
 
 
-def _cmd_update(dsn: str, entry_id: int, payload: dict[str, Any]) -> None:
-    from alla.knowledge.postgres_feedback import PostgresFeedbackStore
+def _cmd_update(client: Any, entry_id: int, payload: dict[str, Any]) -> None:
+    from alla.clients.alla_api_client import AllaApiError
 
     if not isinstance(payload, dict):
         exit_with_error(error_envelope("Payload должен быть JSON-объектом"), EXIT_VALIDATION)
         return
 
-    store = PostgresFeedbackStore(dsn=dsn)
     try:
-        updated = store.update_kb_entry(entry_id, payload)
-    except Exception as exc:
-        exit_with_error(error_envelope(f"UPDATE упал: {exc}"), EXIT_ERROR)
-        return
+        response = client.update_kb_entry(entry_id, payload)
+    except AllaApiError as exc:
+        handle_api_error(exc)
 
-    print_json({"ok": True, "entry_id": entry_id, "updated": updated})
+    print_json({"ok": True, **response})
 
 
-def _cmd_delete(dsn: str, entry_id: int) -> None:
-    with psycopg.connect(dsn) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM alla.kb_entry WHERE entry_id = %s",
-                (entry_id,),
-            )
-            deleted = cur.rowcount
-            conn.commit()
-    if deleted == 0:
+def _cmd_delete(client: Any, entry_id: int, *, force: bool) -> None:
+    from alla.clients.alla_api_client import AllaApiConflictError, AllaApiError
+
+    try:
+        response = client.delete_kb_entry(entry_id, force=force)
+    except AllaApiConflictError as exc:
+        payload = exc.payload if isinstance(exc.payload, dict) else {}
+        feedback_count = payload.get("feedback_count")
         exit_with_error(
-            error_envelope("Запись не найдена", entry_id=entry_id),
-            EXIT_NOT_FOUND,
+            error_envelope(
+                f"Удаление отклонено: {exc.detail}. "
+                "Повтори команду с --force, если нужно удалить запись и связанные голоса.",
+                status_code=exc.status_code,
+                feedback_count=feedback_count,
+            ),
+            EXIT_ERROR,
         )
         return
-    print_json({"ok": True, "entry_id": entry_id, "deleted": True})
+    except AllaApiError as exc:
+        handle_api_error(exc)
 
-
-def _slugify(value: str) -> str:
-    import re
-    slug = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
-    return slug[:80] or "kb_entry"
-
-
-def _short_title(value: str) -> str:
-    head = value.strip().split("\n", 1)[0]
-    return head[:80]
+    print_json({"ok": True, **response.model_dump(mode="json")})
 
 
 def main(argv: list[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
     try:
-        settings = load_settings()
+        settings = load_settings(require_kb_dsn=False, validate_testops=False)
     except Exception as exc:
         exit_with_error(error_envelope(f"Ошибка конфигурации: {exc}"), EXIT_CONFIG)
         return
-    dsn = get_pg_dsn(settings)
 
-    if args.cmd == "list":
-        _cmd_list(dsn, args.project_id)
-        return
-    if args.cmd == "create":
-        try:
-            payload = _read_payload(args.json)
-        except Exception as exc:
-            exit_with_error(
-                error_envelope(f"Не удалось прочитать payload: {exc}"),
-                EXIT_VALIDATION,
-            )
-            return
-        _cmd_create(dsn, payload)
-        return
-    if args.cmd == "update":
-        try:
-            payload = _read_payload(args.json)
-        except Exception as exc:
-            exit_with_error(
-                error_envelope(f"Не удалось прочитать payload: {exc}"),
-                EXIT_VALIDATION,
-            )
-            return
-        _cmd_update(dsn, args.entry_id, payload)
-        return
-    if args.cmd == "delete":
-        _cmd_delete(dsn, args.entry_id)
-        return
+    try:
+        with build_alla_client(settings) as client:
+            if args.cmd == "list":
+                _cmd_list(client, args.project_id)
+                return
+            if args.cmd == "create":
+                try:
+                    payload = _read_payload(args.json)
+                except Exception as exc:
+                    exit_with_error(
+                        error_envelope(f"Не удалось прочитать payload: {exc}"),
+                        EXIT_VALIDATION,
+                    )
+                    return
+                _cmd_create(client, payload)
+                return
+            if args.cmd == "update":
+                try:
+                    payload = _read_payload(args.json)
+                except Exception as exc:
+                    exit_with_error(
+                        error_envelope(f"Не удалось прочитать payload: {exc}"),
+                        EXIT_VALIDATION,
+                    )
+                    return
+                _cmd_update(client, args.entry_id, payload)
+                return
+            if args.cmd == "delete":
+                _cmd_delete(client, args.entry_id, force=args.force)
+                return
+    except Exception as exc:
+        from alla.clients.alla_api_client import AllaApiError
+
+        if isinstance(exc, AllaApiError):
+            handle_api_error(exc)
+        raise
 
     exit_with_error(error_envelope("Неизвестная команда"), EXIT_VALIDATION)
 

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, TypeVar, cast
 
 from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -22,7 +22,7 @@ from alla.app_support import (
     persist_generated_report,
     resolve_report_url,
 )
-from alla.utils.step_paths import normalize_step_path
+from alla.knowledge.slug import make_kb_slug
 from alla.utils.text_normalization import canonicalize_kb_error_example
 
 if TYPE_CHECKING:
@@ -748,24 +748,6 @@ def submit_feedback(request: dict[str, Any]) -> dict[str, Any]:
     return response.model_dump()
 
 
-def _make_slug(title: str, error_example: str, step_path: str | None = None) -> str:
-    """Сгенерировать slug из заголовка + хэша error_example (+ step_path при наличии).
-
-    Формат: <slugified_title>_<8 hex chars of sha256(signature_material)>
-    """
-    import hashlib
-    import re
-
-    base = re.sub(r"[^a-z0-9]+", "_", title.lower())
-    base = base.strip("_")[:50] or "kb_entry"
-    signature_material = error_example
-    normalized_step_path = normalize_step_path(step_path)
-    if normalized_step_path:
-        signature_material = f"{error_example}\n---\n{normalized_step_path}"
-    suffix = hashlib.sha256(signature_material.encode()).hexdigest()[:8]
-    return f"{base}_{suffix}"
-
-
 @app.post("/api/v1/kb/entries", status_code=201)
 def create_kb_entry(response: Response, request: dict[str, Any]) -> dict[str, Any]:
     """Создать новую запись KB из HTML-отчёта."""
@@ -786,7 +768,7 @@ def create_kb_entry(response: Response, request: dict[str, Any]) -> dict[str, An
     if not title:
         first_line = (req.error_example or "").splitlines()[0][:100] if req.error_example else ""
         title = first_line or "KB Entry"
-    slug = req.id or _make_slug(title, req.error_example or "", req.step_path)
+    slug = req.id or make_kb_slug(title, req.error_example or "", req.step_path)
 
     entry = KBEntry(
         id=slug,
@@ -892,6 +874,48 @@ def update_kb_entry(entry_id: int, request: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
 
     return {"entry_id": entry_id, "updated": True}
+
+
+@app.delete("/api/v1/kb/entries/{entry_id}", response_model=None)
+def delete_kb_entry(entry_id: int, force: bool = False) -> dict[str, Any] | JSONResponse:
+    """Удалить KB-запись, защищая записи с feedback от случайного удаления."""
+    store = _require_feedback_store("KB entry deletion requires postgres backend")
+
+    from alla.knowledge.feedback_models import KBEntryDeleteResponse
+
+    feedback_count = _run_kb_action(lambda: store.count_feedback_for_entry(entry_id))
+    if feedback_count > 0 and not force:
+        detail = (
+            f"Cannot delete: kb_entry has {feedback_count} feedback votes. "
+            "Pass force=true to cascade."
+        )
+        return JSONResponse(
+            status_code=409,
+            content={"detail": detail, "feedback_count": feedback_count},
+            headers={"X-Feedback-Count": str(feedback_count)},
+        )
+
+    deleted = _run_kb_action(lambda: store.delete_kb_entry(entry_id))
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
+
+    return KBEntryDeleteResponse(entry_id=entry_id, deleted=True).model_dump()
+
+
+@app.get("/api/v1/kb/entries")
+def list_kb_entries(project_id: int | None = None) -> dict[str, Any]:
+    """Вернуть KB-записи, видимые глобально или для указанного проекта."""
+    store = _require_feedback_store("KB entry listing requires postgres backend")
+
+    entries = _run_kb_action(lambda: store.list_kb_entries(project_id))
+    payload: list[dict[str, Any]] = []
+    for entry in entries:
+        item = entry.model_dump(mode="json")
+        item["error_example_chars"] = len(entry.error_example or "")
+        item["resolution_steps_count"] = len(entry.resolution_steps)
+        payload.append(item)
+
+    return {"count": len(payload), "entries": payload}
 
 
 @app.post("/api/v1/kb/feedback/resolve")

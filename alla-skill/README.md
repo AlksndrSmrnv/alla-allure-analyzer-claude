@@ -10,6 +10,12 @@ LLM-вызовов в скрипте нет — анализ выполняет 
 публичные сервисы пакета `alla` (`src/alla/services/*`), один источник
 истины с server-side путём.
 
+Запись в общую базу знаний, feedback и merge rules идёт через REST API
+`alla-server` — тот же путь, что используют HTML-кнопки отчёта. Для
+локальной работы запусти `python scripts/serve.py` и укажи
+`ALLURE_FEEDBACK_SERVER_URL=http://127.0.0.1:8090`; для shared KB можно
+указать продовый URL без прямой выдачи DSN каждому CLI-пользователю.
+
 ## Установка
 
 ```bash
@@ -52,8 +58,10 @@ context-файл при запросах вроде «проанализируй
 * `scripts/generate_report.py` — HTML-отчёт.
 * `scripts/push_to_testops.py` — постинг (требует `--confirm`).
 * `scripts/delete_comments.py` — очистка `[alla]`-комментариев.
-* `scripts/manage_kb.py` — CRUD KB-записей.
-* `scripts/record_feedback.py` — like/dislike feedback.
+* `scripts/manage_kb.py` — CRUD KB-записей через alla-server REST.
+* `scripts/record_feedback.py` — like/dislike feedback через alla-server REST.
+* `scripts/manage_merge_rules.py` — list/create/delete merge rules.
+* `scripts/feedback_resolve.py` — диагностика подсветки feedback в HTML.
 
 ## Структура
 
@@ -75,7 +83,9 @@ alla-skill/
 │   ├── push_to_testops.py
 │   ├── delete_comments.py
 │   ├── manage_kb.py
-│   └── record_feedback.py
+│   ├── record_feedback.py
+│   ├── manage_merge_rules.py
+│   └── feedback_resolve.py
 ├── references/
 │   ├── workflow.md
 │   ├── delegation_strategy.md
@@ -102,3 +112,13 @@ alla-skill/
    TestOps, нужно явно передать `--confirm`.
 5. **`.env` грузится по абсолютному пути относительно директории
    скрипта**, а не CWD.
+6. **KB/feedback/merge_rules пишутся через REST.** Slug, canonicalize,
+   idempotency и delete-gate живут на сервере, поэтому CLI и HTML не
+   расходятся.
+
+## Troubleshooting
+
+* `AllaApiConnectionError` или «Не удалось подключиться к alla-server» —
+  запусти `python scripts/serve.py` либо проверь `ALLURE_FEEDBACK_SERVER_URL`.
+* `feedback_server_url_empty` в HTML-отчёте — интерактивные кнопки отключены,
+  пока не задан `ALLURE_FEEDBACK_SERVER_URL`.

@@ -1,0 +1,295 @@
+"""Tests for the synchronous alla-server REST client."""
+
+from __future__ import annotations
+
+import httpx
+import pytest
+
+from alla.clients.alla_api_client import (
+    AllaApiClient,
+    AllaApiConflictError,
+    AllaApiConnectionError,
+    AllaApiHTTPError,
+    AllaApiNotFoundError,
+    AllaApiValidationError,
+)
+from alla.knowledge.feedback_models import (
+    CreateKBEntryRequest,
+    FeedbackRequest,
+    FeedbackResolveRequest,
+    FeedbackVote,
+)
+from alla.knowledge.merge_rules_models import MergeRulesRequest
+
+
+def _client(handler) -> AllaApiClient:
+    http = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        base_url="http://alla.test",
+    )
+    return AllaApiClient("http://alla.test", client=http)
+
+
+def test_create_kb_entry_serializes_request_and_reports_created() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["json"] = request.read().decode()
+        return httpx.Response(
+            201,
+            json={
+                "entry_id": 7,
+                "id": "connection_timeout_241f9620",
+                "title": "Connection timeout",
+                "category": "service",
+                "created": True,
+            },
+        )
+
+    client = _client(handler)
+    response, created = client.create_kb_entry(
+        CreateKBEntryRequest(
+            title="Connection timeout",
+            error_example="socket.timeout: 30s",
+            step_path="Login -> Submit",
+            project_id=1,
+        )
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/v1/kb/entries"
+    assert '"title":"Connection timeout"' in captured["json"]
+    assert response.entry_id == 7
+    assert response.id == "connection_timeout_241f9620"
+    assert created is True
+
+
+def test_create_kb_entry_treats_200_as_idempotent_existing_entry() -> None:
+    client = _client(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "entry_id": 7,
+                "id": "connection_timeout_241f9620",
+                "title": "Connection timeout",
+                "category": "service",
+                "created": False,
+            },
+        )
+    )
+
+    response, created = client.create_kb_entry(
+        CreateKBEntryRequest(title="Connection timeout", error_example="socket.timeout: 30s")
+    )
+
+    assert response.entry_id == 7
+    assert response.created is False
+    assert created is False
+
+
+def test_update_kb_entry_returns_json_dict() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["body"] = request.read().decode()
+        return httpx.Response(200, json={"entry_id": 7, "updated": True})
+
+    response = _client(handler).update_kb_entry(7, {"title": "New title"})
+
+    assert captured == {
+        "method": "PUT",
+        "path": "/api/v1/kb/entries/7",
+        "body": '{"title":"New title"}',
+    }
+    assert response == {"entry_id": 7, "updated": True}
+
+
+def test_delete_kb_entry_sends_force_query_and_parses_response() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["force"] = request.url.params["force"]
+        return httpx.Response(200, json={"entry_id": 7, "deleted": True})
+
+    response = _client(handler).delete_kb_entry(7, force=True)
+
+    assert captured == {"path": "/api/v1/kb/entries/7", "force": "true"}
+    assert response.entry_id == 7
+    assert response.deleted is True
+
+
+def test_list_kb_entries_parses_kb_models() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/kb/entries"
+        assert request.url.params["project_id"] == "42"
+        return httpx.Response(
+            200,
+            json={
+                "count": 1,
+                "entries": [
+                    {
+                        "entry_id": 5,
+                        "id": "gateway_timeout_abc12345",
+                        "title": "Gateway timeout",
+                        "description": "desc",
+                        "error_example": "timeout",
+                        "step_path": None,
+                        "category": "service",
+                        "resolution_steps": ["retry"],
+                        "project_id": 42,
+                        "error_example_chars": 7,
+                        "resolution_steps_count": 1,
+                    }
+                ],
+            },
+        )
+
+    entries = _client(handler).list_kb_entries(42)
+
+    assert len(entries) == 1
+    assert entries[0].entry_id == 5
+    assert entries[0].id == "gateway_timeout_abc12345"
+
+
+def test_submit_feedback_parses_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/kb/feedback"
+        return httpx.Response(
+            200,
+            json={
+                "kb_entry_id": 5,
+                "audit_text_preview": "audit",
+                "vote": "like",
+                "created": True,
+                "feedback_id": 8,
+            },
+        )
+
+    response = _client(handler).submit_feedback(
+        FeedbackRequest(
+            kb_entry_id=5,
+            audit_text="audit",
+            vote=FeedbackVote.LIKE,
+            issue_signature_hash="a" * 64,
+        )
+    )
+
+    assert response.feedback_id == 8
+    assert response.vote == FeedbackVote.LIKE
+
+
+def test_resolve_feedback_parses_votes() -> None:
+    client = _client(
+        lambda request: httpx.Response(
+            200,
+            json={"votes": {"5:c1": {"vote": "dislike", "feedback_id": 9}}},
+        )
+    )
+
+    response = client.resolve_feedback(
+        FeedbackResolveRequest(
+            items=[
+                {
+                    "kb_entry_id": 5,
+                    "issue_signature_hash": "b" * 64,
+                    "cluster_id": "c1",
+                }
+            ]
+        )
+    )
+
+    assert response.votes["5:c1"].vote == FeedbackVote.DISLIKE
+    assert response.votes["5:c1"].feedback_id == 9
+
+
+def test_merge_rules_methods_use_expected_endpoints() -> None:
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={
+                    "rules": [
+                        {
+                            "rule_id": 1,
+                            "project_id": 42,
+                            "signature_hash_a": "a" * 64,
+                            "signature_hash_b": "b" * 64,
+                        }
+                    ],
+                    "created_count": 1,
+                    "updated_count": 0,
+                },
+            )
+        if request.method == "GET":
+            assert request.url.params["project_id"] == "42"
+            return httpx.Response(200, json={"rules": []})
+        return httpx.Response(200, json={"rule_id": 1, "deleted": True})
+
+    client = _client(handler)
+    created = client.create_merge_rules(
+        MergeRulesRequest(
+            project_id=42,
+            pairs=[
+                {
+                    "signature_hash_a": "a" * 64,
+                    "signature_hash_b": "b" * 64,
+                }
+            ],
+        )
+    )
+    listed = client.list_merge_rules(42)
+    deleted = client.delete_merge_rule(1)
+
+    assert created.created_count == 1
+    assert listed.rules == []
+    assert deleted.deleted is True
+    assert seen == [
+        ("POST", "/api/v1/merge-rules"),
+        ("GET", "/api/v1/merge-rules"),
+        ("DELETE", "/api/v1/merge-rules/1"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "exc_type"),
+    [
+        (404, AllaApiNotFoundError),
+        (409, AllaApiConflictError),
+        (422, AllaApiValidationError),
+        (500, AllaApiHTTPError),
+    ],
+)
+def test_http_errors_are_mapped_to_specific_exceptions(status_code: int, exc_type: type[Exception]) -> None:
+    client = _client(
+        lambda request: httpx.Response(
+            status_code,
+            json={"detail": "broken", "feedback_count": 2},
+        )
+    )
+
+    with pytest.raises(exc_type) as err:
+        client.list_kb_entries()
+
+    assert err.value.status_code == status_code
+    assert err.value.detail == "broken"
+    assert err.value.payload["feedback_count"] == 2
+
+
+def test_connection_errors_are_mapped() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    client = _client(handler)
+
+    with pytest.raises(AllaApiConnectionError) as err:
+        client.list_kb_entries()
+
+    assert "alla-server" in str(err.value)

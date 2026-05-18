@@ -190,3 +190,10 @@ class CreateKBEntryResponse(BaseModel):
     title: str
     category: RootCauseCategory
     created: bool
+
+
+class KBEntryDeleteResponse(BaseModel):
+    """Ответ DELETE /api/v1/kb/entries/{entry_id}."""
+
+    entry_id: int
+    deleted: bool

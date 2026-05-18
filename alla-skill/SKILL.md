@@ -203,6 +203,11 @@ python alla-skill/scripts/push_to_testops.py --run-id 42 --confirm
 
 ## Дополнительные операции
 
+Операции `manage_kb.py`, `record_feedback.py`, `manage_merge_rules.py` и
+`feedback_resolve.py` ходят через REST API `alla-server`, тем же путём,
+что HTML-кнопки отчёта. Подними `python alla-skill/scripts/serve.py`
+локально или укажи продовый URL в `ALLURE_FEEDBACK_SERVER_URL`.
+
 ```bash
 # Найти launch_id по имени
 python alla-skill/scripts/resolve_launch.py --name "Smoke regression" --project-id 1
@@ -215,10 +220,19 @@ python alla-skill/scripts/manage_kb.py list --project-id 1
 python alla-skill/scripts/manage_kb.py create --json - < kb_entry.json
 python alla-skill/scripts/manage_kb.py update --entry-id 17 --json - < patch.json
 python alla-skill/scripts/manage_kb.py delete --entry-id 17
+python alla-skill/scripts/manage_kb.py delete --entry-id 17 --force
 
 # Like/dislike feedback на kb_match
 python alla-skill/scripts/record_feedback.py --run-id 42 --cluster-id c-abc \
   --kb-entry-id 17 --vote like
+
+# Диагностика подсветки like/dislike в HTML
+python alla-skill/scripts/feedback_resolve.py --json - < feedback_resolve.json
+
+# Merge rules
+python alla-skill/scripts/manage_merge_rules.py list --project-id 1
+python alla-skill/scripts/manage_merge_rules.py create --json - < merge_rules.json
+python alla-skill/scripts/manage_merge_rules.py delete --rule-id 12
 ```
 
 ## Конфигурация
@@ -235,7 +249,7 @@ python alla-skill/scripts/record_feedback.py --run-id 42 --cluster-id c-abc \
 | `ALLURE_PUSH_COMMENTS` | нет | По умолчанию `false`. Не включай по своей инициативе. |
 | `ALLURE_PUSH_REPORT_LINK` | нет | По умолчанию `true`. Прикрепляет ссылку на HTML-отчёт к запуску. |
 | `ALLURE_REPORTS_DIR` | нет | Директория для HTML-отчётов |
-| `ALLURE_FEEDBACK_SERVER_URL` | нет | URL alla-server для KB-кнопок и like/dislike в HTML. Без него HTML рендерится без интерактива. Для локальной работы — `http://127.0.0.1:8090` + `serve.py`. |
+| `ALLURE_FEEDBACK_SERVER_URL` | для HTML/CLI KB/feedback/merge_rules | URL alla-server для KB-кнопок, like/dislike, merge rules и REST CLI. Для локальной работы — `http://127.0.0.1:8090` + `serve.py`. |
 | `ALLURE_SERVER_EXTERNAL_URL` | нет | Публичный URL для ссылок `/reports/<file>` и кнопки «Перезапустить анализ». При локальном serve.py — то же значение, что `ALLURE_FEEDBACK_SERVER_URL`. |
 
 Полный список — в `.env.example`.
@@ -246,5 +260,8 @@ python alla-skill/scripts/record_feedback.py --run-id 42 --cluster-id c-abc \
 
 * `ConfigurationError: ALLURE_KB_POSTGRES_DSN required` — не заполнен `.env`.
 * `psycopg.OperationalError` — недоступна БД, проверь DSN/sslmode/доступы.
+* `AllaApiConnectionError` / «Не удалось подключиться к alla-server» —
+  запусти `python alla-skill/scripts/serve.py` или укажи рабочий
+  `ALLURE_FEEDBACK_SERVER_URL`.
 * `404 launch not found` — неверный `project_id` или нет прав у токена.
 * `push_disabled` — попытка push без `--confirm` при `ALLURE_PUSH_COMMENTS=false`.
