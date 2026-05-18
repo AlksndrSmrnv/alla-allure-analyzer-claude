@@ -93,12 +93,15 @@ class _MemoryFeedbackStore:
 
 
 @pytest.fixture
-def api_client(monkeypatch) -> AllaApiClient:
-    store = _MemoryFeedbackStore()
-    monkeypatch.setattr("alla.server._get_feedback_store", lambda: store)
+def memory_feedback_store() -> _MemoryFeedbackStore:
+    return _MemoryFeedbackStore()
+
+
+@pytest.fixture
+def api_client(monkeypatch, memory_feedback_store: _MemoryFeedbackStore) -> AllaApiClient:
+    monkeypatch.setattr("alla.server._get_feedback_store", lambda: memory_feedback_store)
     test_client = TestClient(app)
     client = AllaApiClient("http://testserver", client=test_client)
-    client._test_store = store  # type: ignore[attr-defined]
     try:
         yield client
     finally:
@@ -197,7 +200,12 @@ def test_cli_repeated_create_is_idempotent(api_client, manage_kb_module, capsys)
     assert second["created"] is False
 
 
-def test_delete_force_gate_cascades_feedback(api_client, manage_kb_module, capsys) -> None:
+def test_delete_force_gate_cascades_feedback(
+    api_client,
+    memory_feedback_store,
+    manage_kb_module,
+    capsys,
+) -> None:
     manage_kb_module._cmd_create(api_client, _payload())
     entry_id = _stdout_json(capsys)["entry_id"]
     api_client.submit_feedback(
@@ -222,4 +230,4 @@ def test_delete_force_gate_cascades_feedback(api_client, manage_kb_module, capsy
     deleted = _stdout_json(capsys)
 
     assert deleted == {"ok": True, "entry_id": entry_id, "deleted": True}
-    assert api_client._test_store.count_feedback_for_entry(entry_id) == 0  # type: ignore[attr-defined]
+    assert memory_feedback_store.count_feedback_for_entry(entry_id) == 0

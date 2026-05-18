@@ -222,7 +222,7 @@ def error_envelope(error: str, **extra: Any) -> dict[str, Any]:
     return payload
 
 
-def exit_with_error(envelope: dict[str, Any], code: int = EXIT_ERROR) -> None:
+def exit_with_error(envelope: dict[str, Any], code: int = EXIT_ERROR) -> NoReturn:
     """Распечатать envelope в stderr (как JSON) и завершиться с кодом."""
     sys.stderr.write(
         json.dumps(envelope, ensure_ascii=False, indent=2, default=_json_default)
