@@ -266,6 +266,7 @@ _DASHBOARD_JS = """
     grid.innerHTML = '';
     const cards = [
       ['reports',  'Отчёты',                  fmt(kpis.total_reports)],
+      ['reports',  'Просмотры отчётов',       fmt(kpis.report_views)],
       ['',         'Уникальных запусков',     fmt(kpis.unique_launches)],
       ['duration', 'Среднее время анализа',   fmtDuration(kpis.avg_analysis_duration_ms)],
       ['',         'Записи в базе знаний',    fmt(kpis.total_kb_entries)],
@@ -337,7 +338,7 @@ _DASHBOARD_JS = """
     const ordered = named.concat(unattributed);
     if (ordered.length === 0) {
       tbody.appendChild(el('tr', {}, [
-        el('td', { colSpan: 10, class: 'muted', text: 'Нет данных за период' }),
+        el('td', { colSpan: 11, class: 'muted', text: 'Нет данных за период' }),
       ]));
       return;
     }
@@ -352,6 +353,7 @@ _DASHBOARD_JS = """
           document.createTextNode(r.project_name),
         ]),
         el('td', { class: 'num', text: fmt(r.reports) }),
+        el('td', { class: 'num', text: fmt(r.report_views) }),
         el('td', { class: 'num', text: fmt(r.kb_entries) }),
         el('td', { class: 'num', text: fmt(r.merge_rules) }),
         el('td', { class: 'num', text: fmt(r.llm_total_tokens) }),
@@ -385,7 +387,7 @@ _DASHBOARD_JS = """
 
     tr.classList.add('expanded');
     const expandTr = el('tr', { class: 'expand-row', 'data-key': tr.dataset.key });
-    const td = el('td', { colSpan: 10 });
+    const td = el('td', { colSpan: 11 });
     const inner = el('div', { class: 'expand-inner' });
     inner.innerHTML = '<span class="spinner"></span>Загрузка отчётов…';
     td.appendChild(inner);
@@ -425,6 +427,7 @@ _DASHBOARD_JS = """
       el('tr', {}, [
         el('th', { text: 'Создан' }),
         el('th', { text: 'Launch' }),
+        el('th', { class: 'num', text: 'Просмотры' }),
         el('th', { class: 'num', text: 'Входные' }),
         el('th', { class: 'num', text: 'Выходные' }),
         el('th', { class: 'num', text: 'Токены' }),
@@ -444,6 +447,7 @@ _DASHBOARD_JS = """
       tb.appendChild(el('tr', {}, [
         el('td', { text: fmtDate(rep.created_at) }),
         el('td', { text: launchText }),
+        el('td', { class: 'num', text: fmt(rep.view_count) }),
         el('td', { class: 'num', text: fmt(rep.llm_prompt_tokens) }),
         el('td', { class: 'num', text: fmt(rep.llm_completion_tokens) }),
         el('td', { class: 'num', text: fmt(rep.llm_total_tokens) }),
@@ -605,6 +609,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
             <tr>
               <th data-col="project_name">Проект</th>
               <th data-col="reports"     class="num">Отчёты</th>
+              <th data-col="report_views" class="num">Просмотры</th>
               <th data-col="kb_entries"  class="num">База знаний</th>
               <th data-col="merge_rules" class="num">Merge rules</th>
               <th data-col="llm_total_tokens" class="num">Токены</th>

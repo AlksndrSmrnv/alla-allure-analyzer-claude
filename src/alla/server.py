@@ -106,6 +106,7 @@ class _AppState:
         self.client: Any = None
         self.auth: Any = None
         self.report_store: Any = None
+        self.report_view_store: Any = None
         self.feedback_store: Any = None
         self.merge_rules_store: Any = None
         self.dashboard_store: Any = None
@@ -119,6 +120,7 @@ _state = _AppState()
 def _reset_lazy_stores_and_caches() -> None:
     """Сбросить ленивые storage-объекты и кэши, завязанные на Settings."""
     _state.report_store = None
+    _state.report_view_store = None
     _state.feedback_store = None
     _state.merge_rules_store = None
     _state.dashboard_store = None
@@ -171,6 +173,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
 
         _state.report_store = PostgresReportStore(dsn=settings.kb_postgres_dsn)
         logger.info("Хранилище отчётов: PostgreSQL")
+
+    if settings.kb_postgres_dsn:
+        from alla.report.report_store import PostgresReportViewStore
+
+        _state.report_view_store = PostgresReportViewStore(dsn=settings.kb_postgres_dsn)
+        logger.info("Учёт просмотров отчётов: PostgreSQL")
 
     # MCP session manager должен жить столько же, сколько FastAPI-приложение.
     # Starlette не пробрасывает lifespan смонтированных приложений, поэтому
@@ -231,6 +239,17 @@ def _build_csp_headers() -> dict[str, str]:
             "img-src 'self' data:;"
         )
     }
+
+
+async def _record_report_view_best_effort(filename: str) -> None:
+    """Записать просмотр отчёта, не влияя на успешную отдачу HTML."""
+    store = _state.report_view_store
+    if store is None:
+        return
+    try:
+        await asyncio.to_thread(store.record_view, filename)
+    except Exception as exc:  # noqa: BLE001 - отдача отчёта важнее учёта
+        logger.warning("report_view recording failed for %s: %s", filename, exc)
 
 
 def _settings() -> "Settings":
@@ -469,6 +488,7 @@ async def get_report(filename: str) -> HTMLResponse:
     if _state.report_store:
         content = _state.report_store.load(filename)
         if content is not None:
+            await _record_report_view_best_effort(filename)
             return HTMLResponse(content=content, headers=_build_csp_headers())
 
     # Fallback на файловую систему.
@@ -476,6 +496,7 @@ async def get_report(filename: str) -> HTMLResponse:
         report_path = Path(_state.settings.reports_dir) / filename
         if report_path.is_file():
             content = report_path.read_text(encoding="utf-8")
+            await _record_report_view_best_effort(filename)
             return HTMLResponse(content=content, headers=_build_csp_headers())
 
     raise HTTPException(status_code=404, detail=f"Отчёт '{filename}' не найден")
