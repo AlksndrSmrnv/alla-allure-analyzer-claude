@@ -271,11 +271,14 @@ _DASHBOARD_JS = """
   }
 
   function fmtSinceDate(iso) {
+    // Префикс «данные с» подчёркивает, что это абсолютная дата начала сбора
+    // статистики по таблице, а не нижняя граница текущего окна — счётчики
+    // выше уже отфильтрованы по окну, дата же остаётся глобальной.
     if (!iso) return null;
     try {
       const d = new Date(iso);
       if (isNaN(d.getTime())) return null;
-      return 'с ' + d.toLocaleDateString('ru-RU');
+      return 'данные с ' + d.toLocaleDateString('ru-RU');
     } catch (e) { return null; }
   }
 

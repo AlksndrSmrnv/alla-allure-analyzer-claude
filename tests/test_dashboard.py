@@ -292,10 +292,11 @@ def test_dashboard_sql_exposes_earliest_dates() -> None:
     assert "AS earliest_report_view_at" in _KPI_SQL
     assert "AS earliest_kb_entry_at" in _KPI_SQL
     assert "AS earliest_merge_rule_at" in _KPI_SQL
-    assert "MIN(created_at) FROM alla.report)" in _KPI_SQL
-    assert "MIN(viewed_at)  FROM alla.report_view)" in _KPI_SQL
-    assert "MIN(created_at) FROM alla.kb_entry)" in _KPI_SQL
-    assert "MIN(created_at) FROM alla.merge_rules)" in _KPI_SQL
+    # Regex без привязки к whitespace: позволяет sqlfluff/black переформатировать SQL.
+    assert re.search(r"MIN\(\s*created_at\s*\)\s+FROM\s+alla\.report\b", _KPI_SQL)
+    assert re.search(r"MIN\(\s*viewed_at\s*\)\s+FROM\s+alla\.report_view\b", _KPI_SQL)
+    assert re.search(r"MIN\(\s*created_at\s*\)\s+FROM\s+alla\.kb_entry\b", _KPI_SQL)
+    assert re.search(r"MIN\(\s*created_at\s*\)\s+FROM\s+alla\.merge_rules\b", _KPI_SQL)
 
 
 def test_dashboard_sql_buckets_in_utc() -> None:
