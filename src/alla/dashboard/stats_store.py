@@ -133,7 +133,6 @@ v AS (
   SELECT project_id, COUNT(*) AS report_views
   FROM alla.report_view
   WHERE viewed_at >= %(start_ts)s AND viewed_at < %(end_ts)s
-    AND project_id IS NOT NULL
   GROUP BY project_id
 ),
 k AS (

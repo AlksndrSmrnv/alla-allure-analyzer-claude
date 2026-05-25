@@ -79,13 +79,20 @@ CREATE INDEX IF NOT EXISTS idx_report_view_project_id ON alla.report_view(projec
 CREATE INDEX IF NOT EXISTS idx_report_view_filename   ON alla.report_view(filename);
 """
 
-_RECORD_VIEW_SQL = """\
+_REPORT_TABLE_EXISTS_SQL = "SELECT to_regclass(%s)"
+
+_RECORD_VIEW_WITH_REPORT_SQL = """\
 INSERT INTO alla.report_view (filename, project_id, launch_id)
 SELECT %(filename)s,
        COALESCE(%(project_id)s, r.project_id),
        COALESCE(%(launch_id)s,  r.launch_id)
 FROM (SELECT %(filename)s::text AS f) k
 LEFT JOIN alla.report r ON r.filename = k.f;
+"""
+
+_RECORD_VIEW_SQL = """\
+INSERT INTO alla.report_view (filename, project_id, launch_id)
+VALUES (%(filename)s, %(project_id)s, %(launch_id)s);
 """
 
 
@@ -202,14 +209,19 @@ class PostgresReportViewStore:
         try:
             with psycopg.connect(self._dsn) as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        _RECORD_VIEW_SQL,
-                        {
-                            "filename": filename,
-                            "project_id": project_id,
-                            "launch_id": launch_id,
-                        },
+                    params = {
+                        "filename": filename,
+                        "project_id": project_id,
+                        "launch_id": launch_id,
+                    }
+                    cur.execute(_REPORT_TABLE_EXISTS_SQL, ("alla.report",))
+                    row = cur.fetchone()
+                    sql = (
+                        _RECORD_VIEW_WITH_REPORT_SQL
+                        if row is not None and row[0] is not None
+                        else _RECORD_VIEW_SQL
                     )
+                    cur.execute(sql, params)
                 conn.commit()
         except Exception as exc:  # noqa: BLE001 - учёт просмотров best-effort
             logger.warning("report_view recording failed for %s: %s", filename, exc)

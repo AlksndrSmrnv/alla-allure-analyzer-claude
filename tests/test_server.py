@@ -225,6 +225,7 @@ def test_postgres_report_view_store_ensures_table_and_records_view(monkeypatch) 
     insert_context, insert_conn, insert_cursor = _mock_connect_context()
     connect = MagicMock(side_effect=[ddl_context, insert_context])
     monkeypatch.setattr(module.psycopg, "connect", connect)
+    insert_cursor.fetchone.return_value = ("alla.report",)
 
     store = module.PostgresReportViewStore(dsn="postgresql://example/db")
     store.record_view("42_x.html", project_id=7, launch_id=42)
@@ -236,11 +237,36 @@ def test_postgres_report_view_store_ensures_table_and_records_view(monkeypatch) 
     assert "CREATE INDEX IF NOT EXISTS idx_report_view_filename" in ddl_sql
     ddl_conn.commit.assert_called_once()
 
-    insert_sql, params = insert_cursor.execute.call_args.args
+    exists_sql, exists_params = insert_cursor.execute.call_args_list[0].args
+    assert "to_regclass" in exists_sql
+    assert exists_params == ("alla.report",)
+
+    insert_sql, params = insert_cursor.execute.call_args_list[1].args
     assert "INSERT INTO alla.report_view" in insert_sql
     assert "SELECT %(filename)s" in insert_sql
     assert "LEFT JOIN alla.report r ON r.filename = k.f" in insert_sql
     assert params == {"filename": "42_x.html", "project_id": 7, "launch_id": 42}
+    insert_conn.commit.assert_called_once()
+
+
+def test_postgres_report_view_store_records_without_report_table(monkeypatch) -> None:
+    """FS-only просмотры пишутся даже если alla.report ещё не создана."""
+    from alla.report import report_store as module
+
+    ddl_context, _, _ = _mock_connect_context()
+    insert_context, insert_conn, insert_cursor = _mock_connect_context()
+    connect = MagicMock(side_effect=[ddl_context, insert_context])
+    monkeypatch.setattr(module.psycopg, "connect", connect)
+    insert_cursor.fetchone.return_value = (None,)
+
+    store = module.PostgresReportViewStore(dsn="postgresql://example/db")
+    store.record_view("fs_only.html")
+
+    insert_sql, params = insert_cursor.execute.call_args_list[1].args
+    assert "INSERT INTO alla.report_view" in insert_sql
+    assert "VALUES" in insert_sql
+    assert "alla.report r" not in insert_sql
+    assert params == {"filename": "fs_only.html", "project_id": None, "launch_id": None}
     insert_conn.commit.assert_called_once()
 
 
