@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from typing import Any
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -106,6 +107,7 @@ def _setup_state(client: Any = None, settings: Any = None) -> None:
     _state.settings = settings or _DummySettings()
     _state.auth = None
     _state.report_store = None
+    _state.report_view_store = None
 
 
 @dataclass
@@ -124,6 +126,37 @@ class _DummySettings:
 
     def model_copy(self, *, update: dict[str, Any] | None = None) -> "_DummySettings":
         return replace(self, **(update or {}))
+
+
+class _RecordingViewStore:
+    """Стаб учёта просмотров отчётов."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[tuple[str, int | None, int | None]] = []
+
+    def record_view(
+        self,
+        filename: str,
+        *,
+        project_id: int | None = None,
+        launch_id: int | None = None,
+    ) -> None:
+        self.calls.append((filename, project_id, launch_id))
+        if self.fail:
+            raise RuntimeError("simulated DB outage")
+
+
+def _mock_connect_context() -> tuple[MagicMock, MagicMock, MagicMock]:
+    """Вернуть psycopg.connect context, connection и cursor mocks."""
+    cursor = MagicMock()
+    cursor_context = MagicMock()
+    cursor_context.__enter__.return_value = cursor
+    conn = MagicMock()
+    conn.cursor.return_value = cursor_context
+    connect_context = MagicMock()
+    connect_context.__enter__.return_value = conn
+    return connect_context, conn, cursor
 
 
 @pytest.fixture
@@ -177,6 +210,57 @@ async def test_mcp_exact_path_is_rewritten_without_redirect() -> None:
     assert resp.status_code == 204
     assert seen_scope["path"] == "/mcp/"
     assert seen_scope["raw_path"] == b"/mcp/"
+
+
+# ---------------------------------------------------------------------------
+# report_view store
+# ---------------------------------------------------------------------------
+
+
+def test_postgres_report_view_store_ensures_table_and_records_view(monkeypatch) -> None:
+    """PostgresReportViewStore создаёт DDL и пишет просмотр через INSERT...SELECT."""
+    from alla.report import report_store as module
+
+    ddl_context, ddl_conn, ddl_cursor = _mock_connect_context()
+    insert_context, insert_conn, insert_cursor = _mock_connect_context()
+    connect = MagicMock(side_effect=[ddl_context, insert_context])
+    monkeypatch.setattr(module.psycopg, "connect", connect)
+
+    store = module.PostgresReportViewStore(dsn="postgresql://example/db")
+    store.record_view("42_x.html", project_id=7, launch_id=42)
+
+    ddl_sql = ddl_cursor.execute.call_args.args[0]
+    assert "CREATE TABLE IF NOT EXISTS alla.report_view" in ddl_sql
+    assert "CREATE INDEX IF NOT EXISTS idx_report_view_viewed_at" in ddl_sql
+    assert "CREATE INDEX IF NOT EXISTS idx_report_view_project_id" in ddl_sql
+    assert "CREATE INDEX IF NOT EXISTS idx_report_view_filename" in ddl_sql
+    ddl_conn.commit.assert_called_once()
+
+    insert_sql, params = insert_cursor.execute.call_args.args
+    assert "INSERT INTO alla.report_view" in insert_sql
+    assert "SELECT %(filename)s" in insert_sql
+    assert "LEFT JOIN alla.report r ON r.filename = k.f" in insert_sql
+    assert params == {"filename": "42_x.html", "project_id": 7, "launch_id": 42}
+    insert_conn.commit.assert_called_once()
+
+
+def test_postgres_report_view_store_record_view_is_best_effort(
+    monkeypatch,
+    caplog,
+) -> None:
+    """Ошибка записи просмотра логируется warning-ом и не пробрасывается наружу."""
+    from alla.report import report_store as module
+
+    ddl_context, _, _ = _mock_connect_context()
+    connect = MagicMock(side_effect=[ddl_context, RuntimeError("postgres unavailable")])
+    monkeypatch.setattr(module.psycopg, "connect", connect)
+
+    store = module.PostgresReportViewStore(dsn="postgresql://example/db")
+
+    with caplog.at_level("WARNING", logger=module.__name__):
+        assert store.record_view("42_x.html") is None
+
+    assert "report_view recording failed for 42_x.html" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +445,90 @@ async def test_analyze_error_mapping(
 
     assert resp.status_code == expected_status
     assert "detail" in resp.json()
+
+
+# ---------------------------------------------------------------------------
+# GET /reports/{filename}
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_report_records_view_for_postgres_report(_http_client) -> None:
+    """Успешная PG-ветка GET /reports/{filename} пишет просмотр отчёта."""
+
+    class _ReportStore:
+        def load(self, filename: str) -> str | None:
+            return "<html><body>from pg</body></html>" if filename == "42_x.html" else None
+
+    view_store = _RecordingViewStore()
+    _setup_state(settings=_DummySettings())
+
+    from alla.server import _state
+
+    _state.report_store = _ReportStore()
+    _state.report_view_store = view_store
+
+    async with _http_client as client:
+        resp = await client.get("/reports/42_x.html")
+
+    assert resp.status_code == 200
+    assert resp.text == "<html><body>from pg</body></html>"
+    assert view_store.calls == [("42_x.html", None, None)]
+
+
+@pytest.mark.asyncio
+async def test_get_report_records_view_for_filesystem_report(
+    _http_client,
+    tmp_path,
+) -> None:
+    """Успешная FS-ветка GET /reports/{filename} тоже пишет просмотр отчёта."""
+    report_path = tmp_path / "42_x.html"
+    report_path.write_text("<html><body>from fs</body></html>", encoding="utf-8")
+    view_store = _RecordingViewStore()
+    _setup_state(settings=_DummySettings(reports_dir=str(tmp_path)))
+
+    from alla.server import _state
+
+    _state.report_view_store = view_store
+
+    async with _http_client as client:
+        resp = await client.get("/reports/42_x.html")
+
+    assert resp.status_code == 200
+    assert resp.text == "<html><body>from fs</body></html>"
+    assert view_store.calls == [("42_x.html", None, None)]
+
+
+@pytest.mark.asyncio
+async def test_get_report_allows_missing_report_view_store(_http_client, tmp_path) -> None:
+    """Если store учёта просмотров не создан, отчёт продолжает отдаваться."""
+    (tmp_path / "42_x.html").write_text("<html><body>ok</body></html>", encoding="utf-8")
+    _setup_state(settings=_DummySettings(reports_dir=str(tmp_path)))
+
+    async with _http_client as client:
+        resp = await client.get("/reports/42_x.html")
+
+    assert resp.status_code == 200
+    assert resp.text == "<html><body>ok</body></html>"
+
+
+@pytest.mark.asyncio
+async def test_get_report_ignores_report_view_store_failure(_http_client, tmp_path) -> None:
+    """Ошибка записи просмотра не должна ломать успешную отдачу HTML."""
+    (tmp_path / "42_x.html").write_text("<html><body>still ok</body></html>", encoding="utf-8")
+    view_store = _RecordingViewStore(fail=True)
+    _setup_state(settings=_DummySettings(reports_dir=str(tmp_path)))
+
+    from alla.server import _state
+
+    _state.report_view_store = view_store
+
+    async with _http_client as client:
+        resp = await client.get("/reports/42_x.html")
+
+    assert resp.status_code == 200
+    assert resp.text == "<html><body>still ok</body></html>"
+    assert view_store.calls == [("42_x.html", None, None)]
 
 
 # ---------------------------------------------------------------------------
