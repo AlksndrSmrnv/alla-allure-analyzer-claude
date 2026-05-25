@@ -82,6 +82,31 @@ def test_parse_correlation_line_drops_placeholders_case_insensitive(
     assert parse_correlation_line(line) == {"rqUID": "real-id-123"}
 
 
+def test_parse_correlation_line_keeps_short_legacy_ids() -> None:
+    """Legacy HTTP-логи часто содержат 3-символьные id (см. test_clustering_service)."""
+    line = "Корреляция: operUID=abc, rqUID=def"
+
+    assert parse_correlation_line(line) == {"operUID": "abc", "rqUID": "def"}
+
+
+def test_parse_correlation_line_keeps_full_value_with_special_chars() -> None:
+    """Значение со спец-символами и точками целиком сохраняется, а не обрезается."""
+    line = "Корреляция: traceId=svc.v1.req-12345/xyz, rqUID=req-1"
+
+    assert parse_correlation_line(line) == {
+        "traceId": "svc.v1.req-12345/xyz",
+        "rqUID": "req-1",
+    }
+
+
+def test_parse_correlation_line_does_not_truncate_long_values() -> None:
+    """Значения длиннее 64 символов не должны обрезаться regex-ом."""
+    long_value = "a" * 96
+    line = f"Корреляция: traceId={long_value}"
+
+    assert parse_correlation_line(line) == {"traceId": long_value}
+
+
 def test_extract_correlation_from_log_reads_first_http_section() -> None:
     log_snippet = (
         "--- [файл: app.log] ---\n"
