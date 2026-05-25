@@ -37,7 +37,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 
@@ -189,6 +189,7 @@ class PostgresReportViewStore:
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
+        self._report_table_known: bool | None = None
         self._ensure_table()
 
     def _ensure_table(self) -> None:
@@ -197,6 +198,16 @@ class PostgresReportViewStore:
                 cur.execute(_ENSURE_VIEW_TABLE_SQL)
             conn.commit()
         logger.info("alla.report_view table ready")
+
+    def _report_table_exists(self, cur: Any) -> bool:
+        if self._report_table_known is True:
+            return True
+
+        cur.execute(_REPORT_TABLE_EXISTS_SQL, ("alla.report",))
+        row = cur.fetchone()
+        exists = row is not None and row[0] is not None
+        self._report_table_known = exists
+        return exists
 
     def record_view(
         self,
@@ -214,11 +225,9 @@ class PostgresReportViewStore:
                         "project_id": project_id,
                         "launch_id": launch_id,
                     }
-                    cur.execute(_REPORT_TABLE_EXISTS_SQL, ("alla.report",))
-                    row = cur.fetchone()
                     sql = (
                         _RECORD_VIEW_WITH_REPORT_SQL
-                        if row is not None and row[0] is not None
+                        if self._report_table_exists(cur)
                         else _RECORD_VIEW_SQL
                     )
                     cur.execute(sql, params)

@@ -270,6 +270,36 @@ def test_postgres_report_view_store_records_without_report_table(monkeypatch) ->
     insert_conn.commit.assert_called_once()
 
 
+def test_postgres_report_view_store_caches_report_table_after_success(monkeypatch) -> None:
+    """После первого обнаружения alla.report to_regclass больше не вызывается."""
+    from alla.report import report_store as module
+
+    ddl_context, _, _ = _mock_connect_context()
+    first_context, _, first_cursor = _mock_connect_context()
+    second_context, _, second_cursor = _mock_connect_context()
+    connect = MagicMock(side_effect=[ddl_context, first_context, second_context])
+    monkeypatch.setattr(module.psycopg, "connect", connect)
+    first_cursor.fetchone.return_value = ("alla.report",)
+
+    store = module.PostgresReportViewStore(dsn="postgresql://example/db")
+    store.record_view("first.html")
+    store.record_view("second.html")
+
+    first_exists_sql = first_cursor.execute.call_args_list[0].args[0]
+    assert "to_regclass" in first_exists_sql
+    assert len(first_cursor.execute.call_args_list) == 2
+
+    assert len(second_cursor.execute.call_args_list) == 1
+    second_sql, second_params = second_cursor.execute.call_args.args
+    assert "LEFT JOIN alla.report r ON r.filename = k.f" in second_sql
+    assert "to_regclass" not in second_sql
+    assert second_params == {
+        "filename": "second.html",
+        "project_id": None,
+        "launch_id": None,
+    }
+
+
 def test_postgres_report_view_store_record_view_is_best_effort(
     monkeypatch,
     caplog,
