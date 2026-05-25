@@ -133,7 +133,7 @@ class _RecordingViewStore:
 
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
-        self.calls: list[tuple[str, int | None, int | None]] = []
+        self.calls: list[dict[str, Any]] = []
 
     def record_view(
         self,
@@ -141,8 +141,16 @@ class _RecordingViewStore:
         *,
         project_id: int | None = None,
         launch_id: int | None = None,
+        viewer_id: str | None = None,
     ) -> None:
-        self.calls.append((filename, project_id, launch_id))
+        self.calls.append(
+            {
+                "filename": filename,
+                "project_id": project_id,
+                "launch_id": launch_id,
+                "viewer_id": viewer_id,
+            }
+        )
         if self.fail:
             raise RuntimeError("simulated DB outage")
 
@@ -228,13 +236,16 @@ def test_postgres_report_view_store_ensures_table_and_records_view(monkeypatch) 
     insert_cursor.fetchone.return_value = ("alla.report",)
 
     store = module.PostgresReportViewStore(dsn="postgresql://example/db")
-    store.record_view("42_x.html", project_id=7, launch_id=42)
+    store.record_view("42_x.html", project_id=7, launch_id=42, viewer_id="viewer-abc")
 
     ddl_sql = ddl_cursor.execute.call_args.args[0]
     assert "CREATE TABLE IF NOT EXISTS alla.report_view" in ddl_sql
+    assert "ALTER TABLE alla.report_view ADD COLUMN IF NOT EXISTS viewer_id" in ddl_sql
     assert "CREATE INDEX IF NOT EXISTS idx_report_view_viewed_at" in ddl_sql
     assert "CREATE INDEX IF NOT EXISTS idx_report_view_project_id" in ddl_sql
     assert "CREATE INDEX IF NOT EXISTS idx_report_view_filename" in ddl_sql
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_report_view_unique_per_viewer" in ddl_sql
+    assert "WHERE viewer_id IS NOT NULL" in ddl_sql
     ddl_conn.commit.assert_called_once()
 
     exists_sql, exists_params = insert_cursor.execute.call_args_list[0].args
@@ -245,7 +256,13 @@ def test_postgres_report_view_store_ensures_table_and_records_view(monkeypatch) 
     assert "INSERT INTO alla.report_view" in insert_sql
     assert "SELECT %(filename)s" in insert_sql
     assert "LEFT JOIN alla.report r ON r.filename = k.f" in insert_sql
-    assert params == {"filename": "42_x.html", "project_id": 7, "launch_id": 42}
+    assert "ON CONFLICT (filename, viewer_id) WHERE viewer_id IS NOT NULL DO NOTHING" in insert_sql
+    assert params == {
+        "filename": "42_x.html",
+        "project_id": 7,
+        "launch_id": 42,
+        "viewer_id": "viewer-abc",
+    }
     insert_conn.commit.assert_called_once()
 
 
@@ -266,7 +283,13 @@ def test_postgres_report_view_store_records_without_report_table(monkeypatch) ->
     assert "INSERT INTO alla.report_view" in insert_sql
     assert "VALUES" in insert_sql
     assert "alla.report r" not in insert_sql
-    assert params == {"filename": "fs_only.html", "project_id": None, "launch_id": None}
+    assert "ON CONFLICT (filename, viewer_id) WHERE viewer_id IS NOT NULL DO NOTHING" in insert_sql
+    assert params == {
+        "filename": "fs_only.html",
+        "project_id": None,
+        "launch_id": None,
+        "viewer_id": None,
+    }
     insert_conn.commit.assert_called_once()
 
 
@@ -297,6 +320,7 @@ def test_postgres_report_view_store_caches_report_table_after_success(monkeypatc
         "filename": "second.html",
         "project_id": None,
         "launch_id": None,
+        "viewer_id": None,
     }
 
 
@@ -529,7 +553,14 @@ async def test_get_report_records_view_for_postgres_report(_http_client) -> None
 
     assert resp.status_code == 200
     assert resp.text == "<html><body>from pg</body></html>"
-    assert view_store.calls == [("42_x.html", None, None)]
+    assert len(view_store.calls) == 1
+    call = view_store.calls[0]
+    assert call["filename"] == "42_x.html"
+    assert call["project_id"] is None
+    assert call["launch_id"] is None
+    assert isinstance(call["viewer_id"], str) and call["viewer_id"]
+    # Первый визит — сервер выставляет cookie.
+    assert "alla_viewer_id" in resp.cookies
 
 
 @pytest.mark.asyncio
@@ -552,7 +583,10 @@ async def test_get_report_records_view_for_filesystem_report(
 
     assert resp.status_code == 200
     assert resp.text == "<html><body>from fs</body></html>"
-    assert view_store.calls == [("42_x.html", None, None)]
+    assert len(view_store.calls) == 1
+    assert view_store.calls[0]["filename"] == "42_x.html"
+    assert isinstance(view_store.calls[0]["viewer_id"], str)
+    assert "alla_viewer_id" in resp.cookies
 
 
 @pytest.mark.asyncio
@@ -584,7 +618,64 @@ async def test_get_report_ignores_report_view_store_failure(_http_client, tmp_pa
 
     assert resp.status_code == 200
     assert resp.text == "<html><body>still ok</body></html>"
-    assert view_store.calls == [("42_x.html", None, None)]
+    assert len(view_store.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_report_reuses_viewer_cookie_on_reload(_http_client, tmp_path) -> None:
+    """Перезагрузка с существующей cookie — тот же viewer_id, без повторного Set-Cookie."""
+    (tmp_path / "42_x.html").write_text("<html><body>reload</body></html>", encoding="utf-8")
+    view_store = _RecordingViewStore()
+    _setup_state(settings=_DummySettings(reports_dir=str(tmp_path)))
+
+    from alla.server import _state
+
+    _state.report_view_store = view_store
+
+    async with _http_client as client:
+        first = await client.get("/reports/42_x.html")
+        viewer = first.cookies.get("alla_viewer_id")
+        assert viewer
+        # Второй запрос с уже выставленной cookie (httpx сохраняет её на
+        # клиенте автоматически после первого ответа).
+        second = await client.get("/reports/42_x.html")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    # record_view вызывался дважды, оба раза с тем же viewer_id — дедуп уже
+    # на стороне БД через ON CONFLICT, но id одинаковый, что и проверяем.
+    assert len(view_store.calls) == 2
+    assert view_store.calls[0]["viewer_id"] == viewer
+    assert view_store.calls[1]["viewer_id"] == viewer
+    # Cookie не выставляется повторно, если она уже была.
+    assert "alla_viewer_id" not in second.cookies
+
+
+@pytest.mark.asyncio
+async def test_get_report_distinct_viewers_get_distinct_ids(
+    _http_client,
+    tmp_path,
+) -> None:
+    """Разные клиенты без cookie получают разные viewer_id."""
+    (tmp_path / "42_x.html").write_text("<html><body>distinct</body></html>", encoding="utf-8")
+    view_store = _RecordingViewStore()
+    _setup_state(settings=_DummySettings(reports_dir=str(tmp_path)))
+
+    from alla.server import _state
+
+    _state.report_view_store = view_store
+
+    async with _http_client as client:
+        resp_a = await client.get("/reports/42_x.html")
+        # Сбрасываем cookie между запросами, чтобы эмулировать другого пользователя.
+        client.cookies.clear()
+        resp_b = await client.get("/reports/42_x.html")
+
+    assert resp_a.cookies.get("alla_viewer_id")
+    assert resp_b.cookies.get("alla_viewer_id")
+    assert resp_a.cookies["alla_viewer_id"] != resp_b.cookies["alla_viewer_id"]
+    assert len(view_store.calls) == 2
+    assert view_store.calls[0]["viewer_id"] != view_store.calls[1]["viewer_id"]
 
 
 # ---------------------------------------------------------------------------
