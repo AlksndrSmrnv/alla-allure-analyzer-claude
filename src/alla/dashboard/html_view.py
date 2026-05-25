@@ -112,6 +112,15 @@ body {
 .kpi-card.reports .value { color: var(--primary); }
 .kpi-card.tokens  .value { color: var(--info); }
 .kpi-card.duration .value { color: var(--warning); }
+.kpis-compact {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.6rem;
+}
+.kpis-compact .kpi-card { padding: 0.75rem 0.9rem; }
+.kpis-compact .kpi-card .label { font-size: 0.7rem; }
+.kpis-compact .kpi-card .value { font-size: 1.15rem; margin-top: 0.25rem; }
+.kpis-compact .kpi-card .sub   { font-size: 0.72rem; }
+.section.tokens-section h2 { font-size: 0.85rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .bars {
   display: flex;
   gap: 2px;
@@ -261,32 +270,50 @@ _DASHBOARD_JS = """
     return Math.round((kpis.total_reports || 0) / days * 10) / 10;
   }
 
+  function fmtSinceDate(iso) {
+    if (!iso) return null;
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return null;
+      return 'с ' + d.toLocaleDateString('ru-RU');
+    } catch (e) { return null; }
+  }
+
+  function appendCard(grid, cls, label, value, subIso) {
+    const children = [
+      el('div', { class: 'label', text: label }),
+      el('div', { class: 'value', text: value }),
+    ];
+    const sub = fmtSinceDate(subIso);
+    if (sub) children.push(el('div', { class: 'sub', text: sub }));
+    grid.appendChild(el('div', { class: 'kpi-card' + (cls ? ' ' + cls : '') }, children));
+  }
+
   function renderKpis(kpis) {
     const grid = document.getElementById('kpis');
+    const tokensGrid = document.getElementById('kpisTokens');
     grid.innerHTML = '';
-    const cards = [
-      ['reports',  'Отчёты',                  fmt(kpis.total_reports)],
-      ['reports',  'Просмотры отчётов',       fmt(kpis.report_views)],
-      ['',         'Уникальных запусков',     fmt(kpis.unique_launches)],
-      ['duration', 'Среднее время анализа',   fmtDuration(kpis.avg_analysis_duration_ms)],
-      ['',         'Записи в базе знаний',    fmt(kpis.total_kb_entries)],
-      ['',         'Merge rules',             fmt(kpis.total_merge_rules)],
-      ['',         'Активных проектов',       fmt(kpis.active_projects)],
-      ['tokens',   'Токены за период',        fmt(kpis.llm_total_tokens)],
-      ['tokens',   'Входные за период',       fmt(kpis.llm_prompt_tokens)],
-      ['tokens',   'Выходные за период',      fmt(kpis.llm_completion_tokens)],
-      ['tokens',   'Токены / прогон',         fmt(kpis.llm_avg_tokens_per_run)],
-      ['tokens',   'Входные / прогон',        fmt(kpis.llm_avg_prompt_tokens_per_run)],
-      ['tokens',   'Выходные / прогон',       fmt(kpis.llm_avg_completion_tokens_per_run)],
-      ['',         'Среднее отчётов / день',  fmt(avgPerDay(kpis))],
+    tokensGrid.innerHTML = '';
+    const mainCards = [
+      ['reports',  'Отчёты',                  fmt(kpis.total_reports),                        kpis.earliest_report_at],
+      ['reports',  'Просмотры отчётов',       fmt(kpis.report_views),                         kpis.earliest_report_view_at],
+      ['',         'Уникальных запусков',     fmt(kpis.unique_launches),                      kpis.earliest_report_at],
+      ['duration', 'Среднее время анализа',   fmtDuration(kpis.avg_analysis_duration_ms),     kpis.earliest_report_at],
+      ['',         'Записи в базе знаний',    fmt(kpis.total_kb_entries),                     kpis.earliest_kb_entry_at],
+      ['',         'Merge rules',             fmt(kpis.total_merge_rules),                    kpis.earliest_merge_rule_at],
+      ['',         'Активных проектов',       fmt(kpis.active_projects),                      kpis.earliest_report_at],
+      ['',         'Среднее отчётов / день',  fmt(avgPerDay(kpis)),                           kpis.earliest_report_at],
     ];
-    for (const [cls, label, value] of cards) {
-      const card = el('div', { class: 'kpi-card' + (cls ? ' ' + cls : '') }, [
-        el('div', { class: 'label', text: label }),
-        el('div', { class: 'value', text: value }),
-      ]);
-      grid.appendChild(card);
-    }
+    const tokenCards = [
+      ['tokens',   'Токены за период',        fmt(kpis.llm_total_tokens),                     kpis.earliest_report_at],
+      ['tokens',   'Входные за период',       fmt(kpis.llm_prompt_tokens),                    kpis.earliest_report_at],
+      ['tokens',   'Выходные за период',      fmt(kpis.llm_completion_tokens),                kpis.earliest_report_at],
+      ['tokens',   'Токены / прогон',         fmt(kpis.llm_avg_tokens_per_run),               kpis.earliest_report_at],
+      ['tokens',   'Входные / прогон',        fmt(kpis.llm_avg_prompt_tokens_per_run),        kpis.earliest_report_at],
+      ['tokens',   'Выходные / прогон',       fmt(kpis.llm_avg_completion_tokens_per_run),    kpis.earliest_report_at],
+    ];
+    for (const [cls, label, value, subIso] of mainCards)  appendCard(grid,       cls, label, value, subIso);
+    for (const [cls, label, value, subIso] of tokenCards) appendCard(tokensGrid, cls, label, value, subIso);
   }
 
   function renderSeries(series) {
@@ -591,6 +618,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       <section class="section">
         <h2>Ключевые показатели</h2>
         <div id="kpis" class="kpis"></div>
+      </section>
+
+      <section class="section tokens-section">
+        <h2>Расход токенов LLM</h2>
+        <div id="kpisTokens" class="kpis kpis-compact"></div>
       </section>
 
       <section class="section">

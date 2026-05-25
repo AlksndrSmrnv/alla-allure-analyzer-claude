@@ -108,7 +108,11 @@ SELECT
      WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
        AND analysis_duration_ms IS NOT NULL)                                                                  AS avg_analysis_duration_ms,
   (SELECT d FROM peak)                                                                                        AS peak_day,
-  (SELECT c FROM peak)                                                                                        AS peak_day_count;
+  (SELECT c FROM peak)                                                                                        AS peak_day_count,
+  (SELECT MIN(created_at) FROM alla.report)                                                                   AS earliest_report_at,
+  (SELECT MIN(viewed_at)  FROM alla.report_view)                                                              AS earliest_report_view_at,
+  (SELECT MIN(created_at) FROM alla.kb_entry)                                                                 AS earliest_kb_entry_at,
+  (SELECT MIN(created_at) FROM alla.merge_rules)                                                              AS earliest_merge_rule_at;
 """
 
 
@@ -250,6 +254,10 @@ class DashboardStatsStore:
                 "avg_analysis_duration_ms": None,
                 "peak_day": None,
                 "peak_day_count": 0,
+                "earliest_report_at": None,
+                "earliest_report_view_at": None,
+                "earliest_kb_entry_at": None,
+                "earliest_merge_rule_at": None,
             }
         peak_day_value = row[14].isoformat() if row[14] is not None else None
         return {
@@ -269,6 +277,10 @@ class DashboardStatsStore:
             "avg_analysis_duration_ms": int(row[13]) if row[13] is not None else None,
             "peak_day": peak_day_value,
             "peak_day_count": int(row[15] or 0),
+            "earliest_report_at": row[16].isoformat() if row[16] is not None else None,
+            "earliest_report_view_at": row[17].isoformat() if row[17] is not None else None,
+            "earliest_kb_entry_at": row[18].isoformat() if row[18] is not None else None,
+            "earliest_merge_rule_at": row[19].isoformat() if row[19] is not None else None,
         }
 
     def per_project_rollup(self, *, window: DateWindow) -> list[dict[str, Any]]:
