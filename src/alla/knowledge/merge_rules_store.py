@@ -29,6 +29,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_merge_rules_pair
 
 CREATE INDEX IF NOT EXISTS idx_merge_rules_project
     ON alla.merge_rules (project_id);
+
+CREATE INDEX IF NOT EXISTS idx_merge_rules_created_at
+    ON alla.merge_rules (created_at);
 """
 
 

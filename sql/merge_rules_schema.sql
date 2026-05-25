@@ -42,6 +42,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_merge_rules_pair
 CREATE INDEX IF NOT EXISTS idx_merge_rules_project
     ON alla.merge_rules (project_id);
 
+-- MIN(created_at) на дашборде (карточка «с …»).
+CREATE INDEX IF NOT EXISTS idx_merge_rules_created_at
+    ON alla.merge_rules (created_at);
+
 COMMENT ON TABLE  alla.merge_rules IS
     'Правила объединения кластеров: пользователь решает какие кластеры считать одной проблемой';
 COMMENT ON COLUMN alla.merge_rules.project_id IS

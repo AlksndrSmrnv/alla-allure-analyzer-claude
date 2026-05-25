@@ -99,6 +99,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_entry_id_project
 CREATE INDEX IF NOT EXISTS idx_kb_entry_project_id
     ON alla.kb_entry (project_id);
 
+-- MIN(created_at) на дашборде (карточка «с …»).
+CREATE INDEX IF NOT EXISTS idx_kb_entry_created_at
+    ON alla.kb_entry (created_at);
+
 -- ---------------------------------------------------------------------------
 -- Группировка проектов для общей видимости KB-записей.
 --

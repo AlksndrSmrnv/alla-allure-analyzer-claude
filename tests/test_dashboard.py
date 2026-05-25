@@ -78,6 +78,10 @@ class _StubStatsStore:
             "avg_analysis_duration_ms": 75000,
             "peak_day": "2026-04-27",
             "peak_day_count": 3,
+            "earliest_report_at": "2026-01-15T08:00:00+00:00",
+            "earliest_report_view_at": "2026-04-01T12:00:00+00:00",
+            "earliest_kb_entry_at": "2026-02-10T09:00:00+00:00",
+            "earliest_merge_rule_at": None,
         }
         self._per_project = per_project or [
             {
@@ -283,6 +287,19 @@ def test_dashboard_sql_includes_new_metrics() -> None:
     assert "kb_feedback" not in _PER_PROJECT_SQL
 
 
+def test_dashboard_sql_exposes_earliest_dates() -> None:
+    """KPI-запрос отдаёт MIN-даты по каждой исходной таблице (без фильтра по окну)."""
+    assert "AS earliest_report_at" in _KPI_SQL
+    assert "AS earliest_report_view_at" in _KPI_SQL
+    assert "AS earliest_kb_entry_at" in _KPI_SQL
+    assert "AS earliest_merge_rule_at" in _KPI_SQL
+    # Regex без привязки к whitespace: позволяет sqlfluff/black переформатировать SQL.
+    assert re.search(r"MIN\(\s*created_at\s*\)\s+FROM\s+alla\.report\b", _KPI_SQL)
+    assert re.search(r"MIN\(\s*viewed_at\s*\)\s+FROM\s+alla\.report_view\b", _KPI_SQL)
+    assert re.search(r"MIN\(\s*created_at\s*\)\s+FROM\s+alla\.kb_entry\b", _KPI_SQL)
+    assert re.search(r"MIN\(\s*created_at\s*\)\s+FROM\s+alla\.merge_rules\b", _KPI_SQL)
+
+
 def test_dashboard_sql_buckets_in_utc() -> None:
     """Бакетинг по дням должен быть в UTC, чтобы совпасть с DateWindow."""
     from alla.dashboard.stats_store import _REPORTS_PER_DAY_SQL
@@ -311,6 +328,10 @@ def test_dashboard_html_has_required_elements() -> None:
     html = render_dashboard_html_shell()
     for marker in [
         'id="kpis"',
+        'id="kpisTokens"',
+        'kpis-compact',
+        'tokens-section',
+        'Расход токенов LLM',
         'id="bars"',
         'id="projectsTable"',
         'id="daysSelect"',
@@ -433,6 +454,10 @@ async def test_dashboard_stats_falls_back_when_testops_unavailable(
     assert data["kpis"]["llm_avg_prompt_tokens_per_run"] == 350
     assert data["kpis"]["llm_avg_completion_tokens_per_run"] == 100
     assert data["kpis"]["llm_reports_with_usage"] == 2
+    assert data["kpis"]["earliest_report_at"] == "2026-01-15T08:00:00+00:00"
+    assert data["kpis"]["earliest_report_view_at"] == "2026-04-01T12:00:00+00:00"
+    assert data["kpis"]["earliest_kb_entry_at"] == "2026-02-10T09:00:00+00:00"
+    assert data["kpis"]["earliest_merge_rule_at"] is None
     assert rows_by_pid[7]["llm_total_tokens"] == 900
     assert rows_by_pid[7]["llm_prompt_tokens"] == 700
     assert rows_by_pid[7]["llm_completion_tokens"] == 200

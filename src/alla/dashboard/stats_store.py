@@ -13,6 +13,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 import psycopg
+from psycopg.rows import dict_row
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,11 @@ SELECT
      WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
        AND analysis_duration_ms IS NOT NULL)                                                                  AS avg_analysis_duration_ms,
   (SELECT d FROM peak)                                                                                        AS peak_day,
-  (SELECT c FROM peak)                                                                                        AS peak_day_count;
+  (SELECT c FROM peak)                                                                                        AS peak_day_count,
+  (SELECT MIN(created_at) FROM alla.report)                                                                   AS earliest_report_at,
+  (SELECT MIN(viewed_at)  FROM alla.report_view)                                                              AS earliest_report_view_at,
+  (SELECT MIN(created_at) FROM alla.kb_entry)                                                                 AS earliest_kb_entry_at,
+  (SELECT MIN(created_at) FROM alla.merge_rules)                                                              AS earliest_merge_rule_at;
 """
 
 
@@ -227,47 +232,47 @@ class DashboardStatsStore:
         return {"start_ts": window.start_ts, "end_ts": window.end_ts}
 
     def totals(self, *, window: DateWindow) -> dict[str, Any]:
+        # dict_row, чтобы значения брались по AS-алиасам из _KPI_SQL — добавление
+        # нового SELECT-поля не превращается в off-by-one в позиционном unpack.
         with psycopg.connect(self._dsn) as conn:
-            with conn.cursor() as cur:
+            with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(_KPI_SQL, self._params(window))
                 row = cur.fetchone()
         if row is None:
-            return {
-                "total_reports": 0,
-                "report_views": 0,
-                "total_kb_entries": 0,
-                "total_merge_rules": 0,
-                "active_projects": 0,
-                "unique_launches": 0,
-                "llm_total_tokens": 0,
-                "llm_prompt_tokens": 0,
-                "llm_completion_tokens": 0,
-                "llm_avg_tokens_per_run": 0,
-                "llm_avg_prompt_tokens_per_run": 0,
-                "llm_avg_completion_tokens_per_run": 0,
-                "llm_reports_with_usage": 0,
-                "avg_analysis_duration_ms": None,
-                "peak_day": None,
-                "peak_day_count": 0,
-            }
-        peak_day_value = row[14].isoformat() if row[14] is not None else None
+            row = {}
+
+        def _int(key: str) -> int:
+            return int(row.get(key) or 0)
+
+        def _opt_int(key: str) -> int | None:
+            value = row.get(key)
+            return int(value) if value is not None else None
+
+        def _iso(key: str) -> str | None:
+            value = row.get(key)
+            return value.isoformat() if value is not None else None
+
         return {
-            "total_reports": int(row[0] or 0),
-            "report_views": int(row[1] or 0),
-            "total_kb_entries": int(row[2] or 0),
-            "total_merge_rules": int(row[3] or 0),
-            "active_projects": int(row[4] or 0),
-            "unique_launches": int(row[5] or 0),
-            "llm_total_tokens": int(row[6] or 0),
-            "llm_prompt_tokens": int(row[7] or 0),
-            "llm_completion_tokens": int(row[8] or 0),
-            "llm_avg_tokens_per_run": int(row[9] or 0),
-            "llm_avg_prompt_tokens_per_run": int(row[10] or 0),
-            "llm_avg_completion_tokens_per_run": int(row[11] or 0),
-            "llm_reports_with_usage": int(row[12] or 0),
-            "avg_analysis_duration_ms": int(row[13]) if row[13] is not None else None,
-            "peak_day": peak_day_value,
-            "peak_day_count": int(row[15] or 0),
+            "total_reports": _int("total_reports"),
+            "report_views": _int("report_views"),
+            "total_kb_entries": _int("total_kb_entries"),
+            "total_merge_rules": _int("total_merge_rules"),
+            "active_projects": _int("active_projects"),
+            "unique_launches": _int("unique_launches"),
+            "llm_total_tokens": _int("llm_total_tokens"),
+            "llm_prompt_tokens": _int("llm_prompt_tokens"),
+            "llm_completion_tokens": _int("llm_completion_tokens"),
+            "llm_avg_tokens_per_run": _int("llm_avg_tokens_per_run"),
+            "llm_avg_prompt_tokens_per_run": _int("llm_avg_prompt_tokens_per_run"),
+            "llm_avg_completion_tokens_per_run": _int("llm_avg_completion_tokens_per_run"),
+            "llm_reports_with_usage": _int("llm_reports_with_usage"),
+            "avg_analysis_duration_ms": _opt_int("avg_analysis_duration_ms"),
+            "peak_day": _iso("peak_day"),
+            "peak_day_count": _int("peak_day_count"),
+            "earliest_report_at": _iso("earliest_report_at"),
+            "earliest_report_view_at": _iso("earliest_report_view_at"),
+            "earliest_kb_entry_at": _iso("earliest_kb_entry_at"),
+            "earliest_merge_rule_at": _iso("earliest_merge_rule_at"),
         }
 
     def per_project_rollup(self, *, window: DateWindow) -> list[dict[str, Any]]:
