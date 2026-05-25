@@ -15,6 +15,7 @@ from alla.dashboard.html_view import render_dashboard_html_shell
 from alla.dashboard.stats_store import (
     _KPI_SQL,
     _PER_PROJECT_SQL,
+    _REPORTS_FOR_PROJECT_SQL,
     DateWindow,
     gap_fill_series,
 )
@@ -62,6 +63,7 @@ class _StubStatsStore:
     ) -> None:
         self._kpis = kpis or {
             "total_reports": 5,
+            "report_views": 12,
             "total_kb_entries": 3,
             "total_merge_rules": 0,
             "active_projects": 1,
@@ -81,6 +83,7 @@ class _StubStatsStore:
             {
                 "project_id": 7,
                 "reports": 5,
+                "report_views": 11,
                 "kb_entries": 3,
                 "merge_rules": 0,
                 "llm_total_tokens": 900,
@@ -96,6 +99,7 @@ class _StubStatsStore:
             {
                 "project_id": None,
                 "reports": 1,
+                "report_views": 2,
                 "kb_entries": 0,
                 "merge_rules": 0,
                 "llm_total_tokens": 0,
@@ -133,6 +137,7 @@ class _StubStatsStore:
                 "llm_completion_tokens": 30,
                 "llm_total_tokens": 150,
                 "analysis_duration_ms": 60000,
+                "view_count": 8,
             }
         ] if project_id == 7 else []
 
@@ -267,6 +272,13 @@ def test_dashboard_sql_includes_new_metrics() -> None:
     assert "AVG(analysis_duration_ms)" in _KPI_SQL
     assert "COUNT(DISTINCT launch_id)" in _KPI_SQL
     assert "WITH peak AS" in _KPI_SQL
+    assert "AS report_views" in _KPI_SQL
+    assert "FROM alla.report_view" in _KPI_SQL
+    assert "v AS (" in _PER_PROJECT_SQL
+    assert "AS report_views" in _PER_PROJECT_SQL
+    assert "AND project_id IS NOT NULL" not in _PER_PROJECT_SQL
+    assert "LEFT JOIN LATERAL" in _REPORTS_FOR_PROJECT_SQL
+    assert "AS view_count" in _REPORTS_FOR_PROJECT_SQL
     assert "kb_feedback" not in _KPI_SQL
     assert "kb_feedback" not in _PER_PROJECT_SQL
 
@@ -318,8 +330,11 @@ def test_dashboard_html_has_required_elements() -> None:
         "Среднее время анализа",
         "Уникальных запусков",
         "Среднее отчётов / день",
+        "Просмотры отчётов",
+        "Просмотры",
     ]:
         assert label in html
+    assert 'data-col="report_views"' in html
 
 
 def test_dashboard_html_drops_removed_widgets() -> None:
@@ -350,6 +365,7 @@ def test_lifespan_reset_clears_dashboard_store_and_project_names_cache() -> None
 
     sentinel = object()
     _state.report_store = sentinel
+    _state.report_view_store = sentinel
     _state.feedback_store = sentinel
     _state.merge_rules_store = sentinel
     _state.dashboard_store = sentinel
@@ -359,6 +375,7 @@ def test_lifespan_reset_clears_dashboard_store_and_project_names_cache() -> None
     _reset_lazy_stores_and_caches()
 
     assert _state.report_store is None
+    assert _state.report_view_store is None
     assert _state.feedback_store is None
     assert _state.merge_rules_store is None
     assert _state.dashboard_store is None
@@ -408,6 +425,7 @@ async def test_dashboard_stats_falls_back_when_testops_unavailable(
     assert rows_by_pid[7]["project_name"] == "Project #7"
     assert rows_by_pid[None]["project_name"] == "Без привязки к проекту"
     assert data["kpis"]["total_reports"] == 5
+    assert data["kpis"]["report_views"] == 12
     assert data["kpis"]["llm_total_tokens"] == 900
     assert data["kpis"]["llm_prompt_tokens"] == 700
     assert data["kpis"]["llm_completion_tokens"] == 200
@@ -422,6 +440,8 @@ async def test_dashboard_stats_falls_back_when_testops_unavailable(
     assert rows_by_pid[7]["llm_avg_prompt_tokens_per_run"] == 350
     assert rows_by_pid[7]["llm_avg_completion_tokens_per_run"] == 100
     assert rows_by_pid[7]["llm_reports_with_usage"] == 2
+    assert rows_by_pid[7]["report_views"] == 11
+    assert rows_by_pid[None]["report_views"] == 2
 
 
 @pytest.mark.asyncio
@@ -466,6 +486,27 @@ async def test_dashboard_stats_reads_db_in_threadpool(_http_client, monkeypatch)
     assert resp.status_code == 200
     assert len(store.thread_ids) == 3
     assert all(thread_id != event_loop_thread_id for thread_id in store.thread_ids)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_project_reports_include_view_count(_http_client, monkeypatch) -> None:
+    """Детальный endpoint отчётов проекта возвращает счётчик просмотров."""
+    from alla.server import _state
+
+    settings = _DashboardSettings()
+    store = _StubStatsStore()
+
+    monkeypatch.setattr(_state, "settings", settings)
+    monkeypatch.setattr(_state, "client", _StubClient(projects={7: "Mobile App"}))
+    monkeypatch.setattr(_state, "dashboard_store", store)
+
+    async with _http_client as http:
+        resp = await http.get("/api/v1/dashboard/projects/7/reports?days=30")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reports"][0]["filename"] == "42_x.html"
+    assert data["reports"][0]["view_count"] == 8
 
 
 @pytest.mark.asyncio

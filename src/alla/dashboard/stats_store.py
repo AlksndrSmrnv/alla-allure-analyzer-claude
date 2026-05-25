@@ -74,6 +74,8 @@ WITH peak AS (
 SELECT
   (SELECT COUNT(*) FROM alla.report
      WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s)                                            AS total_reports,
+  (SELECT COUNT(*) FROM alla.report_view
+     WHERE viewed_at >= %(start_ts)s AND viewed_at < %(end_ts)s)                                              AS report_views,
   (SELECT COUNT(*) FROM alla.kb_entry
      WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s)                                            AS total_kb_entries,
   (SELECT COUNT(*) FROM alla.merge_rules
@@ -127,6 +129,12 @@ WITH r AS (
   WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
   GROUP BY project_id
 ),
+v AS (
+  SELECT project_id, COUNT(*) AS report_views
+  FROM alla.report_view
+  WHERE viewed_at >= %(start_ts)s AND viewed_at < %(end_ts)s
+  GROUP BY project_id
+),
 k AS (
   SELECT project_id, COUNT(*) AS kb_entries, MAX(created_at) AS last_kb
   FROM alla.kb_entry
@@ -141,11 +149,13 @@ mr AS (
 ),
 ids AS (
   SELECT project_id FROM r UNION
+  SELECT project_id FROM v UNION
   SELECT project_id FROM k UNION
   SELECT project_id FROM mr
 )
 SELECT ids.project_id,
        COALESCE(r.reports, 0)      AS reports,
+       COALESCE(v.report_views, 0) AS report_views,
        COALESCE(k.kb_entries, 0)   AS kb_entries,
        COALESCE(mr.merge_rules, 0) AS merge_rules,
        COALESCE(r.llm_total_tokens, 0)                  AS llm_total_tokens,
@@ -163,6 +173,7 @@ SELECT ids.project_id,
        ) AS last_activity
 FROM ids
 LEFT JOIN r  ON ids.project_id IS NOT DISTINCT FROM r.project_id
+LEFT JOIN v  ON ids.project_id IS NOT DISTINCT FROM v.project_id
 LEFT JOIN k  ON ids.project_id IS NOT DISTINCT FROM k.project_id
 LEFT JOIN mr ON ids.project_id IS NOT DISTINCT FROM mr.project_id
 ORDER BY reports DESC, kb_entries DESC;
@@ -178,13 +189,20 @@ GROUP BY 1 ORDER BY 1;
 
 
 _REPORTS_FOR_PROJECT_SQL = """\
-SELECT filename, launch_id, created_at,
-       llm_prompt_tokens, llm_completion_tokens, llm_total_tokens,
-       analysis_duration_ms
-FROM alla.report
-WHERE created_at >= %(start_ts)s AND created_at < %(end_ts)s
-  AND project_id IS NOT DISTINCT FROM %(project_id)s
-ORDER BY created_at DESC
+SELECT r.filename, r.launch_id, r.created_at,
+       r.llm_prompt_tokens, r.llm_completion_tokens, r.llm_total_tokens,
+       r.analysis_duration_ms,
+       v.view_count
+FROM alla.report r
+LEFT JOIN LATERAL (
+    SELECT COUNT(*) AS view_count
+    FROM alla.report_view rv
+    WHERE rv.filename = r.filename
+      AND rv.viewed_at >= %(start_ts)s AND rv.viewed_at < %(end_ts)s
+) v ON TRUE
+WHERE r.created_at >= %(start_ts)s AND r.created_at < %(end_ts)s
+  AND r.project_id IS NOT DISTINCT FROM %(project_id)s
+ORDER BY r.created_at DESC
 LIMIT %(limit)s;
 """
 
@@ -216,6 +234,7 @@ class DashboardStatsStore:
         if row is None:
             return {
                 "total_reports": 0,
+                "report_views": 0,
                 "total_kb_entries": 0,
                 "total_merge_rules": 0,
                 "active_projects": 0,
@@ -231,23 +250,24 @@ class DashboardStatsStore:
                 "peak_day": None,
                 "peak_day_count": 0,
             }
-        peak_day_value = row[13].isoformat() if row[13] is not None else None
+        peak_day_value = row[14].isoformat() if row[14] is not None else None
         return {
             "total_reports": int(row[0] or 0),
-            "total_kb_entries": int(row[1] or 0),
-            "total_merge_rules": int(row[2] or 0),
-            "active_projects": int(row[3] or 0),
-            "unique_launches": int(row[4] or 0),
-            "llm_total_tokens": int(row[5] or 0),
-            "llm_prompt_tokens": int(row[6] or 0),
-            "llm_completion_tokens": int(row[7] or 0),
-            "llm_avg_tokens_per_run": int(row[8] or 0),
-            "llm_avg_prompt_tokens_per_run": int(row[9] or 0),
-            "llm_avg_completion_tokens_per_run": int(row[10] or 0),
-            "llm_reports_with_usage": int(row[11] or 0),
-            "avg_analysis_duration_ms": int(row[12]) if row[12] is not None else None,
+            "report_views": int(row[1] or 0),
+            "total_kb_entries": int(row[2] or 0),
+            "total_merge_rules": int(row[3] or 0),
+            "active_projects": int(row[4] or 0),
+            "unique_launches": int(row[5] or 0),
+            "llm_total_tokens": int(row[6] or 0),
+            "llm_prompt_tokens": int(row[7] or 0),
+            "llm_completion_tokens": int(row[8] or 0),
+            "llm_avg_tokens_per_run": int(row[9] or 0),
+            "llm_avg_prompt_tokens_per_run": int(row[10] or 0),
+            "llm_avg_completion_tokens_per_run": int(row[11] or 0),
+            "llm_reports_with_usage": int(row[12] or 0),
+            "avg_analysis_duration_ms": int(row[13]) if row[13] is not None else None,
             "peak_day": peak_day_value,
-            "peak_day_count": int(row[14] or 0),
+            "peak_day_count": int(row[15] or 0),
         }
 
     def per_project_rollup(self, *, window: DateWindow) -> list[dict[str, Any]]:
@@ -260,6 +280,7 @@ class DashboardStatsStore:
             (
                 project_id,
                 reports,
+                report_views,
                 kb_entries,
                 merge_rules,
                 llm_total_tokens,
@@ -278,6 +299,7 @@ class DashboardStatsStore:
             out.append({
                 "project_id": int(project_id) if project_id is not None else None,
                 "reports": int(reports or 0),
+                "report_views": int(report_views or 0),
                 "kb_entries": int(kb_entries or 0),
                 "merge_rules": int(merge_rules or 0),
                 "llm_total_tokens": int(llm_total_tokens or 0),
@@ -329,6 +351,7 @@ class DashboardStatsStore:
                 llm_completion_tokens,
                 llm_total_tokens,
                 analysis_duration_ms,
+                view_count,
             ) = row
             out.append({
                 "filename": str(filename),
@@ -348,5 +371,6 @@ class DashboardStatsStore:
                     if analysis_duration_ms is not None
                     else None
                 ),
+                "view_count": int(view_count or 0),
             })
         return out
