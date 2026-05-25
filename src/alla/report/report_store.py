@@ -27,17 +27,22 @@
         filename    TEXT         NOT NULL,
         project_id  INTEGER      NULL,
         launch_id   INTEGER      NULL,
+        viewer_id   TEXT         NULL,
         viewed_at   TIMESTAMPTZ  NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_report_view_viewed_at  ON alla.report_view(viewed_at);
     CREATE INDEX IF NOT EXISTS idx_report_view_project_id ON alla.report_view(project_id);
     CREATE INDEX IF NOT EXISTS idx_report_view_filename   ON alla.report_view(filename);
+    -- Дедупликация: один (filename, viewer_id) — одна строка. NULL viewer_id
+    -- (легаси/нет cookie) в индекс не попадают и не дедуплицируются.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_report_view_unique_per_viewer
+        ON alla.report_view(filename, viewer_id) WHERE viewer_id IS NOT NULL;
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 
@@ -72,20 +77,38 @@ CREATE TABLE IF NOT EXISTS alla.report_view (
     filename    TEXT         NOT NULL,
     project_id  INTEGER      NULL,
     launch_id   INTEGER      NULL,
+    viewer_id   TEXT         NULL,
     viewed_at   TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
+-- Миграция для существующих установок, созданных до появления колонки.
+ALTER TABLE alla.report_view ADD COLUMN IF NOT EXISTS viewer_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_report_view_viewed_at  ON alla.report_view(viewed_at);
 CREATE INDEX IF NOT EXISTS idx_report_view_project_id ON alla.report_view(project_id);
 CREATE INDEX IF NOT EXISTS idx_report_view_filename   ON alla.report_view(filename);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_report_view_unique_per_viewer
+    ON alla.report_view(filename, viewer_id) WHERE viewer_id IS NOT NULL;
+"""
+
+_REPORT_TABLE_EXISTS_SQL = "SELECT to_regclass(%s)"
+
+# Дедуп: при существующей паре (filename, viewer_id) INSERT молча игнорируется
+# благодаря частичному UNIQUE-индексу. Если viewer_id IS NULL (нет cookie /
+# легаси), индекс не применяется, запись всё равно добавляется.
+_RECORD_VIEW_WITH_REPORT_SQL = """\
+INSERT INTO alla.report_view (filename, project_id, launch_id, viewer_id)
+SELECT %(filename)s,
+       COALESCE(%(project_id)s, r.project_id),
+       COALESCE(%(launch_id)s,  r.launch_id),
+       %(viewer_id)s
+FROM (SELECT %(filename)s::text AS f) k
+LEFT JOIN alla.report r ON r.filename = k.f
+ON CONFLICT (filename, viewer_id) WHERE viewer_id IS NOT NULL DO NOTHING;
 """
 
 _RECORD_VIEW_SQL = """\
-INSERT INTO alla.report_view (filename, project_id, launch_id)
-SELECT %(filename)s,
-       COALESCE(%(project_id)s, r.project_id),
-       COALESCE(%(launch_id)s,  r.launch_id)
-FROM (SELECT %(filename)s::text AS f) k
-LEFT JOIN alla.report r ON r.filename = k.f;
+INSERT INTO alla.report_view (filename, project_id, launch_id, viewer_id)
+VALUES (%(filename)s, %(project_id)s, %(launch_id)s, %(viewer_id)s)
+ON CONFLICT (filename, viewer_id) WHERE viewer_id IS NOT NULL DO NOTHING;
 """
 
 
@@ -182,6 +205,7 @@ class PostgresReportViewStore:
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
+        self._report_table_known: bool | None = None
         self._ensure_table()
 
     def _ensure_table(self) -> None:
@@ -191,25 +215,45 @@ class PostgresReportViewStore:
             conn.commit()
         logger.info("alla.report_view table ready")
 
+    def _report_table_exists(self, cur: Any) -> bool:
+        if self._report_table_known is True:
+            return True
+
+        cur.execute(_REPORT_TABLE_EXISTS_SQL, ("alla.report",))
+        row = cur.fetchone()
+        exists = row is not None and row[0] is not None
+        self._report_table_known = exists
+        return exists
+
     def record_view(
         self,
         filename: str,
         *,
         project_id: int | None = None,
         launch_id: int | None = None,
+        viewer_id: str | None = None,
     ) -> None:
-        """Записать успешное открытие отчёта, не ломая caller при ошибке БД."""
+        """Записать успешное открытие отчёта, не ломая caller при ошибке БД.
+
+        Если ``viewer_id`` передан, повторное открытие того же отчёта тем же
+        пользователем (включая перезагрузку страницы) не добавит новую строку
+        благодаря частичному UNIQUE-индексу ``idx_report_view_unique_per_viewer``.
+        """
         try:
             with psycopg.connect(self._dsn) as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        _RECORD_VIEW_SQL,
-                        {
-                            "filename": filename,
-                            "project_id": project_id,
-                            "launch_id": launch_id,
-                        },
+                    params = {
+                        "filename": filename,
+                        "project_id": project_id,
+                        "launch_id": launch_id,
+                        "viewer_id": viewer_id,
+                    }
+                    sql = (
+                        _RECORD_VIEW_WITH_REPORT_SQL
+                        if self._report_table_exists(cur)
+                        else _RECORD_VIEW_SQL
                     )
+                    cur.execute(sql, params)
                 conn.commit()
         except Exception as exc:  # noqa: BLE001 - учёт просмотров best-effort
             logger.warning("report_view recording failed for %s: %s", filename, exc)

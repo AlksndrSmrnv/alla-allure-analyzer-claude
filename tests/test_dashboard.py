@@ -103,7 +103,7 @@ class _StubStatsStore:
             {
                 "project_id": None,
                 "reports": 1,
-                "report_views": 0,
+                "report_views": 2,
                 "kb_entries": 0,
                 "merge_rules": 0,
                 "llm_total_tokens": 0,
@@ -280,6 +280,7 @@ def test_dashboard_sql_includes_new_metrics() -> None:
     assert "FROM alla.report_view" in _KPI_SQL
     assert "v AS (" in _PER_PROJECT_SQL
     assert "AS report_views" in _PER_PROJECT_SQL
+    assert "AND project_id IS NOT NULL" not in _PER_PROJECT_SQL
     assert "LEFT JOIN LATERAL" in _REPORTS_FOR_PROJECT_SQL
     assert "AS view_count" in _REPORTS_FOR_PROJECT_SQL
     assert "kb_feedback" not in _KPI_SQL
@@ -465,6 +466,7 @@ async def test_dashboard_stats_falls_back_when_testops_unavailable(
     assert rows_by_pid[7]["llm_avg_completion_tokens_per_run"] == 100
     assert rows_by_pid[7]["llm_reports_with_usage"] == 2
     assert rows_by_pid[7]["report_views"] == 11
+    assert rows_by_pid[None]["report_views"] == 2
 
 
 @pytest.mark.asyncio

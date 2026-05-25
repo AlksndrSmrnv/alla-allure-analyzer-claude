@@ -84,8 +84,12 @@ _CORRELATION_LINE_RE = re.compile(
     r"^\s*Корреляция:\s*(?P<pairs>.+?)\s*$",
     re.IGNORECASE,
 )
+# Для разбора структурированной строки ``Корреляция: k=v, k=v`` сохраняем
+# delimiter-based парсинг "до запятой/конца строки", иначе короткие легаси-id
+# (``operUID=abc``) и значения вне ``_CORRELATION_VALUE_PATTERN`` просто
+# выпадут. Фильтр плейсхолдеров применяется уже к полному извлечённому value.
 _CORRELATION_PAIR_RE = re.compile(
-    rf"(?P<key>[A-Za-z][A-Za-z0-9]*)\s*=\s*(?P<value>{_CORRELATION_VALUE_PATTERN})"
+    r"(?P<key>[A-Za-z][A-Za-z0-9]*)\s*=\s*(?P<value>[^,\s][^,]*?)(?=\s*(?:,|$))"
 )
 _CORR_ID_JSON_RE = re.compile(
     rf"\"(?P<key>{_KEY_ALTERNATION})\"\s*:\s*\"(?P<value>{_CORRELATION_VALUE_PATTERN})\"",
