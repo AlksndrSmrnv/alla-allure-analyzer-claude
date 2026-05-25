@@ -4,8 +4,9 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, TypeVar, cast
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -241,13 +242,48 @@ def _build_csp_headers() -> dict[str, str]:
     }
 
 
-async def _record_report_view_best_effort(filename: str) -> None:
+# Cookie, по которой дедуплицируются просмотры одного отчёта одним
+# пользователем (перезагрузка страницы не добавляет +1 в дашборд).
+_VIEWER_COOKIE_NAME = "alla_viewer_id"
+_VIEWER_COOKIE_MAX_AGE = 60 * 60 * 24 * 365  # ~1 год
+
+
+def _resolve_viewer_id(request: Request) -> tuple[str, bool]:
+    """Вернуть viewer_id из cookie или сгенерировать новый.
+
+    Второй элемент кортежа = True, если cookie нужно выставить в ответе
+    (т.е. её ещё не было).
+    """
+    existing = request.cookies.get(_VIEWER_COOKIE_NAME)
+    if existing:
+        return existing, False
+    return uuid4().hex, True
+
+
+def _set_viewer_cookie(response: Response, viewer_id: str) -> None:
+    response.set_cookie(
+        key=_VIEWER_COOKIE_NAME,
+        value=viewer_id,
+        max_age=_VIEWER_COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+async def _record_report_view_best_effort(
+    filename: str,
+    *,
+    viewer_id: str | None = None,
+) -> None:
     """Записать просмотр отчёта, не влияя на успешную отдачу HTML."""
     store = _state.report_view_store
     if store is None:
         return
     try:
-        await asyncio.to_thread(store.record_view, filename)
+        await asyncio.to_thread(
+            lambda: store.record_view(filename, viewer_id=viewer_id)
+        )
     except Exception as exc:  # noqa: BLE001 - отдача отчёта важнее учёта
         logger.warning("report_view recording failed for %s: %s", filename, exc)
 
@@ -477,27 +513,35 @@ async def analyze_launch_html(
         404: {"model": ErrorResponse, "description": "Отчёт не найден"},
     },
 )
-async def get_report(filename: str) -> HTMLResponse:
+async def get_report(filename: str, request: Request) -> HTMLResponse:
     """Отдать ранее сгенерированный HTML-отчёт по имени файла."""
     from pathlib import Path
 
     if "/" in filename or "\\" in filename or not filename.endswith(".html"):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
+    viewer_id, set_cookie = _resolve_viewer_id(request)
+
+    def _build_response(content: str) -> HTMLResponse:
+        response = HTMLResponse(content=content, headers=_build_csp_headers())
+        if set_cookie:
+            _set_viewer_cookie(response, viewer_id)
+        return response
+
     # Попробовать PostgreSQL.
     if _state.report_store:
         content = _state.report_store.load(filename)
         if content is not None:
-            await _record_report_view_best_effort(filename)
-            return HTMLResponse(content=content, headers=_build_csp_headers())
+            await _record_report_view_best_effort(filename, viewer_id=viewer_id)
+            return _build_response(content)
 
     # Fallback на файловую систему.
     if _state.settings.reports_dir:
         report_path = Path(_state.settings.reports_dir) / filename
         if report_path.is_file():
             content = report_path.read_text(encoding="utf-8")
-            await _record_report_view_best_effort(filename)
-            return HTMLResponse(content=content, headers=_build_csp_headers())
+            await _record_report_view_best_effort(filename, viewer_id=viewer_id)
+            return _build_response(content)
 
     raise HTTPException(status_code=404, detail=f"Отчёт '{filename}' не найден")
 
