@@ -1,14 +1,22 @@
 """Сервис кластеризации похожих ошибок тестов по корневой причине.
 
 Алгоритм: message-first подход.
-1. Для каждого падения строятся три канала текста:
+1. Для каждого падения строятся четыре канала текста:
    - message-document: status_message + category
    - trace-document: status_trace (с компактацией длинных трасс)
    - log-document: log_snippet (лог приложения, если прикреплён к тесту)
+   - step-document: failed_step_path (хлебные крошки до упавшего шага)
 2. Минимальная нормализация: замена волатильных данных (UUID, timestamps,
    длинные числа, IP) плейсхолдерами.
 3. TF-IDF + cosine similarity по каждому каналу отдельно.
-4. Итоговая similarity для пары:
+4. Gates (применяются в этом порядке, до взвешенного объединения):
+   - assertion-actual gate: разные «but was» в assertion → не сливать.
+   - step-path hard gate: если у обоих есть непустой step path и step
+     similarity < `step_path_strict_threshold`, пара принудительно не
+     сливается. Применяется ДО message/log, поэтому log override его не
+     обходит. Если разделение оказалось ошибочным, пользователь сводит
+     кластера через merge rules (`rule_kind="step"`).
+5. Итоговая similarity для пары:
    - если message есть у обоих и message similarity ниже порога:
      * если у обоих есть лог и log similarity ≥ порога — log override:
        лог становится доминирующим каналом (0.6 log + 0.2 msg + 0.2 trace)
@@ -16,7 +24,9 @@
    - иначе взвешенная комбинация message/trace/log
    - если message у одного/обоих пустой, fallback на trace (+log)
    - если лога нет у одного/обоих тестов, его вес перераспределяется на message
-5. Агломеративная кластеризация (complete linkage) по итоговой distance.
+   - мягкий step-path штраф работает только для пар выше strict threshold
+     (или при отключённом gate) и даёт незначительную поправку.
+6. Агломеративная кластеризация (complete linkage) по итоговой distance.
 """
 
 import hashlib
@@ -67,6 +77,11 @@ class ClusteringConfig:
 
     step_path_mismatch_penalty: float = 0.45
     step_path_log_reduction: float = 0.5
+    # Hard gate: пара с обоюдно непустыми step paths и step_sim ниже порога
+    # принудительно не сливается (final_sim=0). Применяется до message/log
+    # gates и НЕ обходится log override. Значение 0.0 фактически отключает
+    # gate (sim < 0.0 невозможно), 1.0 — любое отличие шага режет пару.
+    step_path_strict_threshold: float = 0.95
 
     @property
     def distance_threshold(self) -> float:
@@ -437,6 +452,25 @@ class ClusteringService:
                     and assertion_actuals[i] is not None
                     and assertion_actuals[j] is not None
                     and assertion_actuals[i] != assertion_actuals[j]
+                ):
+                    final_sim[i, j] = 0.0
+                    final_sim[j, i] = 0.0
+                    continue
+
+                # Hard gate по step path: если у обоих failures есть непустой
+                # нормализованный step path и их TF-IDF similarity ниже strict
+                # threshold — пара принудительно не сливается. Применяется ДО
+                # message/log логики, поэтому log override его не обходит.
+                # Если у одного из failures step path отсутствует, gate не
+                # применяется (не плодим мусорные «unknown step» кластера —
+                # тогда работает только мягкий штраф ниже). Если разделение
+                # оказалось ошибочным, объединить можно через merge rule с
+                # `rule_kind="step"`.
+                if (
+                    step_sim is not None
+                    and has_step[i]
+                    and has_step[j]
+                    and float(step_sim[i, j]) < self._config.step_path_strict_threshold
                 ):
                     final_sim[i, j] = 0.0
                     final_sim[j, i] = 0.0

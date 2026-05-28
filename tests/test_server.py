@@ -1217,6 +1217,7 @@ async def test_list_merge_rules_returns_rules_for_project(monkeypatch, _http_cli
                 "signature_hash_b": "d" * 64,
                 "audit_text_a": "",
                 "audit_text_b": "",
+                "rule_kind": "base",
                 "launch_id": None,
                 "created_at": None,
             }

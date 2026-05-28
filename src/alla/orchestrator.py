@@ -161,6 +161,7 @@ def _cluster_failures(
         ClusteringConfig(
             similarity_threshold=settings.clustering_threshold,
             log_similarity_weight=settings.logs_clustering_weight,
+            step_path_strict_threshold=settings.clustering_step_strict_threshold,
         )
     )
     return clustering_service.cluster_failures(launch_id, report.failed_tests)

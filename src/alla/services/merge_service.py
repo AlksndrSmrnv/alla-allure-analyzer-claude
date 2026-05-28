@@ -45,26 +45,33 @@ def apply_merge_rules(
         return clustering_report
 
     test_by_id = {test.test_result_id: test for test in failed_tests}
-    signature_to_cluster_ids: dict[str, list[str]] = defaultdict(list)
+    # Два независимых индекса: base hash и step hash. Step индекс заполняется
+    # только когда контекст кластера имеет step_issue_signature (не None) и
+    # его hash непустой — он есть только при наличии failed_step_path.
+    base_to_cluster_ids: dict[str, list[str]] = defaultdict(list)
+    step_to_cluster_ids: dict[str, list[str]] = defaultdict(list)
 
     for cluster in clustering_report.clusters:
         context = build_feedback_cluster_context(cluster, test_by_id)
         if context is None:
             continue
-        signature_hash = context.base_issue_signature.signature_hash
-        if not signature_hash:
-            continue
-        signature_to_cluster_ids[signature_hash].append(cluster.cluster_id)
+        base_hash = context.base_issue_signature.signature_hash
+        if base_hash:
+            base_to_cluster_ids[base_hash].append(cluster.cluster_id)
+        step_signature = context.step_issue_signature
+        if step_signature and step_signature.signature_hash:
+            step_to_cluster_ids[step_signature.signature_hash].append(cluster.cluster_id)
 
-    if not signature_to_cluster_ids:
+    if not base_to_cluster_ids and not step_to_cluster_ids:
         return clustering_report
 
     union_find = _UnionFind([cluster.cluster_id for cluster in clustering_report.clusters])
     applied_rule_count = 0
 
     for rule in rules:
-        left_ids = signature_to_cluster_ids.get(rule.signature_hash_a, [])
-        right_ids = signature_to_cluster_ids.get(rule.signature_hash_b, [])
+        index = step_to_cluster_ids if rule.rule_kind == "step" else base_to_cluster_ids
+        left_ids = index.get(rule.signature_hash_a, [])
+        right_ids = index.get(rule.signature_hash_b, [])
         if not left_ids or not right_ids:
             continue
 

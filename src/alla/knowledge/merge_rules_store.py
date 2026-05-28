@@ -19,13 +19,36 @@ CREATE TABLE IF NOT EXISTS alla.merge_rules (
     signature_hash_b TEXT         NOT NULL,
     audit_text_a     TEXT         NOT NULL DEFAULT '',
     audit_text_b     TEXT         NOT NULL DEFAULT '',
+    rule_kind        VARCHAR(10)  NOT NULL DEFAULT 'base',
     launch_id        INTEGER,
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT chk_merge_rules_ordered CHECK (signature_hash_a < signature_hash_b)
+    CONSTRAINT chk_merge_rules_ordered CHECK (signature_hash_a < signature_hash_b),
+    CONSTRAINT chk_merge_rules_kind CHECK (rule_kind IN ('base', 'step'))
 );
 
+-- Миграция для существующих инсталляций: добавить колонку и CHECK при апгрейде.
+ALTER TABLE alla.merge_rules
+    ADD COLUMN IF NOT EXISTS rule_kind VARCHAR(10) NOT NULL DEFAULT 'base';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_merge_rules_kind'
+          AND conrelid = 'alla.merge_rules'::regclass
+    ) THEN
+        ALTER TABLE alla.merge_rules
+            ADD CONSTRAINT chk_merge_rules_kind CHECK (rule_kind IN ('base', 'step'));
+    END IF;
+END
+$$;
+
+-- Уникальный индекс теперь включает rule_kind: одна и та же пара хэшей
+-- может существовать как base- и как step-правило независимо.
+DROP INDEX IF EXISTS alla.uq_merge_rules_pair;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_merge_rules_pair
-    ON alla.merge_rules (project_id, signature_hash_a, signature_hash_b);
+    ON alla.merge_rules (project_id, signature_hash_a, signature_hash_b, rule_kind);
 
 CREATE INDEX IF NOT EXISTS idx_merge_rules_project
     ON alla.merge_rules (project_id);
@@ -80,17 +103,17 @@ class PostgresMergeRulesStore:
         query = """
             INSERT INTO alla.merge_rules (
                 project_id, signature_hash_a, signature_hash_b,
-                audit_text_a, audit_text_b, launch_id
+                audit_text_a, audit_text_b, rule_kind, launch_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (project_id, signature_hash_a, signature_hash_b)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (project_id, signature_hash_a, signature_hash_b, rule_kind)
             DO UPDATE SET
                 audit_text_a = EXCLUDED.audit_text_a,
                 audit_text_b = EXCLUDED.audit_text_b,
                 launch_id = EXCLUDED.launch_id,
                 created_at = now()
             RETURNING rule_id, project_id, signature_hash_a, signature_hash_b,
-                      audit_text_a, audit_text_b, launch_id, created_at,
+                      audit_text_a, audit_text_b, rule_kind, launch_id, created_at,
                       (xmax = 0) AS is_insert
         """
         results: list[MergeRule] = []
@@ -111,11 +134,11 @@ class PostgresMergeRulesStore:
                         )
                         cur.execute(
                             query,
-                            (project_id, ha, hb, ta, tb, launch_id),
+                            (project_id, ha, hb, ta, tb, pair.rule_kind, launch_id),
                         )
                         row = cur.fetchone()
                         if row:
-                            is_insert = row[8]
+                            is_insert = row[9]
                             if is_insert:
                                 created += 1
                             else:
@@ -128,8 +151,9 @@ class PostgresMergeRulesStore:
                                     signature_hash_b=row[3],
                                     audit_text_a=row[4],
                                     audit_text_b=row[5],
-                                    launch_id=row[6],
-                                    created_at=row[7],
+                                    rule_kind=row[6],
+                                    launch_id=row[7],
+                                    created_at=row[8],
                                 )
                             )
                 conn.commit()
@@ -152,7 +176,7 @@ class PostgresMergeRulesStore:
 
         query = """
             SELECT rule_id, project_id, signature_hash_a, signature_hash_b,
-                   audit_text_a, audit_text_b, launch_id, created_at
+                   audit_text_a, audit_text_b, rule_kind, launch_id, created_at
             FROM alla.merge_rules
             WHERE project_id = %s
             ORDER BY created_at
@@ -169,8 +193,9 @@ class PostgresMergeRulesStore:
                             signature_hash_b=row[3],
                             audit_text_a=row[4],
                             audit_text_b=row[5],
-                            launch_id=row[6],
-                            created_at=row[7],
+                            rule_kind=row[6],
+                            launch_id=row[7],
+                            created_at=row[8],
                         )
                         for row in cur.fetchall()
                     ]
