@@ -764,13 +764,36 @@ def _render_cluster(
             '<span>Выбрать</span>'
             '</label>'
         )
+    step_raw = cluster.example_step_path
+    if step_raw:
+        parts = [seg.strip() for seg in step_raw.split(">") if seg.strip()]
+        if parts:
+            sep = '<span class="cluster-step-sep" aria-hidden="true">›</span>'
+            step_html_value = f' {sep} '.join(_e(p) for p in parts)
+        else:
+            step_html_value = _e(step_raw)
+    else:
+        step_html_value = '<span class="cluster-step-empty">—</span>'
+
+    label_stack_html = (
+        '<span class="cluster-label-stack">'
+        '<span class="cluster-label-row cluster-label-row--error">'
+        '<span class="cluster-label-key">Ошибка:</span>'
+        f'<span class="cluster-label-value">{_e(cluster.label)}</span>'
+        '</span>'
+        '<span class="cluster-label-row cluster-label-row--step">'
+        '<span class="cluster-label-key">Шаг:</span>'
+        f'<span class="cluster-label-value">{step_html_value}</span>'
+        '</span>'
+        '</span>'
+    )
     return (
         f'<div class="{base_cls}" data-cluster-card-id="{_e(cluster.cluster_id)}">'
         '<div class="cluster-header-row">'
         f"{merge_checkbox_html}"
         '<button type="button" class="cluster-header" aria-expanded="false">'
         f'<span class="cluster-num">#{idx}</span>'
-        f'<span class="cluster-label">{_e(cluster.label)}</span>'
+        f'{label_stack_html}'
         f'<span class="cluster-count">{cluster.member_count} тест(ов)</span>'
         '<span class="cluster-chevron" aria-hidden="true">▸</span>'
         '</button>'
@@ -1644,12 +1667,55 @@ _CSS = """
       padding: 0.25rem 0.75rem;
       border-radius: 9999px;
     }
-    .cluster-label {
-      font-weight: 600;
-      font-size: 1.125rem;
-      flex: 1;
+    .cluster-label-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      flex: 1 1 auto;
       min-width: 200px;
+    }
+    .cluster-label-row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: baseline;
+      flex-wrap: wrap;
+      line-height: 1.45;
       word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .cluster-label-key {
+      flex: 0 0 auto;
+      min-width: 3.25rem;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      padding-top: 0.2rem;
+    }
+    .cluster-label-value {
+      flex: 1 1 auto;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .cluster-label-row--error .cluster-label-value {
+      font-weight: 600;
+      font-size: 1.05rem;
+    }
+    .cluster-label-row--step .cluster-label-value {
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+    .cluster-step-sep {
+      display: inline-block;
+      margin: 0 0.15rem;
+      color: var(--border);
+      font-weight: 400;
+    }
+    .cluster-step-empty {
+      color: var(--text-muted);
+      opacity: 0.7;
     }
     .cluster-count {
       background: var(--border);
@@ -2035,7 +2101,7 @@ _CSS = """
       .onboarding-title { font-size: 1.35rem; }
       .create-kb-toggle-primary { padding: .95rem 1rem; font-size: .95rem; }
       .cluster-header { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
-      .cluster-label { min-width: 100%; }
+      .cluster-label-stack { min-width: 100%; }
     }
 """
 

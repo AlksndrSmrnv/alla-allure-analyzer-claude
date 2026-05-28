@@ -51,6 +51,40 @@ def test_html_report_rerun_button_opens_attached_new_report() -> None:
     assert "document.write(result.html)" in html
 
 
+def test_html_report_cluster_header_shows_error_and_step_path() -> None:
+    """Свернутая шапка кластера показывает ошибку и шаг (или прочерк)."""
+    cluster_with_step = make_failure_cluster(
+        cluster_id="c-step",
+        label="Response body is empty",
+        member_count=1,
+        example_step_path="Api > Запрос POST /users > Проверка тела ответа",
+    )
+    cluster_no_step = make_failure_cluster(
+        cluster_id="c-no-step",
+        label="Connection refused",
+        member_count=1,
+        example_step_path=None,
+    )
+    result = AnalysisResult(
+        triage_report=make_triage_report(launch_id=888),
+        clustering_report=make_clustering_report(
+            clusters=[cluster_with_step, cluster_no_step],
+            cluster_count=2,
+            total_failures=2,
+        ),
+    )
+
+    html = generate_html_report(result)
+
+    assert "cluster-label-stack" in html
+    assert "Ошибка:" in html
+    assert "Шаг:" in html
+    assert "Response body is empty" in html
+    assert "Запрос POST /users" in html
+    assert 'class="cluster-step-sep"' in html
+    assert 'class="cluster-step-empty">—</span>' in html
+
+
 def test_clusters_collapsed_by_default_and_toggle_all_button() -> None:
     """Кластеры свёрнуты по умолчанию, и есть глобальная кнопка toggle-all."""
     cluster = make_failure_cluster(cluster_id="c1", label="Some failure", member_count=2)
