@@ -85,6 +85,30 @@ def test_html_report_cluster_header_shows_error_and_step_path() -> None:
     assert 'class="cluster-step-empty">—</span>' in html
 
 
+def test_html_report_cluster_header_shows_production_arrow_step_path() -> None:
+    """Triage собирает step_path через « → »; шапка показывает его целиком."""
+    cluster = make_failure_cluster(
+        cluster_id="c-arrow",
+        label="Response body is empty",
+        member_count=1,
+        example_step_path="Api → Запрос POST /users → Проверка тела ответа",
+    )
+    result = AnalysisResult(
+        triage_report=make_triage_report(launch_id=889),
+        clustering_report=make_clustering_report(
+            clusters=[cluster],
+            cluster_count=1,
+            total_failures=1,
+        ),
+    )
+
+    html = generate_html_report(result)
+
+    assert "Шаг:" in html
+    assert "Api → Запрос POST /users → Проверка тела ответа" in html
+    assert "Запрос POST /users" in html
+
+
 def test_clusters_collapsed_by_default_and_toggle_all_button() -> None:
     """Кластеры свёрнуты по умолчанию, и есть глобальная кнопка toggle-all."""
     cluster = make_failure_cluster(cluster_id="c1", label="Some failure", member_count=2)
