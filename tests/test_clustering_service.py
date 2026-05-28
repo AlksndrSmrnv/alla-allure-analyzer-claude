@@ -415,6 +415,12 @@ def test_clustering_config_exposes_step_path_penalty_fields() -> None:
     assert custom.step_path_log_reduction == 0.4
 
 
+def test_clustering_config_exposes_step_path_strict_threshold() -> None:
+    """ClusteringConfig содержит step_path_strict_threshold с дефолтом 0.95."""
+    assert ClusteringConfig().step_path_strict_threshold == 0.95
+    assert ClusteringConfig(step_path_strict_threshold=0.5).step_path_strict_threshold == 0.5
+
+
 # ---------------------------------------------------------------------------
 # Unit-тесты _extract_assertion_actual
 # ---------------------------------------------------------------------------
@@ -698,3 +704,212 @@ def test_http_section_with_error_still_influences_clustering() -> None:
     # log override склеивает тесты с разными message.
     assert report.cluster_count == 1
     assert sorted(report.clusters[0].member_test_ids) == [90, 91]
+
+
+# ---------------------------------------------------------------------------
+# Step-path hard gate
+# ---------------------------------------------------------------------------
+
+
+def test_step_path_gate_blocks_log_override() -> None:
+    """Регрессия: hard gate по step path применяется ДО log override.
+
+    Один и тот же лог + похожие message обычно склеиваются через log override,
+    но разные failed_step_path должны принудительно разделить кластера.
+    """
+    shared_log = (
+        "--- [HTTP: Ответ сервера] ---\n"
+        "Корреляция: operUID=abc, rquid=def\n"
+        "HTTP статус: 500\n"
+        "errorMessage: Internal Server Error"
+    )
+    failures = [
+        _failure(
+            100,
+            status_message="Check field validation: condition mismatch",
+            log_snippet=shared_log,
+            failed_step_path="Открыть форму → Проверить поле email",
+        ),
+        _failure(
+            101,
+            status_message="Verify form submission: condition failed",
+            log_snippet=shared_log,
+            failed_step_path="Открыть форму → Проверить поле password",
+        ),
+    ]
+
+    service = ClusteringService(
+        ClusteringConfig(similarity_threshold=0.60, log_similarity_weight=0.15)
+    )
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 2
+    member_sets = sorted(tuple(c.member_test_ids) for c in report.clusters)
+    assert member_sets == [(100,), (101,)]
+
+
+def test_step_path_gate_screen_pol_screen_contract_split() -> None:
+    """Целевой кейс: одинаковая ошибка, разные шаги (screen-pol vs screen-contract) → разные кластера."""
+    failures = [
+        _failure(
+            110,
+            status_message="AssertionError: условие не выполняется",
+            failed_step_path=(
+                "Открыть форму → "
+                "Для текста в поле qwerty выполняется условие равно screen-pol"
+            ),
+        ),
+        _failure(
+            111,
+            status_message="AssertionError: условие не выполняется",
+            failed_step_path=(
+                "Открыть форму → "
+                "Для текста в поле qwerty выполняется условие равно screen-contract"
+            ),
+        ),
+    ]
+
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 2
+
+
+def test_step_path_gate_same_step_keeps_cluster() -> None:
+    """Позитив: одинаковые step paths + похожие message → один кластер (gate не ломает happy path)."""
+    same_step = "Открыть форму → Заполнить поле email"
+    failures = [
+        _failure(
+            120,
+            status_message="AssertionError: validation failed for input",
+            failed_step_path=same_step,
+        ),
+        _failure(
+            121,
+            status_message="AssertionError: validation failed for input",
+            failed_step_path=same_step,
+        ),
+    ]
+
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 1
+    assert sorted(report.clusters[0].member_test_ids) == [120, 121]
+
+
+def test_step_path_gate_skipped_when_one_side_missing_path() -> None:
+    """Если у одного из failures нет step path, gate не применяется."""
+    failures = [
+        _failure(
+            130,
+            status_message="AssertionError: condition mismatch",
+            failed_step_path="Открыть форму → Проверить поле foo",
+        ),
+        _failure(
+            131,
+            status_message="AssertionError: condition mismatch",
+            failed_step_path=None,
+        ),
+    ]
+
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    # Идентичные message + отсутствие step path у одного → старое поведение
+    # (gate не режет; пара мерджится).
+    assert report.cluster_count == 1
+
+
+def test_step_path_gate_does_not_merge_transitively_via_hub() -> None:
+    """Complete linkage не позволяет A и B (разные шаги) склеиться через C без step path."""
+    same_message = "AssertionError: condition mismatch in field"
+    failures = [
+        _failure(
+            140,
+            status_message=same_message,
+            failed_step_path="Открыть форму → Проверить поле alpha",
+        ),
+        _failure(
+            141,
+            status_message=same_message,
+            failed_step_path="Открыть форму → Проверить поле beta",
+        ),
+        _failure(
+            142,
+            status_message=same_message,
+            failed_step_path=None,
+        ),
+    ]
+
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    # 140 и 141 не должны оказаться в одном кластере, даже несмотря на хаб 142.
+    cluster_by_test = {
+        test_id: cluster.cluster_id
+        for cluster in report.clusters
+        for test_id in cluster.member_test_ids
+    }
+    assert cluster_by_test[140] != cluster_by_test[141]
+
+
+def test_step_path_gate_disabled_with_zero_threshold() -> None:
+    """ALLURE_CLUSTERING_STEP_STRICT_THRESHOLD=0.0 фактически отключает gate.
+
+    sim < 0.0 невозможно, поэтому пары больше не режутся — те же два failure
+    из целевого кейса теперь сливаются в один кластер.
+    """
+    failures = [
+        _failure(
+            150,
+            status_message="AssertionError: условие не выполняется",
+            failed_step_path=(
+                "Открыть форму → "
+                "Для текста в поле qwerty выполняется условие равно screen-pol"
+            ),
+        ),
+        _failure(
+            151,
+            status_message="AssertionError: условие не выполняется",
+            failed_step_path=(
+                "Открыть форму → "
+                "Для текста в поле qwerty выполняется условие равно screen-contract"
+            ),
+        ),
+    ]
+
+    service = ClusteringService(
+        ClusteringConfig(similarity_threshold=0.60, step_path_strict_threshold=0.0)
+    )
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 1
+    assert sorted(report.clusters[0].member_test_ids) == [150, 151]
+
+
+def test_step_path_gate_max_threshold_splits_any_difference() -> None:
+    """threshold=1.0 режет пару при любом отличии токенов step path.
+
+    Используем многобуквенные различающиеся слова: TF-IDF дефолтно отсекает
+    однобуквенные токены, и step_sim между «Поле A» и «Поле B» оказывается 1.0.
+    """
+    failures = [
+        _failure(
+            170,
+            status_message="AssertionError: same root cause",
+            failed_step_path="Открыть форму → Поле alpha",
+        ),
+        _failure(
+            171,
+            status_message="AssertionError: same root cause",
+            failed_step_path="Открыть форму → Поле beta",
+        ),
+    ]
+
+    service = ClusteringService(
+        ClusteringConfig(similarity_threshold=0.60, step_path_strict_threshold=1.0)
+    )
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 2

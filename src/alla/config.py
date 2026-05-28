@@ -62,6 +62,17 @@ class Settings(BaseSettings):
         ge=0.0, le=1.0,
         description="Порог схожести для группировки ошибок в кластеры (0.0-1.0)",
     )
+    clustering_step_strict_threshold: float = Field(
+        default=0.95,
+        ge=0.0, le=1.0,
+        description=(
+            "Hard gate по failed_step_path. Если у двух падений есть step path "
+            "и их TF-IDF similarity ниже порога — кластера не сливаются "
+            "(применяется до message/log gates). Значение 0.0 отключает gate, "
+            "1.0 — любое отличие шага режет пару. Пользователь может вручную "
+            "склеить через merge rule с rule_kind=\"step\"."
+        ),
+    )
 
     kb_min_score: float = Field(
         default=0.15,

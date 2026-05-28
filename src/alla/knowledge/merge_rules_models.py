@@ -1,8 +1,16 @@
 """Pydantic-модели для правил объединения кластеров."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+# Тип сигнатур, по которым правило ищет кластера в `apply_merge_rules`:
+# - "base": base_issue_signature (старое поведение, дефолт)
+# - "step": step_issue_signature; используется когда у двух кластеров
+#   одинаковый base hash, но разные step paths (см. clustering hard gate
+#   в services/clustering_service.py).
+MergeRuleKind = Literal["base", "step"]
 
 
 class MergeRule(BaseModel):
@@ -14,6 +22,7 @@ class MergeRule(BaseModel):
     signature_hash_b: str = Field(min_length=64, max_length=64)
     audit_text_a: str = ""
     audit_text_b: str = ""
+    rule_kind: MergeRuleKind = "base"
     launch_id: int | None = None
     created_at: datetime | None = None
 
@@ -33,6 +42,7 @@ class MergeRulePair(BaseModel):
     )
     audit_text_a: str = Field(default="", max_length=2000)
     audit_text_b: str = Field(default="", max_length=2000)
+    rule_kind: MergeRuleKind = "base"
 
     @model_validator(mode="after")
     def _validate_distinct_hashes(self) -> "MergeRulePair":

@@ -20,6 +20,16 @@ def _signature_hash(cluster, failed_tests) -> str:
     return context.base_issue_signature.signature_hash
 
 
+def _step_signature_hash(cluster, failed_tests) -> str:
+    test_by_id = {test.test_result_id: test for test in failed_tests}
+    context = build_feedback_cluster_context(cluster, test_by_id)
+    assert context is not None
+    assert context.step_issue_signature is not None, (
+        "step_issue_signature должен быть, иначе тест step-aware merge не имеет смысла"
+    )
+    return context.step_issue_signature.signature_hash
+
+
 def test_apply_merge_rules_merges_clusters_transitively() -> None:
     """Правила A-B и B-C должны транзитивно слить три компоненты."""
     cluster_a = make_failure_cluster(
@@ -240,3 +250,153 @@ def test_apply_merge_rules_unions_all_clusters_for_same_signature_bucket() -> No
     assert merged.cluster_count == 1
     assert merged.clusters[0].member_test_ids == [21, 22, 23, 24]
     assert merged.clusters[0].representative_test_id == 21
+
+
+# ---------------------------------------------------------------------------
+# Step-aware merge rules (rule_kind="step")
+# ---------------------------------------------------------------------------
+
+
+def _two_clusters_same_base_different_steps() -> tuple:
+    """Помощник: два кластера с одинаковым message+log (=одинаковый base hash),
+    но разными step paths. Имитирует разделение, сделанное step-path hard gate
+    в ClusteringService — и возвращает данные для тестов step-aware merge.
+    """
+    common_message = "AssertionError: условие не выполняется"
+    common_trace = "at form.FieldValidator:42"
+    common_log = "2026-05-28 [ERROR] AssertionError: условие не выполняется"
+
+    cluster_pol = make_failure_cluster(
+        cluster_id="cluster-pol",
+        label="screen-pol",
+        representative_test_id=301,
+        member_test_ids=[301],
+        member_count=1,
+        example_message=common_message,
+        example_trace_snippet=common_trace,
+        example_step_path=(
+            "Открыть форму → "
+            "Для текста в поле qwerty выполняется условие равно screen-pol"
+        ),
+    )
+    cluster_contract = make_failure_cluster(
+        cluster_id="cluster-contract",
+        label="screen-contract",
+        representative_test_id=302,
+        member_test_ids=[302],
+        member_count=1,
+        example_message=common_message,
+        example_trace_snippet=common_trace,
+        example_step_path=(
+            "Открыть форму → "
+            "Для текста в поле qwerty выполняется условие равно screen-contract"
+        ),
+    )
+    failed_tests = [
+        make_failed_test_summary(
+            test_result_id=301,
+            status_message=common_message,
+            status_trace=common_trace,
+            log_snippet=common_log,
+            failed_step_path=cluster_pol.example_step_path,
+        ),
+        make_failed_test_summary(
+            test_result_id=302,
+            status_message=common_message,
+            status_trace=common_trace,
+            log_snippet=common_log,
+            failed_step_path=cluster_contract.example_step_path,
+        ),
+    ]
+    report = make_clustering_report(
+        clusters=[cluster_pol, cluster_contract],
+        cluster_count=2,
+        total_failures=2,
+        unclustered_count=2,
+    )
+    return cluster_pol, cluster_contract, failed_tests, report
+
+
+def test_apply_merge_rules_step_kind_merges_same_base_different_steps() -> None:
+    """rule_kind="step" объединяет кластера, у которых одинаковый base hash, но разные step hashes."""
+    cluster_pol, cluster_contract, failed_tests, report = (
+        _two_clusters_same_base_different_steps()
+    )
+
+    base_pol = _signature_hash(cluster_pol, failed_tests)
+    base_contract = _signature_hash(cluster_contract, failed_tests)
+    # Базовые хэши должны совпадать — это и есть слепое пятно старого merge UI.
+    assert base_pol == base_contract
+
+    step_pol = _step_signature_hash(cluster_pol, failed_tests)
+    step_contract = _step_signature_hash(cluster_contract, failed_tests)
+    assert step_pol != step_contract
+
+    merged = apply_merge_rules(
+        report,
+        failed_tests,
+        [
+            MergeRule(
+                rule_id=1,
+                project_id=42,
+                signature_hash_a=min(step_pol, step_contract),
+                signature_hash_b=max(step_pol, step_contract),
+                rule_kind="step",
+            )
+        ],
+    )
+
+    assert merged.cluster_count == 1
+    assert sorted(merged.clusters[0].member_test_ids) == [301, 302]
+
+
+def test_apply_merge_rules_base_kind_does_not_match_step_hashes() -> None:
+    """rule_kind="base" со step hashes в полях ничего не сольёт — индексы независимы.
+
+    Защищает от регрессии: step rule НЕ должен случайно сработать через base
+    индекс (и наоборот), даже если хэши «выглядят как 64 hex».
+    """
+    cluster_pol, cluster_contract, failed_tests, report = (
+        _two_clusters_same_base_different_steps()
+    )
+    step_pol = _step_signature_hash(cluster_pol, failed_tests)
+    step_contract = _step_signature_hash(cluster_contract, failed_tests)
+
+    merged = apply_merge_rules(
+        report,
+        failed_tests,
+        [
+            MergeRule(
+                rule_id=1,
+                project_id=42,
+                signature_hash_a=min(step_pol, step_contract),
+                signature_hash_b=max(step_pol, step_contract),
+                rule_kind="base",  # неверный kind для step hashes
+            )
+        ],
+    )
+
+    # Правило ничего не нашло в base индексе → отчёт не изменился.
+    assert merged.cluster_count == 2
+
+
+def test_merge_rule_pair_defaults_rule_kind_to_base() -> None:
+    """Backward compat: MergeRulePair без явного rule_kind считается «base»."""
+    from alla.knowledge.merge_rules_models import MergeRulePair
+
+    pair = MergeRulePair(
+        signature_hash_a="a" * 64,
+        signature_hash_b="b" * 64,
+    )
+    assert pair.rule_kind == "base"
+
+
+def test_merge_rule_defaults_rule_kind_to_base() -> None:
+    """Backward compat: MergeRule без явного rule_kind (т.е. строки из старой БД) считается «base»."""
+    rule = MergeRule(
+        rule_id=99,
+        project_id=42,
+        signature_hash_a="a" * 64,
+        signature_hash_b="b" * 64,
+    )
+    assert rule.rule_kind == "base"
