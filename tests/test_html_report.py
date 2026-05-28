@@ -30,6 +30,25 @@ def _extract_error_example_textarea(report_html: str) -> str:
     return _html.unescape(match.group(1))
 
 
+def _extract_cluster_header_step_row(report_html: str, cluster_id: str) -> str:
+    """HTML-фрагмент `.cluster-label-row--step` из свёрнутой шапки кластера."""
+    card_start = report_html.find(f'data-cluster-card-id="{cluster_id}"')
+    assert card_start != -1, f"cluster {cluster_id!r} not found"
+    body_start = report_html.find('<div class="cluster-body"', card_start)
+    assert body_start != -1
+    header_html = report_html[card_start:body_start]
+    match = re.search(
+        r'<span class="cluster-label-row cluster-label-row--step">'
+        r'<span class="cluster-label-key">Шаг:</span>'
+        r'<span class="cluster-label-value">.*?</span>'
+        r'</span>',
+        header_html,
+        flags=re.DOTALL,
+    )
+    assert match is not None, f"header step row for {cluster_id!r} not found"
+    return match.group(0)
+
+
 def test_html_report_rerun_button_opens_attached_new_report() -> None:
     """Rerun-кнопка ждёт новый report URL и открывает его отдельным кликом."""
     result = AnalysisResult(
@@ -49,6 +68,68 @@ def test_html_report_rerun_button_opens_attached_new_report() -> None:
     assert "X-Report-URL" in html
     assert "window.location.href" in html
     assert "document.write(result.html)" in html
+
+
+def test_html_report_cluster_header_shows_error_and_step_path() -> None:
+    """Свернутая шапка кластера показывает ошибку и шаг (или прочерк)."""
+    cluster_with_step = make_failure_cluster(
+        cluster_id="c-step",
+        label="Response body is empty",
+        member_count=1,
+        example_step_path="Api > Запрос POST /users > Проверка тела ответа",
+    )
+    cluster_no_step = make_failure_cluster(
+        cluster_id="c-no-step",
+        label="Connection refused",
+        member_count=1,
+        example_step_path=None,
+    )
+    result = AnalysisResult(
+        triage_report=make_triage_report(launch_id=888),
+        clustering_report=make_clustering_report(
+            clusters=[cluster_with_step, cluster_no_step],
+            cluster_count=2,
+            total_failures=2,
+        ),
+    )
+
+    html = generate_html_report(result)
+
+    assert "cluster-label-stack" in html
+    assert "Ошибка:" in html
+    assert "Response body is empty" in html
+
+    step_row_with_path = _extract_cluster_header_step_row(html, "c-step")
+    assert "Запрос POST /users" in step_row_with_path
+    assert 'class="cluster-step-sep"' in step_row_with_path
+
+    step_row_without_path = _extract_cluster_header_step_row(html, "c-no-step")
+    assert 'class="cluster-step-empty">—</span>' in step_row_without_path
+
+
+def test_html_report_cluster_header_shows_production_arrow_step_path() -> None:
+    """Triage собирает step_path через « → »; шапка показывает его целиком."""
+    cluster = make_failure_cluster(
+        cluster_id="c-arrow",
+        label="Response body is empty",
+        member_count=1,
+        example_step_path="Api → Запрос POST /users → Проверка тела ответа",
+    )
+    result = AnalysisResult(
+        triage_report=make_triage_report(launch_id=889),
+        clustering_report=make_clustering_report(
+            clusters=[cluster],
+            cluster_count=1,
+            total_failures=1,
+        ),
+    )
+
+    html = generate_html_report(result)
+
+    step_row = _extract_cluster_header_step_row(html, "c-arrow")
+    assert "Api → Запрос POST /users → Проверка тела ответа" in step_row
+    assert "Запрос POST /users" in step_row
+    assert 'class="cluster-step-sep"' not in step_row
 
 
 def test_clusters_collapsed_by_default_and_toggle_all_button() -> None:
