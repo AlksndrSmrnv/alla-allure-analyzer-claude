@@ -373,12 +373,15 @@ class TestScanJsonForHttpInfo:
         assert "id-1" in result or "id-2" in result
 
 
+import logging
+
 import pytest
 from unittest.mock import patch
 
 from alla.models.testops import AttachmentMeta, FailedTestSummary
 from alla.models.common import TestStatus
 from alla.services.log_extraction_service import LogExtractionConfig, LogExtractionService
+from conftest import make_failed_test_summary
 
 
 class FakeAttachmentProvider:
@@ -694,3 +697,240 @@ class TestLogExtractionServiceIntegration:
         body, _, marker = summary.log_snippet.partition("\n\n[... обрезано")
         assert len(body) == 500
         assert marker.endswith("...]")
+
+
+class TestDetailsAttachmentAugmentation:
+    """Details-вложение Expected/Actual поднимается в status_message."""
+
+    @pytest.mark.asyncio
+    async def test_details_appended_to_existing_status_message(self):
+        details = "Expected: <200>\nActual: <500>"
+        att = AttachmentMeta(id=101, name="Details", type="text/plain")
+        provider = FakeAttachmentProvider([att], {101: details.encode("utf-8")})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message="AssertionError")
+
+        await service.enrich_with_logs([summary])
+
+        assert summary.status_message == f"AssertionError\n\n{details}"
+        assert summary.log_snippet is None
+
+    @pytest.mark.asyncio
+    async def test_details_becomes_status_message_when_empty(self):
+        details = "Expected: success\r\nActual: failure"
+        att = AttachmentMeta(id=102, name="Details.txt", type="text/plain")
+        provider = FakeAttachmentProvider([att], {102: details.encode("utf-8")})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message=None)
+
+        await service.enrich_with_logs([summary])
+
+        assert summary.status_message == "Expected: success\nActual: failure"
+        assert summary.log_snippet is None
+
+    @pytest.mark.asyncio
+    async def test_no_details_keeps_status_message_and_runs_handlers(self):
+        content = b"2026-01-01 10:00:00 [ERROR] backend failed"
+        att = AttachmentMeta(id=103, name="test.log", type="text/plain")
+        provider = FakeAttachmentProvider([att], {103: content})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message="AssertionError")
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.status_message == "AssertionError"
+        assert summary.log_snippet is not None
+        assert "backend failed" in summary.log_snippet
+
+    @pytest.mark.parametrize(
+        ("name", "mime", "matches"),
+        [
+            ("Details", "text/plain", True),
+            ("DETAILS", "text/plain", True),
+            ("details.txt", "text/plain", True),
+            ("Details.log", "text/plain", True),
+            ("Details", "", True),
+            ("assertion_details.txt", "text/plain", False),
+            ("my_details", "text/plain", False),
+            ("details.json", "text/plain", False),
+            ("Details.png", "text/plain", False),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_details_name_and_mime_matrix(self, name, mime, matches):
+        details = "Expected: <a>\nActual: <b>"
+        att = AttachmentMeta(id=104, name=name, type=mime)
+        provider = FakeAttachmentProvider([att], {104: details.encode("utf-8")})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message="AssertionError")
+
+        await service.enrich_with_logs([summary])
+
+        if matches:
+            assert summary.status_message == f"AssertionError\n\n{details}"
+        else:
+            assert summary.status_message == "AssertionError"
+
+    @pytest.mark.asyncio
+    async def test_details_accepts_content_type_when_type_is_missing(self):
+        details = "Expected: <left>\nActual: <right>"
+        att = AttachmentMeta(
+            id=114,
+            name="Details",
+            type=None,
+            content_type="text/plain",
+        )
+        provider = FakeAttachmentProvider([att], {114: details.encode("utf-8")})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message="AssertionError")
+
+        await service.enrich_with_logs([summary])
+
+        assert summary.status_message == f"AssertionError\n\n{details}"
+
+    @pytest.mark.asyncio
+    async def test_details_with_non_text_mime_is_not_augmented(self):
+        att = AttachmentMeta(id=105, name="Details", type="image/png")
+        provider = FakeAttachmentProvider([att], {105: b"Expected: a\nActual: b"})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message="AssertionError")
+
+        await service.enrich_with_logs([summary])
+
+        assert summary.status_message == "AssertionError"
+
+    @pytest.mark.asyncio
+    async def test_multiple_details_uses_first_and_logs_skipped_rest(self, caplog):
+        first_details = "Expected: <first>\nActual: <used>"
+        second_details = (
+            "Expected: <second>\nActual: <skipped>\n"
+            "2026-01-01 10:00:00 [ERROR] should not become log"
+        )
+        atts = [
+            AttachmentMeta(id=115, name="Details", type="text/plain"),
+            AttachmentMeta(id=116, name="Details.txt", type="text/plain"),
+        ]
+        provider = FakeAttachmentProvider(
+            atts,
+            {
+                115: first_details.encode("utf-8"),
+                116: second_details.encode("utf-8"),
+            },
+        )
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message="AssertionError")
+        caplog.set_level(logging.DEBUG, logger="alla.services.log_extraction_service")
+
+        await service.enrich_with_logs([summary])
+
+        assert summary.status_message == f"AssertionError\n\n{first_details}"
+        assert summary.log_snippet is None
+        assert "пропущено дополнительных Details" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_large_details_is_truncated_with_marker(self):
+        details = "Expected: <ok>\nActual: " + ("x" * 5000)
+        att = AttachmentMeta(id=106, name="Details", type="text/plain")
+        provider = FakeAttachmentProvider([att], {106: details.encode("utf-8")})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message="AssertionError")
+
+        await service.enrich_with_logs([summary])
+
+        assert summary.status_message is not None
+        appended = summary.status_message.split("\n\n", 1)[1]
+        assert appended.endswith("\n... [Details обрезаны]")
+        assert len(appended) == 4096 + len("\n... [Details обрезаны]")
+
+    @pytest.mark.asyncio
+    async def test_details_is_idempotent_when_already_inline(self):
+        details = "Expected: <ok>\nActual: <fail>"
+        att = AttachmentMeta(id=107, name="Details", type="text/plain")
+        provider = FakeAttachmentProvider([att], {107: details.encode("utf-8")})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(
+            status_message=f"AssertionError\n\n{details}",
+        )
+
+        await service.enrich_with_logs([summary])
+
+        assert summary.status_message == f"AssertionError\n\n{details}"
+
+    @pytest.mark.asyncio
+    async def test_details_is_idempotent_with_different_newline_style(self):
+        details = "Expected: <ok>\nActual: <fail>"
+        inline_details = "Expected: <ok>\r\nActual: <fail>"
+        att = AttachmentMeta(id=113, name="Details", type="text/plain")
+        provider = FakeAttachmentProvider([att], {113: details.encode("utf-8")})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(
+            status_message=f"AssertionError\r\n\r\n{inline_details}",
+        )
+
+        await service.enrich_with_logs([summary])
+
+        assert summary.status_message == f"AssertionError\r\n\r\n{inline_details}"
+
+    @pytest.mark.asyncio
+    async def test_details_and_neighbor_log_are_split_between_channels(self):
+        details = "Expected: <active>\nActual: <blocked>"
+        log = b"2026-01-01 10:00:00 [ERROR] Service unavailable"
+        atts = [
+            AttachmentMeta(id=108, name="Details", type="text/plain"),
+            AttachmentMeta(id=109, name="test.log", type="text/plain"),
+        ]
+        provider = FakeAttachmentProvider(
+            atts,
+            {108: details.encode("utf-8"), 109: log},
+        )
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message="AssertionError")
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.status_message == f"AssertionError\n\n{details}"
+        assert summary.log_snippet is not None
+        assert "Service unavailable" in summary.log_snippet
+        assert "Expected: <active>" not in summary.log_snippet
+
+    @pytest.mark.asyncio
+    async def test_details_download_error_does_not_stop_pipeline(self):
+        details_att = AttachmentMeta(id=110, name="Details", type="text/plain")
+        log_att = AttachmentMeta(id=111, name="test.log", type="text/plain")
+
+        class FailingDetailsProvider(FakeAttachmentProvider):
+            async def get_attachment_content(self, attachment_id: int) -> bytes:
+                if attachment_id == 110:
+                    raise RuntimeError("download failed")
+                return await super().get_attachment_content(attachment_id)
+
+        provider = FailingDetailsProvider(
+            [details_att, log_att],
+            {111: b"2026-01-01 10:00:00 [ERROR] downstream failed"},
+        )
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message="AssertionError")
+
+        with patch("alla.services.log_extraction_service._MAGIC_AVAILABLE", True), \
+             patch("magic.from_buffer", return_value="text/plain"):
+            await service.enrich_with_logs([summary])
+
+        assert summary.status_message == "AssertionError"
+        assert summary.log_snippet is not None
+        assert "downstream failed" in summary.log_snippet
+
+    @pytest.mark.asyncio
+    async def test_binary_garbage_details_is_skipped(self):
+        att = AttachmentMeta(id=112, name="Details.txt", type="text/plain")
+        provider = FakeAttachmentProvider([att], {112: bytes(range(256)) * 4})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message="AssertionError")
+
+        with patch("alla.services.log_extraction_service._decode_text", return_value=None):
+            await service.enrich_with_logs([summary])
+
+        assert summary.status_message == "AssertionError"

@@ -97,7 +97,9 @@ class ClusteringConfig:
 # и русский вариант: "но было: <Y>", "но было: [Y]", "но было: \"Y\""
 _ASSERTION_ACTUAL_RE = re.compile(
     r"(?:but\s+was|но\s+было)\s*:?\s*"
-    r"(?:<([^>]+)>|\[([^\]]+)\]|\"([^\"]+)\")",
+    r"(?:<([^>]+)>|\[([^\]]+)\]|\"([^\"]+)\")"
+    r"|"
+    r"(?:^|\n)\s*(?:actual|фактическое)\s*:\s*(.+?)\s*(?:\n|$)",
     re.IGNORECASE,
 )
 
@@ -110,7 +112,7 @@ def _extract_assertion_actual(message: str) -> str | None:
     m = _ASSERTION_ACTUAL_RE.search(message)
     if m is None:
         return None
-    raw = m.group(1) or m.group(2) or m.group(3)
+    raw = m.group(1) or m.group(2) or m.group(3) or m.group(4)
     return " ".join(raw.split()) if raw else raw
 
 
