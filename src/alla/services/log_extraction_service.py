@@ -7,6 +7,7 @@
 
 import asyncio
 import logging
+import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -399,6 +400,45 @@ _PROCESSABLE_MIME_EXACT = frozenset({
     "text/xml",
     "application/x-ndjson",
 })
+_DETAILS_MAX_APPEND_CHARS = 4096
+_DETAILS_ALLOWED_EXTENSIONS = frozenset({"", ".txt", ".log"})
+
+
+def _is_details_attachment(att: AttachmentMeta) -> bool:
+    """Проверить, похоже ли вложение на TestOps Details с Expected/Actual."""
+    raw_name = (att.name or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    stem, ext = os.path.splitext(raw_name)
+    if stem.lower() != "details":
+        return False
+    if ext.lower() not in _DETAILS_ALLOWED_EXTENSIONS:
+        return False
+
+    mime = (att.type or att.content_type or "").lower().split(";")[0].strip()
+    return not mime or mime == "text/plain" or mime.startswith("text/")
+
+
+def _augment_status_message_with_details(
+    summary: FailedTestSummary,
+    details_text: str,
+) -> bool:
+    """Добавить Details-текст в status_message с нормализацией и cap."""
+    normalized = details_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return False
+
+    current = summary.status_message or ""
+    current_normalized = current.replace("\r\n", "\n").replace("\r", "\n")
+    if normalized in current or normalized in current_normalized:
+        return False
+
+    if len(normalized) > _DETAILS_MAX_APPEND_CHARS:
+        normalized = (
+            normalized[:_DETAILS_MAX_APPEND_CHARS]
+            + "\n... [Details обрезаны]"
+        )
+
+    summary.status_message = normalized if not current else f"{current}\n\n{normalized}"
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -523,9 +563,72 @@ class LogExtractionService:
                     )
                     return
 
+            details_atts = [
+                att for att in all_attachments
+                if _is_details_attachment(att)
+            ]
+            if details_atts:
+                details_att = details_atts[0]
+                if details_att.id is None:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "Details: тест %d — вложение %s без id, пропуск",
+                            summary.test_result_id,
+                            details_att.name,
+                        )
+                else:
+                    async with semaphore:
+                        try:
+                            details_bytes = await self._provider.get_attachment_content(
+                                details_att.id,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Details: не удалось скачать аттачмент %d (%s) "
+                                "для теста %d: %s",
+                                details_att.id,
+                                details_att.name,
+                                summary.test_result_id,
+                                exc,
+                            )
+                            details_bytes = b""
+
+                    if details_bytes:
+                        decoded_details = _decode_text(details_bytes)
+                        if decoded_details is None:
+                            if logger.isEnabledFor(logging.DEBUG):
+                                logger.debug(
+                                    "Details: тест %d — аттачмент %d (%s) "
+                                    "не декодирован как текст",
+                                    summary.test_result_id,
+                                    details_att.id,
+                                    details_att.name,
+                                )
+                        else:
+                            before_len = len(summary.status_message or "")
+                            if _augment_status_message_with_details(
+                                summary,
+                                decoded_details,
+                            ):
+                                added_len = len(summary.status_message or "") - before_len
+                                logger.info(
+                                    "Details: тест %d — добавлено %d символов "
+                                    "в status_message",
+                                    summary.test_result_id,
+                                    added_len,
+                                )
+                            elif logger.isEnabledFor(logging.DEBUG):
+                                logger.debug(
+                                    "Details: тест %d — аттачмент %d (%s) "
+                                    "пустой или уже присутствует в status_message",
+                                    summary.test_result_id,
+                                    details_att.id,
+                                    details_att.name,
+                                )
+
             processable = [
                 att for att in all_attachments
-                if self._is_processable_attachment(att)
+                if att not in details_atts and self._is_processable_attachment(att)
             ]
             if not processable:
                 summary.correlation_hint = _apply_status_details_correlation_fallback(

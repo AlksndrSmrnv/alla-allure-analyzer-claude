@@ -458,6 +458,15 @@ class TestExtractAssertionActual:
     def test_inner_tabs_and_newlines_collapsed(self) -> None:
         assert _extract_assertion_actual("but was: < some\t value >") == "some value"
 
+    def test_actual_line(self) -> None:
+        assert _extract_assertion_actual("Expected: 0\nActual: 42") == "42"
+
+    def test_russian_actual_line(self) -> None:
+        assert _extract_assertion_actual("Ожидаемое: ok\nФактическое: server-error") == "server-error"
+
+    def test_actual_word_in_free_text_does_not_match(self) -> None:
+        assert _extract_assertion_actual("The actual results were inconsistent") is None
+
 
 # ---------------------------------------------------------------------------
 # Unit-тесты _strip_correlation_only_http_sections
@@ -637,6 +646,47 @@ def test_same_actual_different_expected_still_merged() -> None:
 
     assert report.cluster_count == 1
     assert sorted(report.clusters[0].member_test_ids) == [70, 71]
+
+
+def test_different_details_actuals_are_not_merged() -> None:
+    """Разные Actual из Details в status_message → разные кластеры."""
+    failures = [
+        _failure(
+            75,
+            status_message="AssertionError\n\nExpected: <0>\nActual: <33>",
+        ),
+        _failure(
+            76,
+            status_message="AssertionError\n\nExpected: <0>\nActual: <1>",
+        ),
+    ]
+
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 2
+    member_sets = sorted(tuple(c.member_test_ids) for c in report.clusters)
+    assert member_sets == [(75,), (76,)]
+
+
+def test_same_details_actuals_are_merged() -> None:
+    """Одинаковый Actual из Details не мешает обычной склейке."""
+    failures = [
+        _failure(
+            77,
+            status_message="AssertionError\n\nExpected: <200>\nActual: server-error",
+        ),
+        _failure(
+            78,
+            status_message="AssertionError\n\nExpected: <0>\nActual: server-error",
+        ),
+    ]
+
+    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
+    report = service.cluster_failures(launch_id=1, failures=failures)
+
+    assert report.cluster_count == 1
+    assert sorted(report.clusters[0].member_test_ids) == [77, 78]
 
 
 def test_correlation_only_http_logs_do_not_merge_different_messages() -> None:
