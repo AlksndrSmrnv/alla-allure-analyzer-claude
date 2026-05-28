@@ -467,6 +467,9 @@ class TestExtractAssertionActual:
     def test_actual_word_in_free_text_does_not_match(self) -> None:
         assert _extract_assertion_actual("The actual results were inconsistent") is None
 
+    def test_actual_after_log_prefix_does_not_match(self) -> None:
+        assert _extract_assertion_actual("foo\n[INFO] Actual: 42 received") is None
+
 
 # ---------------------------------------------------------------------------
 # Unit-тесты _strip_correlation_only_http_sections

@@ -373,6 +373,8 @@ class TestScanJsonForHttpInfo:
         assert "id-1" in result or "id-2" in result
 
 
+import logging
+
 import pytest
 from unittest.mock import patch
 
@@ -772,6 +774,23 @@ class TestDetailsAttachmentAugmentation:
             assert summary.status_message == "AssertionError"
 
     @pytest.mark.asyncio
+    async def test_details_accepts_content_type_when_type_is_missing(self):
+        details = "Expected: <left>\nActual: <right>"
+        att = AttachmentMeta(
+            id=114,
+            name="Details",
+            type=None,
+            content_type="text/plain",
+        )
+        provider = FakeAttachmentProvider([att], {114: details.encode("utf-8")})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message="AssertionError")
+
+        await service.enrich_with_logs([summary])
+
+        assert summary.status_message == f"AssertionError\n\n{details}"
+
+    @pytest.mark.asyncio
     async def test_details_with_non_text_mime_is_not_augmented(self):
         att = AttachmentMeta(id=105, name="Details", type="image/png")
         provider = FakeAttachmentProvider([att], {105: b"Expected: a\nActual: b"})
@@ -781,6 +800,34 @@ class TestDetailsAttachmentAugmentation:
         await service.enrich_with_logs([summary])
 
         assert summary.status_message == "AssertionError"
+
+    @pytest.mark.asyncio
+    async def test_multiple_details_uses_first_and_logs_skipped_rest(self, caplog):
+        first_details = "Expected: <first>\nActual: <used>"
+        second_details = (
+            "Expected: <second>\nActual: <skipped>\n"
+            "2026-01-01 10:00:00 [ERROR] should not become log"
+        )
+        atts = [
+            AttachmentMeta(id=115, name="Details", type="text/plain"),
+            AttachmentMeta(id=116, name="Details.txt", type="text/plain"),
+        ]
+        provider = FakeAttachmentProvider(
+            atts,
+            {
+                115: first_details.encode("utf-8"),
+                116: second_details.encode("utf-8"),
+            },
+        )
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_failed_test_summary(status_message="AssertionError")
+        caplog.set_level(logging.DEBUG, logger="alla.services.log_extraction_service")
+
+        await service.enrich_with_logs([summary])
+
+        assert summary.status_message == f"AssertionError\n\n{first_details}"
+        assert summary.log_snippet is None
+        assert "пропущено дополнительных Details" in caplog.text
 
     @pytest.mark.asyncio
     async def test_large_details_is_truncated_with_marker(self):
@@ -883,6 +930,7 @@ class TestDetailsAttachmentAugmentation:
         service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
         summary = make_failed_test_summary(status_message="AssertionError")
 
-        await service.enrich_with_logs([summary])
+        with patch("alla.services.log_extraction_service._decode_text", return_value=None):
+            await service.enrich_with_logs([summary])
 
         assert summary.status_message == "AssertionError"

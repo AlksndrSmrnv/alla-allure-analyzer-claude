@@ -414,7 +414,7 @@ def _is_details_attachment(att: AttachmentMeta) -> bool:
         return False
 
     mime = (att.type or att.content_type or "").lower().split(";")[0].strip()
-    return not mime or mime == "text/plain" or mime.startswith("text/")
+    return not mime or mime.startswith("text/")
 
 
 def _augment_status_message_with_details(
@@ -568,6 +568,16 @@ class LogExtractionService:
                 if _is_details_attachment(att)
             ]
             if details_atts:
+                if len(details_atts) > 1 and logger.isEnabledFor(logging.DEBUG):
+                    skipped_names = ", ".join(
+                        (att.name or f"attachment-{att.id}") for att in details_atts[1:]
+                    )
+                    logger.debug(
+                        "Details: тест %d — пропущено дополнительных Details: %s",
+                        summary.test_result_id,
+                        skipped_names,
+                    )
+
                 details_att = details_atts[0]
                 if details_att.id is None:
                     if logger.isEnabledFor(logging.DEBUG):
@@ -611,7 +621,7 @@ class LogExtractionService:
                                 decoded_details,
                             ):
                                 added_len = len(summary.status_message or "") - before_len
-                                logger.info(
+                                logger.debug(
                                     "Details: тест %d — добавлено %d символов "
                                     "в status_message",
                                     summary.test_result_id,
