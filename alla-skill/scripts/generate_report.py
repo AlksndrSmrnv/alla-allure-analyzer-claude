@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 from _common import (
     EXIT_CONFIG,
+    EXIT_ERROR,
     build_alla_client,
     error_envelope,
     exit_with_error,
@@ -105,6 +106,25 @@ def main(argv: list[str] | None = None) -> None:
     filename = response.get("report_filename") or f"alla_report_run_{args.run_id}.html"
 
     saved_to_disk = _write_to_disk(html, args.out, settings, filename)
+    saved_to_db = bool(response.get("saved_to_db", False))
+    report_url = response.get("report_url") or ""
+
+    # Hard error: отчёт нигде не доступен — ни серверной копии в БД, ни
+    # локального файла, ни валидного report_url. Иначе шаг отрапортует
+    # "успех", а ссылка из отчёта будет вести в никуда.
+    if not saved_to_db and not saved_to_disk and not report_url:
+        exit_with_error(
+            error_envelope(
+                "Отчёт нигде не сохранён: сервер не записал в БД "
+                "(ALLURE_REPORTS_POSTGRES?), локальная запись не настроена "
+                "или упала, report_url пуст. Укажи --out / ALLURE_REPORTS_DIR "
+                "или настрой сохранение отчётов на сервере.",
+                run_id=args.run_id,
+                report_filename=filename,
+            ),
+            EXIT_ERROR,
+        )
+        return
 
     reasons = response.get("interactive_disabled_reasons")
     if reasons is None:
@@ -122,8 +142,8 @@ def main(argv: list[str] | None = None) -> None:
             "ok": True,
             "run_id": args.run_id,
             "report_filename": filename,
-            "report_url": response.get("report_url"),
-            "saved_to_db": response.get("saved_to_db", False),
+            "report_url": report_url or None,
+            "saved_to_db": saved_to_db,
             "saved_to_disk": saved_to_disk,
             "html_size_bytes": response.get("html_size_bytes", len(html.encode("utf-8"))),
             "interactive_disabled_reasons": reasons,

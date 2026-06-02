@@ -561,10 +561,15 @@ async def get_report(filename: str, request: Request) -> HTMLResponse:
         return response
 
     # Попробовать PostgreSQL (включая отчёты, сохранённые skill-flow при
-    # выключенном ALLURE_REPORTS_POSTGRES).
+    # выключенном ALLURE_REPORTS_POSTGRES). Ошибка БД не должна обрывать
+    # запрос — ниже есть filesystem fallback (reports_dir).
     content_store = _get_report_content_store()
     if content_store is not None:
-        content = content_store.load(filename)
+        try:
+            content = content_store.load(filename)
+        except Exception as exc:  # noqa: BLE001 - временная DB-ошибка не критична
+            logger.warning("Не удалось прочитать отчёт %s из БД: %s", filename, exc)
+            content = None
         if content is not None:
             await _record_report_view_best_effort(filename, viewer_id=viewer_id)
             return _build_response(content)

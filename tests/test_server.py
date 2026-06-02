@@ -1727,3 +1727,28 @@ async def test_skill_summary_context_422_when_clusters_not_object(_http_client) 
             "/api/v1/skill/runs/42/summary-context", json={"clusters": ["a", "b"]}
         )
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_reports_db_load_error_falls_back_to_filesystem(
+    _http_client, monkeypatch, tmp_path
+) -> None:
+    """Временная ошибка чтения из БД не обрывает /reports — отдаём из reports_dir."""
+    (tmp_path / "alla_launch_1_run_1_x.html").write_text("<html>fs</html>", encoding="utf-8")
+    _setup_state(settings=_skill_settings(reports_dir=str(tmp_path)))
+    import alla.report.report_store as report_store_mod
+
+    class _FlakyStore:
+        def __init__(self, *, dsn):
+            pass
+
+        def load(self, filename):
+            raise RuntimeError("DB blip")
+
+    monkeypatch.setattr(report_store_mod, "PostgresReportStore", _FlakyStore)
+
+    async with _http_client as client:
+        resp = await client.get("/reports/alla_launch_1_run_1_x.html")
+
+    assert resp.status_code == 200
+    assert "fs" in resp.text
