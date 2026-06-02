@@ -153,3 +153,64 @@ def test_serve_propagate_env_does_not_override_existing(
     import os
 
     assert os.environ["ALLURE_KB_POSTGRES_DSN"] == "from-shell"
+
+
+class _FakeAllaClient:
+    """Контекст-менеджер-заглушка вместо AllaApiClient."""
+
+    def __init__(self, response: dict) -> None:
+        self._response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args) -> None:
+        return None
+
+    def generate_skill_report(self, run_id: int) -> dict:
+        return self._response
+
+
+def test_generate_report_hard_errors_when_nowhere_saved(monkeypatch) -> None:
+    """Нет saved_to_db, нет --out/reports_dir, пустой report_url → EXIT_ERROR."""
+    import generate_report
+
+    settings = SimpleNamespace(kb_active=True, feedback_server_url="http://x", reports_dir="")
+    monkeypatch.setattr(generate_report, "load_settings", lambda **k: settings)
+    monkeypatch.setattr(
+        generate_report,
+        "build_alla_client",
+        lambda s: _FakeAllaClient(
+            {"html": "<html>", "report_filename": "r.html", "saved_to_db": False, "report_url": ""}
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        generate_report.main(["--run-id", "42"])
+    assert exc.value.code == generate_report.EXIT_ERROR
+
+
+def test_generate_report_ok_when_saved_to_db(monkeypatch, capsys) -> None:
+    """saved_to_db=true — шаг успешен, без hard error."""
+    import generate_report
+
+    settings = SimpleNamespace(kb_active=True, feedback_server_url="http://x", reports_dir="")
+    monkeypatch.setattr(generate_report, "load_settings", lambda **k: settings)
+    monkeypatch.setattr(
+        generate_report,
+        "build_alla_client",
+        lambda s: _FakeAllaClient(
+            {
+                "html": "<html>",
+                "report_filename": "r.html",
+                "saved_to_db": True,
+                "report_url": "http://x/reports/r.html",
+                "interactive_disabled_reasons": [],
+            }
+        ),
+    )
+
+    generate_report.main(["--run-id", "42"])
+    out = capsys.readouterr().out
+    assert '"saved_to_db": true' in out
+    assert '"ok": true' in out

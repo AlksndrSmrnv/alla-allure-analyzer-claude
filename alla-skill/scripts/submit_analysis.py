@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Принять агентский анализ через stdin и записать в ``alla.skill_run``.
+"""Принять агентский анализ через stdin и записать через ``alla-server``.
 
-Тонкая обёртка над :mod:`alla.services.agent_analysis_adapter`
-(валидация) и :mod:`alla.services.skill_state_service` (запись).
+Тонкая обёртка над REST-эндпоинтом
+``POST /api/v1/skill/runs/{run_id}/analysis``. Валидацию схемы и запись в
+``alla.skill_run`` выполняет сервер (DSN живёт только на сервере).
 """
 
 from __future__ import annotations
@@ -14,11 +15,11 @@ from typing import Any
 
 from _common import (
     EXIT_CONFIG,
-    EXIT_NOT_FOUND,
     EXIT_VALIDATION,
+    build_alla_client,
     error_envelope,
     exit_with_error,
-    get_pg_dsn,
+    handle_api_error,
     load_settings,
     parse_stdin_json,
     print_json,
@@ -48,7 +49,7 @@ def _read_payload(source: str) -> Any:
 def main(argv: list[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
     try:
-        settings = load_settings()
+        settings = load_settings(require_kb_dsn=False, validate_testops=False)
     except Exception as exc:
         exit_with_error(error_envelope(f"Ошибка конфигурации: {exc}"), EXIT_CONFIG)
         return
@@ -62,78 +63,22 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
-    from alla.services.agent_analysis_adapter import (
-        AgentAnalysisError,
-        validate_agent_payload,
-    )
-    from alla.services.skill_state_service import (
-        SkillStateError,
-        load_run,
-        save_agent_analysis,
-    )
-
-    dsn = get_pg_dsn(settings)
-    try:
-        skill_run = load_run(dsn=dsn, run_id=args.run_id)
-    except SkillStateError as exc:
+    if not isinstance(payload, dict):
         exit_with_error(
-            error_envelope(str(exc), run_id=args.run_id),
-            EXIT_NOT_FOUND,
-        )
-        return
-
-    expected_ids: list[str] = []
-    if skill_run.clustering_report is not None:
-        expected_ids = [c.cluster_id for c in skill_run.clustering_report.clusters]
-
-    try:
-        missing, extra = validate_agent_payload(
-            payload,
-            expected_cluster_ids=expected_ids,
-        )
-    except AgentAnalysisError as exc:
-        exit_with_error(
-            error_envelope(
-                f"Невалидный agent payload: {exc}",
-                run_id=args.run_id,
-            ),
+            error_envelope("payload должен быть JSON-объектом"),
             EXIT_VALIDATION,
         )
         return
 
-    summary_text = (
-        payload.get("launch_summary", {}).get("summary_text")
-        if isinstance(payload, dict)
-        else ""
-    ) or ""
+    from alla.clients.alla_api_client import AllaApiError
 
     try:
-        save_agent_analysis(
-            dsn=dsn,
-            run_id=args.run_id,
-            agent_analysis=payload,
-            agent_summary_text=summary_text,
-        )
-    except SkillStateError as exc:
-        exit_with_error(
-            error_envelope(
-                f"Не удалось записать анализ: {exc}",
-                run_id=args.run_id,
-            ),
-            EXIT_NOT_FOUND,
-        )
-        return
+        with build_alla_client(settings) as client:
+            response = client.submit_skill_analysis(args.run_id, payload)
+    except AllaApiError as exc:
+        handle_api_error(exc)
 
-    print_json(
-        {
-            "ok": True,
-            "run_id": args.run_id,
-            "clusters_received": len(payload.get("clusters", {})),
-            "clusters_expected": len(expected_ids),
-            "missing_cluster_ids": missing,
-            "extra_cluster_ids": extra,
-        }
-    )
+    print_json(response)
 
 
 if __name__ == "__main__":

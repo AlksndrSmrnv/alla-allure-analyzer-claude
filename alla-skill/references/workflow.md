@@ -40,8 +40,9 @@ Stdout — компактный JSON с `run_id`, счётчиками, top-ур
 **Что делать при `cluster_count == 0`:** скажи пользователю, что в
 прогоне нет активных падений, не вызывая остальных скриптов.
 
-**Что делать при ошибке БД (`psycopg.OperationalError`):**
-проверь `ALLURE_KB_POSTGRES_DSN`, `sslmode`, доступы. См.
+**Что делать при ошибке связи с сервером (`AllaApiConnectionError`):**
+проверь, что `alla-server` поднят и `ALLURE_FEEDBACK_SERVER_URL` указывает
+на него (DSN базы знаний настраивается на сервере, не у клиента). См.
 `troubleshooting.md`.
 
 ### 2. Делегировать анализ кластеров
@@ -100,10 +101,11 @@ python alla-skill/scripts/generate_report.py --run-id 42
 
 Опции:
 
-* `--out path/to/file.html` — явный путь сохранения.
-* `--no-save-to-db` — не сохранять в `alla.report`.
+* `--out path/to/file.html` — явный путь сохранения копии на локальный диск.
 
-Без `--out` отчёт пишется в `ALLURE_REPORTS_DIR` (если задан).
+HTML рендерит и сохраняет в `alla.report` сам сервер. Без `--out` отчёт
+дополнительно пишется в `ALLURE_REPORTS_DIR` (если задан) — это локальная
+копия на машине пользователя.
 
 В stdout: `report_filename`, `report_url` (составляется из
 `ALLURE_SERVER_EXTERNAL_URL` + filename, или из `ALLURE_REPORT_URL`),

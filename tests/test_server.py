@@ -107,6 +107,7 @@ def _setup_state(client: Any = None, settings: Any = None) -> None:
     _state.settings = settings or _DummySettings()
     _state.auth = None
     _state.report_store = None
+    _state.skill_report_store = None
     _state.report_view_store = None
 
 
@@ -1332,3 +1333,422 @@ def test_calculate_llm_token_usage(
     )
 
     assert calculate_llm_token_usage(result) == expected
+
+
+# ---------------------------------------------------------------------------
+# Skill pipeline endpoints (/api/v1/skill/...)
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from alla.models.clustering import (  # noqa: E402
+    ClusterSignature,
+    ClusteringReport,
+    FailureCluster,
+)
+from alla.models.onboarding import OnboardingState  # noqa: E402
+from alla.models.common import TestStatus as _SkillStatus  # noqa: E402
+from alla.models.testops import FailedTestSummary  # noqa: E402
+from alla.services.skill_state_service import (  # noqa: E402
+    SKILL_RUN_SCHEMA_VERSION,
+    SkillRun,
+    SkillStateError,
+)
+
+
+def _skill_settings(**overrides) -> SimpleNamespace:
+    base = dict(
+        kb_active=True,
+        kb_postgres_dsn="postgresql://u:p@localhost/db",
+        reports_postgres=False,
+        server_external_url="http://x",
+        report_url="",
+        report_link_name="Alla report",
+        endpoint="https://allure.example",
+        feedback_server_url="http://x",
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _skill_triage() -> TriageReport:
+    return TriageReport(
+        launch_id=123,
+        launch_name="Run",
+        project_id=1,
+        total_results=5,
+        passed_count=4,
+        failed_count=1,
+        failed_tests=[
+            FailedTestSummary(
+                test_result_id=1,
+                test_case_id=101,
+                name="t1",
+                status=_SkillStatus.FAILED,
+                status_message="boom",
+                log_snippet="ERROR boom",
+            )
+        ],
+    )
+
+
+def _skill_clustering() -> ClusteringReport:
+    return ClusteringReport(
+        launch_id=123,
+        total_failures=1,
+        cluster_count=1,
+        unclustered_count=0,
+        clusters=[
+            FailureCluster(
+                cluster_id="c-1",
+                label="boom",
+                signature=ClusterSignature(),
+                member_test_ids=[1],
+                member_count=1,
+                representative_test_id=1,
+                example_message="boom",
+            )
+        ],
+    )
+
+
+def _make_skill_run(**overrides) -> SkillRun:
+    defaults = dict(
+        run_id=42,
+        schema_version=SKILL_RUN_SCHEMA_VERSION,
+        status="clustered",
+        launch_id=123,
+        project_id=1,
+        launch_name="Run",
+        triage_report=_skill_triage(),
+        clustering_report=_skill_clustering(),
+        onboarding=OnboardingState(),
+    )
+    defaults.update(overrides)
+    return SkillRun(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_skill_get_run_501_when_kb_inactive(_http_client) -> None:
+    _setup_state(settings=_DummySettings(kb_active=False))
+    async with _http_client as client:
+        resp = await client.get("/api/v1/skill/runs/42")
+    assert resp.status_code == 501
+
+
+@pytest.mark.asyncio
+async def test_skill_get_run_returns_serialized(_http_client, monkeypatch) -> None:
+    _setup_state(settings=_skill_settings())
+    import alla.services.skill_state_service as state_mod
+
+    monkeypatch.setattr(state_mod, "load_run", lambda *, dsn, run_id: _make_skill_run())
+
+    async with _http_client as client:
+        resp = await client.get("/api/v1/skill/runs/42")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["run_id"] == 42
+    assert data["launch_id"] == 123
+    TriageReport.model_validate(data["triage_report"])
+
+
+@pytest.mark.asyncio
+async def test_skill_get_run_404_when_missing(_http_client, monkeypatch) -> None:
+    _setup_state(settings=_skill_settings())
+    import alla.services.skill_state_service as state_mod
+
+    def _raise(*, dsn, run_id):
+        raise SkillStateError("not found")
+
+    monkeypatch.setattr(state_mod, "load_run", _raise)
+
+    async with _http_client as client:
+        resp = await client.get("/api/v1/skill/runs/99")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_skill_create_run_persists_and_summarizes(_http_client, monkeypatch) -> None:
+    _setup_state(settings=_skill_settings())
+
+    import alla.orchestrator as orch
+    import alla.services.kb_lookup_service as kb_mod
+    import alla.services.skill_state_service as state_mod
+    from alla.services.kb_lookup_service import KBStageResult
+
+    monkeypatch.setattr(orch, "apply_merge_rules_phase", lambda r, c, s: c)
+    monkeypatch.setattr(kb_mod, "lookup_kb_for_clusters", lambda r, c, s: KBStageResult())
+    monkeypatch.setattr(orch, "build_onboarding_state", lambda *a, **k: OnboardingState())
+    captured = {}
+
+    def _create_run(*, dsn, triage_report, clustering_report, kb_stage, onboarding):
+        captured["launch_id"] = triage_report.launch_id
+        return 77
+
+    monkeypatch.setattr(state_mod, "create_run", _create_run)
+
+    body = {
+        "triage_report": _skill_triage().model_dump(mode="json"),
+        "clustering_report": _skill_clustering().model_dump(mode="json"),
+    }
+    async with _http_client as client:
+        resp = await client.post("/api/v1/skill/runs", json=body)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["run_id"] == 77
+    assert data["cluster_count"] == 1
+    assert captured["launch_id"] == 123
+
+
+@pytest.mark.asyncio
+async def test_skill_create_run_422_without_triage(_http_client) -> None:
+    _setup_state(settings=_skill_settings())
+    async with _http_client as client:
+        resp = await client.post("/api/v1/skill/runs", json={"clustering_report": None})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_skill_cluster_context_happy_and_404(_http_client, monkeypatch) -> None:
+    _setup_state(settings=_skill_settings())
+    import alla.services.skill_state_service as state_mod
+
+    monkeypatch.setattr(state_mod, "load_run", lambda *, dsn, run_id: _make_skill_run())
+
+    async with _http_client as client:
+        ok = await client.get("/api/v1/skill/runs/42/clusters/c-1/context")
+        missing = await client.get("/api/v1/skill/runs/42/clusters/nope/context")
+
+    assert ok.status_code == 200
+    assert ok.json()["cluster_id"] == "c-1"
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_skill_submit_analysis_saves(_http_client, monkeypatch) -> None:
+    _setup_state(settings=_skill_settings())
+    import alla.services.agent_analysis_adapter as adapter_mod
+    import alla.services.skill_state_service as state_mod
+
+    monkeypatch.setattr(state_mod, "load_run", lambda *, dsn, run_id: _make_skill_run())
+    monkeypatch.setattr(
+        adapter_mod, "validate_agent_payload", lambda payload, *, expected_cluster_ids=None: ([], [])
+    )
+    saved = {}
+    monkeypatch.setattr(
+        state_mod,
+        "save_agent_analysis",
+        lambda *, dsn, run_id, agent_analysis, agent_summary_text: saved.update(
+            {"run_id": run_id, "summary": agent_summary_text}
+        ),
+    )
+
+    payload = {"schema_version": 1, "launch_summary": {"summary_text": "done"}, "clusters": {}}
+    async with _http_client as client:
+        resp = await client.post("/api/v1/skill/runs/42/analysis", json=payload)
+
+    assert resp.status_code == 200
+    assert resp.json()["clusters_expected"] == 1
+    assert saved["summary"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_skill_submit_analysis_422_on_invalid(_http_client, monkeypatch) -> None:
+    _setup_state(settings=_skill_settings())
+    import alla.services.agent_analysis_adapter as adapter_mod
+    import alla.services.skill_state_service as state_mod
+    from alla.services.agent_analysis_adapter import AgentAnalysisError
+
+    monkeypatch.setattr(state_mod, "load_run", lambda *, dsn, run_id: _make_skill_run())
+
+    def _bad(payload, *, expected_cluster_ids=None):
+        raise AgentAnalysisError("nope")
+
+    monkeypatch.setattr(adapter_mod, "validate_agent_payload", _bad)
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/skill/runs/42/analysis", json={"x": 1})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_skill_generate_report_returns_html(_http_client, monkeypatch) -> None:
+    _setup_state(settings=_skill_settings())
+    import alla.server as server_mod
+    import alla.services.skill_api_service as api_svc
+    import alla.services.skill_state_service as state_mod
+    import alla.report.report_store as report_store_mod
+
+    monkeypatch.setattr(state_mod, "load_run", lambda *, dsn, run_id: _make_skill_run())
+    monkeypatch.setattr(
+        api_svc, "build_analysis_result", lambda run, settings: _make_analysis_result()
+    )
+    monkeypatch.setattr(server_mod, "build_html_report_content", lambda result, *, settings: "<html>")
+
+    class _FakeStore:
+        def __init__(self, *, dsn):
+            pass
+
+        def save(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(report_store_mod, "PostgresReportStore", _FakeStore)
+    monkeypatch.setattr(state_mod, "save_report", lambda **k: None)
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/skill/runs/42/report")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["html"] == "<html>"
+    assert data["saved_to_db"] is True
+    assert data["report_filename"].endswith(".html")
+    assert data["report_url"].startswith("http://x/reports/")
+
+
+@pytest.mark.asyncio
+async def test_skill_save_push_result(_http_client, monkeypatch) -> None:
+    _setup_state(settings=_skill_settings())
+    import alla.services.skill_state_service as state_mod
+
+    captured = {}
+    monkeypatch.setattr(
+        state_mod,
+        "save_push_result",
+        lambda *, dsn, run_id, push_result: captured.update(
+            {"run_id": run_id, "result": push_result}
+        ),
+    )
+
+    async with _http_client as client:
+        resp = await client.post(
+            "/api/v1/skill/runs/42/push-result", json={"comments_posted": 3}
+        )
+
+    assert resp.status_code == 200
+    assert captured["result"]["comments_posted"] == 3
+
+
+@pytest.mark.asyncio
+async def test_skill_generate_report_db_failure_no_dangling_url(_http_client, monkeypatch) -> None:
+    """Если запись в БД упала — saved_to_db=False, без /reports-ссылки, HTML отдан."""
+    _setup_state(settings=_skill_settings())
+    import alla.server as server_mod
+    import alla.services.skill_api_service as api_svc
+    import alla.services.skill_state_service as state_mod
+    import alla.report.report_store as report_store_mod
+
+    monkeypatch.setattr(state_mod, "load_run", lambda *, dsn, run_id: _make_skill_run())
+    monkeypatch.setattr(
+        api_svc, "build_analysis_result", lambda run, settings: _make_analysis_result()
+    )
+    monkeypatch.setattr(server_mod, "build_html_report_content", lambda result, *, settings: "<html>")
+
+    class _FailingStore:
+        def __init__(self, *, dsn):
+            pass
+
+        def save(self, *a, **k):
+            raise RuntimeError("DB down")
+
+    monkeypatch.setattr(report_store_mod, "PostgresReportStore", _FailingStore)
+    monkeypatch.setattr(state_mod, "save_report", lambda **k: None)
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/skill/runs/42/report")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["html"] == "<html>"
+    assert data["saved_to_db"] is False
+    assert "/reports/" not in (data["report_url"] or "")
+
+
+@pytest.mark.asyncio
+async def test_skill_generate_report_store_init_failure(_http_client, monkeypatch) -> None:
+    """Ошибка инициализации стора (DDL/права) не валит endpoint."""
+    _setup_state(settings=_skill_settings())
+    import alla.server as server_mod
+    import alla.services.skill_api_service as api_svc
+    import alla.services.skill_state_service as state_mod
+    import alla.report.report_store as report_store_mod
+
+    monkeypatch.setattr(state_mod, "load_run", lambda *, dsn, run_id: _make_skill_run())
+    monkeypatch.setattr(
+        api_svc, "build_analysis_result", lambda run, settings: _make_analysis_result()
+    )
+    monkeypatch.setattr(server_mod, "build_html_report_content", lambda result, *, settings: "<html>")
+
+    class _BrokenInitStore:
+        def __init__(self, *, dsn):
+            raise RuntimeError("permission denied")
+
+    monkeypatch.setattr(report_store_mod, "PostgresReportStore", _BrokenInitStore)
+    monkeypatch.setattr(state_mod, "save_report", lambda **k: None)
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/skill/runs/42/report")
+
+    assert resp.status_code == 200
+    assert resp.json()["saved_to_db"] is False
+
+
+@pytest.mark.asyncio
+async def test_reports_serves_skill_saved_report_without_reports_postgres(
+    _http_client, monkeypatch
+) -> None:
+    """/reports читает отчёт из alla.report, сохранённый skill-flow при reports_postgres=false."""
+    _setup_state(settings=_skill_settings())
+    import alla.report.report_store as report_store_mod
+
+    class _ReadStore:
+        def __init__(self, *, dsn):
+            pass
+
+        def load(self, filename):
+            return "<html>skill</html>"
+
+    monkeypatch.setattr(report_store_mod, "PostgresReportStore", _ReadStore)
+
+    async with _http_client as client:
+        resp = await client.get("/reports/alla_launch_1_run_1_x.html")
+
+    assert resp.status_code == 200
+    assert "skill" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_skill_summary_context_422_when_clusters_not_object(_http_client) -> None:
+    _setup_state(settings=_skill_settings())
+    async with _http_client as client:
+        resp = await client.post(
+            "/api/v1/skill/runs/42/summary-context", json={"clusters": ["a", "b"]}
+        )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_reports_db_load_error_falls_back_to_filesystem(
+    _http_client, monkeypatch, tmp_path
+) -> None:
+    """Временная ошибка чтения из БД не обрывает /reports — отдаём из reports_dir."""
+    (tmp_path / "alla_launch_1_run_1_x.html").write_text("<html>fs</html>", encoding="utf-8")
+    _setup_state(settings=_skill_settings(reports_dir=str(tmp_path)))
+    import alla.report.report_store as report_store_mod
+
+    class _FlakyStore:
+        def __init__(self, *, dsn):
+            pass
+
+        def load(self, filename):
+            raise RuntimeError("DB blip")
+
+    monkeypatch.setattr(report_store_mod, "PostgresReportStore", _FlakyStore)
+
+    async with _http_client as client:
+        resp = await client.get("/reports/alla_launch_1_run_1_x.html")
+
+    assert resp.status_code == 200
+    assert "fs" in resp.text

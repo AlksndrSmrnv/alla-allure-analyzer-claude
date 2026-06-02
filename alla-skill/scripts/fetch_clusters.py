@@ -29,9 +29,10 @@ from typing import Any
 from _common import (
     EXIT_CONFIG,
     EXIT_ERROR,
+    build_alla_client,
     error_envelope,
     exit_with_error,
-    get_pg_dsn,
+    handle_api_error,
     load_settings,
     open_testops_client,
     print_json,
@@ -39,8 +40,6 @@ from _common import (
 )
 
 logger = logging.getLogger("alla.skill.fetch_clusters")
-
-_MESSAGE_PREVIEW_CHARS = 240
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -104,91 +103,17 @@ def _cluster(report: Any, settings: Any) -> Any:
     return service.cluster_failures(report.launch_id, report.failed_tests)
 
 
-def _build_response(run_id: int, report: Any, clustering_report: Any, kb_results: dict[str, list[Any]]) -> dict[str, Any]:
-    counters = {
-        "total_results": report.total_results,
-        "passed": report.passed_count,
-        "failed": report.failed_count,
-        "broken": report.broken_count,
-        "skipped": report.skipped_count,
-        "unknown": report.unknown_count,
-        "muted_failures": report.muted_failure_count,
-        "active_failures": report.active_failure_count,
-    }
-    clusters_view: list[dict[str, Any]] = []
-    cluster_count = 0
-    unclustered_count = 0
-    if clustering_report is not None:
-        cluster_count = clustering_report.cluster_count
-        unclustered_count = clustering_report.unclustered_count
-        for cluster in clustering_report.clusters:
-            matches = kb_results.get(cluster.cluster_id) or []
-            top = matches[0] if matches else None
-            top_view = None
-            if top is not None:
-                top_view = {
-                    "title": top.entry.title,
-                    "score": round(top.score, 3),
-                    "tier": _short_tier(top),
-                    "category": top.entry.category.value,
-                    "entry_id": top.entry.entry_id,
-                }
-            preview = (cluster.example_message or "").strip()
-            if len(preview) > _MESSAGE_PREVIEW_CHARS:
-                preview = preview[:_MESSAGE_PREVIEW_CHARS] + "…"
-            clusters_view.append(
-                {
-                    "cluster_id": cluster.cluster_id,
-                    "label": cluster.label,
-                    "size": cluster.member_count,
-                    "representative_test_id": cluster.representative_test_id,
-                    "example_step_path": cluster.example_step_path,
-                    "message_preview": preview,
-                    "kb_match_count": len(matches),
-                    "top_kb_match": top_view,
-                }
-            )
-    return {
-        "ok": True,
-        "run_id": run_id,
-        "launch": {
-            "id": report.launch_id,
-            "name": report.launch_name,
-            "project_id": report.project_id,
-        },
-        "counters": counters,
-        "cluster_count": cluster_count,
-        "unclustered_count": unclustered_count,
-        "clusters": clusters_view,
-    }
-
-
-def _short_tier(match: Any) -> str:
-    if match.match_origin == "feedback_exact":
-        return "feedback_exact"
-    for reason in match.matched_on or []:
-        if "Tier 1" in reason or "exact substring" in reason.lower():
-            return "Tier 1"
-        if "Tier 2" in reason:
-            return "Tier 2"
-        if "Tier 3" in reason or "TF-IDF" in reason:
-            return "Tier 3"
-    return "unknown"
-
-
 async def _main_async(args: argparse.Namespace) -> None:
     try:
-        settings = load_settings()
+        # require_kb_dsn=False: DSN живёт на сервере; клиент шлёт результат
+        # TestOps-триажа в alla-server, который и пишет в PostgreSQL.
+        settings = load_settings(require_kb_dsn=False)
     except Exception as exc:
         exit_with_error(error_envelope(f"Ошибка конфигурации: {exc}"), EXIT_CONFIG)
         return
 
-    from alla.orchestrator import apply_merge_rules_phase, build_onboarding_state
-    from alla.services.kb_lookup_service import KBStageResult, lookup_kb_for_clusters
-    from alla.services.skill_state_service import create_run, record_error
+    from alla.clients.alla_api_client import AllaApiError
     from alla.services.triage_service import TriageService
-
-    dsn = get_pg_dsn(settings)
 
     async with open_testops_client(settings) as client:
         try:
@@ -214,49 +139,24 @@ async def _main_async(args: argparse.Namespace) -> None:
 
         await _enrich_with_logs(report, client, settings)
 
+    # Кластеризация — локально (raw). Merge rules, KB lookup, onboarding и
+    # запись skill_run выполняет сервер (там же DSN).
     clustering_report = _cluster(report, settings)
-    clustering_report = apply_merge_rules_phase(report, clustering_report, settings)
 
-    try:
-        kb_stage = lookup_kb_for_clusters(report, clustering_report, settings)
-    except Exception as exc:
-        logger.warning("KB lookup: ошибка: %s", exc)
-        kb_stage = KBStageResult()
-
-    onboarding = build_onboarding_state(
-        settings,
-        report.project_id,
-        clustering_report,
-        kb_entries=kb_stage.kb_entries,
+    triage_json = report.model_dump(mode="json")
+    clustering_json = (
+        clustering_report.model_dump(mode="json")
+        if clustering_report is not None
+        else None
     )
 
     try:
-        run_id = create_run(
-            dsn=dsn,
-            triage_report=report,
-            clustering_report=clustering_report,
-            kb_stage=kb_stage,
-            onboarding=onboarding,
-        )
-    except Exception as exc:
-        exit_with_error(
-            error_envelope(f"Не удалось записать alla.skill_run: {exc}"),
-            EXIT_ERROR,
-        )
-        return
+        with build_alla_client(settings) as alla_client:
+            response = alla_client.create_skill_run(triage_json, clustering_json)
+    except AllaApiError as exc:
+        handle_api_error(exc)
 
-    try:
-        response = _build_response(run_id, report, clustering_report, kb_stage.kb_results)
-        print_json(response)
-    except Exception as exc:
-        try:
-            record_error(dsn=dsn, run_id=run_id, error={"step": "build_response", "message": str(exc)})
-        except Exception:
-            pass
-        exit_with_error(
-            error_envelope(f"Ошибка формирования ответа: {exc}", run_id=run_id),
-            EXIT_ERROR,
-        )
+    print_json(response)
 
 
 def main(argv: list[str] | None = None) -> None:

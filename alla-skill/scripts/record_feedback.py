@@ -12,12 +12,10 @@ import sys
 
 from _common import (
     EXIT_CONFIG,
-    EXIT_NOT_FOUND,
     EXIT_VALIDATION,
     build_alla_client,
     error_envelope,
     exit_with_error,
-    get_pg_dsn,
     handle_api_error,
     load_settings,
     print_json,
@@ -45,23 +43,32 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
     try:
-        settings = load_settings()
+        settings = load_settings(require_kb_dsn=False, validate_testops=False)
     except Exception as exc:
         exit_with_error(error_envelope(f"Ошибка конфигурации: {exc}"), EXIT_CONFIG)
         return
 
     from alla.clients.alla_api_client import AllaApiError
-    from alla.knowledge.feedback_models import FeedbackRequest, FeedbackVote
-    from alla.services.skill_state_service import SkillStateError, load_run
+    from alla.knowledge.feedback_models import (
+        FeedbackClusterContext,
+        FeedbackRequest,
+        FeedbackVote,
+    )
 
-    dsn = get_pg_dsn(settings)
     try:
-        skill_run = load_run(dsn=dsn, run_id=args.run_id)
-    except SkillStateError as exc:
-        exit_with_error(error_envelope(str(exc), run_id=args.run_id), EXIT_NOT_FOUND)
-        return
+        with build_alla_client(settings) as client:
+            run = client.get_skill_run(args.run_id)
+    except AllaApiError as exc:
+        handle_api_error(exc)
 
-    feedback_ctx = skill_run.feedback_contexts.get(args.cluster_id)
+    feedback_contexts = run.get("feedback_contexts") or {}
+    ctx_payload = feedback_contexts.get(args.cluster_id)
+    feedback_ctx = (
+        FeedbackClusterContext.model_validate(ctx_payload)
+        if ctx_payload is not None
+        else None
+    )
+    launch_id = int(run["launch_id"])
     if feedback_ctx is None:
         exit_with_error(
             error_envelope(
@@ -98,7 +105,7 @@ def main(argv: list[str] | None = None) -> None:
         vote=FeedbackVote(args.vote),
         issue_signature_hash=signature.signature_hash,
         issue_signature_version=signature.version,
-        launch_id=skill_run.launch_id,
+        launch_id=launch_id,
         cluster_id=args.cluster_id,
     )
 
