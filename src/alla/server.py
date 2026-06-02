@@ -107,6 +107,7 @@ class _AppState:
         self.client: Any = None
         self.auth: Any = None
         self.report_store: Any = None
+        self.skill_report_store: Any = None
         self.report_view_store: Any = None
         self.feedback_store: Any = None
         self.merge_rules_store: Any = None
@@ -121,6 +122,7 @@ _state = _AppState()
 def _reset_lazy_stores_and_caches() -> None:
     """Сбросить ленивые storage-объекты и кэши, завязанные на Settings."""
     _state.report_store = None
+    _state.skill_report_store = None
     _state.report_view_store = None
     _state.feedback_store = None
     _state.merge_rules_store = None
@@ -286,6 +288,36 @@ async def _record_report_view_best_effort(
         )
     except Exception as exc:  # noqa: BLE001 - отдача отчёта важнее учёта
         logger.warning("report_view recording failed for %s: %s", filename, exc)
+
+
+def _get_report_content_store() -> Any:
+    """Стор для чтения/записи HTML-отчётов в ``alla.report``.
+
+    Возвращает (по приоритету):
+    1. ``_state.report_store`` — если включён ``ALLURE_REPORTS_POSTGRES``
+       (его же использует основной analyze-flow);
+    2. лениво создаваемый и кэшируемый стор, если задан DSN — нужен для
+       skill-flow, который сохраняет отчёт в БД независимо от
+       ``reports_postgres``, и для отдачи такого отчёта через ``/reports``.
+
+    Кэшируется в отдельном поле ``skill_report_store``, чтобы не менять
+    gating основного analyze-flow (он смотрит ровно на ``report_store``).
+    Если стор создать/проинициализировать не удалось — возвращает ``None``.
+    """
+    if _state.report_store is not None:
+        return _state.report_store
+    settings = _state.settings
+    if settings is None or not settings.kb_active:
+        return None
+    if _state.skill_report_store is None:
+        from alla.report.report_store import PostgresReportStore
+
+        try:
+            _state.skill_report_store = PostgresReportStore(dsn=settings.kb_postgres_dsn)
+        except Exception as exc:  # noqa: BLE001 - DDL/права/сеть
+            logger.warning("Не удалось инициализировать report store: %s", exc)
+            return None
+    return _state.skill_report_store
 
 
 def _settings() -> "Settings":
@@ -528,9 +560,11 @@ async def get_report(filename: str, request: Request) -> HTMLResponse:
             _set_viewer_cookie(response, viewer_id)
         return response
 
-    # Попробовать PostgreSQL.
-    if _state.report_store:
-        content = _state.report_store.load(filename)
+    # Попробовать PostgreSQL (включая отчёты, сохранённые skill-flow при
+    # выключенном ALLURE_REPORTS_POSTGRES).
+    content_store = _get_report_content_store()
+    if content_store is not None:
+        content = content_store.load(filename)
         if content is not None:
             await _record_report_view_best_effort(filename, viewer_id=viewer_id)
             return _build_response(content)
@@ -1278,8 +1312,14 @@ def skill_summary_context(
 
     from alla.services.skill_api_service import build_summary_context
 
-    skill_run = _load_skill_run(dsn, run_id)
     intermediate = request.get("clusters") if isinstance(request, dict) else None
+    if intermediate is not None and not isinstance(intermediate, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="'clusters' must be an object {cluster_id: {analysis_text: ...}}",
+        )
+
+    skill_run = _load_skill_run(dsn, run_id)
     ctx = build_summary_context(skill_run, intermediate)
     if ctx is None:
         raise HTTPException(
@@ -1349,7 +1389,6 @@ def skill_generate_report(run_id: int) -> dict[str, Any]:
     import datetime as dt
 
     from alla.app_support import calculate_llm_token_usage
-    from alla.report.report_store import PostgresReportStore
     from alla.services.skill_api_service import (
         build_analysis_result,
         interactive_disabled_reasons,
@@ -1375,21 +1414,32 @@ def skill_generate_report(run_id: int) -> dict[str, Any]:
     timestamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     filename = f"alla_launch_{skill_run.launch_id}_run_{skill_run.run_id}_{timestamp}.html"
 
+    # Сохранение в БД — best-effort: ошибка инициализации стора (DDL/права)
+    # или самого save не должна валить endpoint, ведь клиент может писать
+    # HTML на свой диск (--out). saved_to_db честно отражает реальный исход.
     saved_to_db = False
-    store = _state.report_store or PostgresReportStore(dsn=dsn)
     try:
-        store.save(
-            filename,
-            skill_run.launch_id,
-            html,
-            skill_run.project_id,
-            token_usage=calculate_llm_token_usage(result),
-        )
-        saved_to_db = True
+        store = _get_report_content_store()
+        if store is not None:
+            store.save(
+                filename,
+                skill_run.launch_id,
+                html,
+                skill_run.project_id,
+                token_usage=calculate_llm_token_usage(result),
+            )
+            saved_to_db = True
     except Exception as exc:
         logger.warning("Skill report: не удалось сохранить в БД: %s", exc)
 
-    report_url = resolve_report_url(settings, report_filename=filename)
+    # `/reports/<file>` ссылку отдаём только если отчёт реально лёг в БД
+    # (иначе сервер вернул бы по ней 404). Без серверной копии — статический
+    # ALLURE_REPORT_URL (обычно пусто), а HTML всё равно возвращается клиенту.
+    if saved_to_db:
+        report_url = resolve_report_url(settings, report_filename=filename)
+    else:
+        report_url = resolve_report_url(settings)
+
     try:
         save_report(
             dsn=dsn,

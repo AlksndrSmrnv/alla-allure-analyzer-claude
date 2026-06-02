@@ -107,6 +107,7 @@ def _setup_state(client: Any = None, settings: Any = None) -> None:
     _state.settings = settings or _DummySettings()
     _state.auth = None
     _state.report_store = None
+    _state.skill_report_store = None
     _state.report_view_store = None
 
 
@@ -1628,3 +1629,101 @@ async def test_skill_save_push_result(_http_client, monkeypatch) -> None:
 
     assert resp.status_code == 200
     assert captured["result"]["comments_posted"] == 3
+
+
+@pytest.mark.asyncio
+async def test_skill_generate_report_db_failure_no_dangling_url(_http_client, monkeypatch) -> None:
+    """Если запись в БД упала — saved_to_db=False, без /reports-ссылки, HTML отдан."""
+    _setup_state(settings=_skill_settings())
+    import alla.server as server_mod
+    import alla.services.skill_api_service as api_svc
+    import alla.services.skill_state_service as state_mod
+    import alla.report.report_store as report_store_mod
+
+    monkeypatch.setattr(state_mod, "load_run", lambda *, dsn, run_id: _make_skill_run())
+    monkeypatch.setattr(
+        api_svc, "build_analysis_result", lambda run, settings: _make_analysis_result()
+    )
+    monkeypatch.setattr(server_mod, "build_html_report_content", lambda result, *, settings: "<html>")
+
+    class _FailingStore:
+        def __init__(self, *, dsn):
+            pass
+
+        def save(self, *a, **k):
+            raise RuntimeError("DB down")
+
+    monkeypatch.setattr(report_store_mod, "PostgresReportStore", _FailingStore)
+    monkeypatch.setattr(state_mod, "save_report", lambda **k: None)
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/skill/runs/42/report")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["html"] == "<html>"
+    assert data["saved_to_db"] is False
+    assert "/reports/" not in (data["report_url"] or "")
+
+
+@pytest.mark.asyncio
+async def test_skill_generate_report_store_init_failure(_http_client, monkeypatch) -> None:
+    """Ошибка инициализации стора (DDL/права) не валит endpoint."""
+    _setup_state(settings=_skill_settings())
+    import alla.server as server_mod
+    import alla.services.skill_api_service as api_svc
+    import alla.services.skill_state_service as state_mod
+    import alla.report.report_store as report_store_mod
+
+    monkeypatch.setattr(state_mod, "load_run", lambda *, dsn, run_id: _make_skill_run())
+    monkeypatch.setattr(
+        api_svc, "build_analysis_result", lambda run, settings: _make_analysis_result()
+    )
+    monkeypatch.setattr(server_mod, "build_html_report_content", lambda result, *, settings: "<html>")
+
+    class _BrokenInitStore:
+        def __init__(self, *, dsn):
+            raise RuntimeError("permission denied")
+
+    monkeypatch.setattr(report_store_mod, "PostgresReportStore", _BrokenInitStore)
+    monkeypatch.setattr(state_mod, "save_report", lambda **k: None)
+
+    async with _http_client as client:
+        resp = await client.post("/api/v1/skill/runs/42/report")
+
+    assert resp.status_code == 200
+    assert resp.json()["saved_to_db"] is False
+
+
+@pytest.mark.asyncio
+async def test_reports_serves_skill_saved_report_without_reports_postgres(
+    _http_client, monkeypatch
+) -> None:
+    """/reports читает отчёт из alla.report, сохранённый skill-flow при reports_postgres=false."""
+    _setup_state(settings=_skill_settings())
+    import alla.report.report_store as report_store_mod
+
+    class _ReadStore:
+        def __init__(self, *, dsn):
+            pass
+
+        def load(self, filename):
+            return "<html>skill</html>"
+
+    monkeypatch.setattr(report_store_mod, "PostgresReportStore", _ReadStore)
+
+    async with _http_client as client:
+        resp = await client.get("/reports/alla_launch_1_run_1_x.html")
+
+    assert resp.status_code == 200
+    assert "skill" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_skill_summary_context_422_when_clusters_not_object(_http_client) -> None:
+    _setup_state(settings=_skill_settings())
+    async with _http_client as client:
+        resp = await client.post(
+            "/api/v1/skill/runs/42/summary-context", json={"clusters": ["a", "b"]}
+        )
+    assert resp.status_code == 422

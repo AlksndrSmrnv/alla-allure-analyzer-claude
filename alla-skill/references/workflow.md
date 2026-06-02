@@ -101,10 +101,11 @@ python alla-skill/scripts/generate_report.py --run-id 42
 
 Опции:
 
-* `--out path/to/file.html` — явный путь сохранения.
-* `--no-save-to-db` — не сохранять в `alla.report`.
+* `--out path/to/file.html` — явный путь сохранения копии на локальный диск.
 
-Без `--out` отчёт пишется в `ALLURE_REPORTS_DIR` (если задан).
+HTML рендерит и сохраняет в `alla.report` сам сервер. Без `--out` отчёт
+дополнительно пишется в `ALLURE_REPORTS_DIR` (если задан) — это локальная
+копия на машине пользователя.
 
 В stdout: `report_filename`, `report_url` (составляется из
 `ALLURE_SERVER_EXTERNAL_URL` + filename, или из `ALLURE_REPORT_URL`),
