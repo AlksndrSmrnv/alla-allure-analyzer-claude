@@ -283,6 +283,140 @@ def test_http_errors_are_mapped_to_specific_exceptions(status_code: int, exc_typ
     assert err.value.payload["feedback_count"] == 2
 
 
+def test_create_skill_run_posts_triage_and_clustering() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["json"] = request.read().decode()
+        return httpx.Response(200, json={"ok": True, "run_id": 42, "clusters": []})
+
+    response = _client(handler).create_skill_run(
+        {"launch_id": 1}, {"cluster_count": 0}
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/v1/skill/runs"
+    assert '"triage_report"' in captured["json"]
+    assert '"clustering_report"' in captured["json"]
+    assert response["run_id"] == 42
+
+
+def test_create_skill_run_allows_null_clustering() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = request.read().decode()
+        return httpx.Response(200, json={"ok": True, "run_id": 7})
+
+    _client(handler).create_skill_run({"launch_id": 1}, None)
+
+    assert '"clustering_report":null' in captured["json"]
+
+
+def test_get_skill_run_uses_get_endpoint() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/api/v1/skill/runs/42"
+        return httpx.Response(200, json={"ok": True, "run_id": 42, "launch_id": 1})
+
+    assert _client(handler).get_skill_run(42)["launch_id"] == 1
+
+
+def test_get_cluster_context_passes_char_limits() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"ok": True, "cluster_id": "c-1"})
+
+    response = _client(handler).get_cluster_context(
+        42, "c-1", max_log_chars=111, max_message_chars=222, max_trace_chars=333
+    )
+
+    assert captured["path"] == "/api/v1/skill/runs/42/clusters/c-1/context"
+    assert captured["params"] == {
+        "max_log_chars": "111",
+        "max_message_chars": "222",
+        "max_trace_chars": "333",
+    }
+    assert response["cluster_id"] == "c-1"
+
+
+def test_get_summary_context_posts_clusters_when_given() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["json"] = request.read().decode()
+        return httpx.Response(200, json={"ok": True})
+
+    _client(handler).get_summary_context(42, {"c-1": {"analysis_text": "x"}})
+
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/v1/skill/runs/42/summary-context"
+    assert '"clusters"' in captured["json"]
+
+
+def test_get_summary_context_omits_clusters_when_none() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = request.read().decode()
+        return httpx.Response(200, json={"ok": True})
+
+    _client(handler).get_summary_context(42, None)
+
+    assert captured["json"] == "{}"
+
+
+def test_submit_skill_analysis_forwards_payload() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["json"] = request.read().decode()
+        return httpx.Response(200, json={"ok": True, "clusters_received": 1})
+
+    response = _client(handler).submit_skill_analysis(42, {"schema_version": 1})
+
+    assert captured["path"] == "/api/v1/skill/runs/42/analysis"
+    assert '"schema_version":1' in captured["json"]
+    assert response["clusters_received"] == 1
+
+
+def test_generate_skill_report_posts_and_returns_html() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/api/v1/skill/runs/42/report"
+        return httpx.Response(
+            200,
+            json={"ok": True, "report_filename": "r.html", "html": "<html>"},
+        )
+
+    response = _client(handler).generate_skill_report(42)
+
+    assert response["report_filename"] == "r.html"
+    assert response["html"] == "<html>"
+
+
+def test_save_skill_push_result_posts_payload() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["json"] = request.read().decode()
+        return httpx.Response(200, json={"ok": True, "run_id": 42})
+
+    _client(handler).save_skill_push_result(42, {"comments_posted": 3})
+
+    assert captured["path"] == "/api/v1/skill/runs/42/push-result"
+    assert '"comments_posted":3' in captured["json"]
+
+
 def test_connection_errors_are_mapped() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused", request=request)

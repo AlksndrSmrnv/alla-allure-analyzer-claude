@@ -7,8 +7,13 @@ description: Анализ упавших автотестов из Allure TestOp
 
 ## Overview
 
-Скилл — это набор Python-скриптов в `alla-skill/scripts/`, которые работают с
-Allure TestOps API и PostgreSQL. Бизнес-логика (получение тестов, извлечение
+Скилл — это набор Python-скриптов в `alla-skill/scripts/`. TestOps-вызовы
+(триаж, скачивание логов, push комментариев) скрипты делают **локально**
+токеном пользователя, а всю работу с **PostgreSQL** (skill_run, поиск в базе
+знаний, merge rules, сохранение HTML-отчёта) делегируют **`alla-server`** по
+REST. Это значит, что строка подключения к БД (`ALLURE_KB_POSTGRES_DSN`) живёт
+**только на сервере** — пользователю скилла её указывать не нужно, достаточно
+`ALLURE_FEEDBACK_SERVER_URL`. Бизнес-логика (получение тестов, извлечение
 логов, кластеризация, поиск в базе знаний, генерация HTML-отчёта, постинг
 комментариев) живёт в публичных сервисах внутри пакета `alla` (`src/alla/`)
 и переиспользуется как server-side, так и скилл-режимом.
@@ -35,11 +40,15 @@ rules при `kb_active=True` → KB lookup → onboarding). `generate_report.py
 ```bash
 cd alla-skill
 cp .env.example .env       # заполни ALLURE_ENDPOINT, ALLURE_TOKEN,
-                           # ALLURE_PROJECT_ID, ALLURE_KB_POSTGRES_DSN
+                           # ALLURE_PROJECT_ID, ALLURE_FEEDBACK_SERVER_URL
 pip install -e ..          # установит пакет alla из корня
-psql "$ALLURE_KB_POSTGRES_DSN" -f sql/skill_run_schema.sql
-# (один раз) применить миграции KB/feedback/merge_rules из ../sql/
 ```
+
+`ALLURE_KB_POSTGRES_DSN` в `.env` пользователя **не нужен** — DSN держит
+`alla-server`. Миграции (`sql/skill_run_schema.sql` + KB/feedback/merge_rules
+из `../sql/`) применяет тот, кто разворачивает сервер, в его БД. Для
+local-first можно поднять сервер этим же `.env` (см. ниже) — тогда DSN
+прописывается в секции «только для сервера» в `.env.example`.
 
 ## Workflow
 
@@ -127,29 +136,30 @@ python alla-skill/scripts/generate_report.py --run-id 42
 ```
 
 Stdout — JSON: `report_filename`, `report_url`, `saved_to_db`,
-`saved_to_disk`, `interactive_disabled_reasons`. Отчёт сохраняется в
-PostgreSQL (`alla.report`) и/или на диск (`ALLURE_REPORTS_DIR`).
+`saved_to_disk`, `interactive_disabled_reasons`. HTML рендерит и сохраняет в
+PostgreSQL (`alla.report`) сам сервер; `saved_to_disk` — копия на локальном
+диске пользователя, если задан `ALLURE_REPORTS_DIR` или `--out`.
 
 Если `interactive_disabled_reasons` непустой (например,
 `["feedback_server_url_empty"]`) — кнопки «Создать решение для
-кластера», like/dislike и merge-rules в HTML отключены. Подними
-локальный сервер (см. ниже) или укажи URL продового `alla-server` в
-`ALLURE_FEEDBACK_SERVER_URL`.
+кластера», like/dislike и merge-rules в HTML отключены. Проверь
+`ALLURE_FEEDBACK_SERVER_URL` (он же используется всем pipeline).
 
-#### Локальный режим интерактива
+#### Сервер обязателен
 
-Браузер не пишет в PostgreSQL напрямую — кнопкам HTML нужен REST-слой
-`alla-server`. Поднимать продовый сервер не обязательно: тот же
-FastAPI-app можно запустить локально на 127.0.0.1.
+Весь pipeline (`fetch_clusters`, `get_cluster_context`,
+`get_summary_context`, `submit_analysis`, `generate_report`,
+`push_to_testops`, `record_feedback`) ходит в PostgreSQL **через**
+`alla-server` — DSN держит сервер, а не пользователь. Поднимать продовый
+сервер не обязательно: тот же FastAPI-app можно запустить локально.
 
 ```bash
-# Терминал 1 — локальный сервер
+# Терминал 1 — локальный сервер (читает DSN из своего окружения/.env)
 python alla-skill/scripts/serve.py
 # → Uvicorn running on http://127.0.0.1:8090
 
 # alla-skill/.env
 ALLURE_FEEDBACK_SERVER_URL=http://127.0.0.1:8090
-ALLURE_SERVER_EXTERNAL_URL=http://127.0.0.1:8090
 
 # Терминал 2 — обычный pipeline скилла
 python alla-skill/scripts/fetch_clusters.py --launch-id 12345
@@ -158,10 +168,10 @@ python alla-skill/scripts/generate_report.py --run-id 42
 # → отчёт по http://127.0.0.1:8090/reports/<filename>.html
 ```
 
-Все REST-эндпоинты, которые дёргают кнопки (`/api/v1/kb/feedback`,
-`/api/v1/kb/entries`, `/api/v1/merge-rules`), пишут в ту же PostgreSQL,
-что и `fetch_clusters` / `submit_analysis` — никаких отдельных
-стораджей.
+Все REST-эндпоинты pipeline (`/api/v1/skill/...`) и кнопок HTML
+(`/api/v1/kb/feedback`, `/api/v1/kb/entries`, `/api/v1/merge-rules`)
+пишут в одну и ту же PostgreSQL на сервере — никаких отдельных стораджей
+и никакого прямого доступа к БД со стороны скрипта.
 
 ### 6. (Опц.) Постинг в Allure TestOps
 
@@ -243,14 +253,14 @@ python alla-skill/scripts/manage_merge_rules.py delete --rule-id 12
 | Переменная | Обязательно | Описание |
 |---|---|---|
 | `ALLURE_ENDPOINT` | да | URL Allure TestOps |
-| `ALLURE_TOKEN` | да | API-токен |
+| `ALLURE_TOKEN` | да | API-токен (TestOps-вызовы выполняются локально этим токеном) |
 | `ALLURE_PROJECT_ID` | да | ID проекта |
-| `ALLURE_KB_POSTGRES_DSN` | да | DSN PostgreSQL |
+| `ALLURE_FEEDBACK_SERVER_URL` | да | URL `alla-server` — через него идёт весь pipeline, KB-кнопки, like/dislike, merge rules. Для локальной работы — `http://127.0.0.1:8090` + `serve.py`. |
 | `ALLURE_PUSH_COMMENTS` | нет | По умолчанию `false`. Не включай по своей инициативе. |
 | `ALLURE_PUSH_REPORT_LINK` | нет | По умолчанию `true`. Прикрепляет ссылку на HTML-отчёт к запуску. |
-| `ALLURE_REPORTS_DIR` | нет | Директория для HTML-отчётов |
-| `ALLURE_FEEDBACK_SERVER_URL` | для HTML/CLI KB/feedback/merge_rules | URL alla-server для KB-кнопок, like/dislike, merge rules и REST CLI. Для локальной работы — `http://127.0.0.1:8090` + `serve.py`. |
-| `ALLURE_SERVER_EXTERNAL_URL` | нет | Публичный URL для ссылок `/reports/<file>` и кнопки «Перезапустить анализ». При локальном serve.py — то же значение, что `ALLURE_FEEDBACK_SERVER_URL`. |
+| `ALLURE_REPORTS_DIR` | нет | Доп. копия HTML на локальном диске пользователя (сервер и так сохраняет в `alla.report`). |
+| `ALLURE_KB_POSTGRES_DSN` | только сервер | DSN PostgreSQL. Задаётся **в окружении сервера**, не у пользователя скилла. |
+| `ALLURE_SERVER_EXTERNAL_URL` | только сервер | Публичный URL для ссылок `/reports/<file>`; резолвится сервером. |
 
 Полный список — в `.env.example`.
 
@@ -258,10 +268,12 @@ python alla-skill/scripts/manage_merge_rules.py delete --rule-id 12
 
 См. `references/troubleshooting.md`. Часто встречающиеся ошибки:
 
-* `ConfigurationError: ALLURE_KB_POSTGRES_DSN required` — не заполнен `.env`.
-* `psycopg.OperationalError` — недоступна БД, проверь DSN/sslmode/доступы.
+* `ALLURE_FEEDBACK_SERVER_URL не задан` (`EXIT_CONFIG`) — заполни URL
+  `alla-server` в `.env` (или подними `serve.py`).
 * `AllaApiConnectionError` / «Не удалось подключиться к alla-server» —
   запусти `python alla-skill/scripts/serve.py` или укажи рабочий
   `ALLURE_FEEDBACK_SERVER_URL`.
+* `HTTP 501 Skill pipeline requires ALLURE_KB_POSTGRES_DSN` — на сервере не
+  настроен DSN: задай его в окружении `alla-server`.
 * `404 launch not found` — неверный `project_id` или нет прав у токена.
 * `push_disabled` — попытка push без `--confirm` при `ALLURE_PUSH_COMMENTS=false`.

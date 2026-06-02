@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, TypeVar, cast
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -1130,6 +1130,301 @@ async def dashboard_page() -> HTMLResponse:
     from alla.dashboard.html_view import render_dashboard_html_shell
 
     return HTMLResponse(content=render_dashboard_html_shell(), headers=_build_csp_headers())
+
+
+# --- Skill pipeline endpoints (DSN живёт только на сервере) ---
+#
+# Скилл-скрипты (`alla-skill/scripts/`) больше не коннектятся к PostgreSQL
+# напрямую — TestOps-триаж они делают локально (токен пользователя), а всю
+# работу с БД (skill_run, KB lookup, merge rules, отчёты) делегируют сюда.
+# DSN задаётся только в окружении сервера.
+
+
+def _require_skill_dsn() -> str:
+    """Вернуть DSN или поднять 501, если PostgreSQL не настроен на сервере."""
+    settings = _state.settings
+    if settings is None or not settings.kb_active:
+        raise HTTPException(
+            status_code=501,
+            detail="Skill pipeline requires ALLURE_KB_POSTGRES_DSN on the server",
+        )
+    return cast(str, settings.kb_postgres_dsn)
+
+
+def _load_skill_run(dsn: str, run_id: int) -> Any:
+    """Загрузить skill_run или поднять 404."""
+    from alla.services.skill_state_service import SkillStateError, load_run
+
+    try:
+        return load_run(dsn=dsn, run_id=run_id)
+    except SkillStateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/api/v1/skill/runs")
+def skill_create_run(request: dict[str, Any]) -> dict[str, Any]:
+    """Persist skill-run: merge rules → KB lookup → onboarding → create_run.
+
+    Body: ``{"triage_report": {...}, "clustering_report": {...} | null}``
+    (сериализованные модели, посчитанные локально из TestOps-триажа).
+    Возвращает компактную сводку прогона с ``run_id``.
+    """
+    dsn = _require_skill_dsn()
+    settings = _settings()
+
+    from alla.models.clustering import ClusteringReport
+    from alla.models.testops import TriageReport
+    from alla.orchestrator import apply_merge_rules_phase, build_onboarding_state
+    from alla.services.kb_lookup_service import KBStageResult, lookup_kb_for_clusters
+    from alla.services.skill_api_service import build_run_summary
+    from alla.services.skill_state_service import SkillStateError, create_run
+
+    triage_payload = request.get("triage_report")
+    if not isinstance(triage_payload, dict):
+        raise HTTPException(status_code=422, detail="triage_report is required")
+    try:
+        report = TriageReport.model_validate(triage_payload)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid triage_report: {exc}")
+
+    clustering_payload = request.get("clustering_report")
+    clustering_report = None
+    if clustering_payload is not None:
+        try:
+            clustering_report = ClusteringReport.model_validate(clustering_payload)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422, detail=f"Invalid clustering_report: {exc}"
+            )
+
+    clustering_report = apply_merge_rules_phase(report, clustering_report, settings)
+    try:
+        kb_stage = lookup_kb_for_clusters(report, clustering_report, settings)
+    except Exception as exc:
+        logger.warning("Skill run: KB lookup failed: %s", exc)
+        kb_stage = KBStageResult()
+
+    onboarding = build_onboarding_state(
+        settings,
+        report.project_id,
+        clustering_report,
+        kb_entries=kb_stage.kb_entries,
+    )
+
+    try:
+        run_id = create_run(
+            dsn=dsn,
+            triage_report=report,
+            clustering_report=clustering_report,
+            kb_stage=kb_stage,
+            onboarding=onboarding,
+        )
+    except SkillStateError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return build_run_summary(run_id, report, clustering_report, kb_stage.kb_results)
+
+
+@app.get("/api/v1/skill/runs/{run_id}")
+def skill_get_run(run_id: int) -> dict[str, Any]:
+    """Вернуть полную сериализацию skill_run для локального восстановления."""
+    dsn = _require_skill_dsn()
+
+    from alla.services.skill_api_service import serialize_run
+
+    return serialize_run(_load_skill_run(dsn, run_id))
+
+
+@app.get("/api/v1/skill/runs/{run_id}/clusters/{cluster_id}/context")
+def skill_cluster_context(
+    run_id: int,
+    cluster_id: str,
+    max_log_chars: int = 8000,
+    max_message_chars: int = 2000,
+    max_trace_chars: int = 400,
+) -> dict[str, Any]:
+    """Контекст + готовый промпт для анализа одного кластера."""
+    dsn = _require_skill_dsn()
+
+    from alla.services.skill_api_service import build_cluster_context
+
+    skill_run = _load_skill_run(dsn, run_id)
+    ctx = build_cluster_context(
+        skill_run,
+        cluster_id,
+        max_message_chars=max_message_chars,
+        max_trace_chars=max_trace_chars,
+        max_log_chars=max_log_chars,
+    )
+    if ctx is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"cluster_id={cluster_id!r} not found in run {run_id}",
+        )
+    return ctx
+
+
+@app.post("/api/v1/skill/runs/{run_id}/summary-context")
+def skill_summary_context(
+    run_id: int,
+    request: dict[str, Any] | None = Body(default=None),
+) -> dict[str, Any]:
+    """Промпт + контекст для итогового launch summary.
+
+    Опц. body ``{"clusters": {cluster_id: {"analysis_text": ...}}}`` —
+    промежуточные анализы до submit. Иначе берётся сохранённый анализ.
+    """
+    dsn = _require_skill_dsn()
+
+    from alla.services.skill_api_service import build_summary_context
+
+    skill_run = _load_skill_run(dsn, run_id)
+    intermediate = request.get("clusters") if isinstance(request, dict) else None
+    ctx = build_summary_context(skill_run, intermediate)
+    if ctx is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"run {run_id} has no ClusteringReport",
+        )
+    return ctx
+
+
+@app.post("/api/v1/skill/runs/{run_id}/analysis")
+def skill_submit_analysis(run_id: int, request: dict[str, Any]) -> dict[str, Any]:
+    """Принять агентский анализ кластеров и сохранить в skill_run."""
+    dsn = _require_skill_dsn()
+
+    from alla.services.agent_analysis_adapter import (
+        AgentAnalysisError,
+        validate_agent_payload,
+    )
+    from alla.services.skill_state_service import SkillStateError, save_agent_analysis
+
+    skill_run = _load_skill_run(dsn, run_id)
+    expected_ids: list[str] = []
+    if skill_run.clustering_report is not None:
+        expected_ids = [c.cluster_id for c in skill_run.clustering_report.clusters]
+
+    try:
+        missing, extra = validate_agent_payload(
+            request, expected_cluster_ids=expected_ids
+        )
+    except AgentAnalysisError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid agent payload: {exc}")
+
+    summary_text = ""
+    if isinstance(request, dict):
+        summary_text = (request.get("launch_summary") or {}).get("summary_text") or ""
+
+    try:
+        save_agent_analysis(
+            dsn=dsn,
+            run_id=run_id,
+            agent_analysis=request,
+            agent_summary_text=summary_text,
+        )
+    except SkillStateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "clusters_received": len(request.get("clusters", {})),
+        "clusters_expected": len(expected_ids),
+        "missing_cluster_ids": missing,
+        "extra_cluster_ids": extra,
+    }
+
+
+@app.post("/api/v1/skill/runs/{run_id}/report")
+def skill_generate_report(run_id: int) -> dict[str, Any]:
+    """Сгенерировать HTML-отчёт, сохранить в alla.report и вернуть HTML.
+
+    FS-сохранение (reports_dir / --out) остаётся на стороне клиента —
+    это путь на машине пользователя, поэтому HTML возвращается в ответе.
+    """
+    dsn = _require_skill_dsn()
+    settings = _settings()
+
+    import datetime as dt
+
+    from alla.app_support import calculate_llm_token_usage
+    from alla.report.report_store import PostgresReportStore
+    from alla.services.skill_api_service import (
+        build_analysis_result,
+        interactive_disabled_reasons,
+    )
+    from alla.services.skill_state_service import SkillStateError, record_error, save_report
+
+    skill_run = _load_skill_run(dsn, run_id)
+
+    try:
+        result = build_analysis_result(skill_run, settings)
+        html = build_html_report_content(result, settings=settings)
+    except Exception as exc:
+        try:
+            record_error(
+                dsn=dsn,
+                run_id=run_id,
+                error={"step": "generate_html", "message": str(exc)},
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Failed to generate HTML: {exc}")
+
+    timestamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    filename = f"alla_launch_{skill_run.launch_id}_run_{skill_run.run_id}_{timestamp}.html"
+
+    saved_to_db = False
+    store = _state.report_store or PostgresReportStore(dsn=dsn)
+    try:
+        store.save(
+            filename,
+            skill_run.launch_id,
+            html,
+            skill_run.project_id,
+            token_usage=calculate_llm_token_usage(result),
+        )
+        saved_to_db = True
+    except Exception as exc:
+        logger.warning("Skill report: не удалось сохранить в БД: %s", exc)
+
+    report_url = resolve_report_url(settings, report_filename=filename)
+    try:
+        save_report(
+            dsn=dsn,
+            run_id=run_id,
+            report_filename=filename,
+            report_url=report_url or None,
+        )
+    except SkillStateError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "report_filename": filename,
+        "report_url": report_url,
+        "saved_to_db": saved_to_db,
+        "interactive_disabled_reasons": interactive_disabled_reasons(settings),
+        "html": html,
+        "html_size_bytes": len(html.encode("utf-8")),
+    }
+
+
+@app.post("/api/v1/skill/runs/{run_id}/push-result")
+def skill_save_push_result(run_id: int, request: dict[str, Any]) -> dict[str, Any]:
+    """Зафиксировать результат push'а в TestOps (push делает клиент локально)."""
+    dsn = _require_skill_dsn()
+
+    from alla.services.skill_state_service import SkillStateError, save_push_result
+
+    try:
+        save_push_result(dsn=dsn, run_id=run_id, push_result=request)
+    except SkillStateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return {"ok": True, "run_id": run_id}
 
 
 def main() -> None:

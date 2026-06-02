@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -159,6 +159,100 @@ class AllaApiClient:
         response = self._request("DELETE", f"/api/v1/merge-rules/{rule_id}")
         return MergeRuleDeleteResponse.model_validate(response.json())
 
+    # --- Skill pipeline (DSN живёт только на сервере) ---
+
+    def create_skill_run(
+        self,
+        triage_report: dict[str, Any],
+        clustering_report: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Persist a skill run (merge rules + KB lookup + onboarding)."""
+        response = self._request(
+            "POST",
+            "/api/v1/skill/runs",
+            json={
+                "triage_report": triage_report,
+                "clustering_report": clustering_report,
+            },
+        )
+        return cast(dict[str, Any], response.json())
+
+    def get_skill_run(self, run_id: int) -> dict[str, Any]:
+        """Fetch the full serialized skill run."""
+        response = self._request("GET", f"/api/v1/skill/runs/{run_id}")
+        return cast(dict[str, Any], response.json())
+
+    def get_cluster_context(
+        self,
+        run_id: int,
+        cluster_id: str,
+        *,
+        max_log_chars: int = 8000,
+        max_message_chars: int = 2000,
+        max_trace_chars: int = 400,
+    ) -> dict[str, Any]:
+        """Fetch context + prompt for a single cluster."""
+        response = self._request(
+            "GET",
+            f"/api/v1/skill/runs/{run_id}/clusters/{cluster_id}/context",
+            params={
+                "max_log_chars": max_log_chars,
+                "max_message_chars": max_message_chars,
+                "max_trace_chars": max_trace_chars,
+            },
+        )
+        return cast(dict[str, Any], response.json())
+
+    def get_summary_context(
+        self,
+        run_id: int,
+        clusters: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Fetch prompt + context for the launch summary."""
+        body: dict[str, Any] = {}
+        if clusters is not None:
+            body["clusters"] = clusters
+        response = self._request(
+            "POST",
+            f"/api/v1/skill/runs/{run_id}/summary-context",
+            json=body,
+        )
+        return cast(dict[str, Any], response.json())
+
+    def submit_skill_analysis(
+        self,
+        run_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Submit the agent cluster analysis for a run."""
+        response = self._request(
+            "POST",
+            f"/api/v1/skill/runs/{run_id}/analysis",
+            json=payload,
+        )
+        return cast(dict[str, Any], response.json())
+
+    def generate_skill_report(self, run_id: int) -> dict[str, Any]:
+        """Render the HTML report server-side; returns metadata + html."""
+        response = self._request(
+            "POST",
+            f"/api/v1/skill/runs/{run_id}/report",
+        )
+        return cast(dict[str, Any], response.json())
+
+    def save_skill_push_result(
+        self,
+        run_id: int,
+        push_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Record the TestOps push result after a local push."""
+        response = self._request(
+            "POST",
+            f"/api/v1/skill/runs/{run_id}/push-result",
+            json=push_result,
+        )
+        return cast(dict[str, Any], response.json())
+
     def close(self) -> None:
         """Close the owned HTTP client."""
         if self._owns_client:
@@ -204,7 +298,7 @@ class AllaApiClient:
 
 def _decode_error_payload(response: httpx.Response) -> Any:
     try:
-        return response.json()
+        return cast(dict[str, Any], response.json())
     except ValueError:
         return {"detail": response.text[:500]}
 

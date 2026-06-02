@@ -10,11 +10,14 @@ LLM-вызовов в скрипте нет — анализ выполняет 
 публичные сервисы пакета `alla` (`src/alla/services/*`), один источник
 истины с server-side путём.
 
-Запись в общую базу знаний, feedback и merge rules идёт через REST API
-`alla-server` — тот же путь, что используют HTML-кнопки отчёта. Для
-локальной работы запусти `python scripts/serve.py` и укажи
-`ALLURE_FEEDBACK_SERVER_URL=http://127.0.0.1:8090`; для shared KB можно
-указать продовый URL без прямой выдачи DSN каждому CLI-пользователю.
+Вся работа с PostgreSQL (skill_run, база знаний, feedback, merge rules,
+HTML-отчёты) идёт через REST API `alla-server` — тот же путь, что используют
+HTML-кнопки отчёта. TestOps-вызовы (триаж, логи, push) скрипты делают
+локально токеном пользователя. Поэтому `ALLURE_KB_POSTGRES_DSN` нужен
+**только серверу**, а CLI-пользователю — лишь `ALLURE_FEEDBACK_SERVER_URL`.
+Для локальной работы запусти `python scripts/serve.py` и укажи
+`ALLURE_FEEDBACK_SERVER_URL=http://127.0.0.1:8090`; для shared-окружения —
+продовый URL без выдачи DSN каждому пользователю.
 
 ## Установка
 
@@ -22,13 +25,16 @@ LLM-вызовов в скрипте нет — анализ выполняет 
 cd alla-skill
 cp .env.example .env
 # заполни ALLURE_ENDPOINT, ALLURE_TOKEN, ALLURE_PROJECT_ID,
-#         ALLURE_KB_POSTGRES_DSN
+#         ALLURE_FEEDBACK_SERVER_URL
 
 pip install -e ..        # установит пакет alla из корня
-psql "$ALLURE_KB_POSTGRES_DSN" -f sql/skill_run_schema.sql
-# (один раз) применить миграции из ../sql/:
-#   kb_schema.sql, kb_feedback_schema.sql, merge_rules_schema.sql
 ```
+
+`ALLURE_KB_POSTGRES_DSN` в `.env` пользователя не нужен. Миграции
+(`sql/skill_run_schema.sql` + `../sql/kb_schema.sql`,
+`kb_feedback_schema.sql`, `merge_rules_schema.sql`) применяет тот, кто
+разворачивает `alla-server`, в его БД. Для local-first можно запустить
+сервер этим же `.env`, прописав DSN в секции «только для сервера».
 
 ## Подключение из агента
 
