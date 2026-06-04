@@ -318,7 +318,7 @@ def test_dashboard_html_no_external_urls() -> None:
     html = render_dashboard_html_shell()
     assert html.startswith("<!DOCTYPE html>")
     assert "<style>" in html and "<script>" in html
-    assert "--primary: #2563eb" in html
+    assert "--primary: #0a0a0a" in html
     # Все http(s) ссылки запрещены
     assert not re.search(r"https?://", html)
 

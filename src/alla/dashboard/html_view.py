@@ -14,30 +14,38 @@ from alla.report.html_report import _logo_data_uri
 
 _DASHBOARD_CSS = """
 :root {
-  --bg: #f8fafc;
+  /* Neutrals — graphite & chalk */
+  --bg: #ffffff;
   --surface: #ffffff;
-  --border: #e2e8f0;
-  --text: #0f172a;
-  --text-muted: #64748b;
-  --primary: #2563eb;
-  --primary-light: #dbeafe;
+  --surface-muted: #f2f2f2;
+  --surface-inverted: #171717;
+  --border: #e5e5e5;
+  --border-strong: #0a0a0a;
+  --text: #0a0a0a;
+  --text-muted: #737373;
+  --primary: #0a0a0a;
+  --primary-light: #f2f2f2;
+  --accent: #2563eb;
   --danger: #dc2626;
   --danger-light: #fef2f2;
   --success: #16a34a;
-  --success-light: #dcfce7;
+  --success-light: #f0fdf4;
   --warning: #d97706;
-  --warning-light: #fffbeb;
+  --warning-light: #fff7ed;
   --info: #0284c7;
   --info-light: #f0f9ff;
-  --radius: 12px;
-  --radius-sm: 8px;
+  --radius: 14px;
+  --radius-sm: 10px;
+  --radius-md: 4px;
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
   background: var(--bg);
   color: var(--text);
-  line-height: 1.5;
+  line-height: 1.43;
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
 }
@@ -54,7 +62,7 @@ body {
   flex-wrap: wrap;
 }
 .header-logo { height: 40px; width: auto; flex-shrink: 0; }
-.header-title { font-size: 1.25rem; font-weight: 600; flex: 1; }
+.header-title { font-size: 1.25rem; font-weight: 600; flex: 1; letter-spacing: -0.025em; }
 .header-controls { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .header-controls label { color: var(--text-muted); font-size: 0.85rem; }
 .header-controls select,
@@ -69,12 +77,21 @@ body {
   cursor: pointer;
   font-family: inherit;
 }
+.header-controls select:focus,
+.header-controls input[type="date"]:focus { outline: none; border-color: var(--text); }
+.header-controls button.primary {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+  font-weight: 500;
+}
+.header-controls button.primary:hover { background: #171717; }
 .header-controls select:disabled,
 .header-controls input:disabled { opacity: 0.5; cursor: not-allowed; }
 .header-controls button.ghost { color: var(--text-muted); }
-.header-controls button.ghost:hover { color: var(--text); border-color: var(--text-muted); }
+.header-controls button.ghost:hover { color: var(--text); border-color: var(--text-muted); background: var(--surface-muted); }
 .window-label {
-  background: var(--surface);
+  background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 0.6rem 1rem;
@@ -94,6 +111,7 @@ body {
   font-weight: 600;
   margin-bottom: 1rem;
   color: var(--text);
+  letter-spacing: -0.025em;
 }
 .kpis {
   display: grid;
@@ -107,9 +125,9 @@ body {
   padding: 1.25rem;
 }
 .kpi-card .label { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
-.kpi-card .value { font-size: 1.85rem; font-weight: 700; margin-top: 0.5rem; color: var(--text); }
+.kpi-card .value { font-size: 1.85rem; font-weight: 600; margin-top: 0.5rem; color: var(--text); letter-spacing: -0.04em; }
 .kpi-card .sub   { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; }
-.kpi-card.reports .value { color: var(--primary); }
+.kpi-card.reports .value { color: var(--text); }
 .kpi-card.tokens  .value { color: var(--info); }
 .kpi-card.duration .value { color: var(--warning); }
 .kpis-compact {
@@ -132,12 +150,12 @@ body {
 .bars .bar {
   flex: 1;
   min-width: 4px;
-  background: var(--primary-light);
-  border-top: 2px solid var(--primary);
-  border-radius: 2px 2px 0 0;
+  background: var(--surface-muted);
+  border-top: 2px solid var(--text);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   position: relative;
 }
-.bars .bar:hover { background: var(--primary); }
+.bars .bar:hover { background: var(--text); }
 .bars .bar[data-n="0"] { background: var(--border); border-top: 0; min-height: 1px; }
 .bars-axis {
   display: flex;
@@ -148,7 +166,7 @@ body {
 }
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 thead th {
-  background: var(--bg);
+  background: var(--surface-muted);
   text-align: left;
   padding: 0.65rem 0.8rem;
   border-bottom: 1px solid var(--border);
@@ -160,16 +178,16 @@ thead th {
   cursor: pointer;
   user-select: none;
 }
-thead th.sorted-asc::after  { content: " \\2191"; color: var(--primary); }
-thead th.sorted-desc::after { content: " \\2193"; color: var(--primary); }
+thead th.sorted-asc::after  { content: " \\2191"; color: var(--text); }
+thead th.sorted-desc::after { content: " \\2193"; color: var(--text); }
 tbody td {
   padding: 0.7rem 0.8rem;
   border-bottom: 1px solid var(--border);
 }
 tbody tr.project-row { cursor: pointer; }
-tbody tr.project-row:hover { background: var(--bg); }
+tbody tr.project-row:hover { background: var(--surface-muted); }
 tbody tr.unattributed { color: var(--text-muted); font-style: italic; }
-tbody tr.expand-row td { background: var(--bg); padding: 0; }
+tbody tr.expand-row td { background: var(--surface-muted); padding: 0; }
 tbody tr.expand-row .expand-inner { padding: 0.75rem 1rem; }
 .expand-inner table { font-size: 0.85rem; }
 .expand-inner thead th { background: transparent; cursor: default; }
@@ -180,13 +198,14 @@ tr.project-row.expanded .disclosure { transform: rotate(90deg); }
 .muted { color: var(--text-muted); }
 .banner {
   background: var(--danger-light);
-  border: 1px solid var(--danger);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
   color: var(--danger);
   border-radius: var(--radius-sm);
   padding: 1rem 1.25rem;
   margin-bottom: 1rem;
 }
-.banner.warn { background: var(--warning-light); border-color: var(--warning); color: var(--warning); }
+.banner.warn { background: var(--warning-light); border-left-color: var(--warning); color: var(--warning); }
 .footer {
   text-align: center;
   color: var(--text-muted);
@@ -197,7 +216,7 @@ tr.project-row.expanded .disclosure { transform: rotate(90deg); }
   display: inline-block;
   width: 14px; height: 14px;
   border: 2px solid var(--border);
-  border-top-color: var(--primary);
+  border-top-color: var(--text);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
   vertical-align: middle;
