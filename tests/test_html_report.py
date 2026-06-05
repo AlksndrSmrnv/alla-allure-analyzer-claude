@@ -439,6 +439,8 @@ def test_html_report_renders_cluster_correlation_separately_from_log() -> None:
 
     assert "Корреляция" in html
     assert "operUID=239482348, rqUID=324234523420" in html
+    # Корреляция — нейтральные метаданные, а не ошибка: свой класс, не error-block
+    assert 'class="correlation-block"' in html
     assert "Лог приложения" in html
     assert 'class="correlation-source"' in html
     assert "https://allure.example/launch/1/errors/1" in html

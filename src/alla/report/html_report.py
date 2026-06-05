@@ -512,7 +512,7 @@ def _render_cluster(
             error_parts.append(
                 '<div class="block-title" style="margin-top: 0.75rem;">'
                 f"Корреляция{source_link_html}</div>"
-                '<div class="error-block">'
+                '<div class="correlation-block">'
                 f"<pre>{_e(cluster.example_correlation)}</pre>"
                 "</div>"
             )
@@ -1802,6 +1802,24 @@ _CSS = """
       font-family: var(--font-mono);
       font-size: 0.8125rem;
       color: var(--danger);
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    /* ---- Блок корреляции (нейтральные метаданные, не ошибка) ---- */
+    .correlation-block {
+      background: var(--surface-muted);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 1.25rem;
+    }
+    .correlation-block pre {
+      margin: 0;
+      font-family: var(--font-mono);
+      font-size: 0.8125rem;
+      color: var(--text);
       white-space: pre-wrap;
       word-break: break-word;
       max-height: 400px;
