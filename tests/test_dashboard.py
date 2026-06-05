@@ -60,6 +60,7 @@ class _StubStatsStore:
         kpis: dict[str, int] | None = None,
         per_project: list[dict[str, Any]] | None = None,
         series: list[dict[str, Any]] | None = None,
+        views_series: list[dict[str, Any]] | None = None,
     ) -> None:
         self._kpis = kpis or {
             "total_reports": 5,
@@ -121,6 +122,10 @@ class _StubStatsStore:
             {"day": "2026-04-26", "n": 2},
             {"day": "2026-04-27", "n": 3},
         ]
+        self._views_series = views_series or [
+            {"day": "2026-04-26", "n": 7},
+            {"day": "2026-04-27", "n": 11},
+        ]
 
     def totals(self, *, window) -> dict[str, Any]:
         return self._kpis
@@ -130,6 +135,9 @@ class _StubStatsStore:
 
     def reports_per_day(self, *, window) -> list[dict[str, Any]]:
         return self._series
+
+    def views_per_day(self, *, window) -> list[dict[str, Any]]:
+        return self._views_series
 
     def reports_for_project(self, *, project_id, window, limit=200) -> list[dict[str, Any]]:
         return [
@@ -164,6 +172,10 @@ class _ThreadRecordingStatsStore(_StubStatsStore):
     def reports_per_day(self, *, window) -> list[dict[str, Any]]:
         self.thread_ids.append(threading.get_ident())
         return super().reports_per_day(window=window)
+
+    def views_per_day(self, *, window) -> list[dict[str, Any]]:
+        self.thread_ids.append(threading.get_ident())
+        return super().views_per_day(window=window)
 
 
 @pytest.fixture
@@ -333,6 +345,9 @@ def test_dashboard_html_has_required_elements() -> None:
         'tokens-section',
         'Расход токенов LLM',
         'id="bars"',
+        'id="viewBars"',
+        'id="viewBarsAxis"',
+        'Просмотры по дням',
         'id="projectsTable"',
         'id="daysSelect"',
         'id="daySelect"',
@@ -467,6 +482,14 @@ async def test_dashboard_stats_falls_back_when_testops_unavailable(
     assert rows_by_pid[7]["llm_reports_with_usage"] == 2
     assert rows_by_pid[7]["report_views"] == 11
     assert rows_by_pid[None]["report_views"] == 2
+    assert data["series"] == [
+        {"day": "2026-04-26", "n": 2},
+        {"day": "2026-04-27", "n": 3},
+    ]
+    assert data["views_series"] == [
+        {"day": "2026-04-26", "n": 7},
+        {"day": "2026-04-27", "n": 11},
+    ]
 
 
 @pytest.mark.asyncio
@@ -509,7 +532,7 @@ async def test_dashboard_stats_reads_db_in_threadpool(_http_client, monkeypatch)
         resp = await http.get("/api/v1/dashboard/stats?days=30")
 
     assert resp.status_code == 200
-    assert len(store.thread_ids) == 3
+    assert len(store.thread_ids) == 4
     assert all(thread_id != event_loop_thread_id for thread_id in store.thread_ids)
 
 

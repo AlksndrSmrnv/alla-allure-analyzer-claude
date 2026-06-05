@@ -144,7 +144,7 @@ body {
   gap: 2px;
   align-items: flex-end;
   height: 180px;
-  padding: 0.5rem 0;
+  padding: 1.1rem 0 0.5rem;
   overflow-x: auto;
 }
 .bars .bar {
@@ -157,6 +157,18 @@ body {
 }
 .bars .bar:hover { background: var(--text); }
 .bars .bar[data-n="0"] { background: var(--border); border-top: 0; min-height: 1px; }
+.bars .bar .bar-label {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 2px;
+  font-size: 0.65rem;
+  line-height: 1;
+  color: var(--text-muted);
+  pointer-events: none;
+  white-space: nowrap;
+}
 .bars-axis {
   display: flex;
   justify-content: space-between;
@@ -338,8 +350,8 @@ _DASHBOARD_JS = """
     for (const [cls, label, value, subIso] of tokenCards) appendCard(tokensGrid, cls, label, value, subIso);
   }
 
-  function renderSeries(series) {
-    const wrap = document.getElementById('bars');
+  function renderSeries(series, barsId, axisId) {
+    const wrap = document.getElementById(barsId);
     wrap.innerHTML = '';
     let max = 0;
     for (const p of series) if (p.n > max) max = p.n;
@@ -351,9 +363,12 @@ _DASHBOARD_JS = """
         style: 'height:' + (p.n === 0 ? 1 : h) + '%',
         'data-n': String(p.n),
       });
+      if (p.n > 0) {
+        bar.appendChild(el('span', { class: 'bar-label', text: String(p.n) }));
+      }
       wrap.appendChild(bar);
     }
-    const axis = document.getElementById('barsAxis');
+    const axis = document.getElementById(axisId);
     axis.innerHTML = '';
     if (series.length > 0) {
       axis.appendChild(el('span', { text: series[0].day }));
@@ -551,7 +566,8 @@ _DASHBOARD_JS = """
       const data = await resp.json();
       renderWindowLabel(data.window || CURRENT_WINDOW, data.kpis);
       renderKpis(data.kpis);
-      renderSeries(data.series);
+      renderSeries(data.series, 'bars', 'barsAxis');
+      renderSeries(data.views_series || [], 'viewBars', 'viewBarsAxis');
       TABLE_ROWS = data.per_project;
       renderTable();
       const ts = document.getElementById('generatedAt');
@@ -651,6 +667,12 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         <h2>Отчёты по дням</h2>
         <div id="bars" class="bars"></div>
         <div id="barsAxis" class="bars-axis"></div>
+      </section>
+
+      <section class="section">
+        <h2>Просмотры по дням</h2>
+        <div id="viewBars" class="bars"></div>
+        <div id="viewBarsAxis" class="bars-axis"></div>
       </section>
 
       <section class="section">
