@@ -193,6 +193,14 @@ GROUP BY 1 ORDER BY 1;
 """
 
 
+_VIEWS_PER_DAY_SQL = """\
+SELECT date_trunc('day', viewed_at AT TIME ZONE 'UTC')::date AS day, COUNT(*) AS n
+FROM alla.report_view
+WHERE viewed_at >= %(start_ts)s AND viewed_at < %(end_ts)s
+GROUP BY 1 ORDER BY 1;
+"""
+
+
 _REPORTS_FOR_PROJECT_SQL = """\
 SELECT r.filename, r.launch_id, r.created_at,
        r.llm_prompt_tokens, r.llm_completion_tokens, r.llm_total_tokens,
@@ -327,6 +335,13 @@ class DashboardStatsStore:
         with psycopg.connect(self._dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(_REPORTS_PER_DAY_SQL, self._params(window))
+                rows = cur.fetchall()
+        return gap_fill_series(rows, series_dates=window.series_dates())
+
+    def views_per_day(self, *, window: DateWindow) -> list[dict[str, Any]]:
+        with psycopg.connect(self._dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(_VIEWS_PER_DAY_SQL, self._params(window))
                 rows = cur.fetchall()
         return gap_fill_series(rows, series_dates=window.series_dates())
 

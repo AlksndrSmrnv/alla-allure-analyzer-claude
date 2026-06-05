@@ -737,12 +737,18 @@ def _read_dashboard_stats(
     store: Any,
     *,
     window: Any,
-) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[
+    dict[str, Any],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     """Синхронно прочитать dashboard-агрегации; вызывается из threadpool."""
     return (
         store.totals(window=window),
         store.per_project_rollup(window=window),
         store.reports_per_day(window=window),
+        store.views_per_day(window=window),
     )
 
 
@@ -1101,7 +1107,7 @@ async def dashboard_stats(
             status_code=503,
             detail="Дашборд требует ALLURE_KB_POSTGRES_DSN",
         )
-    kpis, per_project_raw, series = await asyncio.to_thread(
+    kpis, per_project_raw, series, views_series = await asyncio.to_thread(
         _read_dashboard_stats,
         store,
         window=window,
@@ -1124,6 +1130,7 @@ async def dashboard_stats(
         "kpis": kpis,
         "per_project": per_project,
         "series": series,
+        "views_series": views_series,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
