@@ -40,7 +40,7 @@ def _extract_cluster_header_step_row(report_html: str, cluster_id: str) -> str:
     match = re.search(
         r'<span class="cluster-label-row cluster-label-row--step">'
         r'<span class="cluster-label-key">Шаг:</span>'
-        r'<span class="cluster-label-value">.*?</span>'
+        r'<span class="cluster-label-value"[^>]*>.*?</span>'
         r'</span>',
         header_html,
         flags=re.DOTALL,
@@ -105,6 +105,54 @@ def test_html_report_cluster_header_shows_error_and_step_path() -> None:
 
     step_row_without_path = _extract_cluster_header_step_row(html, "c-no-step")
     assert 'class="cluster-step-empty">—</span>' in step_row_without_path
+
+
+def test_html_report_cluster_header_values_carry_full_title_tooltip() -> None:
+    """Усечённые значения шапки несут полный текст в title (ошибка и шаг).
+
+    Текст в шапке обрезается до двух строк (-webkit-line-clamp), поэтому полный
+    текст должен быть доступен в title-подсказке. Заодно проверяем экранирование.
+    """
+    label = 'Very long error "quote" <tag> ' + "x" * 200
+    raw_step = (
+        "Api > Запрос POST /users > Проверка тела ответа > "
+        "Доп шаг с длинным названием для переноса в шапке кластера"
+    )
+    cluster_with_step = make_failure_cluster(
+        cluster_id="c-step",
+        label=label,
+        member_count=1,
+        example_step_path=raw_step,
+    )
+    cluster_no_step = make_failure_cluster(
+        cluster_id="c-no-step",
+        label="Connection refused",
+        member_count=1,
+        example_step_path=None,
+    )
+    result = AnalysisResult(
+        triage_report=make_triage_report(launch_id=890),
+        clustering_report=make_clustering_report(
+            clusters=[cluster_with_step, cluster_no_step],
+            cluster_count=2,
+            total_failures=2,
+        ),
+    )
+
+    html = generate_html_report(result)
+
+    # title шага содержит полный *сырой* путь (с «>»), а не только видимый текст с «›»
+    step_row = _extract_cluster_header_step_row(html, "c-step")
+    assert f'title="{_html.escape(raw_step)}"' in step_row
+
+    # title ошибки содержит полный экранированный текст, XSS не протекает
+    assert f'title="{_html.escape(label)}"' in html
+    assert "&lt;tag&gt;" in html
+    assert "<tag>" not in html
+
+    # у кластера без шага title на значении шага не появляется
+    step_row_no_path = _extract_cluster_header_step_row(html, "c-no-step")
+    assert "title=" not in step_row_no_path
 
 
 def test_html_report_cluster_header_shows_production_arrow_step_path() -> None:
@@ -391,6 +439,8 @@ def test_html_report_renders_cluster_correlation_separately_from_log() -> None:
 
     assert "Корреляция" in html
     assert "operUID=239482348, rqUID=324234523420" in html
+    # Корреляция — нейтральные метаданные, а не ошибка: свой класс, не error-block
+    assert 'class="correlation-block"' in html
     assert "Лог приложения" in html
     assert 'class="correlation-source"' in html
     assert "https://allure.example/launch/1/errors/1" in html
