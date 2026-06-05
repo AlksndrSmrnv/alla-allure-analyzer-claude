@@ -40,7 +40,7 @@ def _extract_cluster_header_step_row(report_html: str, cluster_id: str) -> str:
     match = re.search(
         r'<span class="cluster-label-row cluster-label-row--step">'
         r'<span class="cluster-label-key">Шаг:</span>'
-        r'<span class="cluster-label-value">.*?</span>'
+        r'<span class="cluster-label-value"[^>]*>.*?</span>'
         r'</span>',
         header_html,
         flags=re.DOTALL,

@@ -58,8 +58,6 @@ def generate_html_report(
     server_url: str = "",
 ) -> str:
     """Сгенерировать самодостаточный HTML-отчёт из AnalysisResult."""
-    from alla import __version__
-
     triage = result.triage_report
     clustering = result.clustering_report
     kb_results = result.kb_results or {}
@@ -168,7 +166,7 @@ def generate_html_report(
       <div class="header-main">
         <div class="header-brand">Alla · AI Test Analysis</div>
         <div class="header-title">{'<a href="' + _e(launch_url) + '" target="_blank" rel="noopener">' + _e(launch_title) + '</a>' if launch_url else _e(launch_title)}</div>
-        <div class="header-meta">Сгенерировано: {generated_at} · Alla v{_e(__version__)}</div>
+        <div class="header-meta">Сгенерировано: {generated_at}</div>
       </div>
       {rerun_button_html}
     </header>
@@ -179,7 +177,7 @@ def generate_html_report(
     {clusters_html}
 
     <footer class="footer">
-      Alla v{_e(__version__)} · AI Test Failure Triage Agent · {generated_at}
+      Alla · AI Test Failure Triage Agent · {generated_at}
     </footer>
 
   </div>
@@ -772,18 +770,20 @@ def _render_cluster(
             step_html_value = f' {sep} '.join(_e(p) for p in parts)
         else:
             step_html_value = _e(step_raw)
+        step_title_attr = f' title="{_e(step_raw)}"'
     else:
         step_html_value = '<span class="cluster-step-empty">—</span>'
+        step_title_attr = ""
 
     label_stack_html = (
         '<span class="cluster-label-stack">'
         '<span class="cluster-label-row cluster-label-row--error">'
         '<span class="cluster-label-key">Ошибка:</span>'
-        f'<span class="cluster-label-value">{_e(cluster.label)}</span>'
+        f'<span class="cluster-label-value" title="{_e(cluster.label)}">{_e(cluster.label)}</span>'
         '</span>'
         '<span class="cluster-label-row cluster-label-row--step">'
         '<span class="cluster-label-key">Шаг:</span>'
-        f'<span class="cluster-label-value">{step_html_value}</span>'
+        f'<span class="cluster-label-value"{step_title_attr}>{step_html_value}</span>'
         '</span>'
         '</span>'
     )
@@ -1288,9 +1288,9 @@ _CSS = """
       --ai: #7c3aed;
       --ai-soft: #f5f3ff;
       /* Radius scale */
-      --radius: 14px;
-      --radius-sm: 10px;
-      --radius-md: 4px;
+      --radius: 10px;
+      --radius-sm: 8px;
+      --radius-md: 6px;
       --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
@@ -1308,7 +1308,7 @@ _CSS = """
     }
 
     .container {
-      max-width: 1200px;
+      max-width: 1440px;
       margin: 0 auto;
       padding: 2rem 1.5rem;
     }
@@ -1413,7 +1413,7 @@ _CSS = """
     /* ---- Статистика ---- */
     .stats {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      grid-template-columns: repeat(6, 1fr);
       gap: 1rem;
       margin-bottom: 2rem;
     }
@@ -1536,32 +1536,22 @@ _CSS = """
       font-size: 0.825rem;
       color: var(--text-muted);
       background: var(--surface);
-      border: 1px dashed var(--border);
+      border: 1px solid var(--border);
       border-radius: var(--radius-sm);
       padding: 0.65rem 0.9rem;
     }
 
     /* ---- LLM-сводка ---- */
     .llm-summary {
-      padding: 1.5rem 2rem;
+      padding: 1.5rem;
     }
 
     /* ---- Общий AI-карточный стиль ---- */
     .ai-card {
-      position: relative;
       background: var(--ai-soft);
       border: 1px solid var(--border);
+      border-left: 3px solid var(--ai);
       border-radius: var(--radius);
-    }
-    .ai-card::before {
-      content: "";
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 2px;
-      border-radius: var(--radius) var(--radius) 0 0;
-      background: var(--ai);
     }
 
     .ai-badge {
@@ -1629,13 +1619,14 @@ _CSS = """
     }
     .cluster-header {
       flex: 1;
+      min-width: 0;
       background: transparent;
       border: 0;
       padding: 1rem 1.5rem;
       display: flex;
       align-items: center;
       gap: 1rem;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       width: 100%;
       text-align: left;
       cursor: pointer;
@@ -1666,22 +1657,23 @@ _CSS = """
       font-size: 0.875rem;
       padding: 0.25rem 0.75rem;
       border-radius: 9999px;
+      flex-shrink: 0;
+      white-space: nowrap;
     }
     .cluster-label-stack {
       display: flex;
       flex-direction: column;
       gap: 0.35rem;
       flex: 1 1 auto;
-      min-width: 200px;
+      min-width: 0;
     }
     .cluster-label-row {
       display: flex;
       gap: 0.5rem;
-      align-items: baseline;
-      flex-wrap: wrap;
+      align-items: flex-start;
+      flex-wrap: nowrap;
       line-height: 1.45;
-      word-break: break-word;
-      overflow-wrap: anywhere;
+      min-width: 0;
     }
     .cluster-label-key {
       flex: 0 0 auto;
@@ -1695,6 +1687,11 @@ _CSS = """
     }
     .cluster-label-value {
       flex: 1 1 auto;
+      min-width: 0;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
       word-break: break-word;
       overflow-wrap: anywhere;
     }
@@ -1724,6 +1721,8 @@ _CSS = """
       font-weight: 600;
       padding: 0.25rem 0.75rem;
       border-radius: 9999px;
+      flex-shrink: 0;
+      white-space: nowrap;
     }
     .cluster-body {
       padding: 1.5rem;
@@ -1796,7 +1795,7 @@ _CSS = """
       border: 1px solid var(--border);
       border-left: 3px solid var(--danger);
       border-radius: var(--radius-sm);
-      padding: 1rem;
+      padding: 1.25rem;
     }
     .error-block pre {
       margin: 0;
@@ -1815,7 +1814,7 @@ _CSS = """
       border: 1px solid var(--border);
       border-left: 3px solid var(--info);
       border-radius: var(--radius-sm);
-      padding: 1rem;
+      padding: 1.25rem;
     }
     .log-block pre {
       margin: 0;
@@ -1839,12 +1838,9 @@ _CSS = """
 
     /* ---- LLM-анализ ---- */
     .llm-analysis {
-      padding: 1.25rem 1.5rem;
+      padding: 1.25rem;
     }
     .llm-analysis.ai-card { border-radius: var(--radius-sm); }
-    .llm-analysis.ai-card::before {
-      border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-    }
 
     /* ---- Совпадения базы знаний ---- */
     .kb-matches {
@@ -1856,7 +1852,7 @@ _CSS = """
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
-      padding: 1rem 1.25rem;
+      padding: 1.25rem;
     }
     .kb-entry-header {
       display: flex;
@@ -1923,11 +1919,11 @@ _CSS = """
       color: var(--text);
     }
     .kb-steps li { margin-bottom: 0.25rem; }
-    .kb-example-toggle{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.4rem .75rem;cursor:pointer;color:var(--text-muted);font-size:.8rem;margin-top:.75rem;transition:all .2s}
+    .kb-example-toggle{background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:.4rem .75rem;cursor:pointer;color:var(--text-muted);font-size:.8rem;margin-top:.75rem;transition:all .2s}
     .kb-example-toggle:hover{border-color:var(--primary);color:var(--primary)}
     .kb-example{margin:.5rem 0 0;padding:.75rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:.75rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:20rem;overflow-y:auto}
     .kb-example.hidden{display:none}
-    .error-trace-toggle{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.4rem .75rem;cursor:pointer;color:var(--text-muted);font-size:.8rem;margin-top:.5rem;transition:all .2s}
+    .error-trace-toggle{background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:.4rem .75rem;cursor:pointer;color:var(--text-muted);font-size:.8rem;margin-top:.5rem;transition:all .2s}
     .error-trace-toggle:hover{border-color:var(--primary);color:var(--primary)}
     .error-trace{margin:.5rem 0 0;padding:.75rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:.75rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:30rem;overflow-y:auto}
     .error-trace.hidden{display:none}
@@ -1946,7 +1942,7 @@ _CSS = """
       width: 100%;
       text-align: left;
       background: none;
-      border: 1px dashed var(--border);
+      border: 1px solid var(--border);
       border-radius: var(--radius-sm);
       padding: 0.75rem 1rem;
       cursor: pointer;
@@ -2091,18 +2087,6 @@ _CSS = """
       border-top: 1px solid var(--border);
     }
 
-    @media (max-width: 768px) {
-      .container { padding: 1rem; }
-      .header { padding: 1.25rem; flex-direction: column; align-items: stretch; }
-      .header-actions { justify-content: flex-start; }
-      .rerun-btn { width: 100%; justify-content: center; }
-      .stats { grid-template-columns: repeat(2, 1fr); }
-      .onboarding-banner { padding: 1.35rem 1.15rem; }
-      .onboarding-title { font-size: 1.35rem; }
-      .create-kb-toggle-primary { padding: .95rem 1rem; font-size: .95rem; }
-      .cluster-header { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
-      .cluster-label-stack { min-width: 100%; }
-    }
 """
 
 
@@ -2314,7 +2298,7 @@ _FEEDBACK_CSS = """
 
     /* ---- Редактирование записи базы знаний ---- */
     .edit-kb-action{margin-top:.75rem}
-    .edit-kb-toggle{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.5rem 1rem;cursor:pointer;color:var(--text-muted);font-size:.8125rem;width:100%;text-align:left;transition:all .15s}
+    .edit-kb-toggle{background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:.5rem 1rem;cursor:pointer;color:var(--text-muted);font-size:.8125rem;width:100%;text-align:left;transition:all .15s}
     .edit-kb-toggle:hover{border-color:var(--text);color:var(--text)}
     .edit-kb-form{display:flex;flex-direction:column;gap:.9rem;padding:1rem;border:1px solid var(--border);border-radius:var(--radius-sm);margin-top:.25rem;background:var(--surface)}
     .edit-kb-form.hidden{display:none}
@@ -2327,15 +2311,9 @@ _FEEDBACK_CSS = """
     .edit-kb-status{font-size:.75rem;color:var(--text-muted)}
     .edit-kb-ok{color:var(--success)}
     .edit-kb-error{color:var(--danger)}
-    .edit-kb-refresh-example{background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);padding:.35rem .75rem;cursor:pointer;color:var(--text);font-size:.75rem;margin-top:.25rem;transition:all .15s;display:inline-block}
+    .edit-kb-refresh-example{background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:.35rem .75rem;cursor:pointer;color:var(--text);font-size:.75rem;margin-top:.25rem;transition:all .15s;display:inline-block}
     .edit-kb-refresh-example:hover{border-color:var(--text);background:var(--surface-muted)}
 
-    @media (max-width: 768px) {
-      .cluster-merge-toolbar{right:16px;left:16px;bottom:16px;min-width:0;max-width:none}
-      .cluster-merge-actions{flex-direction:column;align-items:stretch}
-      .cluster-merge-button,.cluster-merge-clear{width:100%}
-      .cluster-merge-toggle{width:100%;justify-content:flex-start}
-    }
 """
 
 
