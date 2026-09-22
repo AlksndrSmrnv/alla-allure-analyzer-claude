@@ -156,6 +156,8 @@ COMMENT ON TABLE alla.project_group IS
     'Все проекты с одинаковым group_id видят KB-записи друг друга.';
 """
 
+SCHEMA_SQL += "\n" + Path(__file__).with_name("skill_run_schema.sql").read_text(encoding="utf-8")
+
 # ---------------------------------------------------------------------------
 # DML — начальные данные
 # Каждый элемент: (id, title, description, error_example, category,
@@ -409,7 +411,7 @@ def run(
 
     with conn:
         if run_schema:
-            print("Создание схемы alla, таблиц kb_entry, kb_feedback, project_group...")
+            print("Создание схемы alla, таблиц kb_entry, kb_feedback, project_group, skill_run...")
             with conn.cursor() as cur:
                 cur.execute(SCHEMA_SQL)
             print("✓ Схема создана (или уже существовала)\n")

@@ -10,7 +10,14 @@ from pathlib import Path
 from uuid import uuid4
 
 from .analysis import ClusterAnalysis, LaunchAnalysis
-from .evidence import compact_trace, redact, write_json, private_write, secure_artifacts
+from .evidence import (
+    compact_trace,
+    redact,
+    write_json,
+    private_write,
+    secure_artifacts,
+    redact_configuration,
+)
 from .services.clustering_service import ClusteringService
 from .services.log_extraction_service import LogExtractionService
 from .services.triage_service import TriageService
@@ -290,6 +297,11 @@ def source_text(data, run_dir, source):
     if match:
         path = local_path(Path(data["project_root"]), match[1])
         suffixes = {
+            ".yaml",
+            ".yml",
+            ".toml",
+            ".properties",
+            ".ini",
             ".py",
             ".java",
             ".kt",
@@ -333,6 +345,8 @@ def source_text(data, run_dir, source):
         contents = path.read_text(encoding="utf-8")
         if re.search(r"-----BEGIN [^-]*(?:PRIVATE KEY|CERTIFICATE)-----", contents):
             raise ValueError("Ключи и сертификаты не являются доказательствами кода")
+        if path.suffix.lower() in {".yaml", ".yml", ".toml", ".properties", ".ini"}:
+            contents = redact_configuration(contents)
         lines = contents.splitlines()
         line = int(match[2])
         if not 1 <= line <= len(lines):

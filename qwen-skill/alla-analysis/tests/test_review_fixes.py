@@ -198,3 +198,94 @@ def test_skipped_and_empty_attachment_are_distinct():
             assert client.sources["attachment:21"]["state"] == "skipped"
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("value", [42, True, ["oops"], {"nested": "oops"}])
+def test_detail_values_must_be_strings(value):
+    class Provider:
+        async def get_test_result_detail(self, tid):
+            return Result(id=tid, statusDetails={"message": value, "trace": value})
+
+    summary = FailedTestSummary(test_result_id=1, name="test", status="failed")
+    asyncio.run(
+        TriageService(
+            Provider(), Settings(endpoint="https://test.test", token="token")
+        )._fetch_missing_traces([summary])
+    )
+    assert summary.status_message is None
+    assert summary.status_trace is None
+
+
+@pytest.mark.parametrize("suffix", ["yaml", "yml", "toml", "properties", "ini"])
+def test_configuration_evidence(tmp_path, suffix):
+    path = tmp_path / f"config.{suffix}"
+    path.write_text('timeout = 3000\ndb.password = "sensitive value"\n')
+    text = source_text({"project_root": str(tmp_path)}, tmp_path, f"code:{path.name}:1")
+    assert "timeout = 3000" in text
+    assert "sensitive" not in text
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "password: |\n  sensitive\n",
+        'token = """\nsensitive\n"""\n',
+        "password = first\\\nsensitive\n",
+        "credentials:\n  value: sensitive\n",
+        'password: "first\nsensitive"\n',
+    ],
+)
+def test_multiline_config_secrets_cannot_be_read_by_offset(tmp_path, content):
+    (tmp_path / "config.yaml").write_text(content)
+    with pytest.raises(ValueError):
+        source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.yaml:2")
+
+
+def test_snapshot_symlink_error_identifies_link_without_touching_target(tmp_path):
+    from alla_skill.evidence import secure_artifacts
+
+    target = tmp_path / "outside.txt"
+    target.write_text("data")
+    target.chmod(0o644)
+    run = tmp_path / "snapshot"
+    run.mkdir()
+    (run / "bad-link").symlink_to(target)
+    with pytest.raises(ValueError, match="bad-link"):
+        secure_artifacts(run)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+@pytest.mark.parametrize("value", [42, True, ["oops"], {"nested": "oops"}])
+def test_invalid_status_details_in_steps_and_results(value):
+    from alla_skill.models.testops import ExecutionStep
+
+    service = TriageService(object(), Settings(endpoint="https://test.test", token="token"))
+    step = ExecutionStep(
+        name="step", status="failed", statusDetails={"message": value, "trace": value}
+    )
+    assert service._extract_error_from_step(step) == (None, None)
+    result = Result(id=1, status="failed", statusDetails={"message": value, "trace": value})
+    summary = service._build_failed_summary(result, [step], 123)
+    assert summary.status_message is None
+    assert summary.status_trace is None
+
+
+def test_valid_detail_text_is_preserved_when_other_value_is_invalid():
+    class Provider:
+        async def get_test_result_detail(self, tid):
+            return Result(
+                id=tid,
+                statusDetails={
+                    "message": {"invalid": True},
+                    "trace": "AssertionError: actual=503\nCaused by: timeout",
+                },
+            )
+
+    summary = FailedTestSummary(test_result_id=1, name="test", status="failed")
+    asyncio.run(
+        TriageService(
+            Provider(), Settings(endpoint="https://test.test", token="token")
+        )._fetch_missing_traces([summary])
+    )
+    assert summary.status_message == "AssertionError: actual=503"
+    assert summary.status_trace.endswith("Caused by: timeout")

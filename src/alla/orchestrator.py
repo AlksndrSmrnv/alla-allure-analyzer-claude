@@ -174,8 +174,8 @@ def apply_merge_rules_phase(
 ) -> ClusteringReport | None:
     """Применить сохранённые merge rules к результату кластеризации.
 
-    Публичный helper, переиспользуется skill-режимом, чтобы pipeline
-    серверной alla и `alla-skill` шёл через один и тот же gate
+    Публичный helper для серверного анализа и сохранённого skill REST API:
+    оба пути используют один и тот же gate
     (`settings.kb_active`, `project_id`, наличие правил).
     """
     if (

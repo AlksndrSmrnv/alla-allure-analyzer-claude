@@ -121,6 +121,9 @@ python sql/setup_kb.py
 python sql/setup_kb.py --with-starter-pack
 ```
 
+Bootstrap включает `alla.skill_run` для сохранённых `/api/v1/skill/*`. DDL также доступна отдельно в `sql/skill_run_schema.sql`; автономному Qwen-скиллу PostgreSQL не нужен.
+
+
 Можно применять SQL-файлы вручную:
 
 ```bash

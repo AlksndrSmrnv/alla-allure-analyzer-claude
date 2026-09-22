@@ -109,10 +109,44 @@ def write_json(path: Path, value):
 def secure_artifacts(run_dir: Path):
     """Normalize agent-written artifact permissions; reject links before chmod."""
     paths = [run_dir, *run_dir.rglob("*")]
-    if any(path.is_symlink() for path in paths):
-        raise ValueError("Ссылки внутри снимка не поддерживаются")
+    links = [str(path.relative_to(run_dir)) for path in paths if path.is_symlink()]
+    if links:
+        raise ValueError(
+            "Символические ссылки внутри снимка не поддерживаются: "
+            + ", ".join(sorted(links))
+            + ". Удалите указанные ссылки или замените обычными файлами; не удаляйте их цели."
+        )
     for path in paths:
         path.chmod(0o700 if path.is_dir() else 0o600)
+
+
+def redact_configuration(contents: str) -> str:
+    """Mask credential assignments before slicing; fail closed for multiline values."""
+    lines = contents.splitlines()
+    secret_key = re.compile(
+        r"(?i)^\s*(?:-\s*)?[\"']?[\w.-]*(?:password|passwd|secret|token|api[_-]?key|credential|authorization|cookie)[\w.-]*[\"']?\s*[:=]\s*(.*)$"
+    )
+    for index, line in enumerate(lines):
+        match = secret_key.match(line)
+        if not match:
+            continue
+        value = match[1].strip()
+        indent = len(line) - len(line.lstrip())
+        following = lines[index + 1 :]
+        next_line = next((v for v in following if v.strip() and not v.lstrip().startswith("#")), "")
+        if (
+            not value
+            or value.startswith(("|", ">", '"""', "'''", "{", "[", "&"))
+            or value.endswith("\\")
+            or (value.startswith(('"', "'")) and value[0] not in value[1:])
+            or (next_line and len(next_line) - len(next_line.lstrip()) > indent)
+        ):
+            raise ValueError(
+                "Конфиг содержит многострочное или структурное секретное значение; "
+                "используйте другой источник доказательства"
+            )
+        lines[index] = line[: match.start(1)] + "[REDACTED]"
+    return redact("\n".join(lines))
 
 
 def compact_trace(text: str | None, project_hints=(), max_lines=60):

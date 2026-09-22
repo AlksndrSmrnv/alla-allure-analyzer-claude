@@ -1,15 +1,14 @@
 """Сервис управления состоянием skill-режима в таблице ``alla.skill_run``.
 
-Все скрипты в ``alla-skill/scripts/`` обмениваются данными через
-``alla.skill_run``: ``fetch_clusters`` создаёт row, ``submit_analysis``
-дописывает агентский анализ, ``generate_report`` фиксирует сгенерированный
-HTML, ``push_to_testops`` фиксирует push.
+Сохранённые серверные endpoints ``/api/v1/skill/*`` используют таблицу
+для триажа, агентского анализа, HTML-отчёта и публикации в TestOps.
+Автономный Qwen-скилл не использует этот сервис.
 
 Сервис централизует JSONB-сериализацию pydantic-моделей и состояние
 status-машины ``pending → clustered → analyzed → reported → pushed``
 (плюс ``failed`` при ошибке).
 
-DDL таблицы — ``alla-skill/sql/skill_run_schema.sql``.
+DDL таблицы — ``sql/skill_run_schema.sql``.
 """
 
 from __future__ import annotations
