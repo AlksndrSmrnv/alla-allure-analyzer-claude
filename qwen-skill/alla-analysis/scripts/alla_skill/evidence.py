@@ -140,14 +140,30 @@ def redact_configuration(contents: str) -> str:
         "cookie",
         "setcookie",
         "privatekey",
+        "jwttoken",
+        "bearertoken",
     }
     assignment = re.compile(r"^\s*(?:-\s*)?[\"']?([\w.-]+)[\"']?\s*[:=]\s*(.*)$")
     for index, line in enumerate(lines):
+        if line.lstrip().startswith(("#", ";")):
+            continue
         match = assignment.match(line)
         if not match:
+            section = re.fullmatch(r"\s*\[\[?[^\]\n]+\]\]?\s*(?:[#;].*)?", line)
+            if re.search(r"[:=]", line) and not section:
+                raise ValueError(
+                    "Неподдерживаемый синтаксис присваивания в конфиге; "
+                    "используйте другой источник доказательства"
+                )
             continue
-        # Dotted paths denote namespaces; normalize snake/kebab/camel spelling.
-        name = re.sub(r"[_-]", "", match[1].rsplit(".", 1)[-1]).lower()
+        # Dotted paths denote namespaces; split camelCase before removing suffixes.
+        key = match[1].rsplit(".", 1)[-1]
+        key = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", key)
+        key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
+        parts = re.split(r"[_-]+", key.lower())
+        while len(parts) > 1 and parts[-1] in {"hash", "value", "data", "contents", "path"}:
+            parts.pop()
+        name = "".join(parts)
         if name not in secret_names:
             continue
         value = match[2].strip()

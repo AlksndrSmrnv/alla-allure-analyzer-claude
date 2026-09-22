@@ -336,6 +336,52 @@ def test_env_templates_are_not_ignored(tmp_path):
     for name in [".env.example", ".env.local.example"]:
         result = subprocess.run(["git", "-C", str(tmp_path), "check-ignore", "-q", name])
         assert result.returncode == 1
-    for name in [".env", ".env.local"]:
+    for name in [".env", ".env.local", ".env.localexample"]:
         result = subprocess.run(["git", "-C", str(tmp_path), "check-ignore", "-q", name])
         assert result.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "password_hash",
+        "jwt_token",
+        "secret_path",
+        "token_value",
+        "bearerToken",
+        "passwordHash",
+        "access_token_value",
+        "clientSecretContents",
+        "privateKeyData",
+    ],
+)
+def test_derived_credentials_are_masked(tmp_path, key):
+    (tmp_path / "config.yaml").write_text(f"{key} : very-sensitive\n")
+    text = source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.yaml:1")
+    assert "very-sensitive" not in text
+    assert "[REDACTED]" in text
+
+
+@pytest.mark.parametrize(
+    "key", ["some.key [auto]", "password [auto]", "secret key", "[password] value"]
+)
+def test_unsupported_config_assignment_fails_closed(tmp_path, key):
+    (tmp_path / "config.ini").write_text(f"{key} = sensitive\n")
+    with pytest.raises(ValueError, match="синтаксис"):
+        source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.ini:1")
+
+
+def test_spaces_before_separator_are_supported(tmp_path):
+    (tmp_path / "config.yaml").write_text("key : useful\npassword : sensitive\n")
+    text = source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.yaml:1")
+    assert "key : useful" in text
+    assert "sensitive" not in text
+
+
+def test_configuration_sections_remain_supported(tmp_path):
+    (tmp_path / "config.toml").write_text(
+        "[service:local]\ntimeout = 30\n[[clients]]\npasswordHash = sensitive\n"
+    )
+    text = source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.toml:1")
+    assert "timeout = 30" in text
+    assert "sensitive" not in text

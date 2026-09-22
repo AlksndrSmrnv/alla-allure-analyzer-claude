@@ -384,7 +384,10 @@ def run(
         try:
             schema_sql = SCHEMA_SQL + "\n" + path.read_text(encoding="utf-8")
         except OSError:
-            print("Ошибка: для создания схемы поместите skill_run_schema.sql рядом с setup_kb.py", file=sys.stderr)
+            print(
+                "Ошибка: для создания схемы поместите skill_run_schema.sql рядом с setup_kb.py",
+                file=sys.stderr,
+            )
             sys.exit(1)
     if dry_run:
         print("=== DRY RUN — запросы не выполняются ===\n")
