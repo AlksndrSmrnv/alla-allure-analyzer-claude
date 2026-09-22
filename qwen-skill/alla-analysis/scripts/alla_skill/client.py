@@ -5,10 +5,9 @@ import time
 from pathlib import Path
 
 import httpx
-from charset_normalizer import from_bytes
 
 from .config import Settings
-from .evidence import redact
+from .evidence import redact, private_write, decode_attachment
 from .models.testops import AttachmentMeta, ExecutionStep, LaunchResponse, TestResultResponse
 
 
@@ -17,6 +16,7 @@ class Client:
         self.settings = settings
         self.http = httpx.AsyncClient(timeout=settings.request_timeout, transport=transport)
         self.sources = {}
+        self.attachment_mimes = {}
         self.artifacts: Path | None = None
         self.launch = None
         self.hidden_count = 0
@@ -51,8 +51,13 @@ class Client:
                     raise ValueError("missing token")
                 expires = int(body.get("expires_in", 3600))
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                detail = (
+                    f"HTTP {exc.response.status_code}"
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else type(exc).__name__
+                )
                 raise ValueError(
-                    "Не удалось авторизоваться в TestOps; проверьте endpoint и token"
+                    f"Не удалось авторизоваться в TestOps ({detail}); проверьте endpoint и token"
                 ) from exc
             self._jwt = token
             self.secrets.append(token)
@@ -220,10 +225,13 @@ class Client:
 
         attachments = await self._source(f"attachments:{result_id}", load)
         for att in attachments:
+            self.attachment_mimes[att.id] = (
+                (att.content_type or att.type or "").lower().split(";")[0]
+            )
             self.sources.setdefault(
                 f"attachment:{att.id}",
                 {
-                    "state": "absent",
+                    "state": "skipped",
                     "reason": "Не загружено: неподдерживаемый формат",
                     "test_result_ids": [],
                 },
@@ -239,10 +247,20 @@ class Client:
                 f"/api/testresult/attachment/{attachment_id}/content",
                 max_bytes=self.settings.max_attachment_bytes,
             )
-            text = raw.decode("utf-8", errors="strict")
-        except UnicodeError:
-            decoded = from_bytes(raw).best()
-            text = str(decoded) if decoded is not None else ""
+            mime = self.attachment_mimes.get(attachment_id, "")
+            declared_text = mime.startswith("text/") or mime in {
+                "application/json",
+                "application/xml",
+                "application/x-ndjson",
+            }
+            text = decode_attachment(raw, declared_text=declared_text)
+            if text is None:
+                self.sources[key] = {
+                    "state": "skipped",
+                    "reason": "Бинарное или нераспознанное текстовое содержимое",
+                    "test_result_ids": owners,
+                }
+                return b""
         except Exception:
             self.sources[key] = {"state": "unavailable", "test_result_ids": owners}
             raise
@@ -254,6 +272,6 @@ class Client:
         }
         if self.artifacts is not None and text:
             path = self.artifacts / f"{attachment_id}.txt"
-            path.write_text(text, encoding="utf-8")
+            private_write(path, text)
             self.sources[key]["file"] = f"attachments/{attachment_id}.txt"
         return text.encode("utf-8")

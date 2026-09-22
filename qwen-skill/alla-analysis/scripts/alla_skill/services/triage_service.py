@@ -28,6 +28,7 @@ class TriageService:
         self._client = client
         self._endpoint = str(settings.endpoint).rstrip("/")
         self._detail_concurrency = settings.detail_concurrency
+        self._max_detail_enrichments = settings.max_detail_enrichments
 
     async def analyze_launch(self, launch_id: int) -> TriageReport:
         """Получить результаты тестов для запуска и сформировать отчёт триажа.
@@ -188,7 +189,17 @@ class TriageService:
 
         Мутирует объекты summaries in-place, заполняя status_trace и status_message.
         """
-        missing = [s for s in summaries if not s.status_message or not s.status_trace]
+        ordered = sorted(summaries, key=lambda s: s.test_result_id)
+        required = [s for s in ordered if not s.status_message and not s.status_trace]
+        optional = [s for s in ordered if bool(s.status_message) != bool(s.status_trace)]
+        missing = required + optional[: self._max_detail_enrichments]
+        if hasattr(self._client, "sources"):
+            for summary in optional[self._max_detail_enrichments :]:
+                self._client.sources[f"detail:{summary.test_result_id}"] = {
+                    "state": "skipped",
+                    "reason": "Исчерпан лимит дополнительной дозагрузки деталей",
+                    "test_result_ids": [summary.test_result_id],
+                }
         if not missing:
             return
 

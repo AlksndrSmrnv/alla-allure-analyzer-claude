@@ -1,6 +1,7 @@
 """Keep diagnostic values separate from clustering normalization."""
 
 import json
+import os
 import re
 from pathlib import Path
 from uuid import uuid4
@@ -47,11 +48,71 @@ def redact(value, secrets=()):
     return _SECRET.sub(replace_secret, value)
 
 
-def write_json(path: Path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
+def decode_attachment(content: bytes, *, declared_text: bool = False) -> str | None:
+    """Conservative text detection, not a libmagic replacement."""
+    signatures = (
+        b"\x89PNG",
+        b"\xff\xd8\xff",
+        b"GIF87a",
+        b"GIF89a",
+        b"%PDF",
+        b"PK\x03\x04",
+        b"\x7fELF",
+        b"\x1f\x8b",
+        b"Rar!",
+        b"7z\xbc\xaf",
+        b"BZh",
+        b"RIFF",
+        b"SQLite format",
+    )
+    if content.startswith(signatures):
+        return None
+    try:
+        if content.startswith((b"\xff\xfe", b"\xfe\xff")):
+            text = content.decode("utf-16")
+        else:
+            text = content.decode("utf-8-sig")
+    except UnicodeError:
+        if not declared_text:
+            return None
+        from charset_normalizer import from_bytes
+
+        best = from_bytes(content).best()
+        if best is None or best.chaos > 0.05:
+            return None
+        text = str(best)
+    sample = text[:8192]
+    if any(ord(c) < 32 and c not in "\n\r\t" for c in sample):
+        return None
+    if sample and sum(c.isprintable() or c in "\n\r\t" for c in sample) / len(sample) < 0.98:
+        return None
+    return text
+
+
+def private_write(path: Path, text: str):
+    """Create a 0600 temporary file, then replace atomically (POSIX)."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(path.name + "." + uuid4().hex + ".tmp")
-    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def write_json(path: Path, value):
+    private_write(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+def secure_artifacts(run_dir: Path):
+    """Normalize agent-written artifact permissions; reject links before chmod."""
+    paths = [run_dir, *run_dir.rglob("*")]
+    if any(path.is_symlink() for path in paths):
+        raise ValueError("Ссылки внутри снимка не поддерживаются")
+    for path in paths:
+        path.chmod(0o700 if path.is_dir() else 0o600)
 
 
 def compact_trace(text: str | None, project_hints=(), max_lines=60):

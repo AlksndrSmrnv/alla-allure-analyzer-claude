@@ -1,10 +1,7 @@
-"""Parity tests for REST API and alla-skill CLI wrappers."""
+"""Round-trip tests for the retained server KB client API."""
 
 from __future__ import annotations
 
-import json
-import sys
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -14,8 +11,6 @@ from alla.clients.alla_api_client import AllaApiClient, AllaApiConflictError
 from alla.knowledge.feedback_models import FeedbackRequest, FeedbackResponse, FeedbackVote
 from alla.knowledge.models import KBEntry
 from alla.server import app
-
-SKILL_SCRIPTS = Path(__file__).resolve().parent.parent / "alla-skill" / "scripts"
 
 
 class _MemoryFeedbackStore:
@@ -84,11 +79,7 @@ class _MemoryFeedbackStore:
             return False
         entry = self.entries.pop(entry_id)
         self.by_key.pop((entry.id, entry.project_id), None)
-        self.feedback = {
-            key: value
-            for key, value in self.feedback.items()
-            if key[0] != entry_id
-        }
+        self.feedback = {key: value for key, value in self.feedback.items() if key[0] != entry_id}
         return True
 
 
@@ -108,20 +99,6 @@ def api_client(monkeypatch, memory_feedback_store: _MemoryFeedbackStore) -> Alla
         test_client.close()
 
 
-@pytest.fixture
-def manage_kb_module():
-    sys.path.insert(0, str(SKILL_SCRIPTS))
-    try:
-        import manage_kb
-
-        yield manage_kb
-    finally:
-        try:
-            sys.path.remove(str(SKILL_SCRIPTS))
-        except ValueError:
-            pass
-
-
 def _payload() -> dict[str, Any]:
     return {
         "title": "Connection timeout",
@@ -131,103 +108,43 @@ def _payload() -> dict[str, Any]:
     }
 
 
-def _stdout_json(capsys) -> dict[str, Any]:
-    captured = capsys.readouterr()
-    return json.loads(captured.out)
-
-
-def test_slug_parity_rest_then_cli(api_client, manage_kb_module, capsys) -> None:
+def test_create_is_idempotent_and_listed(api_client):
     from alla.knowledge.feedback_models import CreateKBEntryRequest
 
-    created_response, created = api_client.create_kb_entry(
-        CreateKBEntryRequest.model_validate(_payload())
-    )
+    request = CreateKBEntryRequest.model_validate(_payload())
+    first, created = api_client.create_kb_entry(request)
+    second, repeated = api_client.create_kb_entry(request)
     assert created is True
-
-    manage_kb_module._cmd_create(api_client, _payload())
-    cli_response = _stdout_json(capsys)
-
-    assert cli_response["entry_id"] == created_response.entry_id
-    assert cli_response["id"] == created_response.id
-    assert cli_response["created"] is False
+    assert repeated is False
+    assert first.entry_id == second.entry_id
+    assert api_client.list_kb_entries(project_id=1)[0].entry_id == first.entry_id
 
 
-def test_slug_parity_cli_then_rest(api_client, manage_kb_module, capsys) -> None:
+def test_server_canonicalizes_error_example(api_client):
     from alla.knowledge.feedback_models import CreateKBEntryRequest
 
-    manage_kb_module._cmd_create(api_client, _payload())
-    cli_response = _stdout_json(capsys)
-
-    rest_response, created = api_client.create_kb_entry(
-        CreateKBEntryRequest.model_validate(_payload())
-    )
-
-    assert rest_response.entry_id == cli_response["entry_id"]
-    assert rest_response.id == cli_response["id"]
-    assert created is False
-
-
-def test_cli_create_uses_server_canonicalize(api_client, manage_kb_module, capsys) -> None:
     payload = {
-        "title": "Gateway timeout",
-        "error_example": (
-            "Order 123e4567-e89b-12d3-a456-426614174000 failed at 2026-02-10 12:00:00\n"
-            "--- Лог приложения ---\n"
-            "2026-02-10 12:00:00 [ERROR] from 10.20.30.40 build 123456"
-        ),
-        "project_id": 1,
+        **_payload(),
+        "error_example": "Order 123e4567-e89b-12d3-a456-426614174000 failed at 2026-02-10 12:00:00",
     }
-
-    manage_kb_module._cmd_create(api_client, payload)
-    _stdout_json(capsys)
-    entries = api_client.list_kb_entries(project_id=1)
-
-    assert entries[0].error_example == (
-        "Order <ID> failed at <TS>\n"
-        "<TS> [ERROR] from <IP> build <NUM>"
-    )
+    api_client.create_kb_entry(CreateKBEntryRequest.model_validate(payload))
+    assert api_client.list_kb_entries(project_id=1)[0].error_example == "Order <ID> failed at <TS>"
 
 
-def test_cli_repeated_create_is_idempotent(api_client, manage_kb_module, capsys) -> None:
-    manage_kb_module._cmd_create(api_client, _payload())
-    first = _stdout_json(capsys)
+def test_delete_force_gate_cascades_feedback(api_client, memory_feedback_store):
+    from alla.knowledge.feedback_models import CreateKBEntryRequest
 
-    manage_kb_module._cmd_create(api_client, _payload())
-    second = _stdout_json(capsys)
-
-    assert first["entry_id"] == second["entry_id"]
-    assert first["created"] is True
-    assert second["created"] is False
-
-
-def test_delete_force_gate_cascades_feedback(
-    api_client,
-    memory_feedback_store,
-    manage_kb_module,
-    capsys,
-) -> None:
-    manage_kb_module._cmd_create(api_client, _payload())
-    entry_id = _stdout_json(capsys)["entry_id"]
+    response, _ = api_client.create_kb_entry(CreateKBEntryRequest.model_validate(_payload()))
+    entry_id = response.entry_id
     api_client.submit_feedback(
         FeedbackRequest(
             kb_entry_id=entry_id,
-            audit_text="[message]\nsocket.timeout: 30s",
+            audit_text="socket.timeout: 30s",
             vote=FeedbackVote.LIKE,
             issue_signature_hash="c" * 64,
         )
     )
-
-    with pytest.raises(SystemExit) as err:
-        manage_kb_module._cmd_delete(api_client, entry_id, force=False)
-
-    assert err.value.code == 1
-    stderr = json.loads(capsys.readouterr().err)
-    assert stderr["feedback_count"] == 1
     with pytest.raises(AllaApiConflictError):
         api_client.delete_kb_entry(entry_id, force=False)
-
-    manage_kb_module._cmd_delete(api_client, entry_id, force=True)
-    deleted = _stdout_json(capsys)
-
-    assert deleted == {"ok": True, "entry_id": entry_id, "deleted": True}
+    api_client.delete_kb_entry(entry_id, force=True)
     assert memory_feedback_store.count_feedback_for_entry(entry_id) == 0

@@ -4,12 +4,13 @@ import json
 import re
 import subprocess
 from collections import Counter
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from .analysis import ClusterAnalysis, LaunchAnalysis
-from .evidence import compact_trace, redact, write_json
+from .evidence import compact_trace, redact, write_json, private_write, secure_artifacts
 from .services.clustering_service import ClusteringService
 from .services.log_extraction_service import LogExtractionService
 from .services.triage_service import TriageService
@@ -58,9 +59,9 @@ async def prepare(launch_id, project_root, client):
         / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + run_id[:8])
     )
     run_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
-    (run_dir / ".gitignore").write_text("*\n", encoding="utf-8")
+    private_write(run_dir / ".gitignore", "*\n")
     for directory in ("tests", "attachments", "analyses"):
-        (run_dir / directory).mkdir()
+        (run_dir / directory).mkdir(mode=0o700)
     client.artifacts = run_dir / "attachments"
     started = now()
     try:
@@ -77,7 +78,10 @@ async def prepare(launch_id, project_root, client):
                     "test_result_ids": [test.test_result_id],
                 }
         # Only already-redacted evidence participates in clustering.
-        clusters = ClusteringService().cluster_failures(launch_id, report.failed_tests)
+        clustering_config = client.settings.clustering_config()
+        clusters = ClusteringService(clustering_config).cluster_failures(
+            launch_id, report.failed_tests
+        )
         counters = {
             "total_results": report.total_results,
             "passed": report.passed_count,
@@ -92,7 +96,7 @@ async def prepare(launch_id, project_root, client):
         limitations = [
             f"{key}: {value['state']}"
             for key, value in client.sources.items()
-            if value["state"] in ("unavailable", "truncated")
+            if value["state"] in ("unavailable", "truncated", "skipped")
         ]
         limitations.extend(logs.issues)
         for test in report.failed_tests:
@@ -104,6 +108,10 @@ async def prepare(launch_id, project_root, client):
             limitations.insert(0, "Прогон открыт: результаты могли изменяться во время сбора")
         data = {
             "schema_version": 1,
+            "analysis_config": {
+                "clustering": asdict(clustering_config),
+                "max_detail_enrichments": client.settings.max_detail_enrichments,
+            },
             "run_id": run_id,
             "project_root": str(project_root),
             "started_at": started,
@@ -169,6 +177,7 @@ def context(run_dir, cluster_id=None, *, member_id=None, source=None, offset=0, 
     run_dir = Path(run_dir).resolve()
     data = read_json(run_dir / "run.json")
     check_coverage(data)
+    secure_artifacts(run_dir)
     if source is not None:
         if offset < 0 or not 1 <= limit <= 16000:
             raise ValueError("offset >= 0; limit от 1 до 16000")
@@ -280,9 +289,51 @@ def source_text(data, run_dir, source):
     match = re.fullmatch(r"code:(.+):(\d+)", source)
     if match:
         path = local_path(Path(data["project_root"]), match[1])
-        if path.name.startswith(".env") or ".git" in path.parts:
+        suffixes = {
+            ".py",
+            ".java",
+            ".kt",
+            ".kts",
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".cs",
+            ".go",
+            ".rs",
+            ".rb",
+            ".php",
+            ".scala",
+            ".swift",
+            ".c",
+            ".cpp",
+            ".h",
+            ".hpp",
+            ".feature",
+            ".robot",
+            ".groovy",
+            ".sh",
+            ".sql",
+        }
+        original = Path(match[1])
+        forbidden = {".git", ".ssh", ".aws", ".azure", ".qwen", "secrets", "credentials"}
+        if (
+            original.is_absolute()
+            or any(
+                candidate.name.lower().startswith(".env")
+                or set(s.lower() for s in candidate.suffixes)
+                & {".env", ".pem", ".key", ".p12", ".pfx"}
+                for candidate in (path, original)
+            )
+            or any(part.lower() in forbidden for part in (*path.parts, *original.parts))
+            or path.suffix.lower() not in suffixes
+            or original.suffix.lower() not in suffixes
+        ):
             raise ValueError("Секреты и служебные Git-файлы не являются доказательствами")
-        lines = path.read_text(encoding="utf-8").splitlines()
+        contents = path.read_text(encoding="utf-8")
+        if re.search(r"-----BEGIN [^-]*(?:PRIVATE KEY|CERTIFICATE)-----", contents):
+            raise ValueError("Ключи и сертификаты не являются доказательствами кода")
+        lines = contents.splitlines()
         line = int(match[2])
         if not 1 <= line <= len(lines):
             raise ValueError("Строка кода не существует")
@@ -339,6 +390,7 @@ def finalize(run_dir):
     run_dir = Path(run_dir).resolve()
     data = read_json(run_dir / "run.json")
     check_coverage(data)
+    secure_artifacts(run_dir)
     analyses = {
         c["cluster_id"]: validated_analysis(data, run_dir, c["cluster_id"])
         for c in data["clusters"]
@@ -416,7 +468,5 @@ def finalize(run_dir):
         lines.extend([f"[Пример падения]({test['link']})", ""])
     rendered = redact("\n".join(lines)) + "\n"
     output = run_dir / "report.md"
-    temporary = run_dir / ("report." + uuid4().hex + ".tmp")
-    temporary.write_text(rendered, encoding="utf-8")
-    temporary.replace(output)
+    private_write(output, rendered)
     return {"report": str(output), "summary": redact(text), "analyzed_clusters": len(analyses)}

@@ -41,6 +41,7 @@ def main():
 
         def do_POST(self):
             assert self.path == "/api/uaa/oauth/token"
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
             self.reply({"access_token": "synthetic-jwt"})
 
         def do_GET(self):
@@ -80,6 +81,9 @@ def main():
         "ALLURE_TOKEN": "synthetic-api-token",
     }
     env.pop("PYTHONPATH", None)
+    for key in list(env):
+        if key.lower() in {"http_proxy", "https_proxy", "all_proxy"}:
+            env.pop(key)
     env["NO_PROXY"] = "127.0.0.1,localhost"
     env["no_proxy"] = "127.0.0.1,localhost"
 
@@ -94,7 +98,9 @@ def main():
         )
         if result.returncode:
             raise RuntimeError(result.stdout + result.stderr)
-        return json.loads(result.stdout)
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is True
+        return payload
 
     try:
         prepared = command("prepare", "12345", "--project-root", str(project))

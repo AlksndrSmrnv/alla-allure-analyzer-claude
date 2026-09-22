@@ -268,7 +268,7 @@ def test_environment_takes_priority_without_exposing_token(tmp_path, monkeypatch
     )
     monkeypatch.setenv("ALLURE_TOKEN", "env-token")
     monkeypatch.delenv("ALLURE_ENDPOINT", raising=False)
-    settings = Settings.load(tmp_path)
+    settings = Settings.load(tmp_path, env_file=tmp_path / ".env")
     assert settings.token == "env-token"
     assert "env-token" not in repr(settings)
 

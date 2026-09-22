@@ -19,6 +19,7 @@ def main():
     collect = commands.add_parser("prepare")
     collect.add_argument("launch_id", type=int)
     collect.add_argument("--project-root", type=Path, default=Path.cwd())
+    collect.add_argument("--env-file", type=Path)
     inspect = commands.add_parser("context")
     inspect.add_argument("run_dir", type=Path)
     inspect.add_argument("cluster_id", nargs="?")
@@ -35,7 +36,7 @@ def main():
         if args.command == "prepare":
 
             async def collect_run():
-                async with Client(Settings.load(args.project_root)) as client:
+                async with Client(Settings.load(args.project_root, args.env_file)) as client:
                     directory = await prepare(args.launch_id, args.project_root, client)
                     return context(directory)
 
@@ -51,7 +52,7 @@ def main():
             )
         else:
             result = finalize(args.run_dir)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps({**result, "ok": True}, ensure_ascii=False, indent=2))
         return 0
     except (ValueError, OSError, KeyError) as exc:
         print(json.dumps({"ok": False, "error": redact(str(exc))}, ensure_ascii=False))

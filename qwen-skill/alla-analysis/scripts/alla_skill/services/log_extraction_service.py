@@ -17,6 +17,7 @@ from typing import Any
 import ijson
 from charset_normalizer import from_bytes as _cn_from_bytes
 
+from alla_skill.evidence import decode_attachment
 from alla_skill.clients.base import AttachmentProvider
 from alla_skill.models.testops import AttachmentMeta, FailedTestSummary
 from alla_skill.services.attachment_handlers import (
@@ -47,12 +48,12 @@ def _detect_content_type(content: bytes, *, fallback_mime: str = "") -> str:
     Использует MIME и сигнатуры текстовых форматов без libmagic.
     Возвращает 'json', 'xml', 'text' или 'binary'.
     """
-    if (
-        content.startswith((b"\x89PNG", b"\xff\xd8\xff", b"%PDF", b"PK\x03\x04"))
-        or b"\x00" in content[:2048]
-    ):
-        return "binary"
     mime = fallback_mime.lower().split(";")[0].strip()
+    known_text = mime.startswith("text/") or mime in _MAGIC_JSON_MIMES | _MAGIC_XML_MIMES
+    decoded = decode_attachment(content, declared_text=known_text)
+    if decoded is None:
+        return "binary"
+    content = decoded.encode("utf-8")
 
     if mime in _MAGIC_JSON_MIMES:
         return "json"
