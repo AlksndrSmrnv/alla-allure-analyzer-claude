@@ -346,7 +346,7 @@ def source_text(data, run_dir, source):
         if re.search(r"-----BEGIN [^-]*(?:PRIVATE KEY|CERTIFICATE)-----", contents):
             raise ValueError("Ключи и сертификаты не являются доказательствами кода")
         if path.suffix.lower() in {".yaml", ".yml", ".toml", ".properties", ".ini"}:
-            contents = redact_configuration(contents)
+            contents = redact_configuration(contents, yaml=path.suffix.lower() in {".yaml", ".yml"})
         lines = contents.splitlines()
         line = int(match[2])
         if not 1 <= line <= len(lines):

@@ -120,7 +120,7 @@ def secure_artifacts(run_dir: Path):
         path.chmod(0o700 if path.is_dir() else 0o600)
 
 
-def redact_configuration(contents: str) -> str:
+def redact_configuration(contents: str, *, yaml: bool = False) -> str:
     """Mask credential assignments before slicing; fail closed for multiline values."""
     lines = contents.splitlines()
     secret_names = {
@@ -144,13 +144,22 @@ def redact_configuration(contents: str) -> str:
         "bearertoken",
     }
     assignment = re.compile(r"^\s*(?:-\s*)?[\"']?([\w.-]+)[\"']?\s*[:=]\s*(.*)$")
+    block_indent = None
     for index, line in enumerate(lines):
+        if block_indent is not None:
+            if not line.strip() or len(line) - len(line.lstrip()) > block_indent:
+                # A YAML block scalar is content, not configuration assignments.
+                # It still passes through the general text redactor below.
+                continue
+            block_indent = None
         if line.lstrip().startswith(("#", ";")):
             continue
         match = assignment.match(line)
         if not match:
-            section = re.fullmatch(r"\s*\[\[?[^\]\n]+\]\]?\s*(?:[#;].*)?", line)
-            if re.search(r"[:=]", line) and not section:
+            if yaml and line.lstrip().startswith(("- ", "{", "[", '"', "'")):
+                continue
+            section = re.fullmatch(r"\s*(?:\[[^\[\]\n]+\]|\[\[[^\[\]\n]+\]\])\s*(?:[#;].*)?", line)
+            if (re.search(r"[:=]", line) or line.lstrip().startswith("[")) and not section:
                 raise ValueError(
                     "Неподдерживаемый синтаксис присваивания в конфиге; "
                     "используйте другой источник доказательства"
@@ -161,10 +170,12 @@ def redact_configuration(contents: str) -> str:
         key = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", key)
         key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
         parts = re.split(r"[_-]+", key.lower())
-        while len(parts) > 1 and parts[-1] in {"hash", "value", "data", "contents", "path"}:
+        while len(parts) > 1 and parts[-1] in {"hash", "value", "data", "contents"}:
             parts.pop()
         name = "".join(parts)
         if name not in secret_names:
+            if yaml and re.fullmatch(r"[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*(?:#.*)?", match[2]):
+                block_indent = match.start(1)
             continue
         value = match[2].strip()
         indent = match.start(1)

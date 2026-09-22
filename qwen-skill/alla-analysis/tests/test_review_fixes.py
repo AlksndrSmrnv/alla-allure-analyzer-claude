@@ -346,7 +346,6 @@ def test_env_templates_are_not_ignored(tmp_path):
     [
         "password_hash",
         "jwt_token",
-        "secret_path",
         "token_value",
         "bearerToken",
         "passwordHash",
@@ -385,3 +384,62 @@ def test_configuration_sections_remain_supported(tmp_path):
     text = source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.toml:1")
     assert "timeout = 30" in text
     assert "sensitive" not in text
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        'items:\n  - {name: x}\n  - "see: docs"\n  - [a: b]\n',
+        'run: |\n  wget http://host:8080/x\n  echo "see: docs"\nnext: value\n',
+        "entrypoint: >-\n  wget http://host:8080/x\n",
+        "steps:\n  - run: |2-\n      wget http://host:8080/x\n    name: Fetch\n",
+    ],
+)
+def test_yaml_data_and_scripts_remain_evidence(tmp_path, content):
+    (tmp_path / "config.yaml").write_text(content)
+    assert source_text(
+        {"project_root": str(tmp_path)}, tmp_path, "code:config.yaml:1"
+    ) == content.rstrip("\n")
+
+
+@pytest.mark.parametrize("key", ["secretPath", "secret_path", "tokenPath", "passwordPath"])
+def test_credential_path_metadata_is_preserved(tmp_path, key):
+    (tmp_path / "config.yaml").write_text(f"{key}: /etc/secrets/app\n")
+    assert "/etc/secrets/app" in source_text(
+        {"project_root": str(tmp_path)}, tmp_path, "code:config.yaml:1"
+    )
+
+
+@pytest.mark.parametrize("header", ["[x]]", "[[x]", "[x: y]]"])
+def test_unbalanced_section_is_rejected(tmp_path, header):
+    (tmp_path / "config.ini").write_text(header + "\ntimeout = 30\n")
+    with pytest.raises(ValueError, match="синтаксис"):
+        source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.ini:1")
+
+
+def test_yaml_block_ends_before_secret_field(tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        "run: |\n  wget http://host:8080/x\npasswordHash: sensitive\n"
+    )
+    text = source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.yaml:1")
+    assert "wget http://host:8080/x" in text
+    assert "sensitive" not in text
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "items:\n  - {password: sensitive}\n",
+        'run: |\n  echo "password=sensitive"\n',
+    ],
+)
+def test_yaml_content_still_uses_general_redaction(tmp_path, content):
+    (tmp_path / "config.yaml").write_text(content)
+    text = source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.yaml:1")
+    assert "sensitive" not in text
+
+
+def test_yaml_content_exception_does_not_apply_to_ini(tmp_path):
+    (tmp_path / "config.ini").write_text('- {name: x}\n')
+    with pytest.raises(ValueError, match="синтаксис"):
+        source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.ini:1")
