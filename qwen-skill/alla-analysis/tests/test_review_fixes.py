@@ -440,6 +440,24 @@ def test_yaml_content_still_uses_general_redaction(tmp_path, content):
 
 
 def test_yaml_content_exception_does_not_apply_to_ini(tmp_path):
-    (tmp_path / "config.ini").write_text('- {name: x}\n')
+    (tmp_path / "config.ini").write_text("- {name: x}\n")
     with pytest.raises(ValueError, match="синтаксис"):
         source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.ini:1")
+
+
+@pytest.mark.parametrize("indicator", ["|1", "|1-", "|-1", ">1+", ">+1", "|2", ">+2", "|"])
+@pytest.mark.parametrize("prefix", ["", "  ", "- ", "  - "])
+def test_yaml_explicit_block_indent_uses_key_indentation(tmp_path, indicator, prefix):
+    indent = len(prefix)
+    extra = next((int(c) for c in indicator if c.isdigit()), 1)
+    content = (
+        f'{prefix}"run": {indicator}\n'
+        + " " * (indent + extra)
+        + "some.key [auto] = diagnostic-value\n"
+        + " " * indent
+        + "passwordHash: sensitive\n"
+    )
+    (tmp_path / "config.yaml").write_text(content)
+    text = source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.yaml:1")
+    assert "some.key [auto] = diagnostic-value" in text
+    assert "sensitive" not in text

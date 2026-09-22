@@ -174,8 +174,15 @@ def redact_configuration(contents: str, *, yaml: bool = False) -> str:
             parts.pop()
         name = "".join(parts)
         if name not in secret_names:
-            if yaml and re.fullmatch(r"[|>](?:[1-9][+-]?|[+-][1-9]?)?\s*(?:#.*)?", match[2]):
-                block_indent = match.start(1)
+            header = re.fullmatch(r"[|>]([1-9][+-]?|[+-][1-9]?)?\s*(?:#.*)?", match[2])
+            if yaml and header:
+                # Relative to the mapping key's indentation, not the first
+                # character inside a quoted key; sequence markers precede it.
+                key_column = match.start(1)
+                if key_column and line[key_column - 1] in {'"', "'"}:
+                    key_column -= 1
+                indicator = re.search(r"[1-9]", header[1] or "")
+                block_indent = key_column + (int(indicator[0]) if indicator else 1) - 1
             continue
         value = match[2].strip()
         indent = match.start(1)
