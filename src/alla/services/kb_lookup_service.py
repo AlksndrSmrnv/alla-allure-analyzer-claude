@@ -5,7 +5,7 @@
 публичную точку входа, чтобы её одинаково импортировали:
 
 * server-side путь (через :func:`alla.orchestrator.analyze_launch`);
-* skill-скрипт ``alla-skill/scripts/fetch_clusters.py``.
+* сохранённые серверные endpoints ``/api/v1/skill/*``.
 
 Главная функция — :func:`lookup_kb_for_clusters`.
 """

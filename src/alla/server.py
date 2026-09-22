@@ -1180,9 +1180,9 @@ async def dashboard_page() -> HTMLResponse:
 
 # --- Skill pipeline endpoints (DSN живёт только на сервере) ---
 #
-# Скилл-скрипты (`alla-skill/scripts/`) больше не коннектятся к PostgreSQL
-# напрямую — TestOps-триаж они делают локально (токен пользователя), а всю
-# работу с БД (skill_run, KB lookup, merge rules, отчёты) делегируют сюда.
+# Сохранённый REST API для клиентов AllaApiClient: состояние skill_run,
+# KB lookup, merge rules и HTML-отчёты. Автономный Qwen-скилл его не вызывает.
+# DDL состояния: sql/skill_run_schema.sql (включён в sql/setup_kb.py).
 # DSN задаётся только в окружении сервера.
 
 

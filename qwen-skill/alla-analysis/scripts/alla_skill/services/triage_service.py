@@ -4,10 +4,10 @@ import asyncio
 import logging
 from collections import Counter
 
-from alla.clients.base import TestResultsProvider
-from alla.config import Settings
-from alla.models.common import TestStatus
-from alla.models.testops import (
+from alla_skill.clients.base import TestResultsProvider
+from alla_skill.config import Settings
+from alla_skill.models.common import TestStatus
+from alla_skill.models.testops import (
     ExecutionStep,
     FailedTestSummary,
     TestResultResponse,
@@ -33,6 +33,7 @@ class TriageService:
         self._client = client
         self._endpoint = str(settings.endpoint).rstrip("/")
         self._detail_concurrency = settings.detail_concurrency
+        self._max_detail_enrichments = settings.max_detail_enrichments
 
     async def analyze_launch(self, launch_id: int) -> TriageReport:
         """Получить результаты тестов для запуска и сформировать отчёт триажа.
@@ -63,16 +64,12 @@ class TriageService:
             )
 
         # 3. Подсчёт по статусам (без hidden, но с muted)
-        status_counts = Counter(
-            self._normalize_status(r.status) for r in results
-        )
+        status_counts = Counter(self._normalize_status(r.status) for r in results)
 
         # 3.1. Подсчитать muted-падения (включены в status_counts, но не в анализ)
         failure_statuses = TestStatus.failure_statuses()
         muted_failure_count = sum(
-            1 for r in results
-            if self._normalize_status(r.status) in failure_statuses
-            and r.muted
+            1 for r in results if self._normalize_status(r.status) in failure_statuses and r.muted
         )
 
         # 4. Получить execution-данные для упавших/сломанных тестов
@@ -80,8 +77,7 @@ class TriageService:
 
         # 5. Сформировать сводки из результатов + execution-шагов
         failed_tests = [
-            self._build_failed_summary(r, steps, launch_id)
-            for r, steps in failures_with_execution
+            self._build_failed_summary(r, steps, launch_id) for r, steps in failures_with_execution
         ]
 
         # 5.5. Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}
@@ -130,15 +126,13 @@ class TriageService:
         """
         failure_statuses = TestStatus.failure_statuses()
         failed_results = [
-            r for r in results
-            if self._normalize_status(r.status) in failure_statuses
-            and not r.muted
+            r
+            for r in results
+            if self._normalize_status(r.status) in failure_statuses and not r.muted
         ]
 
         muted_failures = sum(
-            1 for r in results
-            if self._normalize_status(r.status) in failure_statuses
-            and r.muted
+            1 for r in results if self._normalize_status(r.status) in failure_statuses and r.muted
         )
         if muted_failures:
             logger.info(
@@ -150,8 +144,7 @@ class TriageService:
             return []
 
         logger.info(
-            "Получение execution-деталей для %d упавших/сломанных тестов "
-            "(параллелизм=%d)",
+            "Получение execution-деталей для %d упавших/сломанных тестов (параллелизм=%d)",
             len(failed_results),
             self._detail_concurrency,
         )
@@ -165,8 +158,7 @@ class TriageService:
         tasks = [fetch_one(r.id) for r in failed_results]
         gathered_results = await asyncio.gather(*tasks, return_exceptions=True)
         execution_results: list[list[ExecutionStep] | BaseException] = [
-            item if isinstance(item, BaseException) else list(item)
-            for item in gathered_results
+            item if isinstance(item, BaseException) else list(item) for item in gathered_results
         ]
 
         return [
@@ -202,17 +194,24 @@ class TriageService:
 
         Мутирует объекты summaries in-place, заполняя status_trace и status_message.
         """
-        missing = [
-            s for s in summaries
-            if not s.status_message and not s.status_trace
-        ]
+        ordered = sorted(summaries, key=lambda s: s.test_result_id)
+        required = [s for s in ordered if not s.status_message and not s.status_trace]
+        optional = [s for s in ordered if bool(s.status_message) != bool(s.status_trace)]
+        missing = required + optional[: self._max_detail_enrichments]
+        if hasattr(self._client, "sources"):
+            for summary in optional[self._max_detail_enrichments :]:
+                self._client.sources[f"detail:{summary.test_result_id}"] = {
+                    "state": "skipped",
+                    "reason": "Исчерпан лимит дополнительной дозагрузки деталей",
+                    "test_result_ids": [summary.test_result_id],
+                }
         if not missing:
             return
 
         logger.info(
-            "Fallback: %d тестов без message/trace, "
-            "запрос GET /api/testresult/{id} для каждого",
-            len(missing),
+            "Fallback: обязательных запросов=%d, обогащений частичных ошибок=%d",
+            len(required),
+            len(missing) - len(required),
         )
 
         semaphore = asyncio.Semaphore(self._detail_concurrency)
@@ -233,13 +232,17 @@ class TriageService:
         results = await asyncio.gather(*tasks)
 
         for summary, detail in zip(missing, results):
-            if detail is None or not detail.trace:
+            if detail is None:
                 continue
-            summary.status_trace = detail.trace
-            if not summary.status_message:
-                first_line = detail.trace.strip().split("\n", 1)[0]
-                if first_line:
-                    summary.status_message = first_line
+            details = detail.status_details or {}
+            summary.status_trace = (
+                summary.status_trace or detail.trace or _diagnostic_text(details.get("trace"))
+            )
+            summary.status_message = summary.status_message or _diagnostic_text(
+                details.get("message")
+            )
+            if not summary.status_message and summary.status_trace:
+                summary.status_message = summary.status_trace.strip().split("\n", 1)[0]
             logger.debug(
                 "Fallback: получен trace для теста %d из GET /api/testresult/{id}",
                 summary.test_result_id,
@@ -313,7 +316,8 @@ class TriageService:
                 if step.steps:
                     deeper_msg, deeper_trace, deeper_breadcrumb = (
                         TriageService._find_failure_details_in_steps(
-                            step.steps, current_path,
+                            step.steps,
+                            current_path,
                         )
                     )
                     if deeper_breadcrumb is not None:
@@ -333,7 +337,8 @@ class TriageService:
                 # он может быть statusless wrapper с statusDetails. Логика
                 # симметрична с failed-веткой выше.
                 message, trace, breadcrumb = TriageService._find_failure_details_in_steps(
-                    step.steps, current_path,
+                    step.steps,
+                    current_path,
                 )
                 if breadcrumb is not None:
                     if not message or not trace:
@@ -390,9 +395,7 @@ class TriageService:
             repr(str(result.status_details)[:200]) if result.status_details else None,
         )
 
-        link = (
-            f"{self._endpoint}/launch/{launch_id}/testresult/{result.id}"
-        )
+        link = f"{self._endpoint}/launch/{launch_id}/testresult/{result.id}"
 
         return FailedTestSummary(
             test_result_id=result.id,

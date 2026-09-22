@@ -9,7 +9,22 @@
 self-contained HTML-отчёт и может записать рекомендации/ссылку обратно в
 TestOps.
 
-## Текущий pipeline
+## Проектный скилл Qwen Code
+
+Единственный распространяемый скилл — `qwen-skill/alla-analysis/`, устанавливаемый
+в `.qwen/skills/alla-analysis/` проекта автотестов. Старые серверные скрипты скилла
+удалены. Новый pipeline: `prepare` (TestOps, снимок, кластеры) → текущая модель
+Qwen Code (каждый кластер + код проекта + общая сводка) → `finalize` (Markdown).
+Нет базы знаний, вызовов Alla REST API, GigaChat, HTML или записи в TestOps.
+
+Секреты: переменные окружения либо приватный `.env` в папке скилла; корневой
+`.env` проекта не загружается автоматически. См. `references/setup.md` скилла.
+Особенности порта и параметры — `references/port-maintenance.md`; состав групп
+при одинаковых входах/настройках проверяет `tests/test_qwen_skill_parity.py`.
+Представители, дозагрузка деталей и определение текстовых вложений намеренно
+отличаются от сервера; не переносить изменения молча в одну из копий.
+
+## Pipeline серверного инструмента (CLI/REST/MCP)
 
 `TriageService`
 → `LogExtractionService`
@@ -105,7 +120,7 @@ MCP сервер монтируется в `alla-server` на `/mcp`.
 | `analyze_launch_html(launch_id, push_comments?, push_report_link?)` | То же + сохранение HTML в `ALLURE_REPORTS_DIR` и/или PostgreSQL, `report_url`/`hint` |
 
 MCP tools не принимают launch name. Для имени используйте REST
-`/api/v1/launch/resolve` или helper `alla-skill/scripts/resolve_launch.py`.
+`/api/v1/launch/resolve`; автономный скилл принимает только числовой launch ID.
 
 ## Конфигурация
 
@@ -231,16 +246,11 @@ JS падает обратно на старое поведение и заме�
 ## Gotchas
 
 - В user-facing тексте писать «база знаний», не «KB».
-- Скилл (`alla-skill/scripts/`) **не знает DSN**: TestOps-триаж делается
-  локально токеном пользователя, а вся работа с PostgreSQL идёт через
-  `/api/v1/skill/...` на `alla-server` (DSN живёт только на сервере). Чистые
-  трансформации этих эндпоинтов — в `alla/services/skill_api_service.py`,
-  REST-клиент — методы `*_skill_*`/`get_cluster_context` в `AllaApiClient`.
-  Гейт `feedback_server_url` (через `_common.get_feedback_server_url`) заменил
-  прежний `require_kb_dsn` для pipeline-скриптов.
-- `feedback_server_url` отвечает за интерактивность HTML и за весь skill
-  pipeline; `server_external_url` (на сервере) — за публичные ссылки
-  `/reports/...` и rerun button.
+- Сохранённые `/api/v1/skill/...` endpoints относятся к прежнему серверному
+  API и не используются новым проектным скиллом. Их трансформации остаются
+  в `alla/services/skill_api_service.py`, клиент — `AllaApiClient`.
+- `feedback_server_url` отвечает за интерактивность серверного HTML;
+  `server_external_url` — за публичные ссылки `/reports/...` и rerun button.
 - `analyze_launch_html` REST прикрепляет report link к TestOps только если есть
   effective report URL и `push_report_link=true`.
 - MCP `analyze_launch_html` сохраняет отчёт и возвращает URL/hint, но не патчит
@@ -249,3 +259,5 @@ JS падает обратно на старое поведение и заме�
   PATCH/DELETE; `_request_raw()` нужен для бинарных attachments.
 - Для запуска проекта нужен Python `>=3.11`; системный Python 3.9 падает ещё на
   аннотациях типов.
+
+DDL сохранённого серверного `/api/v1/skill/*`: `sql/skill_run_schema.sql`, включена в `sql/setup_kb.py`. Автономный Qwen-скилл не использует эту таблицу.

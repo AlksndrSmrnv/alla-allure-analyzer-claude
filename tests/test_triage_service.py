@@ -326,3 +326,19 @@ async def test_find_launch_by_name_uses_configured_page_size(monkeypatch, tmp_pa
         f"Ожидался size=25 (page_size из settings), получен size={last_params.get('size')}"
     )
     await client.close()
+
+
+@pytest.mark.parametrize("value", [42, True, ["oops"], {"nested": "oops"}])
+def test_status_details_reject_non_strings(monkeypatch, tmp_path, value):
+    from alla.models.testops import ExecutionStep
+
+    service = TriageService(_Client(results=[]), _make_settings(monkeypatch, tmp_path))
+    step = ExecutionStep(
+        name="step", status="failed", statusDetails={"message": value, "trace": value}
+    )
+    assert service._extract_error_from_step(step) == (None, None)
+    summary = service._build_failed_summary(
+        _make_failed_result(statusDetails={"message": value, "trace": value}), [step], 123
+    )
+    assert summary.status_message is None
+    assert summary.status_trace is None
