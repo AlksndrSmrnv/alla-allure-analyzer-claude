@@ -123,15 +123,35 @@ def secure_artifacts(run_dir: Path):
 def redact_configuration(contents: str) -> str:
     """Mask credential assignments before slicing; fail closed for multiline values."""
     lines = contents.splitlines()
-    secret_key = re.compile(
-        r"(?i)^\s*(?:-\s*)?[\"']?[\w.-]*(?:password|passwd|secret|token|api[_-]?key|credential|authorization|cookie)[\w.-]*[\"']?\s*[:=]\s*(.*)$"
-    )
+    secret_names = {
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "accesstoken",
+        "refreshtoken",
+        "idtoken",
+        "apikey",
+        "xapikey",
+        "clientsecret",
+        "credential",
+        "credentials",
+        "authorization",
+        "cookie",
+        "setcookie",
+        "privatekey",
+    }
+    assignment = re.compile(r"^\s*(?:-\s*)?[\"']?([\w.-]+)[\"']?\s*[:=]\s*(.*)$")
     for index, line in enumerate(lines):
-        match = secret_key.match(line)
+        match = assignment.match(line)
         if not match:
             continue
-        value = match[1].strip()
-        indent = len(line) - len(line.lstrip())
+        # Dotted paths denote namespaces; normalize snake/kebab/camel spelling.
+        name = re.sub(r"[_-]", "", match[1].rsplit(".", 1)[-1]).lower()
+        if name not in secret_names:
+            continue
+        value = match[2].strip()
+        indent = match.start(1)
         following = lines[index + 1 :]
         next_line = next((v for v in following if v.strip() and not v.lstrip().startswith("#")), "")
         if (
@@ -145,7 +165,7 @@ def redact_configuration(contents: str) -> str:
                 "Конфиг содержит многострочное или структурное секретное значение; "
                 "используйте другой источник доказательства"
             )
-        lines[index] = line[: match.start(1)] + "[REDACTED]"
+        lines[index] = line[: match.start(2)] + "[REDACTED]"
     return redact("\n".join(lines))
 
 

@@ -107,13 +107,21 @@ class Settings:
                     "Env-файл с ALLURE_TOKEN отслеживается Git; используйте приватный файл или окружение"
                 )
         values = {**file_values, **os.environ}
+
+        def number(name, default, convert):
+            try:
+                return convert(values.get(name, default))
+            except (TypeError, ValueError):
+                kind = "целое число" if convert is int else "число"
+                raise ValueError(f"{name}: требуется {kind}; пустое значение недопустимо") from None
+
         return cls(
             endpoint=(values.get("ALLURE_ENDPOINT") or "").strip().rstrip("/"),
             token=values.get("ALLURE_TOKEN") or "",
-            max_detail_enrichments=int(values.get("ALLURE_MAX_DETAIL_ENRICHMENTS", "100")),
-            clustering_threshold=float(values.get("ALLURE_CLUSTERING_THRESHOLD", "0.60")),
-            clustering_step_strict_threshold=float(
-                values.get("ALLURE_CLUSTERING_STEP_STRICT_THRESHOLD", "0.95")
+            max_detail_enrichments=number("ALLURE_MAX_DETAIL_ENRICHMENTS", "100", int),
+            clustering_threshold=number("ALLURE_CLUSTERING_THRESHOLD", "0.60", float),
+            clustering_step_strict_threshold=number(
+                "ALLURE_CLUSTERING_STEP_STRICT_THRESHOLD", "0.95", float
             ),
-            logs_clustering_weight=float(values.get("ALLURE_LOGS_CLUSTERING_WEIGHT", "0.15")),
+            logs_clustering_weight=number("ALLURE_LOGS_CLUSTERING_WEIGHT", "0.15", float),
         )

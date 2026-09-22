@@ -156,8 +156,6 @@ COMMENT ON TABLE alla.project_group IS
     'Все проекты с одинаковым group_id видят KB-записи друг друга.';
 """
 
-SCHEMA_SQL += "\n" + Path(__file__).with_name("skill_run_schema.sql").read_text(encoding="utf-8")
-
 # ---------------------------------------------------------------------------
 # DML — начальные данные
 # Каждый элемент: (id, title, description, error_example, category,
@@ -380,11 +378,19 @@ def run(
     run_seed: bool = False,
     dry_run: bool = False,
 ) -> None:
+    schema_sql = ""
+    if run_schema:
+        path = Path(__file__).with_name("skill_run_schema.sql")
+        try:
+            schema_sql = SCHEMA_SQL + "\n" + path.read_text(encoding="utf-8")
+        except OSError:
+            print("Ошибка: для создания схемы поместите skill_run_schema.sql рядом с setup_kb.py", file=sys.stderr)
+            sys.exit(1)
     if dry_run:
         print("=== DRY RUN — запросы не выполняются ===\n")
         if run_schema:
             print("--- SCHEMA SQL ---")
-            print(SCHEMA_SQL.strip())
+            print(schema_sql.strip())
             print()
         if run_seed:
             print("--- STARTER PACK SQL ---")
@@ -413,7 +419,7 @@ def run(
         if run_schema:
             print("Создание схемы alla, таблиц kb_entry, kb_feedback, project_group, skill_run...")
             with conn.cursor() as cur:
-                cur.execute(SCHEMA_SQL)
+                cur.execute(schema_sql)
             print("✓ Схема создана (или уже существовала)\n")
 
         if run_seed:

@@ -17,6 +17,11 @@ from alla.models.testops import (
 logger = logging.getLogger(__name__)
 
 
+def _diagnostic_text(value) -> str | None:
+    """Unvalidated statusDetails values must not bypass model field types."""
+    return value if isinstance(value, str) and value.strip() else None
+
+
 class TriageService:
     """Оркестрирует процесс триажа упавших тестов.
 
@@ -256,8 +261,8 @@ class TriageService:
             return message, trace
 
         if step.status_details and isinstance(step.status_details, dict):
-            message = step.status_details.get("message")
-            trace = step.status_details.get("trace")
+            message = _diagnostic_text(step.status_details.get("message"))
+            trace = _diagnostic_text(step.status_details.get("trace"))
             if message or trace:
                 return message, trace
 
@@ -371,9 +376,9 @@ class TriageService:
         # Попытка 2 (fallback): из statusDetails — заполнить отсутствующие поля
         if result.status_details and isinstance(result.status_details, dict):
             if not status_message:
-                status_message = result.status_details.get("message")
+                status_message = _diagnostic_text(result.status_details.get("message"))
             if not status_trace:
-                status_trace = result.status_details.get("trace")
+                status_trace = _diagnostic_text(result.status_details.get("trace"))
 
         logger.debug(
             "Сборка сводки для теста %d: шагов=%d, "

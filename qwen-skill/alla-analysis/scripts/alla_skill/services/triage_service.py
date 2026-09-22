@@ -209,8 +209,9 @@ class TriageService:
             return
 
         logger.info(
-            "Fallback: %d тестов без message/trace, запрос GET /api/testresult/{id} для каждого",
-            len(missing),
+            "Fallback: обязательных запросов=%d, обогащений частичных ошибок=%d",
+            len(required),
+            len(missing) - len(required),
         )
 
         semaphore = asyncio.Semaphore(self._detail_concurrency)

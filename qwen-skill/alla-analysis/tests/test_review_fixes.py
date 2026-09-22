@@ -289,3 +289,53 @@ def test_valid_detail_text_is_preserved_when_other_value_is_invalid():
     )
     assert summary.status_message == "AssertionError: actual=503"
     assert summary.status_trace.endswith("Caused by: timeout")
+
+
+@pytest.mark.parametrize(
+    "key", ["token_endpoint_auth_method", "passwordless", "secretManagerUrl", "cookieName"]
+)
+def test_nonsecret_config_keys_remain_evidence(tmp_path, key):
+    path = tmp_path / "config.yaml"
+    path.write_text(f"{key}: useful-value\n")
+    assert f"{key}: useful-value" in source_text(
+        {"project_root": str(tmp_path)}, tmp_path, "code:config.yaml:1"
+    )
+
+
+def test_nonsecret_sections_and_list_neighbors_remain_evidence(tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        "tokens:\n  enabled: true\ncookies:\n  enabled: false\nitems:\n  - password: sensitive\n    timeout: 30\n"
+    )
+    text = source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.yaml:1")
+    assert "timeout: 30" in text
+    assert "sensitive" not in text
+
+
+@pytest.mark.parametrize("value", ["", "garbage"])
+def test_numeric_configuration_error_names_variable(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("ALLURE_CLUSTERING_THRESHOLD", value)
+    with pytest.raises(ValueError, match="ALLURE_CLUSTERING_THRESHOLD") as error:
+        Settings.load(tmp_path)
+    assert "garbage" not in str(error.value)
+
+
+@pytest.mark.parametrize("key", ["access_token", "clientSecret", "x-api-key", "db.password"])
+def test_normalized_secret_names_are_masked(tmp_path, key):
+    (tmp_path / "config.toml").write_text(f'{key} = "sensitive"\n')
+    text = source_text({"project_root": str(tmp_path)}, tmp_path, "code:config.toml:1")
+    assert "sensitive" not in text
+    assert "[REDACTED]" in text
+
+
+def test_env_templates_are_not_ignored(tmp_path):
+    from pathlib import Path
+    import shutil
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    shutil.copyfile(Path(__file__).parents[1] / ".gitignore", tmp_path / ".gitignore")
+    for name in [".env.example", ".env.local.example"]:
+        result = subprocess.run(["git", "-C", str(tmp_path), "check-ignore", "-q", name])
+        assert result.returncode == 1
+    for name in [".env", ".env.local"]:
+        result = subprocess.run(["git", "-C", str(tmp_path), "check-ignore", "-q", name])
+        assert result.returncode == 0

@@ -66,3 +66,28 @@ def test_bootstrap_executes_skill_schema(monkeypatch):
     assert "CREATE TABLE IF NOT EXISTS alla.skill_run" in sql
     assert "CREATE TRIGGER skill_run_updated_at" in sql
     connection.close.assert_called_once()
+
+
+def test_help_without_adjacent_sql(tmp_path):
+    import subprocess
+    import shutil
+
+    script = tmp_path / "setup_kb.py"
+    shutil.copyfile(Path(__file__).resolve().parents[1] / "sql/setup_kb.py", script)
+    result = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "--schema-only" in result.stdout
+
+
+def test_missing_schema_file_has_actionable_error(tmp_path):
+    import subprocess
+    import shutil
+
+    script = tmp_path / "setup_kb.py"
+    shutil.copyfile(Path(__file__).resolve().parents[1] / "sql/setup_kb.py", script)
+    result = subprocess.run(
+        [sys.executable, str(script), "--dry-run"], capture_output=True, text=True
+    )
+    assert result.returncode == 1
+    assert "skill_run_schema.sql рядом с setup_kb.py" in result.stderr
+    assert "Traceback" not in result.stderr
