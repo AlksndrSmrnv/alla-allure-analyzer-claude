@@ -1,0 +1,428 @@
+"""Сервис триажа: получение результатов тестов, фильтрация падений, формирование сводки."""
+
+import asyncio
+import logging
+from collections import Counter
+
+from alla_skill.clients.base import TestResultsProvider
+from alla_skill.config import Settings
+from alla_skill.models.common import TestStatus
+from alla_skill.models.testops import (
+    ExecutionStep,
+    FailedTestSummary,
+    TestResultResponse,
+    TriageReport,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class TriageService:
+    """Оркестрирует процесс триажа упавших тестов.
+
+    Получение результатов тестов, извлечение ошибок (трёхуровневый fallback),
+    формирование сводки по упавшим тестам.
+    """
+
+    def __init__(self, client: TestResultsProvider, settings: Settings) -> None:
+        self._client = client
+        self._endpoint = str(settings.endpoint).rstrip("/")
+        self._detail_concurrency = settings.detail_concurrency
+
+    async def analyze_launch(self, launch_id: int) -> TriageReport:
+        """Получить результаты тестов для запуска и сформировать отчёт триажа.
+
+        Шаги:
+            1. Получить метаданные запуска (имя, статус закрытия).
+            2. Получить все результаты тестов для запуска (пагинация).
+            3. Подсчитать результаты по статусам.
+            4. Получить execution-шаги для упавших/сломанных тестов.
+            5. Создать FailedTestSummary для каждого упавшего/сломанного теста.
+            5.5. Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}.
+            6. Вернуть TriageReport.
+        """
+        # 1. Метаданные запуска
+        launch = await self._client.get_launch(launch_id)
+        logger.info("Анализ запуска #%d (%s)", launch_id, launch.name or "без названия")
+
+        # 2. Все результаты тестов
+        all_results = await self._client.get_all_test_results_for_launch(launch_id)
+
+        # 2.1. Исключить hidden-результаты (retry-попытки, не финальные)
+        results = [r for r in all_results if not r.hidden]
+        hidden_count = len(all_results) - len(results)
+        if hidden_count:
+            logger.info(
+                "Исключено %d hidden-результатов (retry, не финальная попытка)",
+                hidden_count,
+            )
+
+        # 3. Подсчёт по статусам (без hidden, но с muted)
+        status_counts = Counter(self._normalize_status(r.status) for r in results)
+
+        # 3.1. Подсчитать muted-падения (включены в status_counts, но не в анализ)
+        failure_statuses = TestStatus.failure_statuses()
+        muted_failure_count = sum(
+            1 for r in results if self._normalize_status(r.status) in failure_statuses and r.muted
+        )
+
+        # 4. Получить execution-данные для упавших/сломанных тестов
+        failures_with_execution = await self._fetch_failed_executions(results)
+
+        # 5. Сформировать сводки из результатов + execution-шагов
+        failed_tests = [
+            self._build_failed_summary(r, steps, launch_id) for r, steps in failures_with_execution
+        ]
+
+        # 5.5. Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}
+        await self._fetch_missing_traces(failed_tests)
+
+        report = TriageReport(
+            launch_id=launch_id,
+            launch_name=launch.name,
+            project_id=launch.project_id,
+            total_results=len(results),
+            passed_count=status_counts.get(TestStatus.PASSED, 0),
+            failed_count=status_counts.get(TestStatus.FAILED, 0),
+            broken_count=status_counts.get(TestStatus.BROKEN, 0),
+            skipped_count=status_counts.get(TestStatus.SKIPPED, 0),
+            unknown_count=status_counts.get(TestStatus.UNKNOWN, 0),
+            muted_failure_count=muted_failure_count,
+            failed_tests=failed_tests,
+        )
+
+        self._log_report(report)
+        return report
+
+    # --- Внутренние вспомогательные методы ---
+
+    @staticmethod
+    def _normalize_status(raw: str | None) -> TestStatus:
+        """Преобразовать сырую строку статуса в TestStatus enum, по умолчанию UNKNOWN."""
+        if raw is None:
+            return TestStatus.UNKNOWN
+        try:
+            return TestStatus(raw.lower())
+        except ValueError:
+            return TestStatus.UNKNOWN
+
+    async def _fetch_failed_executions(
+        self,
+        results: list[TestResultResponse],
+    ) -> list[tuple[TestResultResponse, list[ExecutionStep]]]:
+        """Получить execution-шаги для упавших/сломанных тестов параллельно.
+
+        Вызывает ``GET /api/testresult/{id}/execution`` для каждого упавшего
+        теста. Именно этот эндпоинт содержит ``statusDetails`` с сообщениями
+        об ошибках и стек-трейсами. Семафор ограничивает параллелизм.
+
+        Возвращает список пар (TestResultResponse, list[ExecutionStep]).
+        """
+        failure_statuses = TestStatus.failure_statuses()
+        failed_results = [
+            r
+            for r in results
+            if self._normalize_status(r.status) in failure_statuses and not r.muted
+        ]
+
+        muted_failures = sum(
+            1 for r in results if self._normalize_status(r.status) in failure_statuses and r.muted
+        )
+        if muted_failures:
+            logger.info(
+                "Исключено %d muted-падений из анализа",
+                muted_failures,
+            )
+
+        if not failed_results:
+            return []
+
+        logger.info(
+            "Получение execution-деталей для %d упавших/сломанных тестов (параллелизм=%d)",
+            len(failed_results),
+            self._detail_concurrency,
+        )
+
+        semaphore = asyncio.Semaphore(self._detail_concurrency)
+
+        async def fetch_one(test_result_id: int) -> list[ExecutionStep]:
+            async with semaphore:
+                return await self._client.get_test_result_execution(test_result_id)
+
+        tasks = [fetch_one(r.id) for r in failed_results]
+        gathered_results = await asyncio.gather(*tasks, return_exceptions=True)
+        execution_results: list[list[ExecutionStep] | BaseException] = [
+            item if isinstance(item, BaseException) else list(item) for item in gathered_results
+        ]
+
+        return [
+            self._collect_execution_result(original, exec_or_exc)
+            for original, exec_or_exc in zip(failed_results, execution_results)
+        ]
+
+    @staticmethod
+    def _collect_execution_result(
+        result: TestResultResponse,
+        execution_result: list[ExecutionStep] | BaseException,
+    ) -> tuple[TestResultResponse, list[ExecutionStep]]:
+        """Нормализовать результат fetch execution в пару (result, steps)."""
+        if isinstance(execution_result, BaseException):
+            logger.warning(
+                "Не удалось получить execution для результата теста %d: %s. "
+                "Ошибка может быть получена через fallback (GET /api/testresult/{id}).",
+                result.id,
+                execution_result,
+            )
+            return result, []
+        return result, execution_result
+
+    async def _fetch_missing_traces(
+        self,
+        summaries: list[FailedTestSummary],
+    ) -> None:
+        """Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}.
+
+        Некоторые тесты имеют все execution steps в статусе passed, а statusDetails
+        в пагинированном списке пустой. В таких случаях trace доступен только
+        на индивидуальном эндпоинте ``GET /api/testresult/{id}``.
+
+        Мутирует объекты summaries in-place, заполняя status_trace и status_message.
+        """
+        missing = [s for s in summaries if not s.status_message or not s.status_trace]
+        if not missing:
+            return
+
+        logger.info(
+            "Fallback: %d тестов без message/trace, запрос GET /api/testresult/{id} для каждого",
+            len(missing),
+        )
+
+        semaphore = asyncio.Semaphore(self._detail_concurrency)
+
+        async def fetch_one(test_result_id: int) -> TestResultResponse | None:
+            async with semaphore:
+                try:
+                    return await self._client.get_test_result_detail(test_result_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Не удалось получить детали результата теста %d: %s",
+                        test_result_id,
+                        exc,
+                    )
+                    return None
+
+        tasks = [fetch_one(s.test_result_id) for s in missing]
+        results = await asyncio.gather(*tasks)
+
+        for summary, detail in zip(missing, results):
+            if detail is None:
+                continue
+            details = detail.status_details or {}
+            summary.status_trace = summary.status_trace or detail.trace or details.get("trace")
+            summary.status_message = summary.status_message or details.get("message")
+            if not summary.status_message and summary.status_trace:
+                summary.status_message = summary.status_trace.strip().split("\n", 1)[0]
+            logger.debug(
+                "Fallback: получен trace для теста %d из GET /api/testresult/{id}",
+                summary.test_result_id,
+            )
+
+    @staticmethod
+    def _extract_error_from_step(
+        step: ExecutionStep,
+    ) -> tuple[str | None, str | None]:
+        """Извлечь message/trace из шага.
+
+        Allure TestOps может хранить ошибку в двух форматах:
+        - Прямые поля ``message`` и ``trace`` на шаге
+        - Вложенный dict ``statusDetails`` с ключами ``message``/``trace``
+        """
+        message = step.message
+        trace = step.trace
+        if message or trace:
+            return message, trace
+
+        if step.status_details and isinstance(step.status_details, dict):
+            message = step.status_details.get("message")
+            trace = step.status_details.get("trace")
+            if message or trace:
+                return message, trace
+
+        return None, None
+
+    @staticmethod
+    def _find_failure_details_in_steps(
+        steps: list[ExecutionStep],
+        _ancestors: list[str] | None = None,
+    ) -> tuple[str | None, str | None, str | None]:
+        """Рекурсивно найти упавшую цепочку и извлечь message/trace/breadcrumb.
+
+        Стратегия — depth-first по первой найденной failure-цепочке.
+        ``step_path`` — хлебные крошки до **самого глубокого** failed/broken-узла
+        этой ветки, разделённые « → ». А вот ``message``/``trace`` берутся с
+        **ближайшего внешнего** failed-шага, у которого они есть: внешний
+        обычно содержит полную ошибку (assertion-префикс), а вложенные —
+        обрезанный фрагмент того же сообщения. Если у внешнего failed-шага
+        своих message/trace нет — каждое из них независимо подтягивается с
+        глубокого failed-узла.
+
+        Если самый глубокий failed-узел сам без message/trace, они также
+        могут подтянуться со statusless-обёртки с ``statusDetails`` (см. ветку
+        не-failed-родителя ниже).
+
+        Если явного статуса нет (корневой execution-объект), но есть
+        данные об ошибке — тоже извлекает.
+
+        Если ни один шаг не содержит ошибку — возвращает (None, None, None).
+        """
+        ancestors = _ancestors or []
+        failure_statuses = {"failed", "broken"}
+
+        # Первый проход: шаги с явным failure-статусом (приоритет)
+        for step in steps:
+            current_path = [*ancestors, step.name] if step.name else list(ancestors)
+            is_failed = bool(step.status and step.status.lower() in failure_statuses)
+
+            if is_failed:
+                own_message, own_trace = TriageService._extract_error_from_step(step)
+                own_breadcrumb = " → ".join(current_path) if current_path else None
+
+                # Сначала ищем более глубокий failed-шаг внутри текущего —
+                # это нужно, чтобы step_path вёл до самого вложенного падения.
+                # Но сам message/trace предпочитаем брать с внешнего failed-шага:
+                # вложенные часто содержат лишь урезанный фрагмент той же ошибки
+                # без assertion-префикса, что портит «Пример ошибки» в отчёте.
+                if step.steps:
+                    deeper_msg, deeper_trace, deeper_breadcrumb = (
+                        TriageService._find_failure_details_in_steps(
+                            step.steps,
+                            current_path,
+                        )
+                    )
+                    if deeper_breadcrumb is not None:
+                        return (
+                            own_message or deeper_msg,
+                            own_trace or deeper_trace,
+                            deeper_breadcrumb,
+                        )
+
+                # Глубже failed-шагов нет — возвращаем текущий
+                if own_message or own_trace or own_breadcrumb:
+                    return own_message, own_trace, own_breadcrumb
+            elif step.steps:
+                # Не-failed родитель: рекурсия с включением имени в путь.
+                # Если у вложенного failed-шага нет своего message или trace,
+                # каждый из них независимо подтягивается с этого родителя —
+                # он может быть statusless wrapper с statusDetails. Логика
+                # симметрична с failed-веткой выше.
+                message, trace, breadcrumb = TriageService._find_failure_details_in_steps(
+                    step.steps,
+                    current_path,
+                )
+                if breadcrumb is not None:
+                    if not message or not trace:
+                        own_message, own_trace = TriageService._extract_error_from_step(step)
+                        return message or own_message, trace or own_trace, breadcrumb
+                    return message, trace, breadcrumb
+
+        # Второй проход: шаги без статуса, но с данными об ошибке
+        # (корневой execution-объект может не иметь поля status)
+        for step in steps:
+            if step.status is not None:
+                continue
+            message, trace = TriageService._extract_error_from_step(step)
+            if message or trace:
+                current_path = [*ancestors, step.name] if step.name else list(ancestors)
+                breadcrumb = " → ".join(current_path) if current_path else None
+                return message, trace, breadcrumb
+
+        return None, None, None
+
+    def _build_failed_summary(
+        self,
+        result: TestResultResponse,
+        execution_steps: list[ExecutionStep],
+        launch_id: int,
+    ) -> FailedTestSummary:
+        """Преобразовать результат теста + execution-шаги в сводку для триажа.
+
+        Извлечение ошибки — двухуровневый fallback (третий уровень
+        обрабатывается позже в ``_fetch_missing_traces``):
+            1. Из execution-шагов (дерево шагов ``GET /api/testresult/{id}/execution``).
+            2. Из ``statusDetails`` результата (пагинированный список).
+            3. (позже) Из ``trace`` индивидуального результата (``GET /api/testresult/{id}``).
+        """
+        # Попытка 1: извлечь ошибку из execution-шагов
+        status_message, status_trace, failed_step_path = self._find_failure_details_in_steps(
+            execution_steps,
+        )
+
+        # Попытка 2 (fallback): из statusDetails — заполнить отсутствующие поля
+        if result.status_details and isinstance(result.status_details, dict):
+            if not status_message:
+                status_message = result.status_details.get("message")
+            if not status_trace:
+                status_trace = result.status_details.get("trace")
+
+        logger.debug(
+            "Сборка сводки для теста %d: шагов=%d, "
+            "сообщение=%s, трейс=%s, status_details результата=%s",
+            result.id,
+            len(execution_steps),
+            repr(status_message[:100]) if status_message else None,
+            repr(status_trace[:100]) if status_trace else None,
+            repr(str(result.status_details)[:200]) if result.status_details else None,
+        )
+
+        link = f"{self._endpoint}/launch/{launch_id}/testresult/{result.id}"
+
+        return FailedTestSummary(
+            test_result_id=result.id,
+            name=result.name or f"test-result-{result.id}",
+            full_name=result.full_name,
+            status=self._normalize_status(result.status),
+            category=result.category,
+            status_message=status_message,
+            status_trace=status_trace,
+            execution_steps=execution_steps or None,
+            test_case_id=result.test_case_id,
+            link=link,
+            duration_ms=result.duration,
+            test_start_ms=result.created_date,
+            failed_step_path=failed_step_path,
+        )
+
+    @staticmethod
+    def _log_report(report: TriageReport) -> None:
+        """Залогировать сводку отчёта триажа."""
+        msg = (
+            "Запуск #%d (%s): всего=%d | успешно=%d | провалено=%d "
+            "| сломано=%d | пропущено=%d | неизвестно=%d"
+        )
+        args: list[object] = [
+            report.launch_id,
+            report.launch_name or "без названия",
+            report.total_results,
+            report.passed_count,
+            report.failed_count,
+            report.broken_count,
+            report.skipped_count,
+            report.unknown_count,
+        ]
+        if report.muted_failure_count:
+            msg += " | muted=%d"
+            args.append(report.muted_failure_count)
+        logger.info(msg, *args)
+
+        if report.failed_tests:
+            logger.info("Падения (%d):", len(report.failed_tests))
+            for t in report.failed_tests:
+                logger.info(
+                    "  [%s] %s (ID: %d) %s",
+                    t.status.value.upper(),
+                    t.name,
+                    t.test_result_id,
+                    t.link or "",
+                )
+        else:
+            logger.info("Падения не найдены.")

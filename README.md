@@ -135,8 +135,31 @@ psql "$ALLURE_KB_POSTGRES_DSN" -f sql/kb_seed.sql
 
 ## Agent materials
 
-- `alla-skill/SKILL.md` — основной агентный skill для анализа launch,
-  кластеров, отчётов, KB и постинга рекомендаций в TestOps.
+- `qwen-skill/alla-analysis/SKILL.md` — автономный проектный скилл Qwen Code:
+  TestOps → кластеры → анализ текущей моделью → Markdown-отчёт.
+  Без сервера Alla, базы знаний и записи в TestOps.
 - `docs/USER_GUIDE.md` — пользовательская инструкция по HTML-отчёту и
   наполнению базы знаний.
 - `CLAUDE.md` — инженерная карта проекта для будущих агентов и разработчиков.
+
+## Автономный скилл Qwen Code
+
+Скопируйте `qwen-skill/alla-analysis/` в `.qwen/skills/alla-analysis/`
+проекта автотестов. Установите отдельное Python-окружение и настройте
+`ALLURE_ENDPOINT` и `ALLURE_TOKEN` по
+[инструкции установки](qwen-skill/alla-analysis/references/setup.md).
+
+Далее напишите в Qwen Code: **«разбери прогон 12345»**.
+Скилл анализирует каждый кластер, читает связанный код проекта и сохраняет
+`reports/alla/<launch_id>/<timestamp>-<unique_id>/report.md`.
+В чате выводятся краткая сводка и ссылка на файл. Для продолжения прерванного
+разбора укажите папку снимка. Серверный CLI и REST API работают отдельно.
+
+Тесты автономного скилла:
+
+```bash
+python -m pytest qwen-skill/alla-analysis/tests
+```
+
+Модельная приёмка в Qwen Code описана в
+[сценариях проверки](qwen-skill/alla-analysis/references/evaluation.md).

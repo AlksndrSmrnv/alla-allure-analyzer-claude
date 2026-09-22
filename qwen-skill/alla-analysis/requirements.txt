@@ -1,0 +1,20 @@
+# Tested with Python 3.11; direct and transitive runtime dependencies.
+annotated-types==0.7.0
+anyio==4.13.0
+certifi==2026.5.20
+charset-normalizer==3.4.7
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.16
+ijson==3.5.0
+joblib==1.5.3
+numpy==2.4.6
+pydantic==2.13.4
+pydantic-core==2.46.4
+python-dotenv==1.2.2
+scikit-learn==1.8.0
+scipy==1.17.1
+threadpoolctl==3.6.0
+typing-extensions==4.15.0
+typing-inspection==0.4.2

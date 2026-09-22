@@ -1,0 +1,160 @@
+"""Pydantic-модели для ответов Allure TestOps API и доменных объектов."""
+
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from alla_skill.models.common import TestStatus
+
+StatusDetails = dict[str, Any]
+ExecutionParameter = dict[str, Any]
+
+
+class TestResultResponse(BaseModel):
+    """Сырой результат теста из Allure TestOps API.
+
+    Используется для двух эндпоинтов:
+    - ``GET /api/testresult?launchId=X`` (пагинированный список, ``trace`` обычно пустой)
+    - ``GET /api/testresult/{id}`` (индивидуальный результат, содержит top-level ``trace``)
+
+    Поля намеренно Optional там, где API может их не вернуть,
+    что делает модель устойчивой к вариациям API. ``extra="allow"``
+    захватывает любые недокументированные поля без ошибок валидации.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    id: int
+    name: str | None = None
+    full_name: str | None = Field(None, alias="fullName")
+    status: str | None = None
+    status_details: StatusDetails | None = Field(None, alias="statusDetails")
+    trace: str | None = None
+    duration: int | None = None
+    test_case_id: int | None = Field(None, alias="testCaseId")
+    test_case_name: str | None = Field(None, alias="testCaseName")
+    launch_id: int | None = Field(None, alias="launchId")
+    created_date: int | None = Field(None, alias="createdDate")
+    category: str | None = None
+    muted: bool = False
+    hidden: bool = False
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _coerce_category(cls, v: object) -> str | None:
+        if v is None or isinstance(v, str):
+            return v
+        if isinstance(v, dict):
+            return v.get("name") or str(v)
+        return str(v)
+
+
+class LaunchResponse(BaseModel):
+    """Метаданные запуска из Allure TestOps API."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    id: int
+    name: str | None = None
+    closed: bool = False
+    created_date: int | None = Field(None, alias="createdDate")
+    project_id: int | None = Field(None, alias="projectId")
+
+
+class AttachmentMeta(BaseModel):
+    """Метаданные аттачмента.
+
+    Используется для двух источников:
+    - Из ``GET /api/testresult/attachment?testResultId={id}`` (содержит ``id``)
+    - Из execution-шагов (содержит ``source``, deprecated)
+
+    Поле ``id`` используется для скачивания через новый API.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    id: int | None = None
+    name: str | None = None
+    source: str | None = None
+    type: str | None = None
+    size: int | None = None
+    content_type: str | None = Field(None, alias="contentType")
+
+
+class ExecutionStep(BaseModel):
+    """Шаг выполнения теста из ``/api/testresult/{id}/execution``.
+
+    Ответ эндпоинта — дерево шагов. Каждый шаг может содержать вложенные
+    ``steps``, а также ``statusDetails`` с сообщением об ошибке и стек-трейсом.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    name: str | None = None
+    status: str | None = None
+    status_details: StatusDetails | None = Field(None, alias="statusDetails")
+    message: str | None = None
+    trace: str | None = None
+    steps: "list[ExecutionStep] | None" = None
+    duration: int | None = None
+    parameters: list[ExecutionParameter] | None = None
+    attachments: list[AttachmentMeta] | None = None
+
+
+class FailedTestSummary(BaseModel):
+    """Доменная модель: краткое описание упавшего теста для вывода триажа.
+
+    ``status_message`` и ``status_trace`` заполняются трёхуровневым fallback:
+    1. Из execution-шагов (``GET /api/testresult/{id}/execution``).
+    2. Из ``statusDetails`` результата (пагинированный список).
+    3. Из top-level ``trace`` индивидуального результата (``GET /api/testresult/{id}``).
+    """
+
+    test_result_id: int
+    name: str
+    full_name: str | None = None
+    status: TestStatus
+    category: str | None = None
+    status_message: str | None = None
+    status_trace: str | None = None
+    execution_steps: list[ExecutionStep] | None = None
+    test_case_id: int | None = None
+    link: str | None = None
+    duration_ms: int | None = None
+    test_start_ms: int | None = None
+    log_snippet: str | None = None
+    correlation_hint: str | None = None
+    failed_step_path: str | None = None
+
+
+class TriageReport(BaseModel):
+    """Результат шага триажа: сводка падений запуска.
+
+    ``failed_count`` и ``broken_count`` — общее число тестов с этими статусами
+    (включая muted). ``muted_failure_count`` — сколько из них muted и исключено
+    из анализа. ``failed_tests`` содержит только не-muted падения.
+
+    Инвариант: ``len(failed_tests) == failure_count - muted_failure_count``.
+    """
+
+    launch_id: int
+    launch_name: str | None = None
+    project_id: int | None = None
+    total_results: int
+    passed_count: int = 0
+    failed_count: int = 0
+    broken_count: int = 0
+    skipped_count: int = 0
+    unknown_count: int = 0
+    muted_failure_count: int = 0
+    failed_tests: list[FailedTestSummary] = []
+
+    @property
+    def failure_count(self) -> int:
+        """Общее число падений (failed + broken), включая muted."""
+        return self.failed_count + self.broken_count
+
+    @property
+    def active_failure_count(self) -> int:
+        """Число падений, участвующих в анализе (без muted)."""
+        return self.failure_count - self.muted_failure_count

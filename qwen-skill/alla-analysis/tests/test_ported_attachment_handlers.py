@@ -1,0 +1,354 @@
+"""Тесты для StructuredErrorLogHandler и реестра обработчиков вложений."""
+
+import json
+from typing import Any
+
+from alla_skill.models.testops import AttachmentMeta
+from alla_skill.services.attachment_handlers import (
+    AttachmentContext,
+    ErrorBlocksHandler,
+    HttpSignalsHandler,
+    StructuredErrorLogHandler,
+    default_handlers,
+)
+
+
+def _ctx(
+    content: bytes, *, detected_type: str = "json", name: str = "log.txt"
+) -> AttachmentContext:
+    decoded = content.decode("utf-8", errors="replace")
+    return AttachmentContext(
+        att=AttachmentMeta(id=1, name=name, type="text/plain"),
+        content=content,
+        detected_type=detected_type,
+        decoded_text=decoded,
+    )
+
+
+def _entry(**extra: Any) -> dict[str, Any]:
+    """Базовая запись журнала: содержит обязательные deploymentUnit/tenantCode."""
+    base: dict[str, Any] = {
+        "deploymentUnit": "billing-prod",
+        "tenantCode": "tenant-42",
+    }
+    base.update(extra)
+    return base
+
+
+class TestStructuredErrorLogHandlerDetection:
+    def test_detects_structured_journal(self) -> None:
+        items = [
+            _entry(subsystem="auth", message="Login failed", logLevel="ERROR"),
+            _entry(subsystem="db", message="Timeout", logLevel="ERROR"),
+        ]
+        content = json.dumps(items, ensure_ascii=False).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert result.label == "журнал"
+        assert result.consumed is True
+        parsed = json.loads(result.section)
+        assert parsed == items
+
+    def test_detects_with_only_required_keys(self) -> None:
+        """Достаточно одних обязательных ключей — никакие message/logLevel не нужны."""
+        items = [
+            {"deploymentUnit": "x", "tenantCode": "y"},
+            {"deploymentUnit": "x2", "tenantCode": "y2"},
+        ]
+        content = json.dumps(items).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+
+    def test_detection_is_case_insensitive_for_required_keys(self) -> None:
+        items = [
+            {"DeploymentUnit": "x", "TENANTCODE": "y", "msg": "..."},
+            {"deploymentunit": "x2", "tenantCode": "y2", "msg": "..."},
+        ]
+        content = json.dumps(items).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+
+    def test_rejects_when_one_required_key_missing(self) -> None:
+        """Только deploymentUnit без tenantCode — не журнал."""
+        items = [
+            {"deploymentUnit": "x", "message": "fail"},
+            {"deploymentUnit": "y", "message": "fail"},
+        ]
+        content = json.dumps(items).encode("utf-8")
+        assert StructuredErrorLogHandler().handle(_ctx(content)) is None
+
+    def test_rejects_when_other_required_key_missing(self) -> None:
+        """Только tenantCode без deploymentUnit — не журнал."""
+        items = [
+            {"tenantCode": "x", "message": "fail"},
+            {"tenantCode": "y", "message": "fail"},
+        ]
+        content = json.dumps(items).encode("utf-8")
+        assert StructuredErrorLogHandler().handle(_ctx(content)) is None
+
+    def test_detects_nested_journal_one_level_deep(self) -> None:
+        """Массив-журнал лежит под ключом ``data``."""
+        items = [_entry(message="a"), _entry(message="b")]
+        wrapper = {"data": items, "meta": {"version": 1}}
+        content = json.dumps(wrapper).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert json.loads(result.section) == items
+
+    def test_detects_nested_journal_two_levels_deep(self) -> None:
+        """Массив-журнал глубоко в иерархии: response → items."""
+        items = [_entry(message="x"), _entry(message="y"), _entry(message="z")]
+        wrapper = {"response": {"status": "ok", "items": items}}
+        content = json.dumps(wrapper).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert json.loads(result.section) == items
+
+    def test_detects_journal_inside_outer_array(self) -> None:
+        """Внешний массив — не журнал, но один из элементов содержит журнал внутри."""
+        items = [_entry(message="inner-1"), _entry(message="inner-2")]
+        wrapper = [{"meta": "x"}, {"section": "errors", "errors": items}]
+        content = json.dumps(wrapper).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert json.loads(result.section) == items
+
+    def test_rejects_when_no_array_anywhere_matches(self) -> None:
+        """Никакой из массивов в иерархии не выглядит как журнал."""
+        wrapper = {
+            "data": [{"foo": 1}, {"bar": 2}],
+            "more": {"items": [{"x": 1}]},
+        }
+        content = json.dumps(wrapper).encode("utf-8")
+        assert StructuredErrorLogHandler().handle(_ctx(content)) is None
+
+    def test_rejects_plain_array_of_unrelated_objects(self) -> None:
+        items = [
+            {"name": "Alice", "age": 30},
+            {"name": "Bob", "age": 25},
+        ]
+        content = json.dumps(items).encode("utf-8")
+        assert StructuredErrorLogHandler().handle(_ctx(content)) is None
+
+    def test_rejects_single_dict(self) -> None:
+        content = json.dumps(_entry(message="x")).encode("utf-8")
+        assert StructuredErrorLogHandler().handle(_ctx(content)) is None
+
+    def test_rejects_empty_array(self) -> None:
+        assert StructuredErrorLogHandler().handle(_ctx(b"[]")) is None
+
+    def test_rejects_invalid_json(self) -> None:
+        assert StructuredErrorLogHandler().handle(_ctx(b"not json at all")) is None
+
+    def test_rejects_xml_detected_type(self) -> None:
+        items = [_entry(message="x")]
+        content = json.dumps(items).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content, detected_type="xml"))
+        assert result is None
+
+    def test_rejects_binary_detected_type(self) -> None:
+        items = [_entry(message="x")]
+        content = json.dumps(items).encode("utf-8")
+        assert StructuredErrorLogHandler().handle(_ctx(content, detected_type="binary")) is None
+
+    def test_majority_threshold_60_percent(self) -> None:
+        """3 из 5 объектов — лог-записи (60%), handler должен сработать."""
+        items = [
+            _entry(message="fail-1"),
+            _entry(message="fail-2"),
+            _entry(message="fail-3"),
+            {"unrelated": "data"},
+            {"more": "junk"},
+        ]
+        content = json.dumps(items).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+
+    def test_below_threshold_rejected(self) -> None:
+        """2 из 5 — ниже 60%, не срабатываем."""
+        items = [
+            _entry(message="fail-1"),
+            _entry(message="fail-2"),
+            {"unrelated": "data"},
+            {"foo": "bar"},
+            {"baz": "qux"},
+        ]
+        content = json.dumps(items).encode("utf-8")
+        assert StructuredErrorLogHandler().handle(_ctx(content)) is None
+
+
+class TestStructuredErrorLogHandlerFormatting:
+    def test_section_is_pretty_printed_json_with_all_keys(self) -> None:
+        items = [
+            _entry(
+                subsystem="auth",
+                logLevel="ERROR",
+                message="Login failed",
+                stackTrace="com.example.Auth.fail()\n  at line 42",
+                customField="extra-value",
+            ),
+            _entry(
+                subsystem="db",
+                logLevel="WARN",
+                message="Slow query",
+                stackTrace="com.example.Db.q()",
+            ),
+        ]
+        content = json.dumps(items, ensure_ascii=False).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        parsed = json.loads(result.section)
+        assert parsed == items
+        # Pretty-print: должны быть переносы и отступы.
+        assert "\n" in result.section
+        assert "  " in result.section
+
+    def test_correlation_hint_extracted(self) -> None:
+        items = [
+            _entry(
+                message="fail",
+                logLevel="ERROR",
+                stackTrace="...",
+                rqUID="req-abc-123",
+                operUID="op-456",
+            )
+        ]
+        content = json.dumps(items).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert result.correlation_hint == "operUID=op-456, rqUID=req-abc-123"
+
+    def test_correlation_hint_extracted_from_nested_object(self) -> None:
+        """Correlation IDs во вложенных dict тоже находятся (как в общем JSON-сканере)."""
+        items = [
+            _entry(
+                message="fail",
+                logLevel="ERROR",
+                stackTrace="...",
+                context={"request": {"rqUID": "deep-req-1", "operUID": "deep-op-1"}},
+            )
+        ]
+        content = json.dumps(items).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert result.correlation_hint == "operUID=deep-op-1, rqUID=deep-req-1"
+
+    def test_correlation_hint_none_when_absent(self) -> None:
+        items = [
+            _entry(message="fail", logLevel="ERROR", stackTrace="..."),
+            _entry(message="fail2", logLevel="ERROR", stackTrace="..."),
+        ]
+        content = json.dumps(items).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert result.correlation_hint is None
+
+    def test_large_journal_not_truncated(self) -> None:
+        """Файл ~12 000 символов целиком попадает в секцию."""
+        items = []
+        for i in range(40):
+            items.append(
+                _entry(
+                    subsystem=f"svc-{i}",
+                    logLevel="ERROR",
+                    message=f"failure number {i} with reasonably long description " * 4,
+                    stackTrace="com.example.Class.method()\n  at line 1\n  at line 2\n" * 3,
+                )
+            )
+        content = json.dumps(items, ensure_ascii=False).encode("utf-8")
+        assert len(content) >= 10_000
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert json.loads(result.section) == items
+
+    def test_nested_object_preserved(self) -> None:
+        items = [
+            _entry(
+                message="fail",
+                logLevel="ERROR",
+                stackTrace="...",
+                context={"userId": 42, "tags": ["a", "b"]},
+            )
+        ]
+        content = json.dumps(items, ensure_ascii=False).encode("utf-8")
+        result = StructuredErrorLogHandler().handle(_ctx(content))
+        assert result is not None
+        assert json.loads(result.section) == items
+
+
+class TestStructuredErrorLogHandlerNameAgnostic:
+    """Имя файла НЕ должно влиять на детект — только содержимое."""
+
+    def test_works_with_arbitrary_name(self) -> None:
+        items = [
+            _entry(message="fail"),
+            _entry(message="fail2"),
+        ]
+        content = json.dumps(items).encode("utf-8")
+        for name in ("random.txt", "data.json", "Какой-то лог", "x.log", ""):
+            ctx = _ctx(content, name=name)
+            result = StructuredErrorLogHandler().handle(ctx)
+            assert result is not None, f"failed for name={name!r}"
+
+    def test_rejects_unrelated_array_regardless_of_name(self) -> None:
+        items = [{"foo": 1}, {"bar": 2}]
+        content = json.dumps(items).encode("utf-8")
+        for name in ("Ошибка из журнала.txt", "log.txt", "error.json"):
+            ctx = _ctx(content, name=name)
+            assert StructuredErrorLogHandler().handle(ctx) is None
+
+
+class TestErrorBlocksHandler:
+    def test_extracts_error_blocks(self) -> None:
+        text = (
+            "2026-01-01 10:00:00 [ERROR] Boom\n"
+            "    at Foo.bar(Foo.java:1)\n"
+            "2026-01-01 10:00:01 [INFO] done"
+        )
+        ctx = AttachmentContext(
+            att=AttachmentMeta(id=1, name="app.log", type="text/plain"),
+            content=text.encode("utf-8"),
+            detected_type="text",
+            decoded_text=text,
+        )
+        result = ErrorBlocksHandler().handle(ctx)
+        assert result is not None
+        assert result.label == "файл"
+        assert result.consumed is False
+        assert "Boom" in result.section
+        assert "[INFO]" not in result.section
+
+    def test_skips_non_text(self) -> None:
+        ctx = AttachmentContext(
+            att=AttachmentMeta(id=1, name="x.json", type="application/json"),
+            content=b'{"x":1}',
+            detected_type="json",
+            decoded_text='{"x":1}',
+        )
+        assert ErrorBlocksHandler().handle(ctx) is None
+
+
+class TestHttpSignalsHandler:
+    def test_extracts_http_section(self) -> None:
+        content = b'{"RqUID": "abc", "statusCode": 503, "error": "down"}'
+        ctx = AttachmentContext(
+            att=AttachmentMeta(id=1, name="r.json", type="application/json"),
+            content=content,
+            detected_type="json",
+            decoded_text=content.decode("utf-8"),
+        )
+        result = HttpSignalsHandler().handle(ctx)
+        assert result is not None
+        assert result.label == "HTTP"
+        assert result.consumed is False
+        assert "503" in result.section
+        assert "abc" in (result.correlation_hint or "")
+
+
+class TestDefaultHandlersRegistry:
+    def test_default_order_by_priority(self) -> None:
+        handlers = default_handlers()
+        priorities = [h.priority for h in handlers]
+        assert priorities == sorted(priorities)
+        names = [h.name for h in handlers]
+        assert names[0] == "structured-error-log"
