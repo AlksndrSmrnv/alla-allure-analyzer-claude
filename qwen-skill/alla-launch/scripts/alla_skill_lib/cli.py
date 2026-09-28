@@ -51,7 +51,7 @@ from alla_skill_lib.cluster_task import (
 )
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
 from alla_skill_lib.errors import fetch_error_hint
-from alla_skill_lib.feedback import find_entry, remember, reject
+from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, reject
 from alla_skill_lib.history import append_run, load_history, recurrence, run_records
 from alla_skill_lib.kb import (
     ProjectKB,
@@ -806,14 +806,17 @@ def _done_body(
         show = ws.skill_command("apply", file_id, "--run", str(paths.root))
         lines.append(
             f"- Правка автотеста для проблемы {int(file_id)}: покажи пользователю diff ({show}) "
-            "и спроси, применить ли. Только после явного «да» выполни ту же команду с --yes. "
-            "Тесты не запускай."
+            "и спроси, применить ли. Только после явного «да» выполни команду с --yes --diff, "
+            "которую напечатает скрипт под diff. Тесты не запускай."
         )
     if feedback:
         run = str(paths.root)
         lines += [
-            "- Если пользователь назовёт причину или рецепт для проблемы N — сохрани их по "
-            "разделу «Обратная связь» в SKILL.md. Команды для ЭТОГО разбора (всегда с этим --run):",
+            "- Если пользователь назовёт причину или рецепт для проблемы N (или подтвердит твой "
+            "разбор) — сохрани их. Файл обратной связи пиши со слов пользователя, не додумывай; "
+            "формат:",
+            *(f"    {line}" for line in FEEDBACK_FORMAT.splitlines()),
+            "  Команды для ЭТОГО разбора (всегда с этим --run):",
             f"  файл обратной связи: {paths.root / 'feedback'}/NN.md",
             f"  {ws.skill_command('remember', 'N', '--run', run)}",
             f"  разбор подтверждён как есть: {ws.skill_command('remember', 'N', '--run', run, '--from-analysis')}",

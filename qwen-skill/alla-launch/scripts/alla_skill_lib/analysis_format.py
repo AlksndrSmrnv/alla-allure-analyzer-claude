@@ -63,7 +63,7 @@ _HEADER_NAMES = "|".join(sorted(_SECTIONS, key=len, reverse=True))
 # «:» или тире с пробелами. «Код-ревью» и «Код ответа: 504» заголовком не являются.
 _HEADER_RE = re.compile(
     rf"^[\s#>*_`\-•]*(?:\d+[.)]\s*)?[\s#>*_`]*(?P<name>{_HEADER_NAMES})[*_`]*\s*"
-    r"(?:[:：][*_`]*\s*(?P<colon>.*)|[—–-]+\s+(?P<dash>.*)|$)",
+    r"(?:[:：][*_`]*\s*(?P<colon>.*)|[—–-]+(?=\s|$)\s*(?P<dash>.*)|$)",
     re.IGNORECASE,
 )
 _LIST_MARKER_RE = re.compile(r"(?:^|(?<=\s))(?:[-*•]|\d+[.)])(?=\s)")

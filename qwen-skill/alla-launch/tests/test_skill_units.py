@@ -91,6 +91,16 @@ def test_parse_numbered_and_dash_headers() -> None:
     assert analysis.code == ["OrderTest.java:6 — вызов"]
 
 
+def test_dash_header_may_end_the_line() -> None:
+    analysis = parse_analysis(
+        "ЧТО СЛОМАЛОСЬ — Тест упал по таймауту.\nПРИЧИНА — тест: устаревший локатор.\n"
+        "КАК ИСПРАВИТЬ —\n1. Обновить локатор.\n"
+    )
+    assert analysis.cause == "тест: устаревший локатор."
+    assert analysis.fix == "1. Обновить локатор."
+    assert parse_analysis("Код-ревью не проведён").code == []  # дефис без пробела — не заголовок
+
+
 def test_parse_ignores_bom_and_crlf() -> None:
     analysis = parse_analysis(
         "\ufeffЧТО СЛОМАЛОСЬ: x\r\nПРИЧИНА: тест — y\r\nКАК ИСПРАВИТЬ:\r\n1. z\r\n"

@@ -274,3 +274,36 @@ def test_clean_removes_only_old_runs(project: Path, testops: FakeTestOps, capsys
     code, out = _run(["clean", "--project-root", str(project)], capsys)
     assert code == 0 and "Удалены" in out
     assert not old_dir.exists() and fresh.exists() and (reports / "history.jsonl").exists()
+
+
+# --- обёртка setup ---------------------------------------------------------------------
+
+
+def test_setup_argument_split() -> None:
+    import alla_skill
+
+    assert alla_skill.split_setup_args([]) == (None, [])
+    assert alla_skill.split_setup_args(["--python", "/opt/py311"]) == ("/opt/py311", [])
+    assert alla_skill.split_setup_args(
+        ["--python", "/opt/py311", "--", "--index-url", "https://mirror/simple"]
+    ) == ("/opt/py311", ["--index-url", "https://mirror/simple"])
+    assert alla_skill.split_setup_args(["--", "--proxy", "http://p:3128"]) == (
+        None, ["--proxy", "http://p:3128"],
+    )
+
+
+def test_setup_creates_env_from_example_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import alla_skill
+
+    monkeypatch.setattr(alla_skill, "SKILL_DIR", tmp_path)
+    assert alla_skill.create_env_file() is None  # образца нет
+
+    (tmp_path / ".env.example").write_text("ALLURE_ENDPOINT=\nALLURE_TOKEN=\n", encoding="utf-8")
+    created = alla_skill.create_env_file()
+    assert created == tmp_path / ".env" and created.read_text(encoding="utf-8").startswith("ALLURE_ENDPOINT=")
+    if os.name != "nt":
+        assert created.stat().st_mode & 0o077 == 0  # токен потом лежит только для владельца
+
+    created.write_text("ALLURE_TOKEN=already-filled\n", encoding="utf-8")
+    assert alla_skill.create_env_file() is None  # существующий .env не перезаписывается
+    assert "already-filled" in created.read_text(encoding="utf-8")
