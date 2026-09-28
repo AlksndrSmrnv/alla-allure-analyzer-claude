@@ -79,6 +79,30 @@ class Settings:
             )
         if not self.token.strip():
             raise ConfigurationError("Не задан ALLURE_TOKEN — API-токен Allure TestOps")
+        for name, (low, high) in BOUNDS.items():
+            value = getattr(self, name)
+            if (low is not None and value < low) or (high is not None and value > high):
+                allowed = f"от {low}" if high is None else f"от {low} до {high}"
+                raise ConfigurationError(
+                    f"{ENV_PREFIX}{name.upper()}: допустимо {allowed}, получено {value}"
+                )
+
+
+# Допустимые границы (ge, le) — как у Field(...) серверного alla.config.Settings.
+# Например, параллелизм 0 навсегда подвесит asyncio.Semaphore в триаже и логах.
+# Совпадение с сервером проверяет tests/test_qwen_skill_sync.py.
+BOUNDS: dict[str, tuple[float | None, float | None]] = {
+    "detail_concurrency": (1, None),
+    "logs_concurrency": (1, None),
+    "logs_max_attachment_bytes": (1024, None),
+    "logs_max_snippet_chars": (1000, None),
+    "clustering_threshold": (0.0, 1.0),
+    "logs_clustering_weight": (0.0, 1.0),
+    "clustering_step_strict_threshold": (0.0, 1.0),
+    "llm_prompt_message_max_chars": (100, None),
+    "llm_prompt_trace_max_chars": (50, None),
+    "llm_prompt_log_max_chars": (100, None),
+}
 
 
 def read_env_file(path: Path) -> dict[str, str]:

@@ -57,3 +57,27 @@ def test_shim_defaults_match_server_settings() -> None:
         assert default == Settings.model_fields[name].default, name
         checked += 1
     assert checked >= 10
+
+
+def test_shim_bounds_match_server_settings() -> None:
+    """Границы ge/le в shim те же, что у Field(...) серверного Settings."""
+    tree = ast.parse((sync.CORE_ROOT / "config.py").read_text(encoding="utf-8"))
+    bounds_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "BOUNDS"
+    )
+    shim_bounds = ast.literal_eval(bounds_node.value)
+
+    server_bounds = {}
+    for name in sync.shim_fields() - {"endpoint", "token"}:
+        ge = le = None
+        for constraint in Settings.model_fields[name].metadata:
+            ge = getattr(constraint, "ge", ge)
+            le = getattr(constraint, "le", le)
+        if ge is not None or le is not None:
+            server_bounds[name] = (ge, le)
+
+    assert shim_bounds == server_bounds

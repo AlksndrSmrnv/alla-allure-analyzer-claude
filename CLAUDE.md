@@ -23,14 +23,17 @@ TestOps.
 Анализ кластеров и прогона пишет модель Qwen Code, Python готовит данные.
 
 - `scripts/alla_skill.py` — точка входа (Python 3.8+), перезапускает себя в
-  `.venv` скилла; `setup` создаёт venv. Команды: `prepare <launch_id>`,
+  `.venv` скилла; `setup` создаёт venv и после успешного pip install пишет
+  `.venv/.alla-setup-complete` (хэш `requirements.txt`) — без него команды
+  отвечают `STATUS: setup_required`. Команды: `prepare <launch_id>`,
   `next [run_dir]`; первая строка вывода — `STATUS: analyze|fix|summary|done|error`.
 - `scripts/alla_core/` — **GENERATED** копия чистых модулей `src/alla`
   (клиент TestOps, триаж, логи, кластеризация, prompt builder) с импортами
   `alla_core.*`. Не править руками: после изменений в этих модулях запускать
   `python tools/sync_qwen_skill.py` (`--check` — проверка дрейфа, её же делает
   `tests/test_qwen_skill_sync.py`). Рукописный только `alla_core/config.py`
-  (shim `Settings`: читает `<skill>/.env` + env `ALLURE_*`, чужие ключи игнорирует).
+  (shim `Settings`: читает `<skill>/.env` + env `ALLURE_*`, чужие ключи игнорирует;
+  `BOUNDS` повторяет ge/le серверного `Settings` — сверяет drift-тест).
 - `scripts/alla_skill_lib/` — логика скилла: `pipeline` (триаж → логи →
   кластеризация как в orchestrator), `cluster_task` (задание `clusters/NN.md`
   из серверного промпта без упоминаний базы знаний + тесты, кадры стека,

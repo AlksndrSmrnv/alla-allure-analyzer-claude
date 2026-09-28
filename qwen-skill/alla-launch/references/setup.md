@@ -82,5 +82,10 @@ alla-reports/<launch_id>-<YYYYmmdd-HHMMSS>/
 
 Папка `scripts/alla_core/` сгенерирована из репозитория alla
 (`tools/sync_qwen_skill.py`) — не правьте её вручную. Для обновления
-скопируйте папку скилла заново, сохранив `.env` и `.venv`, и выполните
-`setup`, чтобы подтянуть зависимости.
+скопируйте папку скилла заново, сохранив `.env` и `.venv`. Если изменился
+`requirements.txt`, скрипт сам ответит `STATUS: setup_required` — выполните
+`setup`.
+
+`setup` отмечает успешную установку файлом `.venv/.alla-setup-complete` с
+хэшем `requirements.txt`. Если `pip install` оборвался, маркера нет, и любая
+команда просит повторить `setup` вместо падения на импорте.

@@ -10,6 +10,7 @@
 создаёт ``.venv`` и ставит зависимости из ``requirements.txt``.
 """
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -20,6 +21,9 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPTS_DIR.parent
 VENV_DIR = SKILL_DIR / ".venv"
 REQUIREMENTS = SKILL_DIR / "requirements.txt"
+# Пишется только после успешного pip install: хэш requirements.txt, с которым
+# ставились зависимости. Нет маркера или хэш другой — окружение не готово.
+SETUP_MARKER = VENV_DIR / ".alla-setup-complete"
 MIN_VERSION = (3, 11)
 PYTHON_CANDIDATES = ("python3.13", "python3.12", "python3.11", "python3", "python")
 CHILD_MARKER = "ALLA_SKILL_IN_VENV"
@@ -29,6 +33,19 @@ def venv_python(venv_dir=VENV_DIR):
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
+
+
+def requirements_digest():
+    return hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest()
+
+
+def setup_complete():
+    """Окружение создано и зависимости из текущего requirements.txt установлены."""
+    try:
+        marker = SETUP_MARKER.read_text(encoding="utf-8").strip()
+        return venv_python().exists() and marker == requirements_digest()
+    except OSError:
+        return False
 
 
 def running_in_venv():
@@ -95,6 +112,10 @@ def setup(argv):
             print("Не удалось создать venv. На Debian/Ubuntu нужен пакет python3-venv.")
             return 1
 
+    try:
+        SETUP_MARKER.unlink()
+    except FileNotFoundError:
+        pass
     print("Ставлю зависимости из {}".format(REQUIREMENTS), flush=True)
     code = subprocess.call([
         str(target), "-m", "pip", "install", "--disable-pip-version-check",
@@ -104,6 +125,7 @@ def setup(argv):
         print("STATUS: error")
         print("pip install завершился с кодом {}. Проверь доступ к индексу пакетов.".format(code))
         return 1
+    SETUP_MARKER.write_text(requirements_digest() + "\n", encoding="utf-8")
     print("STATUS: ready")
     print("Окружение скилла готово: {}".format(VENV_DIR))
     return 0
@@ -113,23 +135,27 @@ def main(argv):
     if argv[:1] == ["setup"]:
         return setup(argv[1:])
 
+    if not setup_complete():
+        if venv_python().exists():
+            state = "не доустановлено или устарело (изменился requirements.txt)"
+        else:
+            state = "не установлено"
+        print("STATUS: setup_required")
+        print("Окружение скилла {}. Выполни один раз (займёт пару минут):".format(state))
+        print(self_command("setup"))
+        print("Затем повтори команду:")
+        print(self_command(*argv))
+        return 3
+
     if running_in_venv() or os.environ.get(CHILD_MARKER):
         sys.path.insert(0, str(SCRIPTS_DIR))
         from alla_skill_lib.cli import main as cli_main
 
         return cli_main(argv)
 
-    target = venv_python()
-    if not target.exists():
-        print("STATUS: setup_required")
-        print("Окружение скилла не установлено. Выполни один раз (займёт пару минут):")
-        print(self_command("setup"))
-        print("Затем повтори команду:")
-        print(self_command(*argv))
-        return 3
-
     env = dict(os.environ, **{CHILD_MARKER: "1"})
-    return subprocess.call([str(target), str(Path(__file__).resolve())] + list(argv), env=env)
+    command = [str(venv_python()), str(Path(__file__).resolve())] + list(argv)
+    return subprocess.call(command, env=env)
 
 
 if __name__ == "__main__":

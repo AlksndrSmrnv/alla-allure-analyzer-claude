@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -220,6 +222,18 @@ def test_settings_env_overrides_file(tmp_path: Path) -> None:
         ({"ALLURE_ENDPOINT": "allure.example", "ALLURE_TOKEN": "t"}, "http://"),
         ({"ALLURE_ENDPOINT": "https://a.example"}, "ALLURE_TOKEN"),
         ({"ALLURE_ENDPOINT": "https://a", "ALLURE_TOKEN": "t", "ALLURE_PAGE_SIZE": "x"}, "число"),
+        (
+            {"ALLURE_ENDPOINT": "https://a", "ALLURE_TOKEN": "t", "ALLURE_DETAIL_CONCURRENCY": "0"},
+            "ALLURE_DETAIL_CONCURRENCY: допустимо от 1",
+        ),
+        (
+            {"ALLURE_ENDPOINT": "https://a", "ALLURE_TOKEN": "t", "ALLURE_LOGS_CONCURRENCY": "0"},
+            "ALLURE_LOGS_CONCURRENCY: допустимо от 1",
+        ),
+        (
+            {"ALLURE_ENDPOINT": "https://a", "ALLURE_TOKEN": "t", "ALLURE_CLUSTERING_THRESHOLD": "1.5"},
+            "допустимо от 0.0 до 1.0",
+        ),
     ],
 )
 def test_settings_errors(environ: dict[str, str], message: str) -> None:
@@ -244,19 +258,68 @@ def test_detect_project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 # --- точка входа ----------------------------------------------------------
 
 
-def test_entrypoint_requires_setup(tmp_path: Path) -> None:
-    scripts = tmp_path / "skill" / "scripts"
-    scripts.mkdir(parents=True)
-    stub = scripts / "alla_skill.py"
-    stub.write_text((SCRIPTS_DIR / "alla_skill.py").read_text(encoding="utf-8"), encoding="utf-8")
+def _install_skill_copy(tmp_path: Path) -> tuple[Path, Path]:
+    """Копия скилла без .venv: (папка скилла, путь к alla_skill.py)."""
+    skill = tmp_path / "skill"
+    shutil.copytree(SCRIPTS_DIR, skill / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
+    (skill / "requirements.txt").write_text("httpx>=0.27\n", encoding="utf-8")
+    return skill, skill / "scripts" / "alla_skill.py"
+
+
+def _fake_venv_python(skill: Path) -> Path:
+    """«Python» в .venv скилла — обёртка над текущим интерпретатором."""
+    python = skill / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    python.chmod(0o755)
+    return python
+
+
+def _run_stub(stub: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = {key: value for key, value in os.environ.items() if key != "ALLA_SKILL_IN_VENV"}
-    result = subprocess.run(
-        [sys.executable, str(stub), "prepare", "123"],
+    return subprocess.run(
+        [sys.executable, str(stub), *args],
         capture_output=True,
         text=True,
         env=env,
         check=False,
     )
+
+
+@pytest.mark.parametrize(
+    ("state", "message"),
+    [
+        ("missing", "не установлено"),
+        ("no_marker", "не доустановлено"),
+        ("stale_marker", "не доустановлено"),
+    ],
+)
+@pytest.mark.skipif(os.name == "nt", reason="обёртка .venv/bin/python — POSIX")
+def test_entrypoint_requires_complete_setup(tmp_path: Path, state: str, message: str) -> None:
+    skill, stub = _install_skill_copy(tmp_path)
+    if state != "missing":
+        _fake_venv_python(skill)
+    if state == "stale_marker":
+        (skill / ".venv" / ".alla-setup-complete").write_text("0" * 64, encoding="utf-8")
+
+    result = _run_stub(stub, "prepare", "123")
+
     assert result.returncode == 3
     assert result.stdout.startswith("STATUS: setup_required")
+    assert message in result.stdout
     assert f"{stub} setup" in result.stdout
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="обёртка .venv/bin/python — POSIX")
+def test_entrypoint_runs_cli_after_complete_setup(tmp_path: Path) -> None:
+    skill, stub = _install_skill_copy(tmp_path)
+    _fake_venv_python(skill)
+    digest = hashlib.sha256((skill / "requirements.txt").read_bytes()).hexdigest()
+    (skill / ".venv" / ".alla-setup-complete").write_text(digest + "\n", encoding="utf-8")
+
+    result = _run_stub(stub, "next", "--project-root", str(tmp_path / "project"))
+
+    assert result.returncode == 1, result.stderr
+    assert result.stdout.startswith("STATUS: error")  # CLI отработал: разборов ещё нет
+    assert "prepare" in result.stdout
