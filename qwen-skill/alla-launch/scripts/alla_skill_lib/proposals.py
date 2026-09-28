@@ -66,9 +66,38 @@ _EMPTY_CATCH_RE = re.compile(
     r"|\.catch\(\s*(?:\(\s*\w*\s*\)|\w+)\s*=>\s*(?:\{\s*\}|null|undefined|void 0)\s*\)"
 )
 _SLEEP_RE = re.compile(r"\bsleep\s*\(|Thread\.sleep|time\.sleep|\bdelay\s*\(", re.IGNORECASE)
-_TIMEOUT_LINE_RE = re.compile(r"timeout|wait|delay|poll|interval|ttl|atMost|sleep", re.IGNORECASE)
+_NUM = r"(\d+(?:\.\d+)?)"
+_UNIT_MS = {
+    "ms": 1, "milli": 1, "millis": 1, "millisecond": 1, "milliseconds": 1,
+    "s": 1000, "sec": 1000, "secs": 1000, "second": 1000, "seconds": 1000,
+    "min": 60_000, "mins": 60_000, "minute": 60_000, "minutes": 60_000,
+    "h": 3_600_000, "hour": 3_600_000, "hours": 3_600_000,
+}
+# Длительности с единицами: (regex, номер группы числа, номер группы единицы).
+_DURATION_PATTERNS: tuple[tuple[re.Pattern[str], int, int], ...] = (
+    # Duration.ofSeconds(30), ofMillis(500)
+    (re.compile(rf"\bof(millis|seconds|minutes|hours)\s*\(\s*{_NUM}", re.IGNORECASE), 2, 1),
+    # 60, TimeUnit.SECONDS / (5, ChronoUnit.MINUTES)
+    (re.compile(
+        rf"{_NUM}\s*,\s*(?:TimeUnit\.|ChronoUnit\.)?(milliseconds|millis|seconds|minutes|hours)\b",
+        re.IGNORECASE,
+    ), 1, 2),
+    # timedelta(seconds=30)
+    (re.compile(rf"\b(milliseconds|seconds|minutes|hours)\s*=\s*{_NUM}", re.IGNORECASE), 2, 1),
+    # 30s, 500ms, 2min, 30.seconds
+    (re.compile(
+        rf"\b{_NUM}\s*\.?\s*(ms|millis(?:econds?)?|secs?|seconds?|s|mins?|minutes?|hours?|h)\b",
+        re.IGNORECASE,
+    ), 1, 2),
+)
+# Число без единиц засчитывается, только если стоит прямо у ключа ожидания:
+# timeout=5, setTimeout(60000), pollInterval: 200.
+_RAW_TIMEOUT_RE = re.compile(
+    rf"\b(\w*(?:timeout|wait|delay|poll|interval|ttl)\w*)[\"']?\s*[=:(]\s*{_NUM}", re.IGNORECASE
+)
+_NAME_BEFORE_RE = re.compile(r"([A-Za-z_]\w*)\s*$")
+_ASSIGNED_KEY_RE = re.compile(r"([A-Za-z_]\w*)[\"']?\s*[=:]\s*$")
 _LITERAL_RE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|\b\d+(?:\.\d+)?\b")
-_NUMBER_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
 
 
 class SourceEncodingError(Exception):
@@ -240,7 +269,7 @@ def weakening_warnings(before: list[str], after: list[str]) -> list[str]:
             + ", ".join(sorted(removed.elements())) + " → " + ", ".join(sorted(added.elements()))
             + "): убедись, что новое поведение приложения задумано, а не регрессия"
         )
-    if _timeout_numbers(after) > _timeout_numbers(before):
+    if _timeouts_increased(before, after):
         warnings.append(
             "увеличено значение ожидания или таймаута: это лечит симптом, если тест ждёт "
             "не то условие"
@@ -256,12 +285,83 @@ def _assertion_literals(lines: list[str]) -> Counter[str]:
     return found
 
 
-def _timeout_numbers(lines: list[str]) -> float:
-    total = 0.0
-    for line in _strip_comments("\n".join(lines)).splitlines():
-        if _TIMEOUT_LINE_RE.search(line):
-            total += sum(float(number) for number in _NUMBER_RE.findall(line))
-    return total
+def _durations(lines: list[str]) -> list[tuple[str, float]]:
+    """Ожидания в порядке появления: (ключ, значение).
+
+    Ключ — группа единиц (``ms`` — пересчитано в миллисекунды, ``raw`` — число
+    без единиц) и «чьё это ожидание»: вызов, внутри которого стоит значение
+    (``a(…)``, ``withTimeout(…)``, ``timedelta(…)``), или ключ присваивания
+    (``timeout: 30s``). По ключу перестановка целых вызовов отличается от
+    переноса значения из одного вызова в другой.
+    """
+    found: list[tuple[int, int, str, float]] = []  # (строка, позиция, ключ, значение)
+    for number, line in enumerate(lines):
+        rest = line
+        for pattern, number_group, unit_group in _DURATION_PATTERNS:
+            for match in pattern.finditer(rest):
+                unit = match.group(unit_group).lower()
+                value = float(match.group(number_group)) * _UNIT_MS.get(unit, 1)
+                key = "ms:" + _owner(line[:match.start()])
+                found.append((number, match.start(), key, value))
+            # Пробелы той же длины: позиции сохраняются, а число не засчитается
+            # ещё и «без единиц».
+            rest = pattern.sub(lambda m: " " * len(m.group(0)), rest)
+        for match in _RAW_TIMEOUT_RE.finditer(rest):
+            key = f"raw:{_owner(line[:match.start()])}.{match.group(1).lower()}"
+            found.append((number, match.start(), key, float(match.group(2))))
+    return [(key, value) for _, _, key, value in sorted(found)]
+
+
+def _owner(prefix: str) -> str:
+    """Имя вызова, в скобках которого стоит значение, или ключ присваивания."""
+    depth = 0
+    for index in range(len(prefix) - 1, -1, -1):
+        char = prefix[index]
+        if char == ")":
+            depth += 1
+        elif char == "(":
+            if depth == 0:
+                name = _NAME_BEFORE_RE.search(prefix[:index])
+                return name.group(1).lower() if name else ""
+            depth -= 1
+    assigned = _ASSIGNED_KEY_RE.search(prefix)
+    return assigned.group(1).lower() if assigned else ""
+
+
+def _timeouts_increased(before: list[str], after: list[str]) -> bool:
+    """Какое-то ожидание заменено большим (с учётом единиц).
+
+    Ожидания сопоставляются по одному внутри своего ключа (см.
+    :func:`_durations`), по порядку появления: уменьшение одного не скрывает
+    увеличение другого (60→30 с и 1→5 с), перенос значения из ``a`` в ``b``
+    виден, а перестановка целых вызовов — не увеличение. Значения, у которых
+    нет пары по ключу (вызов переименован, добавлен или убран), сравниваются
+    между собой по возрастанию. Новое ожидание без замены старого (явное
+    ожидание условия вместо его отсутствия) — не увеличение.
+    """
+    old_by_key: dict[str, list[float]] = {}
+    new_by_key: dict[str, list[float]] = {}
+    for key, value in _durations(before):
+        old_by_key.setdefault(key, []).append(value)
+    for key, value in _durations(after):
+        new_by_key.setdefault(key, []).append(value)
+
+    unpaired_old: dict[str, list[float]] = {}
+    unpaired_new: dict[str, list[float]] = {}
+    for key in old_by_key.keys() | new_by_key.keys():
+        old, new = old_by_key.get(key, []), new_by_key.get(key, [])
+        if any(new_value > old_value for old_value, new_value in zip(old, new)):
+            return True
+        group = key.split(":", 1)[0]
+        unpaired_old.setdefault(group, []).extend(old[len(new):])
+        unpaired_new.setdefault(group, []).extend(new[len(old):])
+
+    for group, old in unpaired_old.items():
+        removed = sorted((Counter(old) - Counter(unpaired_new.get(group, []))).elements())
+        added = sorted((Counter(unpaired_new.get(group, [])) - Counter(old)).elements())
+        if any(new_value > old_value for old_value, new_value in zip(removed, added)):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -286,11 +386,15 @@ def find_block(lines: list[str], block: list[str]) -> list[int]:
 
 
 def _locate(lines: list[str], proposal: Proposal) -> _Location:
-    """Одно место правки: БЫЛО ровно в одном месте, у указанной строки.
+    """Одно место правки — общее для проверки, замены и отметки «применено».
 
-    БЫЛО внутри уже стоящего СТАЛО (``click()`` → ``waitUntilReady(); click()``)
-    — часть готовой правки, а не новое место. Если БЫЛО нет, но СТАЛО стоит
-    рядом с указанной строкой — правку уже сделали.
+    Кандидаты — ещё не исправленные вхождения БЫЛО и уже вставленные блоки
+    СТАЛО; берётся ближайший к указанной строке (в пределах ±LINE_WINDOW).
+    Если он — СТАЛО, правка здесь уже стоит, и соседнее БЫЛО не трогается.
+
+    БЫЛО внутри вставленного СТАЛО (``click()`` → ``waitUntilReady(); click()``)
+    — часть готовой правки, а не новое место; СТАЛО внутри ещё целого БЫЛО
+    (``click(); click()`` → ``click()``) — исходный код, а не признак применения.
     """
     after_positions = find_block(lines, proposal.after)
     covered = {
@@ -298,38 +402,43 @@ def _locate(lines: list[str], proposal: Proposal) -> _Location:
         for start in after_positions
         for offset in find_block(proposal.after, proposal.before)
     }
-    pending = _nearest(
-        [p for p in find_block(lines, proposal.before) if p not in covered], proposal.line
-    )
-    if len(pending) == 1:
-        return _Location("pending", pending[0])
-    if pending:
-        return _Location("ambiguous")
-    if _nearest(after_positions, proposal.line):
-        return _Location("applied")
-    return _Location("missing")
-
-
-def _nearest(positions: list[int], line: int | None) -> list[int]:
-    """Кандидаты у указанной строки (±LINE_WINDOW): только самые близкие."""
-    if line is None:
-        return positions
-    inside = [p for p in positions if abs(p + 1 - line) <= LINE_WINDOW]
-    if not inside:
-        return []
-    best = min(abs(p + 1 - line) for p in inside)
-    return [p for p in inside if abs(p + 1 - line) == best]
+    pending = [p for p in find_block(lines, proposal.before) if p not in covered]
+    inside_pending = {
+        start + offset
+        for start in pending
+        for offset in find_block(proposal.before, proposal.after)
+    }
+    candidates = [(p, "pending") for p in pending]
+    candidates += [(p, "applied") for p in after_positions if p not in inside_pending]
+    if proposal.line is not None:
+        line = proposal.line
+        candidates = [c for c in candidates if abs(c[0] + 1 - line) <= LINE_WINDOW]
+        if candidates:
+            best = min(abs(position + 1 - line) for position, _ in candidates)
+            candidates = [c for c in candidates if abs(c[0] + 1 - line) == best]
+    if not candidates:
+        return _Location("missing")
+    states = {state for _, state in candidates}
+    if states == {"applied"}:
+        return _Location("applied", candidates[0][0])
+    if states == {"pending"} and len(candidates) == 1:
+        return _Location("pending", candidates[0][0])
+    return _Location("ambiguous")
 
 
 def _resolve(proposal: Proposal, project_root: Path, errors: list[str]) -> Path | None:
-    if not proposal.file:
+    return _resolve_file(proposal.file, project_root, errors)
+
+
+def _resolve_file(file: str | None, project_root: Path, errors: list[str]) -> Path | None:
+    if not file:
         errors.append("нет «ФАЙЛ:» — укажи путь от корня проекта и строку: path/Test.java:42")
         return None
     root = project_root.resolve()
-    candidate = Path(proposal.file)
+    candidate = Path(file)
     target = (candidate if candidate.is_absolute() else root / candidate).resolve()
     if root not in target.parents or not target.is_file():
-        errors.append(f"файл «{proposal.file}» не найден в проекте {root}")
+        errors.append(f"файл «{file}» не найден в проекте {root}")
         return None
     parts = target.relative_to(root).parts
     if (
@@ -337,8 +446,8 @@ def _resolve(proposal: Proposal, project_root: Path, errors: list[str]) -> Path 
         or any(part.startswith(".") or part in DENIED_DIRS for part in parts)
     ):
         errors.append(
-            f"файл «{proposal.file}» не относится к коду автотестов (правятся только исходники "
-            "тестов, не настройки, сборка и CI)"
+            f"файл «{file}» не относится к коду автотестов (правятся только исходники "
+            "тестов, не настройки, сборку и CI)"
         )
         return None
     return target
@@ -422,28 +531,34 @@ def apply_proposal(
     return ApplyResult("applied", f"Правка применена: {proposal.file}\n{diff}", changed=True)
 
 
-def revert_proposal(
-    proposal: Proposal,
-    project_root: Path,
-    files: ProposalFiles,
-) -> ApplyResult:
-    """Вернуть файл из ``NN.orig``, если после ``apply`` его больше не меняли."""
+def revert_proposal(project_root: Path, files: ProposalFiles) -> ApplyResult:
+    """Вернуть файл из ``NN.orig``, если после ``apply`` его больше не меняли.
+
+    Файл берётся из записи применения, а не из предложения: предложение можно
+    переписать (другой ``ФАЙЛ:``), и откат ушёл бы не в тот файл.
+    """
     data = _load_record(files.record)
     if data is None:
         return ApplyResult("error", "Эта правка не применялась командой apply — откатывать нечего.")
-    target = _resolve(proposal, project_root, [])
-    if target is None:
-        return ApplyResult("error", f"Файл «{proposal.file}» не найден — откат невозможен.")
-    if hashlib.sha256(target.read_bytes()).hexdigest() != data.get("sha_after"):
+    if not data.get("sha_after") or not data.get("file"):
         return ApplyResult("error", (
-            f"{proposal.file} изменён после apply — откат затёр бы чужие правки. Верни файл "
+            "Отметка применения старого формата (без хэша файла и резервной копии) — откат "
+            "невозможен, верни файл вручную (git)."
+        ))
+    errors: list[str] = []
+    target = _resolve_file(str(data["file"]), project_root, errors)
+    if target is None:
+        return ApplyResult("error", f"Откат невозможен: {errors[0]}")
+    if hashlib.sha256(target.read_bytes()).hexdigest() != data["sha_after"]:
+        return ApplyResult("error", (
+            f"{data['file']} изменён после apply — откат затёр бы чужие правки. Верни файл "
             f"вручную (версия до правки: {files.backup})."
         ))
     if not files.backup.is_file():
         return ApplyResult("error", f"Нет резервной копии {files.backup} — откат невозможен.")
     _write_bytes(target, files.backup.read_bytes(), mode_from=target)
     files.record.unlink(missing_ok=True)
-    return ApplyResult("reverted", f"Файл {proposal.file} возвращён к версии до правки.")
+    return ApplyResult("reverted", f"Файл {data['file']} возвращён к версии до правки.")
 
 
 def is_applied(
@@ -483,20 +598,35 @@ def _load_record(record: Path) -> dict[str, object] | None:
 
 
 def _recorded(proposal: Proposal, target: Path, record: Path) -> bool:
-    """Отметка относится к этому предложению, а файл — ровно как после apply.
+    """Отметка относится к этому предложению, и правка по-прежнему на месте.
 
     По содержимому БЫЛО/СТАЛО нельзя отличить «уже применено» от «такой же
     фрагмент есть рядом» (три ``click()`` подряд, правка убирает один):
-    повторный apply удалил бы ещё строку. Хэш файла после записи однозначен;
-    любое изменение файла (откат, ручная правка) отметку обнуляет.
+    повторный apply удалил бы ещё строку. Поэтому применение записывается.
+
+    Хэш файла после записи — быстрый путь. Если он не совпал, файл менялся:
+    возможно, другой правкой, и это не значит, что наша откачена. Тогда
+    смотрим, стоит ли СТАЛО у записанной строки. Файл, вернувшийся к версии до
+    правки (хэш ``sha_before``), применённым не считается. Отметки старого
+    формата (без хэшей) проверяются только по СТАЛО у записанной строки.
     """
     data = _load_record(record)
     if data is None or data.get("proposal") != _proposal_hash(proposal):
         return False
     try:
-        return hashlib.sha256(target.read_bytes()).hexdigest() == data.get("sha_after")
+        current = hashlib.sha256(target.read_bytes()).hexdigest()
     except OSError:
         return False
+    if current == data.get("sha_after"):
+        return True
+    if current == data.get("sha_before"):
+        return False
+    try:
+        line = int(data["line"])  # type: ignore[call-overload]
+        lines = _normalize(_read_source(target)).split("\n")
+    except (KeyError, TypeError, ValueError, SourceEncodingError):
+        return False
+    return any(abs(p + 1 - line) <= LINE_WINDOW for p in find_block(lines, proposal.after))
 
 
 # ---------------------------------------------------------------------------

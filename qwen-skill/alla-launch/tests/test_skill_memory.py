@@ -508,17 +508,47 @@ def test_apply_when_after_contains_before_is_not_repeated(tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     ("before", "after", "warned"),
     [
-        ("wait(Duration.ofSeconds(30));", "wait(Duration.ofSeconds(60));", True),
+        ("wait(Duration.ofMillis(500));", "wait(Duration.ofSeconds(30));", True),
         ("setTimeout(60000); poll(timeout=1000)", "setTimeout(60000); poll(timeout=5000)", True),
+        ("wait.withTimeout(30, TimeUnit.SECONDS)", "wait.withTimeout(2, TimeUnit.MINUTES)", True),
+        ("timeout: 30s", "timeout: 2min", True),
         ("wait_for(ready, timeout=5)", "wait_for(ready, timeout=60)", True),
-        ("wait(Duration.ofSeconds(30));", "wait(Duration.ofSeconds(5));", False),
-        ('waitForElement("#item-3", 10)', 'waitForElement("#item-3", 10)', False),
-        ("page.click();", "wait.until(visible(el), Duration.ofSeconds(10)); page.click();", True),
+        ("deadline = timedelta(seconds=30)", "deadline = timedelta(minutes=5)", True),
+        ("wait(Duration.ofSeconds(30));", "wait(Duration.ofMillis(500));", False),
+        ('waitForElement("#item-3", 10)', 'waitForElement("#item-4", 10)', False),
+        ("timeout(60, SECONDS)", "timeout(60, SECONDS)  // тот же", False),
+        # уменьшение одного ожидания не скрывает увеличение другого
+        ("a(Duration.ofSeconds(60)); b(Duration.ofSeconds(1));",
+         "a(Duration.ofSeconds(30)); b(Duration.ofSeconds(5));", True),
+        ("a(Duration.ofSeconds(60)); b(Duration.ofSeconds(10));",
+         "a(Duration.ofSeconds(30)); b(Duration.ofSeconds(5));", False),
+        # перенос значения из одного вызова в другой — увеличение ожидания b
+        ("a(Duration.ofSeconds(60)); b(Duration.ofSeconds(1));",
+         "a(Duration.ofSeconds(1)); b(Duration.ofSeconds(60));", True),
+        ("a(timeout=5); b(timeout=60)", "a(timeout=60); b(timeout=5)", True),
+        # само ожидание wait выросло, check(1s) — новое
+        ("wait(Duration.ofSeconds(1));",
+         "wait(Duration.ofSeconds(5)); check(Duration.ofSeconds(1));", True),
     ],
 )
-def test_timeout_growth_warning(before: str, after: str, warned: bool) -> None:
-    assert weakening_errors([before], [after]) == []
+def test_timeout_growth_warning_respects_units(before: str, after: str, warned: bool) -> None:
+    assert weakening_errors([before], [after]) == []  # предупреждение, не отказ
     assert any("ожидания" in w for w in weakening_warnings([before], [after])) is warned
+
+
+def test_new_explicit_wait_is_not_a_timeout_increase() -> None:
+    before = ["page.click();"]
+    after = ["wait.until(visible(el), Duration.ofSeconds(10));", "page.click();"]
+    assert weakening_errors(before, after) == [] and weakening_warnings(before, after) == []
+
+
+def test_reordered_waits_are_not_an_increase() -> None:
+    before = ["a(Duration.ofSeconds(60));", "b(Duration.ofSeconds(1));"]
+    after = ["b(Duration.ofSeconds(1));", "a(Duration.ofSeconds(60));"]
+    assert weakening_warnings(before, after) == []
+    same_line = ["a(Duration.ofSeconds(60)); b(Duration.ofSeconds(1));"]
+    swapped_calls = ["b(Duration.ofSeconds(1)); a(Duration.ofSeconds(60));"]
+    assert weakening_warnings(same_line, swapped_calls) == []
 
 
 def test_changed_expected_value_is_a_warning() -> None:
@@ -618,18 +648,18 @@ def test_revert_restores_original_and_refuses_after_later_edits(java_project: Pa
     proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
     original = target.read_bytes()
 
-    assert revert_proposal(proposal, java_project, files).status == "error"  # ещё не применяли
+    assert revert_proposal(java_project, files).status == "error"  # ещё не применяли
 
     assert _apply(proposal, java_project, files)[1].status == "applied"
     assert target.read_bytes() != original and files.backup.read_bytes() == original
-    reverted = revert_proposal(proposal, java_project, files)
+    reverted = revert_proposal(java_project, files)
     assert reverted.status == "reverted" and target.read_bytes() == original
     assert not files.record.exists() and not is_applied(proposal, java_project, files)
 
     # После отката правку можно применить снова, а если файл потом правили руками — откат не затирает.
     assert _apply(proposal, java_project, files)[1].status == "applied"
     target.write_text(target.read_text(encoding="utf-8") + "// manual\n", encoding="utf-8")
-    refused = revert_proposal(proposal, java_project, files)
+    refused = revert_proposal(java_project, files)
     assert refused.status == "error" and "изменён после apply" in refused.text
     assert "// manual" in target.read_text(encoding="utf-8")
 
@@ -716,3 +746,78 @@ def test_proposal_parser_handles_bold_ticks_and_spaces(tmp_path: Path) -> None:
     assert proposal.before == ['page.click("#a");']
     assert proposal.after == ['page.click("#b");', "x = a ** b;"]  # «**» в коде не потерян
     assert proposal.why == "локатор устарел"
+
+
+def test_applied_place_nearer_to_the_line_wins_over_a_neighbouring_before(tmp_path: Path) -> None:
+    """СТАЛО уже стоит у указанной строки, а такое же БЫЛО — в 10 строках дальше: соседний участок не трогать."""
+    body = (
+        ["class T {"] + ["    // f"] * 8 + ["    void a() {"]
+        + ["        page.waitUntilReady();", "        page.click();", "    }"]
+        + ["    // f"] * 6 + ["    void b() {", "        page.click();", "    }", "}"]
+    )
+    target = tmp_path / "T.java"
+    target.write_text("\n".join(body) + "\n", encoding="utf-8")
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:11\nБЫЛО:\n        page.click();\n"
+        "СТАЛО:\n        page.waitUntilReady();\n        page.click();\nПОЧЕМУ: нет ожидания"
+    )
+    before = target.read_text(encoding="utf-8")
+
+    assert is_applied(proposal, tmp_path)  # без отметки: по содержимому, ближайшее — СТАЛО
+    result = apply_proposal(proposal, tmp_path, confirm=True)
+    assert result.status == "applied" and not result.changed and "уже применена" in result.text
+    assert target.read_text(encoding="utf-8") == before
+
+
+def test_applied_mark_survives_unrelated_edits_and_old_records(tmp_path: Path) -> None:
+    target = tmp_path / "T.java"
+    target.write_text(THREE_CLICKS, encoding="utf-8")
+    files = _files(tmp_path)
+    proposal = parse_proposal(REMOVE_ONE_CLICK)
+    assert _apply(proposal, tmp_path, files)[1].status == "applied"
+    backup = files.backup.read_bytes()
+    assert target.read_text(encoding="utf-8").count("page.click();") == 2
+
+    # Другая правка того же файла меняет хэш, но оставшиеся два click() — не новое БЫЛО.
+    target.write_text(target.read_text(encoding="utf-8") + "// другая правка\n", encoding="utf-8")
+    assert is_applied(proposal, tmp_path, files)
+    again = apply_proposal(proposal, tmp_path, confirm=True, files=files)
+    assert again.status == "applied" and not again.changed and "уже применена" in again.text
+    assert target.read_text(encoding="utf-8").count("page.click();") == 2
+    assert files.backup.read_bytes() == backup  # исходный бэкап не перезаписан
+
+    # Файл вернули к версии до правки — правка снова не применена.
+    target.write_bytes(backup)
+    assert not is_applied(proposal, tmp_path, files)
+
+    # Отметка старого формата (только proposal/file/line) учитывается по СТАЛО у строки.
+    _apply(proposal, tmp_path, files)
+    files.record.write_text(json.dumps({
+        "proposal": json.loads(files.record.read_text(encoding="utf-8"))["proposal"],
+        "file": "T.java", "line": 3,
+    }), encoding="utf-8")
+    target.write_text(target.read_text(encoding="utf-8") + "// ещё правка\n", encoding="utf-8")
+    assert is_applied(proposal, tmp_path, files)
+    assert apply_proposal(proposal, tmp_path, confirm=True, files=files).status == "applied"
+    assert target.read_text(encoding="utf-8").count("page.click();") == 2
+
+
+def test_revert_uses_the_file_from_the_apply_record(tmp_path: Path) -> None:
+    """Предложение переписали (другой ФАЙЛ) — откат всё равно возвращает файл, который правил apply."""
+    (tmp_path / "A.java").write_text("a();\nb();\n", encoding="utf-8")
+    (tmp_path / "B.java").write_text("a();\nc();\n", encoding="utf-8")  # совпадёт с A после правки
+    files = _files(tmp_path)
+    for_a = parse_proposal("РЕШЕНИЕ: исправить\nФАЙЛ: A.java:2\nБЫЛО:\nb();\nСТАЛО:\nc();\nПОЧЕМУ: x")
+    assert _apply(for_a, tmp_path, files)[1].status == "applied"
+    assert (tmp_path / "A.java").read_text(encoding="utf-8") == "a();\nc();\n"
+
+    # B.java не менялся и не должен пострадать, какое бы предложение сейчас ни лежало в папке.
+    reverted = revert_proposal(tmp_path, files)
+    assert reverted.status == "reverted" and "A.java" in reverted.text
+    assert (tmp_path / "A.java").read_text(encoding="utf-8") == "a();\nb();\n"
+    assert (tmp_path / "B.java").read_text(encoding="utf-8") == "a();\nc();\n"
+
+    # Отметка старого формата: откатить нечем, файл не трогается.
+    files.record.write_text(json.dumps({"proposal": "x", "file": "A.java", "line": 2}), encoding="utf-8")
+    old = revert_proposal(tmp_path, files)
+    assert old.status == "error" and "старого формата" in old.text

@@ -891,13 +891,7 @@ def _apply_hint(paths: ws.RunPaths, file_id: str, result: ApplyResult) -> str:
 
 
 def _revert(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> tuple[str, str]:
-    file_id = entry["file_id"]
-    path = paths.proposal(file_id)
-    if not path.is_file():
-        return "error", f"Для проблемы №{int(file_id)} нет предложения правки."
-    result = revert_proposal(
-        parse_proposal(ws.read_text(path)), Path(run["project_root"]), _proposal_files(paths, file_id)
-    )
+    result = revert_proposal(Path(run["project_root"]), _proposal_files(paths, entry["file_id"]))
     return result.status, result.text
 
 
