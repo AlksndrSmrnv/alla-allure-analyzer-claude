@@ -352,3 +352,28 @@ def test_schema_1_run_still_reaches_done(project: Path, testops: FakeTestOps, ca
     out = _finish(run_dir, capsys, {order: TEST_ANALYSIS, login: MARKDOWN_ANALYSIS})
     assert "Обратная связь:" not in out and "Можно исправить" not in out
     assert not (project / "alla-reports" / "history.jsonl").exists()
+
+
+def test_feedback_commands_require_run_and_explicit_analysis_confirmation(
+    project: Path, testops: FakeTestOps, capsys
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    out = _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    assert f"remember N --run {run_dir}" in out  # готовые команды именно этого разбора
+
+    # Без --run команда не угадывает разбор по .last_run.
+    for argv in (["remember", "3"], ["reject", "3", "some_id"], ["apply", "1"]):
+        with pytest.raises(SystemExit):
+            cli.main([*argv, "--project-root", str(project)])
+    capsys.readouterr()
+
+    # Нет файла обратной связи — разбор модели не сохраняется «молча».
+    code, out = _run(["remember", "3", "--run", str(run_dir)], capsys)
+    assert code == 1 and out.startswith("STATUS: fix") and "--from-analysis" in out
+    assert not (project / "alla-kb").exists()
+
+    code, out = _run(["remember", "3", "--run", str(run_dir), "--from-analysis"], capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    [kb_file] = (project / "alla-kb").glob("*.json")
+    assert json.loads(kb_file.read_text(encoding="utf-8"))["category"] == "env"

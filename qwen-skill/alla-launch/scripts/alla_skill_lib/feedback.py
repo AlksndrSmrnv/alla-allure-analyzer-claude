@@ -55,8 +55,16 @@ def remember(
     entry: dict[str, Any],
     entry_id: str | None,
     today: date,
+    *,
+    from_analysis: bool = False,
 ) -> tuple[str, str]:
-    """Сохранить причину и рецепт для кластера. Возвращает (статус, текст)."""
+    """Сохранить причину и рецепт для кластера. Возвращает (статус, текст).
+
+    Источник — ``feedback/NN.md`` со слов пользователя. Разбор модели берётся
+    как есть только по явному ``from_analysis`` (пользователь подтвердил его):
+    иначе забытый или записанный в другой разбор файл обратной связи незаметно
+    превратился бы в «подтверждённый» разбор модели.
+    """
     file_id = entry["file_id"]
     blocked = _blocked(paths, entry)
     if blocked:
@@ -64,6 +72,11 @@ def remember(
 
     feedback_path = paths.feedback(file_id)
     from_feedback = feedback_path.is_file() and bool(feedback_path.read_text(encoding="utf-8").strip())
+    if not from_feedback and not from_analysis:
+        return "fix", _fix_body(paths, file_id, [
+            f"нет файла обратной связи {feedback_path} — запиши его со слов пользователя; "
+            "если пользователь подтвердил разбор как есть, повтори команду с --from-analysis"
+        ], entry_id)
     source = feedback_path if from_feedback else paths.analysis(file_id)
     parsed = parse_analysis(source.read_text(encoding="utf-8"))
     project_root = Path(run["project_root"])

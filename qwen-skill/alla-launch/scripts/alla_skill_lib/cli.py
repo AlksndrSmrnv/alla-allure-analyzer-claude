@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_next(args.run_dir, reports_dir)
     if args.command == "remember":
         return _cluster_command(args, reports_dir, lambda paths, run, entry: remember(
-            paths, run, entry, args.entry, date.today()
+            paths, run, entry, args.entry, date.today(), from_analysis=args.from_analysis
         ))
     if args.command == "reject":
         return _cluster_command(args, reports_dir, lambda paths, run, entry: reject(
@@ -145,14 +145,23 @@ def _build_parser() -> argparse.ArgumentParser:
     step = commands.add_parser("next", parents=[common], help="следующий шаг разбора")
     step.add_argument("run_dir", nargs="?", help="папка разбора (по умолчанию последняя)")
 
+    # Папка разбора обязательна: после нового prepare «последний» разбор — уже
+    # другой прогон, и обратная связь или правка ушли бы не туда.
     run_option = argparse.ArgumentParser(add_help=False)
-    run_option.add_argument("--run", help="папка разбора (по умолчанию последняя)")
+    run_option.add_argument(
+        "--run", required=True, help="папка разбора, к отчёту которого относится команда"
+    )
     run_option.add_argument("cluster", help="номер проблемы из отчёта: 3 или 03")
     keep = commands.add_parser(
         "remember", parents=[common, run_option],
         help="сохранить причину и рецепт из обратной связи в базу знаний проекта",
     )
     keep.add_argument("--entry", help="id существующей записи, которую нужно обновить")
+    keep.add_argument(
+        "--from-analysis",
+        action="store_true",
+        help="сохранить разбор модели как есть (пользователь подтвердил его без правок)",
+    )
     drop = commands.add_parser(
         "reject", parents=[common, run_option],
         help="запомнить, что запись базы знаний к этой ошибке не относится",
@@ -564,10 +573,15 @@ def _done_body(
             "Тесты не запускай."
         )
     if feedback:
-        lines.append(
-            "- Если пользователь назовёт причину или рецепт для какой-то проблемы — сохрани их "
-            "по разделу «Обратная связь» в SKILL.md (команда remember)."
-        )
+        run = str(paths.root)
+        lines += [
+            "- Если пользователь назовёт причину или рецепт для проблемы N — сохрани их по "
+            "разделу «Обратная связь» в SKILL.md. Команды для ЭТОГО разбора (всегда с этим --run):",
+            f"  файл обратной связи: {paths.root / 'feedback'}/NN.md",
+            f"  {ws.skill_command('remember', 'N', '--run', run)}",
+            f"  разбор подтверждён как есть: {ws.skill_command('remember', 'N', '--run', run, '--from-analysis')}",
+            f"  известная проблема не подходит: {ws.skill_command('reject', 'N', '<id>', '--run', run)}",
+        ]
     return "\n".join(lines)
 
 

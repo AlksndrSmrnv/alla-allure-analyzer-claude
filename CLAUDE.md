@@ -28,8 +28,11 @@ TestOps.
   `.venv` скилла; `setup` создаёт venv и после успешного pip install пишет
   `.venv/.alla-setup-complete` (хэш `requirements.txt`) — без него команды
   отвечают `STATUS: setup_required`. Команды: `prepare <launch_id>`,
-  `next [run_dir]`, `apply N [--yes]`, `remember N [--entry ID]`,
-  `reject N <id>`; первая строка вывода — `STATUS: analyze|fix|propose|summary|
+  `next [run_dir]`, `apply N --run DIR [--yes]`,
+  `remember N --run DIR [--entry ID] [--from-analysis]`, `reject N <id> --run DIR`
+  (`--run` обязателен: `.last_run` после нового prepare — другой прогон;
+  разбор модели сохраняется в базу знаний только с явным `--from-analysis`);
+  первая строка вывода — `STATUS: analyze|fix|propose|summary|
   done|diff|applied|saved|error`. `run.json` схемы 1 (до базы знаний) доходит
   до `done` без propose/истории.
 - `scripts/alla_core/` — **GENERATED** копия чистых модулей `src/alla`
@@ -62,8 +65,10 @@ TestOps.
   - `history` — `alla-reports/history.jsonl` (локально), повторы по
     сигнатуре, грубому ключу или записи базы знаний; другой `launch_id`.
   - `proposals` — статус `propose` для кластеров «тест» с `КОД:` (до 5 на
-    прогон): БЫЛО/СТАЛО, проверки на ослабление теста; `apply` меняет файл
-    только с `--yes`, ровно одно место, повторно не применяет.
+    прогон): БЫЛО/СТАЛО, проверки на ослабление теста (таймауты сравниваются
+    по отдельным значениям с учётом единиц); `apply` меняет файл только с
+    `--yes`, ровно одно место; БЫЛО внутри уже вставленного СТАЛО считается
+    применённым, поэтому повторный `apply` ничего не дублирует.
 - Тесты скилла — `qwen-skill/alla-launch/tests/`; фикстуры в
   `skill_fixtures.py`, а не `conftest.py`: второй модуль `conftest` ломает
   `from conftest import ...` в тестах репозитория. Оба каталога в `testpaths`.

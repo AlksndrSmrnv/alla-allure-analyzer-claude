@@ -30,7 +30,13 @@ from alla_skill_lib.kb import (
     missing_fingerprint_lines,
     secret_lines,
 )
-from alla_skill_lib.proposals import apply_proposal, is_applied, parse_proposal, validate_proposal
+from alla_skill_lib.proposals import (
+    apply_proposal,
+    is_applied,
+    parse_proposal,
+    validate_proposal,
+    weakening_errors,
+)
 
 MESSAGE = "Order 0f8a1c2e-1b2c-4d5e-8f90-123456789abc not found: status 404"
 TRACE = "java.lang.AssertionError: Order not found\n\tat ru.company.OrderTest.check(OrderTest.java:12)"
@@ -349,3 +355,45 @@ def test_apply_refuses_when_code_changed_or_ambiguous(java_project: Path) -> Non
     target.write_text(doubled, encoding="utf-8")
     status, message = apply_proposal(proposal, java_project, confirm=True)
     assert status == "error" and "2 раз" in message
+
+
+def test_apply_when_after_contains_before_is_not_repeated(tmp_path: Path) -> None:
+    target = tmp_path / "T.java"
+    target.write_text("class T {\n    void t() {\n        page.click();\n    }\n}\n", encoding="utf-8")
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:3\nБЫЛО:\n        page.click();\n"
+        "СТАЛО:\n        page.waitUntilReady();\n        page.click();\nПОЧЕМУ: нет ожидания"
+    )
+
+    assert not is_applied(proposal, tmp_path)
+    assert apply_proposal(proposal, tmp_path, confirm=True)[0] == "applied"
+    assert is_applied(proposal, tmp_path)  # БЫЛО внутри вставленного СТАЛО — не новое место
+    status, message = apply_proposal(proposal, tmp_path, confirm=True)
+    assert status == "applied" and "уже применена" in message
+    assert target.read_text(encoding="utf-8").count("waitUntilReady") == 1
+    assert validate_proposal(proposal, tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "increased"),
+    [
+        ("wait(Duration.ofMillis(500));", "wait(Duration.ofSeconds(30));", True),
+        ("setTimeout(60000); poll(timeout=1000)", "setTimeout(60000); poll(timeout=5000)", True),
+        ("wait.withTimeout(30, TimeUnit.SECONDS)", "wait.withTimeout(2, TimeUnit.MINUTES)", True),
+        ("timeout: 30s", "timeout: 2min", True),
+        ("wait_for(ready, timeout=5)", "wait_for(ready, timeout=60)", True),
+        ("deadline = timedelta(seconds=30)", "deadline = timedelta(minutes=5)", True),
+        ("wait(Duration.ofSeconds(30));", "wait(Duration.ofMillis(500));", False),
+        ('waitForElement("#item-3", 10)', 'waitForElement("#item-4", 10)', False),
+        ("timeout(60, SECONDS)", "timeout(60, SECONDS)  // тот же", False),
+    ],
+)
+def test_timeout_increase_respects_units(before: str, after: str, increased: bool) -> None:
+    errors = weakening_errors([before], [after])
+    assert any("таймаут" in error for error in errors) is increased
+
+
+def test_new_explicit_wait_is_not_a_timeout_increase() -> None:
+    before = ["page.click();"]
+    after = ["wait.until(visible(el), Duration.ofSeconds(10));", "page.click();"]
+    assert weakening_errors(before, after) == []

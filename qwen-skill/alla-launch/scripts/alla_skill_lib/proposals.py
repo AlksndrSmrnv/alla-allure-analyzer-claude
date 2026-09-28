@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,8 +30,35 @@ _SKIP_RE = re.compile(
 )
 _EMPTY_CATCH_RE = re.compile(r"catch\s*\([^)]*\)\s*\{\s*\}|except[^\n:]*:\s*(?:#[^\n]*)?\s*pass\b")
 _SLEEP_RE = re.compile(r"\bsleep\s*\(|Thread\.sleep|time\.sleep|\bdelay\s*\(", re.IGNORECASE)
-_TIMEOUT_LINE_RE = re.compile(r"timeout|duration\.of|ofseconds|ofmillis|waitfor", re.IGNORECASE)
-_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+_NUM = r"(\d+(?:\.\d+)?)"
+_UNIT_MS = {
+    "ms": 1, "milli": 1, "millis": 1, "millisecond": 1, "milliseconds": 1,
+    "s": 1000, "sec": 1000, "secs": 1000, "second": 1000, "seconds": 1000,
+    "min": 60_000, "mins": 60_000, "minute": 60_000, "minutes": 60_000,
+    "h": 3_600_000, "hour": 3_600_000, "hours": 3_600_000,
+}
+# Длительности с единицами: (regex, номер группы числа, номер группы единицы).
+_DURATION_PATTERNS: tuple[tuple[re.Pattern[str], int, int], ...] = (
+    # Duration.ofSeconds(30), ofMillis(500)
+    (re.compile(rf"\bof(millis|seconds|minutes|hours)\s*\(\s*{_NUM}", re.IGNORECASE), 2, 1),
+    # 60, TimeUnit.SECONDS / (5, ChronoUnit.MINUTES)
+    (re.compile(
+        rf"{_NUM}\s*,\s*(?:TimeUnit\.|ChronoUnit\.)?(milliseconds|millis|seconds|minutes|hours)\b",
+        re.IGNORECASE,
+    ), 1, 2),
+    # timedelta(seconds=30)
+    (re.compile(rf"\b(milliseconds|seconds|minutes|hours)\s*=\s*{_NUM}", re.IGNORECASE), 2, 1),
+    # 30s, 500ms, 2min, 30.seconds
+    (re.compile(
+        rf"\b{_NUM}\s*\.?\s*(ms|millis(?:econds?)?|secs?|seconds?|s|mins?|minutes?|hours?|h)\b",
+        re.IGNORECASE,
+    ), 1, 2),
+)
+# Число без единиц засчитывается, только если стоит прямо у ключа ожидания:
+# timeout=5, setTimeout(60000), pollInterval: 200.
+_RAW_TIMEOUT_RE = re.compile(
+    rf"\b\w*(?:timeout|wait|delay|poll|interval|ttl)\w*[\"']?\s*[=:(]\s*{_NUM}", re.IGNORECASE
+)
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _LINE_COMMENT_RE = re.compile(r"(?://|#).*$", re.MULTILINE)
 
@@ -133,7 +161,7 @@ def weakening_errors(before: list[str], after: list[str]) -> list[str]:
         errors.append("правка глушит исключение пустым catch/except — так нельзя")
     if len(_SLEEP_RE.findall(new)) > len(_SLEEP_RE.findall(old)):
         errors.append("правка добавляет sleep — используй явное ожидание условия")
-    if _max_timeout(after) > _max_timeout(before):
+    if _timeouts_increased(before, after):
         errors.append("правка увеличивает таймаут — это не исправление дефекта теста")
     return errors
 
@@ -160,7 +188,7 @@ def apply_proposal(proposal: Proposal, project_root: Path, *, confirm: bool) -> 
     lines = _read_lines(target)
     if _already_applied(proposal, target):
         return "applied", f"Правка уже применена: {proposal.file}"
-    positions = find_block(lines, proposal.before)
+    positions = _pending_positions(lines, proposal)
     if len(positions) != 1:
         return "error", (
             f"«БЫЛО:» встречается в {proposal.file} {len(positions)} раз — "
@@ -191,9 +219,21 @@ def is_applied(proposal: Proposal, project_root: Path) -> bool:
     return target is not None and _already_applied(proposal, target)
 
 
+def _pending_positions(lines: list[str], proposal: Proposal) -> list[int]:
+    """Места БЫЛО, ещё не заменённые правкой.
+
+    СТАЛО может содержать БЫЛО целиком (``click()`` → ``waitUntilReady();
+    click()``): такое вхождение БЫЛО внутри уже вставленного СТАЛО — часть
+    применённой правки, а не место для повторной замены.
+    """
+    offsets = find_block(proposal.after, proposal.before)
+    covered = {start + offset for start in find_block(lines, proposal.after) for offset in offsets}
+    return [position for position in find_block(lines, proposal.before) if position not in covered]
+
+
 def _already_applied(proposal: Proposal, target: Path) -> bool:
     lines = _read_lines(target)
-    return bool(find_block(lines, proposal.after)) and not find_block(lines, proposal.before)
+    return bool(find_block(lines, proposal.after)) and not _pending_positions(lines, proposal)
 
 
 def _resolve(proposal: Proposal, project_root: Path, errors: list[str]) -> Path | None:
@@ -228,13 +268,34 @@ def _strip_comments(code: str) -> str:
     return _LINE_COMMENT_RE.sub("", code)
 
 
-def _max_timeout(lines: list[str]) -> float:
-    values = [
-        float(number)
-        for line in lines if _TIMEOUT_LINE_RE.search(line)
-        for number in _NUMBER_RE.findall(line)
-    ]
-    return max(values, default=0.0)
+def _durations(lines: list[str]) -> tuple[list[float], list[float]]:
+    """(длительности в мс с известной единицей, числа у ключей ожидания без единиц)."""
+    known: list[float] = []
+    raw: list[float] = []
+    for line in lines:
+        rest = line
+        for pattern, number_group, unit_group in _DURATION_PATTERNS:
+            for match in pattern.finditer(rest):
+                unit = match.group(unit_group).lower()
+                known.append(float(match.group(number_group)) * _UNIT_MS.get(unit, 1))
+            rest = pattern.sub(" ", rest)  # чтобы число не засчиталось ещё и «без единиц»
+        raw.extend(float(match.group(1)) for match in _RAW_TIMEOUT_RE.finditer(rest))
+    return known, raw
+
+
+def _timeouts_increased(before: list[str], after: list[str]) -> bool:
+    """Какое-то значение ожидания заменено большим (с учётом единиц).
+
+    Сравниваются отдельные значения, а не максимумы: неизменный большой
+    таймаут не скрывает увеличение соседнего. Новое ожидание без замены
+    старого (явное ожидание условия вместо его отсутствия) — не увеличение.
+    """
+    for old, new in zip(_durations(before), _durations(after), strict=True):
+        removed = Counter(old) - Counter(new)
+        added = Counter(new) - Counter(old)
+        if removed and added and max(added) > max(removed):
+            return True
+    return False
 
 
 def _trim(lines: list[str]) -> list[str]:
