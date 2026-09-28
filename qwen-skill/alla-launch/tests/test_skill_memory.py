@@ -476,3 +476,52 @@ def test_removing_duplicate_line_is_located_and_applied_once(tmp_path: Path) -> 
     status, message = apply_proposal(proposal, tmp_path, confirm=True)
     assert status == "applied" and "уже применена" in message
     assert target.read_text(encoding="utf-8").count("page.click();") == 1
+
+
+THREE_CLICKS = (
+    "class T {\n    void t() {\n        page.click();\n        page.click();\n"
+    "        page.click();\n    }\n}\n"
+)
+REMOVE_ONE_CLICK = (
+    "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:3\nБЫЛО:\n        page.click();\n        page.click();\n"
+    "СТАЛО:\n        page.click();\nПОЧЕМУ: двойной клик отправляет форму дважды"
+)
+
+
+def test_repeated_apply_with_overlapping_matches_uses_record(tmp_path: Path) -> None:
+    """Три click() подряд, правка убирает один: повтор не должен удалять ещё."""
+    target = tmp_path / "T.java"
+    target.write_text(THREE_CLICKS, encoding="utf-8")
+    record = tmp_path / "01.applied.json"
+    proposal = parse_proposal(REMOVE_ONE_CLICK)
+
+    assert apply_proposal(proposal, tmp_path, confirm=False, record=record)[0] == "diff"
+    assert not record.exists()  # показ diff ничего не фиксирует
+
+    assert apply_proposal(proposal, tmp_path, confirm=True, record=record)[0] == "applied"
+    assert target.read_text(encoding="utf-8").count("page.click();") == 2
+    assert json.loads(record.read_text(encoding="utf-8"))["line"] == 3
+    assert is_applied(proposal, tmp_path, record)
+
+    for _ in range(2):
+        status, message = apply_proposal(proposal, tmp_path, confirm=True, record=record)
+        assert status == "applied" and "уже применена" in message
+    assert target.read_text(encoding="utf-8").count("page.click();") == 2
+
+
+def test_record_is_ignored_after_revert_or_rewrite(java_project: Path) -> None:
+    target = java_project / "src" / "OrderTest.java"
+    record = java_project / "01.applied.json"
+    proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
+    assert apply_proposal(proposal, java_project, confirm=True, record=record)[0] == "applied"
+
+    # Правку откатили вручную — отметка устарела, применить снова можно.
+    target.write_text(JAVA, encoding="utf-8")
+    assert not is_applied(proposal, java_project, record)
+    assert apply_proposal(proposal, java_project, confirm=True, record=record)[0] == "applied"
+    assert '"#submit"' in target.read_text(encoding="utf-8")
+
+    # Предложение переписали — старая отметка к нему не относится.
+    target.write_text(JAVA, encoding="utf-8")
+    rewritten = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#send");'))
+    assert not is_applied(rewritten, java_project, record)

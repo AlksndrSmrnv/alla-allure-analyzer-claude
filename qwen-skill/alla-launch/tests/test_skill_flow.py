@@ -267,7 +267,12 @@ def test_test_cluster_gets_fix_proposal_and_apply(project: Path, testops: FakeTe
     code, out = _run(["apply", "1", "--run", str(run_dir), "--yes"], capsys)
     assert code == 0 and out.startswith("STATUS: applied")
     assert "assertEquals(201" in test_file.read_text(encoding="utf-8")
+    assert (run_dir / "proposals" / f"{order}.applied.json").is_file()
     assert "(уже применено)" in _next(run_dir, capsys)
+
+    code, out = _run(["apply", "1", "--run", str(run_dir), "--yes"], capsys)
+    assert code == 0 and "уже применена" in out
+    assert test_file.read_text(encoding="utf-8").count("assertEquals(201") == 1
 
 
 def test_feedback_is_remembered_and_recognized_next_launch(

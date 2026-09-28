@@ -100,6 +100,10 @@ class RunPaths:
     def proposal(self, file_id: str) -> Path:
         return self.root / "proposals" / f"{file_id}.md"
 
+    def proposal_record(self, file_id: str) -> Path:
+        """Отметка, что предложение применено командой ``apply --yes``."""
+        return self.root / "proposals" / f"{file_id}.applied.json"
+
     def feedback(self, file_id: str) -> Path:
         return self.root / "feedback" / f"{file_id}.md"
 

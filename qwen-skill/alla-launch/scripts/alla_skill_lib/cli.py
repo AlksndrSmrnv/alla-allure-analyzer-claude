@@ -426,7 +426,10 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
         ws.write_json(paths.state_json, state)
 
     fixes = {file_id: p for file_id, p in proposals.items() if p.is_fix}
-    applied = {file_id for file_id, p in fixes.items() if is_applied(p, project_root)}
+    applied = {
+        file_id for file_id, p in fixes.items()
+        if is_applied(p, project_root, paths.proposal_record(file_id))
+    }
     console, full = render_report(run, analyses, flagged, summary, paths, fixes, applied)
     ws.write_text(paths.report, full)
     return "done", _done_body(console, paths, fixes, schema >= 2)
@@ -448,7 +451,7 @@ def _proposal_step(
         return "propose", _propose_body(paths, entry, position, total)
     proposal = parse_proposal(text)
     errors = validate_proposal(proposal, project_root)
-    if not errors or is_applied(proposal, project_root):
+    if not errors or is_applied(proposal, project_root, paths.proposal_record(file_id)):
         return proposal
     attempt = _register_invalid(state, f"proposal-{file_id}", text, paths)
     if attempt < MAX_FIX_ATTEMPTS:
@@ -624,6 +627,7 @@ def _apply(
         parse_proposal(path.read_text(encoding="utf-8")),
         Path(run["project_root"]),
         confirm=confirm,
+        record=paths.proposal_record(entry["file_id"]),
     )
     if status == "diff":
         body += (

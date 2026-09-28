@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
+import json
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -180,12 +182,30 @@ def find_block(lines: list[str], block: list[str]) -> list[int]:
     return [i for i in range(len(stripped) - size + 1) if stripped[i:i + size] == wanted]
 
 
-def apply_proposal(proposal: Proposal, project_root: Path, *, confirm: bool) -> tuple[str, str]:
-    """(статус, текст): ``diff`` — показать правку, ``applied``/``error`` — итог."""
-    errors = validate_proposal(proposal, project_root)
+def apply_proposal(
+    proposal: Proposal,
+    project_root: Path,
+    *,
+    confirm: bool,
+    record: Path | None = None,
+) -> tuple[str, str]:
+    """(статус, текст): ``diff`` — показать правку, ``applied``/``error`` — итог.
+
+    ``record`` — файл-отметка применения этого предложения (в папке разбора).
+    По одному поиску БЫЛО/СТАЛО нельзя отличить «уже применено» от «такой же
+    фрагмент есть рядом» (три ``click()`` подряд, правка убирает один из двух):
+    повторный ``apply --yes`` удалил бы ещё строку сверх показанного diff.
+    Поэтому применение фиксируется, и отметка проверяется первой.
+    """
     if not proposal.is_fix:
         return "error", "Это предложение — «не трогать», применять нечего."
     target = _resolve(proposal, project_root, [])
+    if target is not None and record is not None and _recorded(proposal, target, record):
+        return "applied", (
+            f"Правка уже применена: {proposal.file} (отметка {record}; если правку откатили "
+            "вручную и её нужно применить снова — удали этот файл)."
+        )
+    errors = validate_proposal(proposal, project_root)
     if target is None or errors:
         return "error", "Правка не проходит проверку:\n" + "\n".join(f"- {e}" for e in errors)
 
@@ -211,15 +231,51 @@ def apply_proposal(proposal: Proposal, project_root: Path, *, confirm: bool) -> 
     # _read_lines сохраняет пустой последний элемент, если файл кончался
     # переводом строки, поэтому join восстанавливает его без добавок.
     target.write_text(newline.join(updated), encoding="utf-8", newline="")
+    if record is not None:
+        record.write_text(json.dumps({
+            "proposal": _proposal_hash(proposal),
+            "file": proposal.file,
+            "line": start + 1,
+        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return "applied", f"Правка применена: {proposal.file}\n{diff}"
 
 
-def is_applied(proposal: Proposal, project_root: Path) -> bool:
-    """Место правки (у указанной строки) уже исправлено."""
+def is_applied(proposal: Proposal, project_root: Path, record: Path | None = None) -> bool:
+    """Правка применена: есть отметка применения или место уже исправлено."""
     if not proposal.is_fix or not proposal.after:
         return False
     target = _resolve(proposal, project_root, [])
-    return target is not None and _locate(_read_lines(target), proposal).state == "applied"
+    if target is None:
+        return False
+    if record is not None and _recorded(proposal, target, record):
+        return True
+    return _locate(_read_lines(target), proposal).state == "applied"
+
+
+def _proposal_hash(proposal: Proposal) -> str:
+    material = "\n".join([
+        proposal.decision, str(proposal.file), str(proposal.line),
+        *proposal.before, "\u241e", *proposal.after,
+    ])
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _recorded(proposal: Proposal, target: Path, record: Path) -> bool:
+    """Отметка относится к этому же предложению и СТАЛО по-прежнему на месте.
+
+    Если предложение переписали — отметка не подходит. Если СТАЛО у
+    записанной строки больше нет (правку откатили или код переписали) —
+    применённой правка не считается.
+    """
+    try:
+        data = json.loads(record.read_text(encoding="utf-8"))
+        line = int(data["line"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    if data.get("proposal") != _proposal_hash(proposal):
+        return False
+    lines = _read_lines(target)
+    return any(abs(position + 1 - line) <= LINE_WINDOW for position in find_block(lines, proposal.after))
 
 
 @dataclass(frozen=True)

@@ -43,6 +43,7 @@ alla-reports/                       локально, в git не попадае
     clusters/NN.md                  задание на разбор кластера NN
     analyses/NN.md                  разбор кластера, написанный моделью
     proposals/NN.md                 решение по правке автотеста (для категории «тест»)
+    proposals/NN.applied.json       отметка: правка применена командой apply --yes
     feedback/NN.md                  обратная связь пользователя по проблеме NN
     evidence/NN.txt                 текст ошибки для проверки признаков (служебный)
     summary_task.md, summary.md     задание и общий анализ прогона
