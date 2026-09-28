@@ -57,8 +57,10 @@ _DURATION_PATTERNS: tuple[tuple[re.Pattern[str], int, int], ...] = (
 # Число без единиц засчитывается, только если стоит прямо у ключа ожидания:
 # timeout=5, setTimeout(60000), pollInterval: 200.
 _RAW_TIMEOUT_RE = re.compile(
-    rf"\b\w*(?:timeout|wait|delay|poll|interval|ttl)\w*[\"']?\s*[=:(]\s*{_NUM}", re.IGNORECASE
+    rf"\b(\w*(?:timeout|wait|delay|poll|interval|ttl)\w*)[\"']?\s*[=:(]\s*{_NUM}", re.IGNORECASE
 )
+_NAME_BEFORE_RE = re.compile(r"([A-Za-z_]\w*)\s*$")
+_ASSIGNED_KEY_RE = re.compile(r"([A-Za-z_]\w*)[\"']?\s*[=:]\s*$")
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _LINE_COMMENT_RE = re.compile(r"(?://|#).*$", re.MULTILINE)
 
@@ -233,15 +235,28 @@ def _locate(lines: list[str], proposal: Proposal) -> _Location:
 
     Кандидаты — не исправленные вхождения БЫЛО и уже вставленные блоки СТАЛО.
     БЫЛО внутри вставленного СТАЛО (``click()`` → ``waitUntilReady(); click()``)
-    — часть применённой правки, а не новое место. Берётся кандидат, ближайший
+    — часть применённой правки, а не новое место; СТАЛО внутри ещё целого
+    БЫЛО (``click(); click()`` → ``click()``) — не признак применения. Берётся кандидат, ближайший
     к указанной строке (в пределах ±LINE_WINDOW): если там правка уже стоит,
     другое совпадение в другом месте файла не заменяется.
     """
-    offsets = find_block(proposal.after, proposal.before)
     after_positions = find_block(lines, proposal.after)
-    covered = {start + offset for start in after_positions for offset in offsets}
-    candidates = [(p, "pending") for p in find_block(lines, proposal.before) if p not in covered]
-    candidates += [(p, "applied") for p in after_positions]
+    # БЫЛО внутри вставленного СТАЛО — часть применённой правки.
+    covered = {
+        start + offset
+        for start in after_positions
+        for offset in find_block(proposal.after, proposal.before)
+    }
+    pending = [p for p in find_block(lines, proposal.before) if p not in covered]
+    # И наоборот: СТАЛО внутри ещё не заменённого БЫЛО (убрать лишний второй
+    # click()) — это исходный код, а не доказательство применения.
+    inside_pending = {
+        start + offset
+        for start in pending
+        for offset in find_block(proposal.before, proposal.after)
+    }
+    candidates = [(p, "pending") for p in pending]
+    candidates += [(p, "applied") for p in after_positions if p not in inside_pending]
     if proposal.line is not None:
         line = proposal.line
         candidates = [c for c in candidates if abs(c[0] + 1 - line) <= LINE_WINDOW]
@@ -290,41 +305,81 @@ def _strip_comments(code: str) -> str:
     return _LINE_COMMENT_RE.sub("", code)
 
 
-def _durations(lines: list[str]) -> tuple[list[float], list[float]]:
-    """(длительности в мс с известной единицей, числа у ключей ожидания без единиц)."""
-    known: list[float] = []
-    raw: list[float] = []
-    for line in lines:
+def _durations(lines: list[str]) -> list[tuple[str, float]]:
+    """Ожидания в порядке появления: (ключ, значение).
+
+    Ключ — группа единиц (``ms`` — пересчитано в миллисекунды, ``raw`` — число
+    без единиц) и «чьё это ожидание»: вызов, внутри которого стоит значение
+    (``a(…)``, ``withTimeout(…)``, ``timedelta(…)``), или ключ присваивания
+    (``timeout: 30s``). По ключу перестановка целых вызовов отличается от
+    переноса значения из одного вызова в другой.
+    """
+    found: list[tuple[int, int, str, float]] = []  # (строка, позиция, ключ, значение)
+    for number, line in enumerate(lines):
         rest = line
         for pattern, number_group, unit_group in _DURATION_PATTERNS:
             for match in pattern.finditer(rest):
                 unit = match.group(unit_group).lower()
-                known.append(float(match.group(number_group)) * _UNIT_MS.get(unit, 1))
-            rest = pattern.sub(" ", rest)  # чтобы число не засчиталось ещё и «без единиц»
-        raw.extend(float(match.group(1)) for match in _RAW_TIMEOUT_RE.finditer(rest))
-    return known, raw
+                value = float(match.group(number_group)) * _UNIT_MS.get(unit, 1)
+                key = "ms:" + _owner(line[:match.start()])
+                found.append((number, match.start(), key, value))
+            # Пробелы той же длины: позиции сохраняются, а число не засчитается
+            # ещё и «без единиц».
+            rest = pattern.sub(lambda m: " " * len(m.group(0)), rest)
+        for match in _RAW_TIMEOUT_RE.finditer(rest):
+            key = f"raw:{_owner(line[:match.start()])}.{match.group(1).lower()}"
+            found.append((number, match.start(), key, float(match.group(2))))
+    return [(key, value) for _, _, key, value in sorted(found)]
+
+
+def _owner(prefix: str) -> str:
+    """Имя вызова, в скобках которого стоит значение, или ключ присваивания."""
+    depth = 0
+    for index in range(len(prefix) - 1, -1, -1):
+        char = prefix[index]
+        if char == ")":
+            depth += 1
+        elif char == "(":
+            if depth == 0:
+                name = _NAME_BEFORE_RE.search(prefix[:index])
+                return name.group(1).lower() if name else ""
+            depth -= 1
+    assigned = _ASSIGNED_KEY_RE.search(prefix)
+    return assigned.group(1).lower() if assigned else ""
 
 
 def _timeouts_increased(before: list[str], after: list[str]) -> bool:
     """Какое-то ожидание заменено большим (с учётом единиц).
 
-    Ожидания сопоставляются по одному, а не по максимумам: уменьшение одного
-    не скрывает увеличение другого (60→30 с и 1→5 с), неизменный большой
-    таймаут — тоже. При том же числе ожиданий пары берутся по порядку
-    появления (если набор значений вообще изменился — перестановка строк не
-    увеличение). Если ожиданий стало больше или меньше, изменённые значения
-    сопоставляются по возрастанию. Новое ожидание без замены старого (явное
+    Ожидания сопоставляются по одному внутри своего ключа (см.
+    :func:`_durations`), по порядку появления: уменьшение одного не скрывает
+    увеличение другого (60→30 с и 1→5 с), перенос значения из ``a`` в ``b``
+    виден, а перестановка целых вызовов — не увеличение. Значения, у которых
+    нет пары по ключу (вызов переименован, добавлен или убран), сравниваются
+    между собой по возрастанию. Новое ожидание без замены старого (явное
     ожидание условия вместо его отсутствия) — не увеличение.
     """
-    for old, new in zip(_durations(before), _durations(after), strict=True):
-        removed = sorted((Counter(old) - Counter(new)).elements())
-        added = sorted((Counter(new) - Counter(old)).elements())
-        if not removed or not added:
-            continue
-        if len(old) == len(new):
-            if any(new_value > old_value for old_value, new_value in zip(old, new)):
-                return True
-        elif any(new_value > old_value for old_value, new_value in zip(removed, added)):
+    old_by_key: dict[str, list[float]] = {}
+    new_by_key: dict[str, list[float]] = {}
+    for key, value in _durations(before):
+        old_by_key.setdefault(key, []).append(value)
+    for key, value in _durations(after):
+        new_by_key.setdefault(key, []).append(value)
+
+    unpaired_old: dict[str, list[float]] = {}
+    unpaired_new: dict[str, list[float]] = {}
+    for key in old_by_key.keys() | new_by_key.keys():
+        old, new = old_by_key.get(key, []), new_by_key.get(key, [])
+        if any(new_value > old_value for old_value, new_value in zip(old, new)):
+            return True
+        group = key.split(":", 1)[0]
+        unpaired_old.setdefault(group, []).extend(old[len(new):])
+        unpaired_new.setdefault(group, []).extend(new[len(old):])
+
+    for group, old in unpaired_old.items():
+        removed = sorted((Counter(old) - Counter(unpaired_new.get(group, []))).elements())
+        added = sorted((Counter(unpaired_new.get(group, [])) - Counter(old)).elements())
+        if any(new_value > old_value for old_value, new_value in zip(removed, added)):
             return True
     return False
 

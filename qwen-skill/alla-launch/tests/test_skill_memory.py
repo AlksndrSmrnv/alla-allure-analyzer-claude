@@ -427,6 +427,13 @@ def test_apply_when_after_contains_before_is_not_repeated(tmp_path: Path) -> Non
          "a(Duration.ofSeconds(30)); b(Duration.ofSeconds(5));", True),
         ("a(Duration.ofSeconds(60)); b(Duration.ofSeconds(10));",
          "a(Duration.ofSeconds(30)); b(Duration.ofSeconds(5));", False),
+        # перенос значения из одного вызова в другой — увеличение ожидания b
+        ("a(Duration.ofSeconds(60)); b(Duration.ofSeconds(1));",
+         "a(Duration.ofSeconds(1)); b(Duration.ofSeconds(60));", True),
+        ("a(timeout=5); b(timeout=60)", "a(timeout=60); b(timeout=5)", True),
+        # само ожидание wait выросло, check(1s) — новое
+        ("wait(Duration.ofSeconds(1));",
+         "wait(Duration.ofSeconds(5)); check(Duration.ofSeconds(1));", True),
     ],
 )
 def test_timeout_increase_respects_units(before: str, after: str, increased: bool) -> None:
@@ -444,3 +451,28 @@ def test_reordered_waits_are_not_an_increase() -> None:
     before = ["a(Duration.ofSeconds(60));", "b(Duration.ofSeconds(1));"]
     after = ["b(Duration.ofSeconds(1));", "a(Duration.ofSeconds(60));"]
     assert weakening_errors(before, after) == []
+    same_line = ["a(Duration.ofSeconds(60)); b(Duration.ofSeconds(1));"]
+    swapped_calls = ["b(Duration.ofSeconds(1)); a(Duration.ofSeconds(60));"]
+    assert weakening_errors(same_line, swapped_calls) == []
+
+
+def test_removing_duplicate_line_is_located_and_applied_once(tmp_path: Path) -> None:
+    """СТАЛО внутри ещё целого БЫЛО (убрать двойной клик) — не признак применения."""
+    target = tmp_path / "T.java"
+    target.write_text(
+        "class T {\n    void t() {\n        page.click();\n        page.click();\n    }\n}\n",
+        encoding="utf-8",
+    )
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:3\nБЫЛО:\n        page.click();\n        page.click();\n"
+        "СТАЛО:\n        page.click();\nПОЧЕМУ: двойной клик отправляет форму дважды"
+    )
+
+    assert validate_proposal(proposal, tmp_path) == []
+    assert not is_applied(proposal, tmp_path)
+    assert apply_proposal(proposal, tmp_path, confirm=True)[0] == "applied"
+    assert target.read_text(encoding="utf-8").count("page.click();") == 1
+    assert is_applied(proposal, tmp_path)
+    status, message = apply_proposal(proposal, tmp_path, confirm=True)
+    assert status == "applied" and "уже применена" in message
+    assert target.read_text(encoding="utf-8").count("page.click();") == 1
