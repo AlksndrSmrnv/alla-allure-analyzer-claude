@@ -17,6 +17,29 @@ TestOps.
 отдельных ветках; не восстанавливать скилл в `main` без явного решения пользователя.
 Серверные исправления и API остаются частью основной ветки.
 
+### Скилл `alla-launch` (v2, ветка `claude/qwen-skill-v2`)
+
+`qwen-skill/alla-launch/` — проектный скилл Qwen Code (без базы знаний).
+Анализ кластеров и прогона пишет модель Qwen Code, Python готовит данные.
+
+- `scripts/alla_skill.py` — точка входа (Python 3.8+), перезапускает себя в
+  `.venv` скилла; `setup` создаёт venv. Команды: `prepare <launch_id>`,
+  `next [run_dir]`; первая строка вывода — `STATUS: analyze|fix|summary|done|error`.
+- `scripts/alla_core/` — **GENERATED** копия чистых модулей `src/alla`
+  (клиент TestOps, триаж, логи, кластеризация, prompt builder) с импортами
+  `alla_core.*`. Не править руками: после изменений в этих модулях запускать
+  `python tools/sync_qwen_skill.py` (`--check` — проверка дрейфа, её же делает
+  `tests/test_qwen_skill_sync.py`). Рукописный только `alla_core/config.py`
+  (shim `Settings`: читает `<skill>/.env` + env `ALLURE_*`, чужие ключи игнорирует).
+- `scripts/alla_skill_lib/` — логика скилла: `pipeline` (триаж → логи →
+  кластеризация как в orchestrator), `cluster_task` (задание `clusters/NN.md`
+  из серверного промпта без упоминаний базы знаний + тесты, кадры стека,
+  подсказки по коду), `code_hints`, `analysis_format` (прощающий парсер
+  формата ЧТО СЛОМАЛОСЬ / ПРИЧИНА / КАК ИСПРАВИТЬ / КОД), `report`, `cli`.
+- Тесты скилла — `qwen-skill/alla-launch/tests/`; фикстуры в
+  `skill_fixtures.py`, а не `conftest.py`: второй модуль `conftest` ломает
+  `from conftest import ...` в тестах репозитория. Оба каталога в `testpaths`.
+
 ## Pipeline серверного инструмента (CLI/REST/MCP)
 
 `TriageService`
