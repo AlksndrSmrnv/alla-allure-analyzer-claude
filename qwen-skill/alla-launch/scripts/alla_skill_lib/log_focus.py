@@ -17,10 +17,16 @@ from dataclasses import dataclass
 FOCUS_NOTE = "[лог сокращён: отобраны блоки по связи с ошибкой, пропуски помечены]"
 CONTEXT_LINES = 2
 ID_WEIGHT = 3.0
+ERROR_HINT_BONUS = 0.5
 
 _SECTION_HEADER_RE = re.compile(r"^--- \[[^\]:\s][^\]:]*?: .+?\] ---$", re.MULTILINE)
 _BLOCK_SPLIT_RE = re.compile(r"\n[ \t]*\n")
 _EXTRACTION_MARKER_RE = re.compile(r"^\[\.\.\. обрезано:")
+_ERROR_HINT_RE = re.compile(
+    r"\b(?:ERROR|FATAL|SEVERE|CRITICAL)\b|\w(?:Exception|Error)\b|Caused by|Traceback"
+    r"|\bfail(?:ed|ure)\b",
+    re.IGNORECASE,
+)
 _WORD_RE = re.compile(r"\b[^\W\d_]\w{3,}\b")
 _ID_RE = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
@@ -77,7 +83,7 @@ def focus_log(snippet: str, error_text: str, budget: int) -> str:
                 section=section_index,
                 position=len(blocks),
                 text=text,
-                score=_score(text, tokens),
+                score=_block_score(text, tokens),
                 pinned=bool(_EXTRACTION_MARKER_RE.match(text)),
             ))
 
@@ -127,13 +133,32 @@ def _score(text: str, tokens: dict[str, float]) -> float:
     return sum(weight for token, weight in tokens.items() if token in present)
 
 
+def _block_score(text: str, tokens: dict[str, float]) -> float:
+    """Пересечение с ошибкой + небольшой бонус блокам с явной ошибкой приложения.
+
+    Бонус меньше одного совпавшего слова: он лишь поднимает ERROR-блоки над
+    «шумом» (HTTP-сигналы, INFO-журнал), когда пересечения нет ни у кого.
+    """
+    bonus = ERROR_HINT_BONUS if _ERROR_HINT_RE.search(text) else 0.0
+    return _score(text, tokens) + bonus
+
+
 def _shrink_block(text: str, tokens: dict[str, float], limit: int) -> str:
-    """Сократить огромный блок до строк, совпадающих с ошибкой, и их контекста."""
+    """Сократить огромный блок до значимых строк и их контекста.
+
+    Значимые строки — совпадающие с текстом ошибки; если таких нет (assertion
+    не пересекается с логом) — строки с явными ошибками приложения; если нет
+    и их — начало блока, сколько поместится.
+    """
     lines = text.split("\n")
+    anchors = [i for i, line in enumerate(lines) if _score(line, tokens) > 0]
+    if not anchors:
+        anchors = [i for i, line in enumerate(lines) if _ERROR_HINT_RE.search(line)]
+    if not anchors:
+        anchors = list(range(len(lines)))  # начало блока, дальше отрежет лимит
     keep = {0}
-    for index, line in enumerate(lines):
-        if _score(line, tokens) > 0:
-            keep.update(range(index - CONTEXT_LINES, index + CONTEXT_LINES + 1))
+    for index in anchors:
+        keep.update(range(index - CONTEXT_LINES, index + CONTEXT_LINES + 1))
     kept: list[str] = []
     previous = -1
     size = 0

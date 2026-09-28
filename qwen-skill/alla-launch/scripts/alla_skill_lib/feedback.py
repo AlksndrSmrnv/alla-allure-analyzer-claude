@@ -73,7 +73,7 @@ def remember(
             return "fix", _fix_body(paths, file_id, [
                 "разбор кластера не прошёл проверку формата — запиши причину и рецепт "
                 "в файл обратной связи"
-            ])
+            ], entry_id)
 
     kb = project_kb(run)
     record: KBRecord | None = None
@@ -101,13 +101,24 @@ def remember(
         errors.extend(_fingerprint_errors(fingerprint, paths.evidence(file_id)))
     else:
         fingerprint = record.error_example
+    title = _title(parsed.title or parsed.what or parsed.cause_reason)
+    description = " ".join(parsed.cause_reason.split())
+    # alla-kb/ коммитится: секретов не должно быть ни в одном сохраняемом поле.
+    for field_name, text in (
+        ("НАЗВАНИЕ", title),
+        ("ПРИЧИНА", description),
+        ("КАК ИСПРАВИТЬ", "\n".join(steps)),
+    ):
+        for line in secret_lines(text):
+            errors.append(
+                f"в «{field_name}:» строка похожа на секрет, её нельзя коммитить: «{line[:60]}»"
+            )
     if errors:
-        return "fix", _fix_body(paths, file_id, errors)
+        return "fix", _fix_body(paths, file_id, errors, entry_id)
 
     assert parsed.category is not None
     signature = str(entry["signature"])
     records, _warnings = kb.load()
-    title = _title(parsed.title or parsed.what or parsed.cause_reason)
     if record is None:
         owner = next((r for r in records if signature in r.confirmed_signatures), None)
         if owner is not None:
@@ -125,7 +136,7 @@ def remember(
             id=new_id,
             title=title,
             category=CATEGORY_TO_KB[parsed.category],
-            description=" ".join(parsed.cause_reason.split()),
+            description=description,
             resolution_steps=steps,
             error_example="\n".join(fingerprint_lines(fingerprint)),
             created={"date": today.isoformat(), "launch_id": run["launch_id"], "cluster": file_id},
@@ -135,7 +146,7 @@ def remember(
         if parsed.title:
             record.title = title
         record.category = CATEGORY_TO_KB[parsed.category]
-        record.description = " ".join(parsed.cause_reason.split())
+        record.description = description
         record.resolution_steps = steps
         if parsed.fingerprint:
             record.error_example = "\n".join(fingerprint_lines(parsed.fingerprint))
@@ -208,14 +219,22 @@ def _fingerprint_errors(fingerprint: str, evidence_path: Path) -> list[str]:
     return errors
 
 
-def _fix_body(paths: ws.RunPaths, file_id: str, errors: list[str]) -> str:
+def _fix_body(
+    paths: ws.RunPaths,
+    file_id: str,
+    errors: list[str],
+    entry_id: str | None,
+) -> str:
+    # Повтор должен обновить ту же запись: без --entry создалась бы новая
+    # (или ответ «уже подтверждали»).
+    retry = ["remember", file_id, *(["--entry", entry_id] if entry_id else []), "--run", str(paths.root)]
     return "\n".join([
         "Обратная связь не сохранена:",
         *(f"- {error}" for error in errors),
         f"Запиши или исправь файл: {paths.feedback(file_id)}",
         "Формат:",
         FEEDBACK_FORMAT,
-        f"Затем выполни: {ws.skill_command('remember', file_id, '--run', str(paths.root))}",
+        f"Затем выполни: {ws.skill_command(*retry)}",
     ])
 
 

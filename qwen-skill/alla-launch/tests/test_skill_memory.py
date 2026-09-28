@@ -86,9 +86,30 @@ def test_fingerprint_matching_is_number_and_id_agnostic() -> None:
     assert not fingerprint_hits("", text)
 
 
-def test_secret_lines_are_detected() -> None:
-    assert secret_lines("Authorization: Bearer abc\nOrder not found") == ["Authorization: Bearer abc"]
-    assert secret_lines("password=qwerty") and not secret_lines("Order not found")
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Authorization: Bearer abc",
+        "password=qwerty",
+        '{"password": "hunter2"}',
+        '"access_token": "abc123"',
+        "'refresh_token': 'x'",
+        "client_secret=x",
+        "X-Api-Key: 123",
+        "Set-Cookie: SESSION=abc",
+        "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+    ],
+)
+def test_secret_lines_are_detected(line: str) -> None:
+    assert secret_lines(f"Order not found\n{line}") == [line]
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["Order not found", "Authorization failed for user", "token expired", "tokenId=5 is invalid"],
+)
+def test_ordinary_error_text_is_not_a_secret(line: str) -> None:
+    assert secret_lines(line) == []
 
 
 def test_default_fingerprint_matches_own_evidence() -> None:
@@ -147,11 +168,19 @@ def test_kb_loader_skips_broken_files(tmp_path: Path) -> None:
     (tmp_path / "renamed.json").write_text(
         json.dumps(_record("other_id").to_json()), encoding="utf-8"
     )
+    (tmp_path / "list.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "null.json").write_text("null", encoding="utf-8")
+    wrong_type = _record("wrong_type").to_json() | {"resolution_steps": "одной строкой"}
+    (tmp_path / "wrong_type.json").write_text(json.dumps(wrong_type), encoding="utf-8")
+    no_title = {key: value for key, value in _record("no_title").to_json().items() if key != "title"}
+    (tmp_path / "no_title.json").write_text(json.dumps(no_title), encoding="utf-8")
 
     records, warnings = kb.load()
 
     assert [record.id for record in records] == ["npe_order_12345678"]
-    assert len(warnings) == 3 and all("пропущен" in warning for warning in warnings)
+    assert len(warnings) == 7 and all("пропущен" in warning for warning in warnings)
+    with pytest.raises(ValueError, match="JSON-объектом"):
+        kb.get("list")
 
 
 def test_kb_ids_and_signature_invariants(tmp_path: Path) -> None:

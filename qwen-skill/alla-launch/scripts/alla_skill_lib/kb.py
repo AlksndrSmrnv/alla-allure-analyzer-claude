@@ -43,8 +43,15 @@ KB_TO_CATEGORY = {value: key for key, value in CATEGORY_TO_KB.items()}
 _ID_RE = re.compile(r"^[a-z0-9_]{1,100}$")
 _NUMBER_RE = re.compile(r"\b\d+\b|<NUM>")
 _TRUNCATION_MARKERS = ("...[обрезано]", "[…]", "…")
+# Секрет как ключ со значением в любом виде: password=…, token: …,
+# "access_token": "…" (кавычка между ключом и разделителем), Authorization: …,
+# а также «Bearer <значение>» и JWT. Проза вроде «Authorization failed» или
+# «token expired» — обычный текст ошибки, его признаком оставлять можно.
 _SECRET_RE = re.compile(
-    r"bearer\s|authorization|passw(?:or)?d\s*[=:]|token\s*[=:]|secret|api[_-]?key",
+    r"\bbearer\s+\S"
+    r"|(?:authorization|cookie|passw(?:or)?d|pwd|token|secret|api[_-]?key|private[_-]?key"
+    r"|session[_-]?id)[\"']?\s*[=:]"
+    r"|\beyJ[\w-]{10,}\.[\w-]{10,}",
     re.IGNORECASE,
 )
 _FRAME_RE = re.compile(r"^\s*(?:at\s|File\s\"|\.\.\.\s*\d+\s+more)")
@@ -129,8 +136,9 @@ def fingerprint_hits(fingerprint: str, text: str) -> bool:
     return bool(fingerprint_lines(fingerprint)) and not missing_fingerprint_lines(fingerprint, text)
 
 
-def secret_lines(fingerprint: str) -> list[str]:
-    return [line for line in fingerprint_lines(fingerprint) if _SECRET_RE.search(line)]
+def secret_lines(text: str) -> list[str]:
+    """Строки, похожие на секреты: их нельзя класть в коммитируемый ``alla-kb/``."""
+    return [line.strip() for line in text.splitlines() if _SECRET_RE.search(line)]
 
 
 def default_fingerprint(message: str, trace: str, log: str) -> str:
@@ -185,7 +193,18 @@ class KBRecord:
     created: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_json(cls, data: dict[str, Any]) -> KBRecord:
+    def from_json(cls, data: Any) -> KBRecord:
+        """Разобрать запись; любая ошибка структуры — ``ValueError``."""
+        if not isinstance(data, dict):
+            raise ValueError(f"запись должна быть JSON-объектом, а не {type(data).__name__}")
+        for key in ("id", "title", "category"):
+            if key not in data:
+                raise ValueError(f"нет поля {key!r}")
+        for key in ("resolution_steps", "confirmed_signatures", "rejected_signatures"):
+            if not isinstance(data.get(key, []), list):
+                raise ValueError(f"поле {key!r} должно быть списком")
+        if not isinstance(data.get("created", {}), dict):
+            raise ValueError("поле 'created' должно быть объектом")
         if data.get("category") not in KB_TO_CATEGORY:
             raise ValueError(f"неизвестная категория {data.get('category')!r}")
         entry_id = str(data["id"])

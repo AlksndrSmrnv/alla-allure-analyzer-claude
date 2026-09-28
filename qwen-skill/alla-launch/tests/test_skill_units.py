@@ -212,6 +212,40 @@ def test_focus_log_tiny_budget_keeps_start_of_best_block() -> None:
     assert "[ERROR] OrderService" in focused
 
 
+def _journal(error_line: str | None) -> str:
+    lines = [f'  {{"level": "INFO", "msg": "heartbeat {i}"}},' for i in range(300)]
+    if error_line:
+        lines.append(error_line)
+    lines += [f'  {{"level": "INFO", "msg": "heartbeat tail {i}"}},' for i in range(300)]
+    return "--- [журнал: journal.json] ---\n[\n" + "\n".join(lines) + "\n]"
+
+
+def test_focus_log_without_overlap_keeps_application_errors() -> None:
+    error = '  {"level": "ERROR", "msg": "NullPointerException in OrderService"},'
+    focused = focus_log(_journal(error), "expected: <200> but was: <500>", 3000)
+
+    assert "NullPointerException in OrderService" in focused  # раньше оставался только «[»
+    assert "heartbeat 299" in focused  # контекст вокруг ошибки
+    assert len(focused) <= 3000
+
+
+def test_focus_log_without_any_signal_keeps_block_head() -> None:
+    focused = focus_log(_journal(None), "expected: <200> but was: <500>", 3000)
+
+    assert "heartbeat 0" in focused and "heartbeat 10" in focused
+    assert focused.rstrip().endswith("[…]") and len(focused) <= 3000
+
+
+def test_focus_log_prefers_error_blocks_over_noise_without_overlap() -> None:
+    noise = "--- [HTTP: response.json] ---\n" + "\n\n".join(
+        "\n".join(f"HTTP/1.1 200 OK body {i}.{j} padding padding" for j in range(8)) for i in range(15)
+    )
+    errors = "--- [файл: app.log] ---\n" + _error_block(30, "Database pool exhausted", 3)
+    focused = focus_log(f"{noise}\n\n{errors}", "expected: <200> but was: <500>", 1500)
+
+    assert "Database pool exhausted" in focused
+
+
 def test_focus_log_shrinks_huge_block_to_matching_lines() -> None:
     journal = "\n".join(
         [f'  {{"level": "INFO", "msg": "heartbeat {i}"}},' for i in range(500)]

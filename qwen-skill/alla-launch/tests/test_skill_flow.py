@@ -307,6 +307,16 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
     assert code == 1 and "уже подтверждали" in out and f"--entry {entry_id}" in out
 
+    # Уточнение записи с ошибкой: секрет в рецепте не сохраняется, а повтор
+    # предлагается с тем же --entry, чтобы обновить именно эту запись.
+    feedback.write_text(FEEDBACK + '2. Взять "password": "hunter2" из vault\n', encoding="utf-8")
+    code, out = _run(["remember", "1", "--entry", entry_id, "--run", str(run_dir)], capsys)
+    assert code == 1 and out.startswith("STATUS: fix")
+    assert "«КАК ИСПРАВИТЬ:» строка похожа на секрет" in out
+    assert f"remember 01 --entry {entry_id} --run" in out
+    assert "hunter2" not in kb_file.read_text(encoding="utf-8")
+    feedback.write_text(FEEDBACK, encoding="utf-8")
+
     # Следующий прогон с теми же падениями: ошибка узнаётся точно и видна как повтор.
     FakeTestOps(default_launch(778)).install(monkeypatch)
     run_dir2, run2, _ = _prepare(project, capsys, launch_id=778)
