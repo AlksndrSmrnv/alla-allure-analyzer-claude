@@ -246,6 +246,27 @@ def test_focus_log_prefers_error_blocks_over_noise_without_overlap() -> None:
     assert "Database pool exhausted" in focused
 
 
+def test_focus_log_keeps_fragment_of_huge_error_line() -> None:
+    line = (
+        "2026-09-01 10:00:01 [ERROR] OrderController: request failed payload="
+        + "x" * 6000 + " OrderService: customer is null " + "y" * 3000
+    )
+    focused = focus_log("--- [файл: app.log] ---\n" + line, "OrderService customer", 8000)
+
+    assert len(focused) <= 8000
+    assert "2026-09-01 10:00:01 [ERROR] OrderController" in focused  # начало строки
+    assert "OrderService: customer is null" in focused  # окно вокруг совпадения
+    assert " … " in focused and focused.rstrip().endswith("…")
+
+
+def test_focus_log_keeps_head_of_huge_line_without_overlap() -> None:
+    line = "2026-09-01 10:00:01 [ERROR] Gateway timeout " + "z" * 9000
+    focused = focus_log("--- [файл: app.log] ---\n" + line, "expected: <200> but was: <500>", 8000)
+
+    assert "[ERROR] Gateway timeout" in focused and len(focused) <= 8000
+    assert focused.count("z") > 3000
+
+
 def test_focus_log_shrinks_huge_block_to_matching_lines() -> None:
     journal = "\n".join(
         [f'  {{"level": "INFO", "msg": "heartbeat {i}"}},' for i in range(500)]

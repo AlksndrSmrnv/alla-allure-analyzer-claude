@@ -18,6 +18,8 @@ FOCUS_NOTE = "[лог сокращён: отобраны блоки по свя�
 CONTEXT_LINES = 2
 ID_WEIGHT = 3.0
 ERROR_HINT_BONUS = 0.5
+MIN_FRAGMENT_CHARS = 80
+LINE_HEAD_CHARS = 120
 
 _SECTION_HEADER_RE = re.compile(r"^--- \[[^\]:\s][^\]:]*?: .+?\] ---$", re.MULTILINE)
 _BLOCK_SPLIT_RE = re.compile(r"\n[ \t]*\n")
@@ -104,7 +106,7 @@ def focus_log(snippet: str, error_text: str, budget: int) -> str:
         # блока, чем одни пометки о пропусках.
         room = budget - len(FOCUS_NOTE) - 3
         if room > 0:
-            return f"{FOCUS_NOTE}\n\n{priority[0].text[:room]}…"
+            return f"{FOCUS_NOTE}\n\n{_fragment(priority[0].text, tokens, room)}"
     return result if len(result) <= budget else result[: budget - 1] + "…"
 
 
@@ -163,17 +165,45 @@ def _shrink_block(text: str, tokens: dict[str, float], limit: int) -> str:
     previous = -1
     size = 0
     for index in sorted(i for i in keep if 0 <= i < len(lines)):
+        prefix = "[…]\n" if index != previous + 1 else ""
         piece = lines[index]
-        if index != previous + 1:
-            piece = "[…]\n" + piece
-        if size + len(piece) + 1 > limit - 4:
+        room = limit - 4 - size - len(prefix) - 1
+        if len(piece) > room:
+            # Строка целиком не помещается (например, [ERROR] с огромным
+            # payload) — оставляем её значимый фрагмент, а не теряем совсем.
+            if room >= MIN_FRAGMENT_CHARS:
+                kept.append(prefix + _fragment(piece, tokens, room))
+                previous = index
             break
-        kept.append(piece)
-        size += len(piece) + 1
+        kept.append(prefix + piece)
+        size += len(prefix) + len(piece) + 1
         previous = index
     if previous < len(lines) - 1:
         kept.append("[…]")
     return "\n".join(kept)
+
+
+def _fragment(text: str, tokens: dict[str, float], room: int) -> str:
+    """Фрагмент длинного текста не длиннее ``room`` с пометками обрезки «…».
+
+    Берётся окно вокруг первого совпадения с ошибкой (или явной ошибки
+    приложения); начало строки — время, уровень, логгер — сохраняется.
+    """
+    if len(text) <= room:
+        return text
+    lowered = text.lower()
+    hits = [lowered.find(token) for token in tokens if token in lowered]
+    hint = _ERROR_HINT_RE.search(text)
+    anchor = min(hits) if hits else (hint.start() if hint else 0)
+    width = room - 1  # место под «…» в конце
+    head = min(LINE_HEAD_CHARS, width // 4)
+    start = max(0, anchor - width // 4)
+    if start <= head:
+        return text[:width] + "…"
+    body = width - head - 3  # « … » между началом и окном
+    start = min(start, len(text) - body)
+    end = start + body
+    return text[:head] + " … " + text[start:end] + ("…" if end < len(text) else "")
 
 
 def _overhead(sections: list[tuple[str | None, list[str]]]) -> int:
