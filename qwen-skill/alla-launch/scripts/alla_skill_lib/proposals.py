@@ -30,6 +30,7 @@ from alla_skill_lib.code_hints import SOURCE_EXTENSIONS
 
 LINE_WINDOW = 20
 CONTEXT_LINES = 5
+ANCHOR_LINES = 3  # строк вокруг правки, которые apply записывает в отметку применения
 # Не код автотестов: служебные папки скилла, зависимости и результаты сборки
 # отчётов. Всё с точки в имени (.git, .github, .env) закрыто отдельно.
 DENIED_DIRS = frozenset({
@@ -520,6 +521,7 @@ def apply_proposal(
     updated = updated_text.encode(encoding)
     _write_bytes(target, updated, mode_from=target)
     if files is not None:
+        end = start + len(proposal.after)
         _write_bytes(files.record, (json.dumps({
             "proposal": _proposal_hash(proposal),
             "file": proposal.file,
@@ -527,6 +529,9 @@ def apply_proposal(
             "sha_before": hashlib.sha256(original).hexdigest(),
             "sha_after": hashlib.sha256(updated).hexdigest(),
             "backup": files.backup.name,
+            # Строки вокруг СТАЛО: по ним потом узнаётся именно это место.
+            "context_before": [line.rstrip() for line in updated_lines[max(0, start - ANCHOR_LINES):start]],
+            "context_after": [line.rstrip() for line in updated_lines[end:end + ANCHOR_LINES]],
         }, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return ApplyResult("applied", f"Правка применена: {proposal.file}\n{diff}", changed=True)
 
@@ -605,10 +610,10 @@ def _recorded(proposal: Proposal, target: Path, record: Path) -> bool:
     повторный apply удалил бы ещё строку. Поэтому применение записывается.
 
     Хэш файла после записи — быстрый путь. Если он не совпал, файл менялся:
-    возможно, другой правкой, и это не значит, что наша откачена. Тогда
-    смотрим, стоит ли СТАЛО у записанной строки. Файл, вернувшийся к версии до
-    правки (хэш ``sha_before``), применённым не считается. Отметки старого
-    формата (без хэшей) проверяются только по СТАЛО у записанной строки.
+    возможно, другой правкой, и это не значит, что наша откачена. Тогда нужно
+    подтвердить именно наш участок (см. :func:`_still_in_place`): такое же
+    СТАЛО в другом месте файла применения не доказывает. Файл, вернувшийся к
+    версии до правки (хэш ``sha_before``), применённым не считается.
     """
     data = _load_record(record)
     if data is None or data.get("proposal") != _proposal_hash(proposal):
@@ -622,11 +627,37 @@ def _recorded(proposal: Proposal, target: Path, record: Path) -> bool:
     if current == data.get("sha_before"):
         return False
     try:
-        line = int(data["line"])  # type: ignore[call-overload]
         lines = _normalize(_read_source(target)).split("\n")
+        return _still_in_place(proposal, data, lines)
     except (KeyError, TypeError, ValueError, SourceEncodingError):
         return False
-    return any(abs(p + 1 - line) <= LINE_WINDOW for p in find_block(lines, proposal.after))
+
+
+def _still_in_place(proposal: Proposal, data: dict[str, object], lines: list[str]) -> bool:
+    """СТАЛО стоит именно там, где его записал apply.
+
+    Место узнаётся по строкам вокруг СТАЛО, записанным при apply: они
+    переживают правки в других частях файла, которые сдвигают номера строк.
+    Совпавших мест может быть несколько (одинаковые методы) — тогда верим,
+    только если одно из них на записанной строке. Отметка старого формата
+    (без окружения) подтверждает только СТАЛО ровно на записанной строке.
+    """
+    recorded_line = int(data["line"])  # type: ignore[call-overload]
+    positions = find_block(lines, proposal.after)
+    if "context_before" not in data or "context_after" not in data:
+        return recorded_line - 1 in positions
+    before = [str(line) for line in data["context_before"]]  # type: ignore[attr-defined]
+    after = [str(line) for line in data["context_after"]]  # type: ignore[attr-defined]
+    size = len(proposal.after)
+    matched = [
+        position for position in positions
+        if position >= len(before) and position + size + len(after) <= len(lines)
+        and (before or position == 0)  # пустое окружение — правка была у края файла
+        and (after or position + size == len(lines))
+        and [line.rstrip() for line in lines[position - len(before):position]] == before
+        and [line.rstrip() for line in lines[position + size:position + size + len(after)]] == after
+    ]
+    return len(matched) == 1 or recorded_line - 1 in matched
 
 
 # ---------------------------------------------------------------------------

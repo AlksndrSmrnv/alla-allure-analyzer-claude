@@ -821,3 +821,105 @@ def test_revert_uses_the_file_from_the_apply_record(tmp_path: Path) -> None:
     files.record.write_text(json.dumps({"proposal": "x", "file": "A.java", "line": 2}), encoding="utf-8")
     old = revert_proposal(tmp_path, files)
     assert old.status == "error" and "старого формата" in old.text
+
+
+TWO_METHODS = (
+    "class T {\n    void a() {\n        page.click();\n    }\n"
+    + "    // filler\n" * 5
+    + "    void b() {\n        page.waitUntilReady();\n        page.click();\n    }\n}\n"
+)
+WAIT_BEFORE_CLICK = (
+    "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:3\nБЫЛО:\n        page.click();\n"
+    "СТАЛО:\n        page.waitUntilReady();\n        page.click();\nПОЧЕМУ: нет ожидания"
+)
+
+
+def test_neighbouring_after_does_not_confirm_a_manually_reverted_place(tmp_path: Path) -> None:
+    """Участок у строки 3 откатили вручную (другая правка в файле осталась), а такое же СТАЛО
+    есть в соседнем методе: применённым место не считается, apply снова предлагает его."""
+    target = tmp_path / "T.java"
+    target.write_text(TWO_METHODS, encoding="utf-8")
+    files = _files(tmp_path)
+    proposal = parse_proposal(WAIT_BEFORE_CLICK)
+    assert _apply(proposal, tmp_path, files)[1].changed
+    assert target.read_text(encoding="utf-8").count("waitUntilReady") == 2
+
+    reverted = target.read_text(encoding="utf-8").replace(
+        "        page.waitUntilReady();\n        page.click();\n    }\n    // filler",
+        "        page.click();\n    }\n    // filler", 1,
+    )
+    target.write_text(reverted + "// другая правка\n", encoding="utf-8")
+    assert target.read_text(encoding="utf-8").count("waitUntilReady") == 1
+
+    assert not is_applied(proposal, tmp_path, files)
+    shown, result = _apply(proposal, tmp_path, files)
+    assert "@@" in shown.text and result.changed  # снова показан diff и правка сделана
+    fixed = target.read_text(encoding="utf-8").split("\n")
+    assert fixed[2].strip() == "page.waitUntilReady();" and fixed[3].strip() == "page.click();"
+    assert target.read_text(encoding="utf-8").count("waitUntilReady") == 2
+    assert target.read_text(encoding="utf-8").endswith("// другая правка\n")
+
+
+def test_applied_mark_follows_the_place_when_lines_shift(tmp_path: Path) -> None:
+    """Правка выше по файлу сдвинула номера строк — место узнаётся по окружению, а не по номеру."""
+    target = tmp_path / "T.java"
+    target.write_text(TWO_METHODS, encoding="utf-8")
+    files = _files(tmp_path)
+    proposal = parse_proposal(WAIT_BEFORE_CLICK)
+    assert _apply(proposal, tmp_path, files)[1].changed
+
+    shifted = target.read_text(encoding="utf-8").replace(
+        "class T {\n", "// заголовок\n// ещё строка\n// и ещё\nclass T {\n", 1
+    )
+    target.write_text(shifted, encoding="utf-8")
+    assert is_applied(proposal, tmp_path, files)
+    again = apply_proposal(proposal, tmp_path, confirm=True, files=files)
+    assert again.status == "applied" and not again.changed
+    assert target.read_text(encoding="utf-8") == shifted
+
+
+def test_identical_methods_are_confirmed_only_at_the_recorded_line(tmp_path: Path) -> None:
+    """Два одинаковых метода: копия СТАЛО с тем же окружением не доказывает применение."""
+    method = "    void {n}() {{\n        page.click();\n    }}\n"
+    source = "class T {\n" + method.format(n="a") + "    // between\n" + method.format(n="a") + "}\n"
+    target = tmp_path / "T.java"
+    target.write_text(source, encoding="utf-8")
+    files = _files(tmp_path)
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:3\nБЫЛО:\n        page.click();\n"
+        "СТАЛО:\n        page.waitUntilReady();\n        page.click();\nПОЧЕМУ: нет ожидания"
+    )
+    assert _apply(proposal, tmp_path, files)[1].changed
+    # Второй метод правили так же руками, а участок у строки 3 откатили.
+    both = target.read_text(encoding="utf-8")
+    manual = both.replace("        page.waitUntilReady();\n", "", 1)  # снимает СТАЛО у строки 3
+    manual = manual.replace(
+        "    // between\n    void a() {\n        page.click();",
+        "    // between\n    void a() {\n        page.waitUntilReady();\n        page.click();",
+    ) + "// правка\n"
+    target.write_text(manual, encoding="utf-8")
+    assert not is_applied(proposal, tmp_path, files)
+
+
+def test_old_format_mark_confirms_only_the_exact_recorded_line(tmp_path: Path) -> None:
+    target = tmp_path / "T.java"
+    target.write_text(TWO_METHODS, encoding="utf-8")
+    files = _files(tmp_path)
+    proposal = parse_proposal(WAIT_BEFORE_CLICK)
+    assert _apply(proposal, tmp_path, files)[1].changed
+    recorded = json.loads(files.record.read_text(encoding="utf-8"))
+    files.record.write_text(json.dumps({
+        "proposal": recorded["proposal"], "file": "T.java", "line": recorded["line"],
+    }), encoding="utf-8")
+
+    target.write_text(target.read_text(encoding="utf-8") + "// правка\n", encoding="utf-8")
+    assert is_applied(proposal, tmp_path, files)  # СТАЛО ровно на записанной строке
+
+    target.write_text(
+        target.read_text(encoding="utf-8").replace(
+            "        page.waitUntilReady();\n        page.click();\n    }\n    // filler",
+            "        page.click();\n    }\n    // filler", 1,
+        ),
+        encoding="utf-8",
+    )
+    assert not is_applied(proposal, tmp_path, files)  # соседнее СТАЛО в b() не в счёт
