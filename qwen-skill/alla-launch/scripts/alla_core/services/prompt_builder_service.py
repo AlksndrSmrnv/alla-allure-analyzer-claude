@@ -89,12 +89,17 @@ def build_cluster_analysis_prompt(
     message_max_chars: int = DEFAULT_MESSAGE_MAX_CHARS,
     trace_max_chars: int = DEFAULT_TRACE_MAX_CHARS,
     log_max_chars: int = DEFAULT_LOG_MAX_CHARS,
+    normalize_evidence: bool = True,
 ) -> ClusterAnalysisPrompt:
     """Собрать промпт для анализа одного кластера.
 
     Поведение совпадает с прежним ``build_cluster_prompt`` из
     :mod:`alla.services.llm_service` — это единственный builder, который
     теперь используют и LLM-сервис, и скрипты skill.
+
+    ``normalize_evidence=False`` оставляет в трейсе и логе ID, время и IP как
+    есть (без ``<ID>``/``<TS>``/``<IP>``): по ним агент связывает падение
+    с конкретной операцией и восстанавливает порядок событий.
     """
     system_prompt = _SYSTEM_PROMPT_CLUSTER
 
@@ -122,14 +127,15 @@ def build_cluster_analysis_prompt(
     trace_text = full_trace or cluster.example_trace_snippet
     trace_chars = 0
     if trace_text:
-        trace_text = normalize_text_for_llm(trace_text)
+        if normalize_evidence:
+            trace_text = normalize_text_for_llm(trace_text)
         trace_text = _truncate_prompt_text(trace_text, trace_max_chars)
         trace_chars = len(trace_text)
         parts.append(f"\n--- Стек-трейс ---\n{trace_text}")
 
     log_chars = 0
     if log_snippet:
-        log_text = normalize_text_for_llm(log_snippet)
+        log_text = normalize_text_for_llm(log_snippet) if normalize_evidence else log_snippet
         log_text = _truncate_prompt_text(log_text, log_max_chars)
         log_chars = len(log_text)
         parts.append(f"\n--- Фрагмент лога ---\n{log_text}")

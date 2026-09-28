@@ -17,8 +17,9 @@ from alla_core.exceptions import ConfigurationError
 from alla_core.models.clustering import ClusterSignature, FailureCluster
 from alla_core.services.prompt_builder_service import build_cluster_analysis_prompt
 from alla_skill_lib.analysis_format import parse_analysis, validate_analysis
-from alla_skill_lib.cluster_task import project_frames, split_prompt, strip_knowledge_base
+from alla_skill_lib.cluster_task import adapt_task, project_frames, split_prompt
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
+from alla_skill_lib.log_focus import FOCUS_NOTE, focus_log
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 
@@ -96,11 +97,27 @@ def test_validate_code_paths(tmp_path: Path) -> None:
     assert validate_analysis(outside, tmp_path)
 
 
-def test_compact_keeps_cause_and_first_sentence() -> None:
+def test_code_line_must_exist(tmp_path: Path) -> None:
+    (tmp_path / "Test.java").write_text("line1\nline2\nline3\n", encoding="utf-8")
+    base = "ЧТО СЛОМАЛОСЬ: x\nПРИЧИНА: тест — y\nКАК ИСПРАВИТЬ:\n1. z\n"
+
+    for ok_line in ("Test.java:1", "Test.java:3", "Test.java"):
+        assert validate_analysis(parse_analysis(base + f"КОД: {ok_line} — ok\n"), tmp_path) == []
+    for bad_line in ("Test.java:999", "Test.java:0"):
+        errors = validate_analysis(parse_analysis(base + f"КОД: {bad_line} — битая\n"), tmp_path)
+        assert errors and "вне файла «Test.java» (в файле 3 строк)" in errors[0]
+
+
+def test_compact_keeps_cause_sentence_and_first_step() -> None:
     analysis = parse_analysis(
-        "ЧТО СЛОМАЛОСЬ: Первое. Второе.\nПРИЧИНА: данные — нет клиента\nКАК ИСПРАВИТЬ:\n1. x\n"
+        "ЧТО СЛОМАЛОСЬ: Первое.\nВторое.\nПРИЧИНА: данные —\nнет клиента\n"
+        "КАК ИСПРАВИТЬ:\n1) Создать клиента в стенде.\n2. Повторить.\n"
     )
-    assert analysis.compact() == "ПРИЧИНА: данные — нет клиента\nЧТО СЛОМАЛОСЬ: Первое."
+    assert analysis.compact() == (
+        "ПРИЧИНА: данные — нет клиента\n"
+        "ЧТО СЛОМАЛОСЬ: Первое.\n"
+        "ПЕРВЫЙ ШАГ ИСПРАВЛЕНИЯ: Создать клиента в стенде."
+    )
 
 
 # --- задание кластера -----------------------------------------------------
@@ -122,9 +139,92 @@ def test_task_has_no_knowledge_base_mentions(message: str | None, log: str | Non
     prompt = build_cluster_analysis_prompt(cluster, None, log_snippet=log)
     _, task = split_prompt(prompt.user_prompt)
     assert task.startswith("═")
-    cleaned = strip_knowledge_base(task)
+    cleaned = adapt_task(task)
     assert "знаний" not in cleaned
-    assert "ЧТО СЛОМАЛОСЬ:" in cleaned and "ПРИЧИНА:" in cleaned
+    assert "ЧТО СЛОМАЛОСЬ:" in cleaned
+    cause_line = next(line for line in cleaned.splitlines() if line.startswith("ПРИЧИНА:"))
+    assert "данные / неизвестно («неизвестно» — только если" in cause_line
+
+
+# --- отбор лога -------------------------------------------------------------
+
+
+def _error_block(minute: int, text: str, trace_lines: int = 3) -> str:
+    lines = [f"2026-09-01 10:{minute:02d}:00 [ERROR] {text}"]
+    lines += [f"\tat ru.company.Service.method{i}(Service.java:{i})" for i in range(trace_lines)]
+    return "\n".join(lines)
+
+
+def test_focus_log_keeps_short_log() -> None:
+    log = "--- [файл: app.log] ---\n" + _error_block(0, "boom")
+    assert focus_log(log, "boom", 8000) == log
+
+
+def test_focus_log_prefers_related_block_and_marks_gaps() -> None:
+    noise = "\n\n".join(_error_block(i, f"Scheduler tick {i} slow", 10) for i in range(40))
+    related = _error_block(50, "OrderService failed rqUID=0f8a1c2e-1b2c-4d5e-8f90-123456789abc")
+    other = "--- [файл: audit.log] ---\n" + "\n\n".join(
+        _error_block(i, f"Audit rotate {i}", 10) for i in range(20)
+    )
+    log = f"--- [файл: app.log] ---\n{noise}\n\n{related}\n\n{other}"
+    error_text = "Order not created\nrqUID=0f8a1c2e-1b2c-4d5e-8f90-123456789abc"
+
+    focused = focus_log(log, error_text, 3000)
+
+    assert len(focused) <= 3000
+    assert focused.startswith(FOCUS_NOTE)
+    assert "10:50:00 [ERROR] OrderService failed rqUID=0f8a1c2e" in focused  # ID и время целы
+    assert "[… пропущено блоков:" in focused
+    assert focused.index("Scheduler tick 0 ") < focused.index("OrderService failed")  # порядок
+    assert "--- [файл: audit.log] ---" in focused
+
+
+def test_focus_log_marks_attachment_that_did_not_fit() -> None:
+    first = "--- [файл: app.log] ---\n" + "\n\n".join(
+        _error_block(i, f"Payment declined for order {i}", 5) for i in range(30)
+    )
+    second = "--- [HTTP: response.json] ---\n" + "\n\n".join(
+        "\n".join(f"HTTP/1.1 500 unrelated body {i}.{j} with some padding" for j in range(10))
+        for i in range(20)
+    )
+    focused = focus_log(f"{first}\n\n{second}", "Payment declined order", 2500)
+
+    assert len(focused) <= 2500
+    assert "--- [HTTP: response.json] ---\n[вложение не вошло в лимит задания: 200 строк]" in focused
+
+
+def test_focus_log_without_overlap_keeps_earliest_blocks() -> None:
+    log = "--- [файл: app.log] ---\n" + "\n\n".join(
+        _error_block(i, f"NullPointerException customer {i}", 5) for i in range(60)
+    )
+    focused = focus_log(log, "expected: <200> but was: <500>", 2000)
+
+    assert "10:00:00 [ERROR] NullPointerException customer 0" in focused
+    assert "10:59:00" not in focused
+    assert len(focused) <= 2000
+
+
+def test_focus_log_tiny_budget_keeps_start_of_best_block() -> None:
+    log = "--- [файл: app.log] ---\n" + _error_block(1, "OrderService customer is null", 5)
+    focused = focus_log(log, "OrderService customer", 130)
+
+    assert len(focused) <= 130
+    assert "[ERROR] OrderService" in focused
+
+
+def test_focus_log_shrinks_huge_block_to_matching_lines() -> None:
+    journal = "\n".join(
+        [f'  {{"level": "INFO", "msg": "heartbeat {i}"}},' for i in range(500)]
+        + ['  {"level": "ERROR", "msg": "OrderService customer is null"},']
+        + [f'  {{"level": "INFO", "msg": "heartbeat tail {i}"}},' for i in range(500)]
+    )
+    log = f"--- [журнал: journal.json] ---\n[\n{journal}\n]"
+    focused = focus_log(log, "OrderService customer", 3000)
+
+    assert len(focused) <= 3000
+    assert "OrderService customer is null" in focused
+    assert "heartbeat 498" in focused  # контекст вокруг совпадения
+    assert "[…]" in focused
 
 
 def test_project_frames_skip_frameworks() -> None:

@@ -61,6 +61,8 @@ _CONFIG_EXTENSIONS = frozenset({
     ".toml", ".gradle", ".sql", ".md", ".txt", ".env", ".csv",
 })
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s")
+_STEP_PREFIX_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
+MAX_CHECKED_FILE_BYTES = 5_000_000
 
 
 @dataclass
@@ -81,12 +83,27 @@ class ClusterAnalysis:
         return text or self.cause
 
     def compact(self) -> str:
-        """Короткая версия для задания на общий анализ большого прогона."""
-        what = _SENTENCE_END_RE.split(self.what.strip(), maxsplit=1)[0] if self.what else ""
-        lines = [f"ПРИЧИНА: {self.cause}".strip()]
+        """Сжатый разбор для задания на общий анализ.
+
+        Причина с категорией, первое предложение «что сломалось» и первый шаг
+        исправления — из них сводка собирает ключевые проблемы и приоритетные
+        исправления, не тратя контекст на полные разборы.
+        """
+        lines = [f"ПРИЧИНА: {_one_line(self.cause)}"]
+        what = _SENTENCE_END_RE.split(_one_line(self.what), maxsplit=1)[0]
         if what:
             lines.append(f"ЧТО СЛОМАЛОСЬ: {what}")
+        step = self.first_fix_step()
+        if step:
+            lines.append(f"ПЕРВЫЙ ШАГ ИСПРАВЛЕНИЯ: {step}")
         return "\n".join(lines)
+
+    def first_fix_step(self) -> str:
+        for line in self.fix.splitlines():
+            step = _STEP_PREFIX_RE.sub("", line).strip()
+            if step:
+                return step
+        return ""
 
 
 def parse_analysis(text: str) -> ClusterAnalysis:
@@ -139,17 +156,13 @@ def validate_analysis(analysis: ClusterAnalysis, project_root: Path) -> list[str
         )
     if not analysis.fix:
         errors.append("нет раздела «КАК ИСПРАВИТЬ:» с шагами исправления")
-    for missing in missing_code_paths(analysis, project_root):
-        errors.append(
-            f"в «КОД:» файл «{missing}» не найден в проекте {project_root} — "
-            "укажи путь относительно корня проекта или удали строку КОД"
-        )
+    errors.extend(code_ref_errors(analysis, project_root))
     return errors
 
 
-def missing_code_paths(analysis: ClusterAnalysis, project_root: Path) -> list[str]:
-    """Пути из раздела КОД, которых нет в проекте."""
-    missing: list[str] = []
+def code_ref_errors(analysis: ClusterAnalysis, project_root: Path) -> list[str]:
+    """Проблемы ссылок из раздела КОД: нет файла в проекте или строка вне файла."""
+    errors: list[str] = []
     root = project_root.resolve()
     for line in analysis.code:
         match = _PATH_RE.search(line)
@@ -167,8 +180,28 @@ def missing_code_paths(analysis: ClusterAnalysis, project_root: Path) -> list[st
         except OSError:
             inside = False
         if not inside or not resolved.is_file():
-            missing.append(raw)
-    return missing
+            errors.append(
+                f"в «КОД:» файл «{raw}» не найден в проекте {root} — "
+                "укажи путь относительно корня проекта или удали строку КОД"
+            )
+            continue
+        number = match.group("line")
+        total = _line_count(resolved) if number else None
+        if number and total is not None and not 1 <= int(number) <= total:
+            errors.append(
+                f"в «КОД:» строка {number} вне файла «{raw}» (в файле {total} строк) — "
+                "укажи строку, которая есть в файле"
+            )
+    return errors
+
+
+def _line_count(path: Path) -> int | None:
+    try:
+        if path.stat().st_size > MAX_CHECKED_FILE_BYTES:
+            return None
+        return len(path.read_text(encoding="utf-8", errors="replace").splitlines())
+    except OSError:
+        return None
 
 
 def _strip_category(cause: str) -> str:
@@ -185,3 +218,7 @@ def _strip_category(cause: str) -> str:
 
 def _join(lines: list[str]) -> str:
     return "\n".join(lines).strip()
+
+
+def _one_line(text: str) -> str:
+    return " ".join(text.split())

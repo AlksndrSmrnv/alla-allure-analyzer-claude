@@ -137,6 +137,24 @@ def test_build_cluster_prompt_no_step_rule_with_rich_log() -> None:
     assert "Данных об ошибке немного" not in user
 
 
+def test_build_cluster_analysis_prompt_normalize_evidence_flag() -> None:
+    """По умолчанию ID/время в логе и трейсе заменяются; normalize_evidence=False их сохраняет."""
+    from alla.services.prompt_builder_service import build_cluster_analysis_prompt
+
+    cluster = make_failure_cluster(example_message="AssertionError: false")
+    log = "2026-09-01 10:00:01 [ERROR] rqUID=0f8a1c2e-1b2c-4d5e-8f90-123456789abc failed"
+    trace = "java.lang.AssertionError at 10.1.2.3"
+
+    default = build_cluster_analysis_prompt(cluster, log_snippet=log, full_trace=trace).user_prompt
+    raw = build_cluster_analysis_prompt(
+        cluster, log_snippet=log, full_trace=trace, normalize_evidence=False
+    ).user_prompt
+
+    assert "<TS> [ERROR] rqUID=<ID> failed" in default and "<IP>" in default
+    assert log in raw and "10.1.2.3" in raw
+    assert "<TS>" not in raw and "<ID>" not in raw
+
+
 def test_build_cluster_prompt_no_step_rule_without_step_path() -> None:
     """Без example_step_path подсказка про шаг не добавляется даже при дефиците данных."""
     cluster = make_failure_cluster(

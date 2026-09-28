@@ -19,7 +19,7 @@ from alla_skill_lib.analysis_format import CATEGORIES, ClusterAnalysis
 from alla_skill_lib.cluster_task import UNTRUSTED_NOTE
 from alla_skill_lib.workspace import RunPaths
 
-COMPACT_SUMMARY_THRESHOLD = 15
+MAX_FLAGGED_SUMMARY_CHARS = 300
 MAX_CONSOLE_CLUSTERS = 20
 MAX_REPORT_TESTS = 5
 MAX_CAUSE_CHARS = 220
@@ -43,20 +43,20 @@ def load_models(run: dict[str, Any]) -> tuple[TriageReport, ClusteringReport | N
 def build_summary_task(
     run: dict[str, Any],
     analyses: dict[str, ClusterAnalysis],
+    flagged: set[str],
     paths: RunPaths,
 ) -> str:
-    """Задание на общий анализ: серверный launch summary prompt + разборы кластеров."""
+    """Задание на общий анализ: серверный launch summary prompt + сжатые разборы.
+
+    Полные разборы занимали почти всё задание, а сводке нужны только причина,
+    суть и первый шаг исправления по каждому кластеру.
+    """
     triage, clustering = load_models(run)
     assert clustering is not None
-    compact = len(run["clusters"]) > COMPACT_SUMMARY_THRESHOLD
     cluster_analyses = {
         entry["cluster_id"]: LLMClusterAnalysis(
             cluster_id=entry["cluster_id"],
-            analysis_text=(
-                analyses[entry["file_id"]].compact()
-                if compact
-                else analyses[entry["file_id"]].raw
-            ),
+            analysis_text=_summary_text(analyses[entry["file_id"]], entry["file_id"] in flagged),
         )
         for entry in run["clusters"]
     }
@@ -215,6 +215,12 @@ def _cluster_details(
         if len(member_ids) > MAX_REPORT_TESTS:
             lines.append(f"- … и ещё {len(member_ids) - MAX_REPORT_TESTS}")
     return lines
+
+
+def _summary_text(analysis: ClusterAnalysis, flagged: bool) -> str:
+    if flagged:  # формат нарушен — разделов нет, берём начало текста как есть
+        return _truncate(" ".join(analysis.raw.split()), MAX_FLAGGED_SUMMARY_CHARS)
+    return analysis.compact()
 
 
 def _truncate(text: str, limit: int) -> str:

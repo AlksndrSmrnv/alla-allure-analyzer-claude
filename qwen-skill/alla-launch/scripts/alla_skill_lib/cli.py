@@ -277,7 +277,7 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
 
     summary = paths.summary.read_text(encoding="utf-8") if paths.summary.is_file() else ""
     if not summary.strip():
-        ws.write_text(paths.summary_task, build_summary_task(run, analyses, paths))
+        ws.write_text(paths.summary_task, build_summary_task(run, analyses, flagged, paths))
         return "summary", _summary_body(paths, total)
 
     console, full = render_report(run, analyses, flagged, summary, paths)

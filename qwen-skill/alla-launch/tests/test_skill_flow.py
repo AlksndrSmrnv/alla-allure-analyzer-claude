@@ -71,6 +71,9 @@ def test_prepare_builds_run(project: Path, testops: FakeTestOps, capsys) -> None
     assert str(run_dir / "analyses" / "01.md") in first
     assert "недоверенный" in first
     assert "customer is null" in first  # лог из вложения
+    assert "2026-09-01 10:00:01 [ERROR] OrderService" in first  # время не стёрто
+    assert "<TS>" not in first and "<ID>" not in first
+    assert "данные / неизвестно («неизвестно» — только если" in first
     assert "ru.company.orders.OrderTest.createOrder" in first
     assert "at ru.company.orders.OrderTest.createOrder(OrderTest.java:6)" in first
     assert "org.junit.Assert" not in first.split("--- Кадры стека из кода проекта ---")[1]
@@ -110,6 +113,9 @@ def test_full_flow_until_done(project: Path, testops: FakeTestOps, capsys) -> No
     assert out.startswith("STATUS: summary")
     task = (run_dir / "summary_task.md").read_text(encoding="utf-8")
     assert "OrderService.create падает на пустом customer" in task
+    assert "ПЕРВЫЙ ШАГ ИСПРАВЛЕНИЯ: Добавить проверку customer в OrderService.create." in task
+    assert "Вернуть 400" not in task  # в сводку идут сжатые разборы
+    assert "КОД:" not in task
     assert str(run_dir / "summary.md") in task
 
     (run_dir / "summary.md").write_text(

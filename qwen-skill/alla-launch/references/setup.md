@@ -66,7 +66,7 @@ alla-reports/<launch_id>-<YYYYmmdd-HHMMSS>/
 | `ALLURE_CLUSTERING_STEP_STRICT_THRESHOLD` | `0.95` | Жёсткое разделение по шагу теста |
 | `ALLURE_LLM_PROMPT_MESSAGE_MAX_CHARS` | `2000` | Лимит сообщения об ошибке в задании |
 | `ALLURE_LLM_PROMPT_TRACE_MAX_CHARS` | `400` | Лимит трейса в задании |
-| `ALLURE_LLM_PROMPT_LOG_MAX_CHARS` | `8000` | Лимит лога в задании |
+| `ALLURE_LLM_PROMPT_LOG_MAX_CHARS` | `8000` | Лимит лога в задании; длинный лог сокращается отбором блоков, связанных с ошибкой, пропуски помечаются |
 
 Значения по умолчанию совпадают с сервером alla.
 

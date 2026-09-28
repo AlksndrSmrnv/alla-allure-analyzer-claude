@@ -17,6 +17,7 @@ from alla_core.models.testops import FailedTestSummary
 from alla_core.services.prompt_builder_service import build_cluster_analysis_prompt
 
 from alla_skill_lib.code_hints import CodeHint
+from alla_skill_lib.log_focus import focus_log
 
 MAX_LISTED_TESTS = 20
 MAX_FRAME_LINES = 40
@@ -45,16 +46,23 @@ CODE_LINE_NOTE = """\
 Дополнительно к формату выше: если ты открывал код проекта и он подтвердил
 вывод, добавь последней строкой
 КОД: <путь относительно корня проекта>:<строка> — <что там происходит>
-Если код не открывал или он ничего не дал — строку КОД не добавляй.
-Допустимые категории в ПРИЧИНА: тест / приложение / окружение / данные / неизвестно."""
+Если код не открывал или он ничего не дал — строку КОД не добавляй."""
 
-# Серверный промпт рассчитан на базу знаний; в скилле её пока нет, поэтому
-# фразы про записи базы знаний убираются из задания.
+# Серверное задание рассчитано на базу знаний (в скилле её пока нет) и на
+# четыре категории. Фразы про записи базы знаний убираются, а в строку
+# ПРИЧИНА добавляется «неизвестно» — её принимает проверка формата скилла.
 _KB_SENTENCE_RE = re.compile(r" ?[^.\n]*запис[ьи] базы знаний[^.\n]*\.")
-_KB_REPLACEMENTS = (
+_TASK_REPLACEMENTS = (
     ("Базы знаний нет — опирайся", "Опирайся"),
     (", лога или базы знаний", ", лога или кода проекта"),
+    (
+        "ровно одна категория из списка: тест / приложение / окружение / данные.",
+        "ровно одна категория из списка: тест / приложение / окружение / данные / "
+        "неизвестно («неизвестно» — только если ни одну из четырёх нельзя "
+        "обосновать данными и кодом).",
+    ),
 )
+MAX_ERROR_TRACE_LINES = 20
 _FRAME_RE = re.compile(r"^\s*(at\s|File\s\")")
 _CAUSED_BY_RE = re.compile(r"^\s*Caused by:")
 _JAVA_FRAMEWORK_PREFIXES = (
@@ -152,7 +160,18 @@ def build_cluster_task(
     hints: list[CodeHint],
     settings: Settings,
 ) -> str:
-    """Собрать markdown-задание на анализ одного кластера."""
+    """Собрать markdown-задание на анализ одного кластера.
+
+    Лог и трейс идут без нормализации (ID и время сохраняются), а лог длиннее
+    лимита отбирается по связи с ошибкой (:func:`focus_log`), а не режется
+    по началу.
+    """
+    if log_snippet:
+        log_snippet = focus_log(
+            log_snippet,
+            error_text_for(cluster, full_trace),
+            settings.llm_prompt_log_max_chars,
+        )
     prompt = build_cluster_analysis_prompt(
         cluster,
         None,
@@ -161,9 +180,10 @@ def build_cluster_task(
         message_max_chars=settings.llm_prompt_message_max_chars,
         trace_max_chars=settings.llm_prompt_trace_max_chars,
         log_max_chars=settings.llm_prompt_log_max_chars,
+        normalize_evidence=False,
     )
     data_part, task_part = split_prompt(prompt.user_prompt)
-    task_part = strip_knowledge_base(task_part)
+    task_part = adapt_task(task_part)
 
     sections = [
         f"# Кластер {position} из {total} · прогон #{launch_id}",
@@ -181,8 +201,10 @@ def build_cluster_task(
         "",
         data_part,
         "",
-        _render_members(cluster, tests_by_id),
     ]
+    if cluster.example_correlation:
+        sections += ["--- Корреляция запроса ---", cluster.example_correlation, ""]
+    sections += [_render_members(cluster, tests_by_id)]
     if frames:
         sections += ["", "--- Кадры стека из кода проекта ---", *frames]
     if hints:
@@ -207,12 +229,23 @@ def split_prompt(user_prompt: str) -> tuple[str, str]:
     return "\n".join(lines[:index]).rstrip(), "\n".join(lines[index:]).strip()
 
 
-def strip_knowledge_base(task: str) -> str:
-    """Убрать из серверного задания упоминания базы знаний."""
+def adapt_task(task: str) -> str:
+    """Приспособить серверное задание к скиллу: без базы знаний, с «неизвестно»."""
     task = _KB_SENTENCE_RE.sub("", task)
-    for old, new in _KB_REPLACEMENTS:
+    for old, new in _TASK_REPLACEMENTS:
         task = task.replace(old, new)
     return task
+
+
+def error_text_for(cluster: FailureCluster, full_trace: str | None) -> str:
+    """Текст ошибки, с которым сопоставляются блоки лога при отборе."""
+    trace = full_trace or cluster.example_trace_snippet or ""
+    parts = [
+        cluster.example_message or "",
+        "\n".join(trace.splitlines()[:MAX_ERROR_TRACE_LINES]),
+        cluster.example_correlation or "",
+    ]
+    return "\n".join(part for part in parts if part)
 
 
 def _render_members(cluster: FailureCluster, tests_by_id: dict[int, FailedTestSummary]) -> str:
