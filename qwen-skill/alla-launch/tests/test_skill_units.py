@@ -259,6 +259,19 @@ def test_focus_log_keeps_fragment_of_huge_error_line() -> None:
     assert " … " in focused and focused.rstrip().endswith("…")
 
 
+@pytest.mark.parametrize("budget", [100, 150, 300])  # 100 — минимум ALLURE_LLM_PROMPT_LOG_MAX_CHARS
+def test_focus_log_keeps_error_line_fragment_on_small_budget(budget: int) -> None:
+    line = (
+        "2026-09-01 10:00:01 [ERROR] payload=" + "x" * 6000
+        + " OrderService: customer is null " + "y" * 3000
+    )
+    focused = focus_log("--- [файл: app.log] ---\n" + line, "OrderService customer", budget)
+
+    assert len(focused) <= budget
+    assert "OrderService: customer is null" in focused
+    assert "[…]" not in focused
+
+
 def test_focus_log_keeps_head_of_huge_line_without_overlap() -> None:
     line = "2026-09-01 10:00:01 [ERROR] Gateway timeout " + "z" * 9000
     focused = focus_log("--- [файл: app.log] ---\n" + line, "expected: <200> but was: <500>", 8000)

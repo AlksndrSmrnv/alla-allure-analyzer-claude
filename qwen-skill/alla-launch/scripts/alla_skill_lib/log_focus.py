@@ -53,6 +53,7 @@ class _Block:
     text: str
     score: float
     pinned: bool
+    original: str  # до сокращения: запасной вариант режет исходный текст, а не «[…]»
 
     @property
     def cost(self) -> int:
@@ -78,15 +79,17 @@ def focus_log(snippet: str, error_text: str, budget: int) -> str:
     sections = _split_sections(snippet)
     blocks: list[_Block] = []
     for section_index, (_header, texts) in enumerate(sections):
-        for text in texts:
+        for original in texts:
+            text = original
             if len(text) > budget // 2:
                 text = _shrink_block(text, tokens, budget // 2)
             blocks.append(_Block(
                 section=section_index,
                 position=len(blocks),
                 text=text,
-                score=_block_score(text, tokens),
-                pinned=bool(_EXTRACTION_MARKER_RE.match(text)),
+                score=_block_score(original, tokens),  # важность — по исходному блоку
+                pinned=bool(_EXTRACTION_MARKER_RE.match(original)),
+                original=original,
             ))
 
     priority = sorted(blocks, key=lambda b: (not b.pinned, -b.score, b.position))
@@ -102,11 +105,14 @@ def focus_log(snippet: str, error_text: str, budget: int) -> str:
         chosen.pop()  # сначала уходят наименее важные
         result = _render(sections, blocks, {b.position for b in chosen})
     if not chosen and priority:
-        # Лимит меньше заголовков и маркеров: лучше начало самого важного
-        # блока, чем одни пометки о пропусках.
-        room = budget - len(FOCUS_NOTE) - 3
-        if room > 0:
-            return f"{FOCUS_NOTE}\n\n{_fragment(priority[0].text, tokens, room)}"
+        # Лимит меньше заголовков и маркеров: лучше фрагмент самого важного
+        # блока (из исходного текста), чем одни пометки о пропусках. Если
+        # пояснение съест почти весь лимит — без него: обрезку и так видно по «…».
+        best = priority[0].original
+        room = budget - len(FOCUS_NOTE) - 2
+        if room >= MIN_FRAGMENT_CHARS:
+            return f"{FOCUS_NOTE}\n\n{_fragment(best, tokens, room)}"
+        return _fragment(best, tokens, budget)
     return result if len(result) <= budget else result[: budget - 1] + "…"
 
 
@@ -171,7 +177,9 @@ def _shrink_block(text: str, tokens: dict[str, float], limit: int) -> str:
         if len(piece) > room:
             # Строка целиком не помещается (например, [ERROR] с огромным
             # payload) — оставляем её значимый фрагмент, а не теряем совсем.
-            if room >= MIN_FRAGMENT_CHARS:
+            # Первую значимую строку сохраняем при любом месте, остальные —
+            # только если фрагмент выйдет осмысленной длины.
+            if room >= MIN_FRAGMENT_CHARS or (not kept and room > 0):
                 kept.append(prefix + _fragment(piece, tokens, room))
                 previous = index
             break
