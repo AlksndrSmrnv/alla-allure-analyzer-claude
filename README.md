@@ -121,7 +121,7 @@ python sql/setup_kb.py
 python sql/setup_kb.py --with-starter-pack
 ```
 
-Bootstrap включает `alla.skill_run` для сохранённых `/api/v1/skill/*`. DDL также доступна отдельно в `sql/skill_run_schema.sql`; автономному Qwen-скиллу PostgreSQL не нужен.
+Bootstrap включает `alla.skill_run` для сохранённых `/api/v1/skill/*`. DDL также доступна отдельно в `sql/skill_run_schema.sql`.
 
 Можно применять SQL-файлы вручную:
 
@@ -137,31 +137,14 @@ psql "$ALLURE_KB_POSTGRES_DSN" -f sql/kb_seed.sql
 
 ## Agent materials
 
-- `qwen-skill/alla-analysis/SKILL.md` — автономный проектный скилл Qwen Code:
-  TestOps → кластеры → анализ текущей моделью → Markdown-отчёт.
-  Без сервера Alla, базы знаний и записи в TestOps.
 - `docs/USER_GUIDE.md` — пользовательская инструкция по HTML-отчёту и
   наполнению базы знаний.
 - `CLAUDE.md` — инженерная карта проекта для будущих агентов и разработчиков.
 
-## Автономный скилл Qwen Code
+## Экспериментальный скилл
 
-Скопируйте `qwen-skill/alla-analysis/` в `.qwen/skills/alla-analysis/`
-проекта автотестов. Установите отдельное Python-окружение и настройте
-`ALLURE_ENDPOINT` и `ALLURE_TOKEN` по
-[инструкции установки](qwen-skill/alla-analysis/references/setup.md).
-
-Далее напишите в Qwen Code: **«разбери прогон 12345»**.
-Скилл анализирует каждый кластер, читает связанный код проекта и сохраняет
-`reports/alla/<launch_id>/<timestamp>-<unique_id>/report.md`.
-В чате выводятся краткая сводка и ссылка на файл. Для продолжения прерванного
-разбора укажите папку снимка. Серверный CLI и REST API работают отдельно.
-
-Тесты автономного скилла:
-
-```bash
-python -m pytest qwen-skill/alla-analysis/tests
-```
-
-Модельная приёмка в Qwen Code описана в
-[сценариях проверки](qwen-skill/alla-analysis/references/evaluation.md).
+Первая версия проектного скилла Qwen Code сохранена в ветке
+[`codex/experiment-qwen-skill-v1`](https://github.com/AlksndrSmrnv/alla-allure-analyzer-claude/tree/codex/experiment-qwen-skill-v1).
+Реализация, инструкции установки и тесты находятся там в `qwen-skill/alla-analysis/`.
+Версия не финальная и не входит в `main`; дальнейшие подходы разрабатываются
+в отдельных экспериментальных ветках.
