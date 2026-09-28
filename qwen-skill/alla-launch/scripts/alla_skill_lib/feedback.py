@@ -25,6 +25,7 @@ from alla_skill_lib.kb import (
     make_entry_id,
     missing_fingerprint_lines,
     secret_lines,
+    store_fingerprint,
 )
 
 MAX_TITLE_CHARS = 120
@@ -155,7 +156,7 @@ def remember(
             category=CATEGORY_TO_KB[parsed.category],
             description=description,
             resolution_steps=steps,
-            error_example="\n".join(fingerprint_lines(fingerprint)),
+            error_example=store_fingerprint(fingerprint),
             created={"date": today.isoformat(), "launch_id": run["launch_id"], "cluster": file_id},
         )
         action = "новая запись"
@@ -166,7 +167,7 @@ def remember(
         record.description = description
         record.resolution_steps = steps
         if parsed.fingerprint:
-            record.error_example = "\n".join(fingerprint_lines(parsed.fingerprint))
+            record.error_example = store_fingerprint(parsed.fingerprint)
         action = "запись обновлена"
 
     record.confirm(signature)

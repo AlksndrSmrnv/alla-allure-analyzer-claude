@@ -18,7 +18,7 @@ from alla_core.services.prompt_builder_service import build_launch_summary_promp
 from alla_skill_lib.analysis_format import CATEGORIES, ClusterAnalysis
 from alla_skill_lib.cluster_task import UNTRUSTED_NOTE
 from alla_skill_lib.history import format_date
-from alla_skill_lib.proposals import Proposal
+from alla_skill_lib.proposals import Proposal, weakening_warnings
 from alla_skill_lib.workspace import RunPaths
 
 MAX_FLAGGED_SUMMARY_CHARS = 300
@@ -268,6 +268,7 @@ def _proposal_details(fixes: dict[str, Proposal], applied: set[str]) -> list[str
             "```",
             *proposal.after,
             "```",
+            *(f"**Проверь:** {warning}" for warning in weakening_warnings(proposal.before, proposal.after)),
         ]
     return lines
 

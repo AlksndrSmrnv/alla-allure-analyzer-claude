@@ -107,6 +107,14 @@ class RunPaths:
         """Отметка, что предложение применено командой ``apply --yes``."""
         return self.root / "proposals" / f"{file_id}.applied.json"
 
+    def proposal_backup(self, file_id: str) -> Path:
+        """Файл до правки: из него ``revert`` возвращает исходную версию."""
+        return self.root / "proposals" / f"{file_id}.orig"
+
+    def proposal_patch(self, file_id: str) -> Path:
+        """Показанный пользователю diff (unified, можно применить ``git apply``)."""
+        return self.root / "proposals" / f"{file_id}.patch"
+
     def feedback(self, file_id: str) -> Path:
         return self.root / "feedback" / f"{file_id}.md"
 

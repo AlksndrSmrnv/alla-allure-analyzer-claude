@@ -15,7 +15,6 @@ from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib.history import (
     append_run,
     load_history,
-    loose_key,
     recurrence,
     render_recurrence,
 )
@@ -29,13 +28,17 @@ from alla_skill_lib.kb import (
     match_cluster,
     missing_fingerprint_lines,
     secret_lines,
+    store_fingerprint,
 )
 from alla_skill_lib.proposals import (
+    ProposalFiles,
     apply_proposal,
     is_applied,
     parse_proposal,
+    revert_proposal,
     validate_proposal,
     weakening_errors,
+    weakening_warnings,
 )
 
 MESSAGE = "Order 0f8a1c2e-1b2c-4d5e-8f90-123456789abc not found: status 404"
@@ -104,6 +107,13 @@ def test_fingerprint_matching_is_number_and_id_agnostic() -> None:
         "X-Api-Key: 123",
         "Set-Cookie: SESSION=abc",
         "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+        "jdbc:postgresql://app:pw@db.internal/orders",
+        "GET https://user:pass@host/path failed",
+        "key AKIAIOSFODNN7EXAMPLE rejected",
+        "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "пароль: hunter2",
+        "session_id: 12ab34",
     ],
 )
 def test_secret_lines_are_detected(line: str) -> None:
@@ -112,7 +122,11 @@ def test_secret_lines_are_detected(line: str) -> None:
 
 @pytest.mark.parametrize(
     "line",
-    ["Order not found", "Authorization failed for user", "token expired", "tokenId=5 is invalid"],
+    [
+        "Order not found", "Authorization failed for user", "token expired", "tokenId=5 is invalid",
+        "Invalid token: expired", "Session id: missing in request",
+        "Failed to reach http://host:8080/orders",
+    ],
 )
 def test_ordinary_error_text_is_not_a_secret(line: str) -> None:
     assert secret_lines(line) == []
@@ -164,6 +178,52 @@ def test_kb_save_is_stable_and_server_compatible(tmp_path: Path) -> None:
     assert data["confirmed_signatures"] == ["v5:a", "v5:b"]
     KBEntry.model_validate(data)
     assert (tmp_path / "alla-kb" / "README.md").is_file()
+
+
+def test_kb_keeps_hand_added_fields_and_writes_atomically(tmp_path: Path) -> None:
+    kb = ProjectKB(tmp_path / "alla-kb")
+    record = _record()
+    path = kb.save(record)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.update({"jira": "QA-123", "owner": "team-orders", "tags": ["api", "orders"]})
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    loaded = kb.get(record.id)
+    assert loaded is not None
+    loaded.confirm("v5:new")  # remember/reject перезаписывают файл целиком
+    kb.save(loaded)
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert (saved["jira"], saved["owner"], saved["tags"]) == ("QA-123", "team-orders", ["api", "orders"])
+    assert saved["confirmed_signatures"] == ["v5:new"]
+    assert "step_path" not in saved
+    assert not list((tmp_path / "alla-kb").glob("*.tmp"))
+    assert b"\r\n" not in path.read_bytes()
+
+
+def test_kb_get_reports_conflict_markers(tmp_path: Path) -> None:
+    kb = ProjectKB(tmp_path)
+    (tmp_path / "npe_order_12345678.json").write_text(
+        "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> b\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="конфликт"):
+        kb.get("npe_order_12345678")
+
+
+def test_stored_fingerprint_is_normalized_and_still_matches() -> None:
+    raw = (
+        "Order 0f8a1c2e-1b2c-4d5e-8f90-123456789abc not found for anna@company.ru\n"
+        "2026-09-01 10:00:01 timeout after 1500 ms"
+    )
+    stored = store_fingerprint(raw)
+    assert "0f8a1c2e" not in stored and "anna@company.ru" not in stored
+    assert "<ID>" in stored and "<EMAIL>" in stored
+    evidence = (
+        "prefix\nOrder aaaaaaaa-1111-2222-3333-444444444444 not found for bob@other.org\n"
+        "2026-10-02 11:22:33 timeout after 2500 ms\n"
+    )
+    assert fingerprint_hits(stored, evidence)
+    assert not fingerprint_hits(stored, "Order not found for nobody")
 
 
 def test_kb_loader_skips_broken_files(tmp_path: Path) -> None:
@@ -222,37 +282,40 @@ def test_match_cluster_orders_exact_first_and_drops_rejected() -> None:
 
 
 def test_history_recurrence(tmp_path: Path) -> None:
-    key = loose_key(MESSAGE, TRACE)
-    assert key == loose_key(MESSAGE.replace("404", "500").replace("0f8a", "aaaa"), "")
     append_run(tmp_path, [
-        {"date": "2026-09-20", "launch_id": 1, "signature": "v5:a", "loose_key": "k1",
+        {"date": "2026-09-20", "launch_id": 1, "signature": "v5:a",
          "category": "приложение", "cause": "старая причина", "kb_entry": None},
-        {"date": "2026-09-25", "launch_id": 2, "signature": "v5:other", "loose_key": "k1",
-         "category": "окружение", "cause": "последняя причина", "kb_entry": None},
-        {"date": "2026-09-26", "launch_id": 2, "signature": "v5:a", "loose_key": "k1",
+        {"date": "2026-09-25", "launch_id": 2, "signature": "v5:other",
+         "category": "окружение", "cause": "другая ошибка", "kb_entry": None},
+        {"date": "2026-09-26", "launch_id": 2, "signature": "v5:a",
          "category": "окружение", "cause": "дубль прогона 2", "kb_entry": None},
-        {"date": "2026-09-27", "launch_id": 9, "signature": "v5:a", "loose_key": "k1",
+        {"date": "2026-09-27", "launch_id": 9, "signature": "v5:a",
          "category": "тест", "cause": "тот же прогон", "kb_entry": None},
-        {"date": "2026-09-28", "launch_id": 3, "signature": "v5:z", "loose_key": "kz",
+        {"date": "2026-09-28", "launch_id": 3, "signature": "v5:z",
          "category": "данные", "cause": "по записи", "kb_entry": "kb_1"},
     ])
     with (tmp_path / "history.jsonl").open("a", encoding="utf-8") as stream:
-        stream.write("{broken\n")
+        stream.write("{broken")  # оборванная строка без перевода строки
 
+    append_run(tmp_path, [
+        {"date": "2026-09-29", "launch_id": 4, "signature": "v5:tail", "kb_entry": None},
+    ])  # не должна склеиться с оборванной строкой
     history = load_history(tmp_path)
-    assert len(history) == 5
+    assert len(history) == 6 and history[-1]["launch_id"] == 4
 
-    info = recurrence(history, launch_id=9, signature="v5:a", loose="k1", kb_ids=set())
-    assert info is not None
-    assert info["launches"] == 2 and info["first_date"] == "2026-09-20"
-    assert info["last"]["cause"] == "дубль прогона 2"
-    assert recurrence(history, launch_id=9, signature="v5:q", loose="kq", kb_ids={"kb_1"})["launches"] == 1
-    assert recurrence(history, launch_id=9, signature="v5:q", loose="kq", kb_ids=set()) is None
+    info = recurrence(history, launch_id=9, signature="v5:a", kb_ids=set())
+    assert info == {"launches": 2, "first_date": "2026-09-20", "last_date": "2026-09-26"}
+    assert recurrence(history, launch_id=9, signature="v5:q", kb_ids={"kb_1"})["launches"] == 1
+    assert recurrence(history, launch_id=9, signature="v5:q", kb_ids=set()) is None
+    # Похожая по первой строке, но другая ошибка (другая сигнатура) повтором не считается.
+    assert recurrence(history, launch_id=9, signature="v5:similar", kb_ids=set()) is None
 
-    unconfirmed = "\n".join(render_recurrence(info, has_exact_kb=False))
-    assert "20.09.2026" in unconfirmed and "не подтверждён" in unconfirmed
+    text = "\n".join(render_recurrence(info, has_exact_kb=False))
+    assert "20.09.2026" in text and "2 других прогонах" in text
+    # Прошлые выводы модели в задание не попадают — они не подтверждены.
+    assert "дубль" not in text and "причина" not in text.lower().replace("подтверждённая", "")
     confirmed = "\n".join(render_recurrence(info, has_exact_kb=True))
-    assert "дубль" not in confirmed and "базе знаний" in confirmed
+    assert "базе знаний" in confirmed
 
 
 # --- правки автотестов ---------------------------------------------------------
@@ -312,33 +375,65 @@ def test_proposal_validation(java_project: Path) -> None:
     assert "не относится к коду автотестов" in validate_proposal(foreign, java_project)[0]
 
 
-def test_timeout_increase_is_rejected(tmp_path: Path) -> None:
+def _files(tmp_path: Path, name: str = "01") -> ProposalFiles:
+    folder = tmp_path / "proposals"
+    return ProposalFiles(
+        record=folder / f"{name}.applied.json",
+        backup=folder / f"{name}.orig",
+        patch=folder / f"{name}.patch",
+    )
+
+
+def _apply(proposal, root: Path, files: ProposalFiles | None = None):
+    """Показать diff, затем применить ровно его — как это делает агент."""
+    shown = apply_proposal(proposal, root, files=files)
+    assert shown.status == "diff", shown.text
+    return shown, apply_proposal(
+        proposal, root, confirm=True, diff_hash=shown.diff_hash, files=files
+    )
+
+
+def test_timeout_increase_is_a_warning_not_a_rejection(tmp_path: Path) -> None:
     (tmp_path / "t.py").write_text("wait_for(ready, timeout=5)\n", encoding="utf-8")
     proposal = parse_proposal(
         "РЕШЕНИЕ: исправить\nФАЙЛ: t.py:1\nБЫЛО:\nwait_for(ready, timeout=5)\n"
         "СТАЛО:\nwait_for(ready, timeout=60)\nПОЧЕМУ: долго"
     )
-    assert any("таймаут" in error for error in validate_proposal(proposal, tmp_path))
+    assert validate_proposal(proposal, tmp_path) == []
+    shown = apply_proposal(proposal, tmp_path)
+    assert shown.status == "diff" and "Проверь: увеличено значение ожидания" in shown.text
 
 
-def test_apply_shows_diff_then_applies_once(java_project: Path) -> None:
+def test_apply_shows_diff_then_applies_once(java_project: Path, tmp_path: Path) -> None:
     target = java_project / "src" / "OrderTest.java"
     target.write_text(JAVA.replace("\n", "\r\n"), encoding="utf-8", newline="")
+    files = _files(tmp_path)
     proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
 
-    status, diff = apply_proposal(proposal, java_project, confirm=False)
-    assert status == "diff" and '+        page.click("#submit");' in diff
+    shown = apply_proposal(proposal, java_project, files=files)
+    assert shown.status == "diff" and '+        page.click("#submit");' in shown.text
     assert "#submit-old" in target.read_text(encoding="utf-8")
+    assert files.patch.read_text(encoding="utf-8") == shown.text  # тот же diff сохранён в NN.patch
 
-    status, _ = apply_proposal(proposal, java_project, confirm=True)
+    result = apply_proposal(proposal, java_project, confirm=True, diff_hash=shown.diff_hash, files=files)
     content = target.read_bytes().decode("utf-8")
-    assert status == "applied"
+    assert result.status == "applied" and result.changed
     assert '        page.click("#submit");\r\n' in content and "#submit-old" not in content
     assert content.endswith("}\r\n") and not content.endswith("\r\n\r\n")
-    assert is_applied(proposal, java_project)
+    assert is_applied(proposal, java_project, files)
 
-    status, message = apply_proposal(proposal, java_project, confirm=True)
-    assert status == "applied" and "уже применена" in message
+    again = apply_proposal(proposal, java_project, confirm=True, diff_hash=shown.diff_hash, files=files)
+    assert again.status == "applied" and not again.changed and "уже применена" in again.text
+
+
+def test_yes_without_matching_diff_hash_shows_diff_again(java_project: Path) -> None:
+    target = java_project / "src" / "OrderTest.java"
+    proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
+
+    for wrong in (None, "deadbeef"):
+        result = apply_proposal(proposal, java_project, confirm=True, diff_hash=wrong)
+        assert result.status == "diff" and "Хэш --diff не совпал" in result.text
+        assert result.diff_hash and "#submit-old" in target.read_text(encoding="utf-8")
 
 
 def test_apply_refuses_when_code_changed_or_ambiguous(java_project: Path) -> None:
@@ -346,7 +441,7 @@ def test_apply_refuses_when_code_changed_or_ambiguous(java_project: Path) -> Non
     proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
 
     target.write_text(JAVA.replace("#submit-old", "#changed"), encoding="utf-8")
-    assert apply_proposal(proposal, java_project, confirm=True)[0] == "error"
+    assert apply_proposal(proposal, java_project, confirm=True).status == "error"
 
     # Два одинаковых места на равном расстоянии от указанной строки — неоднозначно.
     around = JAVA.replace(
@@ -357,8 +452,8 @@ def test_apply_refuses_when_code_changed_or_ambiguous(java_project: Path) -> Non
     equidistant = parse_proposal(
         _proposal('        page.click("#submit-old");', '        page.click("#submit");', line=5)
     )
-    status, message = apply_proposal(equidistant, java_project, confirm=True)
-    assert status == "error" and "несколько одинаковых мест" in message
+    result = apply_proposal(equidistant, java_project, confirm=True)
+    assert result.status == "error" and "несколько одинаковых мест" in result.text
     assert target.read_text(encoding="utf-8") == around
 
 
@@ -379,8 +474,8 @@ def test_apply_touches_only_the_stated_place(tmp_path: Path) -> None:
     before = target.read_text(encoding="utf-8")
 
     assert is_applied(proposal, tmp_path)
-    status, message = apply_proposal(proposal, tmp_path, confirm=True)
-    assert status == "applied" and "уже применена" in message
+    result = apply_proposal(proposal, tmp_path, confirm=True)
+    assert result.status == "applied" and "уже применена" in result.text
     assert target.read_text(encoding="utf-8") == before
 
     # Та же правка, указанная на строку 100, меняет только b().
@@ -388,7 +483,7 @@ def test_apply_touches_only_the_stated_place(tmp_path: Path) -> None:
         "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:100\nБЫЛО:\n        page.click();\n"
         "СТАЛО:\n        page.waitUntilReady();\n        page.click();\nПОЧЕМУ: нет ожидания"
     )
-    assert apply_proposal(at_b, tmp_path, confirm=True)[0] == "applied"
+    assert _apply(at_b, tmp_path)[1].status == "applied"
     lines = target.read_text(encoding="utf-8").split("\n")
     assert [i + 1 for i, line in enumerate(lines) if "waitUntilReady" in line] == [10, 100]
 
@@ -402,58 +497,65 @@ def test_apply_when_after_contains_before_is_not_repeated(tmp_path: Path) -> Non
     )
 
     assert not is_applied(proposal, tmp_path)
-    assert apply_proposal(proposal, tmp_path, confirm=True)[0] == "applied"
+    assert _apply(proposal, tmp_path)[1].status == "applied"
     assert is_applied(proposal, tmp_path)  # БЫЛО внутри вставленного СТАЛО — не новое место
-    status, message = apply_proposal(proposal, tmp_path, confirm=True)
-    assert status == "applied" and "уже применена" in message
+    result = apply_proposal(proposal, tmp_path, confirm=True)
+    assert result.status == "applied" and "уже применена" in result.text
     assert target.read_text(encoding="utf-8").count("waitUntilReady") == 1
     assert validate_proposal(proposal, tmp_path) == []
 
 
 @pytest.mark.parametrize(
-    ("before", "after", "increased"),
+    ("before", "after", "warned"),
     [
-        ("wait(Duration.ofMillis(500));", "wait(Duration.ofSeconds(30));", True),
+        ("wait(Duration.ofSeconds(30));", "wait(Duration.ofSeconds(60));", True),
         ("setTimeout(60000); poll(timeout=1000)", "setTimeout(60000); poll(timeout=5000)", True),
-        ("wait.withTimeout(30, TimeUnit.SECONDS)", "wait.withTimeout(2, TimeUnit.MINUTES)", True),
-        ("timeout: 30s", "timeout: 2min", True),
         ("wait_for(ready, timeout=5)", "wait_for(ready, timeout=60)", True),
-        ("deadline = timedelta(seconds=30)", "deadline = timedelta(minutes=5)", True),
-        ("wait(Duration.ofSeconds(30));", "wait(Duration.ofMillis(500));", False),
-        ('waitForElement("#item-3", 10)', 'waitForElement("#item-4", 10)', False),
-        ("timeout(60, SECONDS)", "timeout(60, SECONDS)  // тот же", False),
-        # уменьшение одного ожидания не скрывает увеличение другого
-        ("a(Duration.ofSeconds(60)); b(Duration.ofSeconds(1));",
-         "a(Duration.ofSeconds(30)); b(Duration.ofSeconds(5));", True),
-        ("a(Duration.ofSeconds(60)); b(Duration.ofSeconds(10));",
-         "a(Duration.ofSeconds(30)); b(Duration.ofSeconds(5));", False),
-        # перенос значения из одного вызова в другой — увеличение ожидания b
-        ("a(Duration.ofSeconds(60)); b(Duration.ofSeconds(1));",
-         "a(Duration.ofSeconds(1)); b(Duration.ofSeconds(60));", True),
-        ("a(timeout=5); b(timeout=60)", "a(timeout=60); b(timeout=5)", True),
-        # само ожидание wait выросло, check(1s) — новое
-        ("wait(Duration.ofSeconds(1));",
-         "wait(Duration.ofSeconds(5)); check(Duration.ofSeconds(1));", True),
+        ("wait(Duration.ofSeconds(30));", "wait(Duration.ofSeconds(5));", False),
+        ('waitForElement("#item-3", 10)', 'waitForElement("#item-3", 10)', False),
+        ("page.click();", "wait.until(visible(el), Duration.ofSeconds(10)); page.click();", True),
     ],
 )
-def test_timeout_increase_respects_units(before: str, after: str, increased: bool) -> None:
-    errors = weakening_errors([before], [after])
-    assert any("таймаут" in error for error in errors) is increased
+def test_timeout_growth_warning(before: str, after: str, warned: bool) -> None:
+    assert weakening_errors([before], [after]) == []
+    assert any("ожидания" in w for w in weakening_warnings([before], [after])) is warned
 
 
-def test_new_explicit_wait_is_not_a_timeout_increase() -> None:
-    before = ["page.click();"]
-    after = ["wait.until(visible(el), Duration.ofSeconds(10));", "page.click();"]
-    assert weakening_errors(before, after) == []
+def test_changed_expected_value_is_a_warning() -> None:
+    warnings = weakening_warnings(
+        ["        assertEquals(200, api.create().status());"],
+        ["        assertEquals(201, api.create().status());"],
+    )
+    assert len(warnings) == 1 and "200 → 201" in warnings[0]
+    assert weakening_warnings(["assertEquals(200, x);"], ["assertEquals(200, y);"]) == []
 
 
-def test_reordered_waits_are_not_an_increase() -> None:
-    before = ["a(Duration.ofSeconds(60));", "b(Duration.ofSeconds(1));"]
-    after = ["b(Duration.ofSeconds(1));", "a(Duration.ofSeconds(60));"]
-    assert weakening_errors(before, after) == []
-    same_line = ["a(Duration.ofSeconds(60)); b(Duration.ofSeconds(1));"]
-    swapped_calls = ["b(Duration.ofSeconds(1)); a(Duration.ofSeconds(60));"]
-    assert weakening_errors(same_line, swapped_calls) == []
+@pytest.mark.parametrize(
+    ("before", "after", "reported"),
+    [
+        # переименование аргумента проверок не убирает
+        ("assertEquals(expectedCode, api.status());", "assertEquals(201, api.status());", False),
+        ("assert x == expected_status", "assert x == 201", False),
+        # «#» и «//» внутри строк — не комментарий
+        ('$("#total").shouldHave(text("5"));', '$("#total").click();', True),
+        ('open("http://app"); assertEquals(1, x);', 'open("http://app");', True),
+        ('open("http://app");', 'open("http://app"); // assertEquals(1, x);', False),
+        ("assertEquals(1, x); // проверка", "// assertEquals(1, x);", True),
+        # RestAssured, Gherkin, JS-проверки
+        ("given().get(u).then().statusCode(200).body(\"a\", eq(1));", "given().get(u).then();", True),
+        ("Then the status is 200", "And the status is 200", True),
+        ("expect(res.status).toBe(200);", "await res;", True),
+        # отключение и глушение
+        ("[Fact]\nvoid T() {}", "[Fact(Skip = \"flaky\")]\nvoid T() {}", True),
+        ("[Test]", "[Test][Ignore]", True),
+        ("void t() {}", "@Retry(3)\nvoid t() {}", True),
+        ("await page.click();", "await page.click().catch(() => {});", True),
+        ("try { go(); } catch (Exception e) { log(e); }", "try { go(); } catch (Exception e) {}", True),
+        ("go();", "try { go(); } catch {}", True),
+    ],
+)
+def test_weakening_detection(before: str, after: str, reported: bool) -> None:
+    assert bool(weakening_errors(before.split("\n"), after.split("\n"))) is reported
 
 
 def test_removing_duplicate_line_is_located_and_applied_once(tmp_path: Path) -> None:
@@ -470,11 +572,11 @@ def test_removing_duplicate_line_is_located_and_applied_once(tmp_path: Path) -> 
 
     assert validate_proposal(proposal, tmp_path) == []
     assert not is_applied(proposal, tmp_path)
-    assert apply_proposal(proposal, tmp_path, confirm=True)[0] == "applied"
+    assert _apply(proposal, tmp_path)[1].status == "applied"
     assert target.read_text(encoding="utf-8").count("page.click();") == 1
     assert is_applied(proposal, tmp_path)
-    status, message = apply_proposal(proposal, tmp_path, confirm=True)
-    assert status == "applied" and "уже применена" in message
+    result = apply_proposal(proposal, tmp_path, confirm=True)
+    assert result.status == "applied" and "уже применена" in result.text
     assert target.read_text(encoding="utf-8").count("page.click();") == 1
 
 
@@ -492,36 +594,125 @@ def test_repeated_apply_with_overlapping_matches_uses_record(tmp_path: Path) -> 
     """Три click() подряд, правка убирает один: повтор не должен удалять ещё."""
     target = tmp_path / "T.java"
     target.write_text(THREE_CLICKS, encoding="utf-8")
-    record = tmp_path / "01.applied.json"
+    files = _files(tmp_path)
     proposal = parse_proposal(REMOVE_ONE_CLICK)
 
-    assert apply_proposal(proposal, tmp_path, confirm=False, record=record)[0] == "diff"
-    assert not record.exists()  # показ diff ничего не фиксирует
+    shown = apply_proposal(proposal, tmp_path, files=files)
+    assert shown.status == "diff" and not files.record.exists()  # показ ничего не фиксирует
 
-    assert apply_proposal(proposal, tmp_path, confirm=True, record=record)[0] == "applied"
+    result = apply_proposal(proposal, tmp_path, confirm=True, diff_hash=shown.diff_hash, files=files)
+    assert result.status == "applied"
     assert target.read_text(encoding="utf-8").count("page.click();") == 2
-    assert json.loads(record.read_text(encoding="utf-8"))["line"] == 3
-    assert is_applied(proposal, tmp_path, record)
+    assert json.loads(files.record.read_text(encoding="utf-8"))["line"] == 3
+    assert is_applied(proposal, tmp_path, files)
 
     for _ in range(2):
-        status, message = apply_proposal(proposal, tmp_path, confirm=True, record=record)
-        assert status == "applied" and "уже применена" in message
+        again = apply_proposal(proposal, tmp_path, confirm=True, diff_hash=shown.diff_hash, files=files)
+        assert again.status == "applied" and "уже применена" in again.text
     assert target.read_text(encoding="utf-8").count("page.click();") == 2
 
 
-def test_record_is_ignored_after_revert_or_rewrite(java_project: Path) -> None:
+def test_revert_restores_original_and_refuses_after_later_edits(java_project: Path, tmp_path: Path) -> None:
     target = java_project / "src" / "OrderTest.java"
-    record = java_project / "01.applied.json"
+    files = _files(tmp_path)
     proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
-    assert apply_proposal(proposal, java_project, confirm=True, record=record)[0] == "applied"
+    original = target.read_bytes()
+
+    assert revert_proposal(proposal, java_project, files).status == "error"  # ещё не применяли
+
+    assert _apply(proposal, java_project, files)[1].status == "applied"
+    assert target.read_bytes() != original and files.backup.read_bytes() == original
+    reverted = revert_proposal(proposal, java_project, files)
+    assert reverted.status == "reverted" and target.read_bytes() == original
+    assert not files.record.exists() and not is_applied(proposal, java_project, files)
+
+    # После отката правку можно применить снова, а если файл потом правили руками — откат не затирает.
+    assert _apply(proposal, java_project, files)[1].status == "applied"
+    target.write_text(target.read_text(encoding="utf-8") + "// manual\n", encoding="utf-8")
+    refused = revert_proposal(proposal, java_project, files)
+    assert refused.status == "error" and "изменён после apply" in refused.text
+    assert "// manual" in target.read_text(encoding="utf-8")
+
+
+def test_record_is_ignored_after_revert_or_rewrite(java_project: Path, tmp_path: Path) -> None:
+    target = java_project / "src" / "OrderTest.java"
+    files = _files(tmp_path)
+    proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
+    assert _apply(proposal, java_project, files)[1].status == "applied"
 
     # Правку откатили вручную — отметка устарела, применить снова можно.
     target.write_text(JAVA, encoding="utf-8")
-    assert not is_applied(proposal, java_project, record)
-    assert apply_proposal(proposal, java_project, confirm=True, record=record)[0] == "applied"
+    assert not is_applied(proposal, java_project, files)
+    assert _apply(proposal, java_project, files)[1].status == "applied"
     assert '"#submit"' in target.read_text(encoding="utf-8")
 
     # Предложение переписали — старая отметка к нему не относится.
     target.write_text(JAVA, encoding="utf-8")
     rewritten = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#send");'))
-    assert not is_applied(rewritten, java_project, record)
+    assert not is_applied(rewritten, java_project, files)
+
+
+def test_line_endings_are_preserved_per_line(tmp_path: Path) -> None:
+    target = tmp_path / "T.java"
+    target.write_bytes(b"a();\r\nb();\nc();\r\nd();")  # смесь окончаний, без перевода в конце
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:3\nБЫЛО:\nc();\nСТАЛО:\nc1();\nc2();\nПОЧЕМУ: x"
+    )
+    assert _apply(proposal, tmp_path)[1].status == "applied"
+    assert target.read_bytes() == b"a();\r\nb();\nc1();\r\nc2();\r\nd();"
+
+    tail = tmp_path / "U.java"
+    tail.write_bytes(b"x();\ny();")
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: U.java:2\nБЫЛО:\ny();\nСТАЛО:\ny1();\ny2();\nПОЧЕМУ: x"
+    )
+    assert _apply(proposal, tmp_path)[1].status == "applied"
+    assert tail.read_bytes() == b"x();\ny1();\ny2();"
+
+
+def test_bom_is_kept_and_non_utf8_is_refused(tmp_path: Path) -> None:
+    bom = tmp_path / "B.java"
+    bom.write_bytes(b"\xef\xbb\xbfa();\nb();\n")
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: B.java:2\nБЫЛО:\nb();\nСТАЛО:\nc();\nПОЧЕМУ: x"
+    )
+    assert _apply(proposal, tmp_path)[1].status == "applied"
+    assert bom.read_bytes() == b"\xef\xbb\xbfa();\nc();\n"
+
+    legacy = tmp_path / "Old.java"
+    legacy.write_bytes("// тест\nb();\n".encode("cp1251"))
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: Old.java:2\nБЫЛО:\nb();\nСТАЛО:\nc();\nПОЧЕМУ: x"
+    )
+    errors = validate_proposal(proposal, tmp_path)  # раньше здесь был UnicodeDecodeError
+    assert errors and "не в кодировке UTF-8" in errors[0]
+    assert apply_proposal(proposal, tmp_path, confirm=True).status == "error"
+    assert not is_applied(proposal, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["pom.xml", "config/.env", ".github/workflows/ci.py", "node_modules/x/index.js", "notes.md"],
+)
+def test_only_test_sources_can_be_edited(tmp_path: Path, path: str) -> None:
+    target = tmp_path / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("a\n", encoding="utf-8")
+    proposal = parse_proposal(f"РЕШЕНИЕ: исправить\nФАЙЛ: {path}:1\nБЫЛО:\na\nСТАЛО:\nb\nПОЧЕМУ: x")
+    errors = validate_proposal(proposal, tmp_path)
+    assert errors and "не относится к коду автотестов" in errors[0]
+
+
+def test_proposal_parser_handles_bold_ticks_and_spaces(tmp_path: Path) -> None:
+    text = (
+        "**РЕШЕНИЕ:** исправить\n"
+        "**ФАЙЛ:** `src/My Tests/OrderTest.java:6` — локатор\n"
+        "**БЫЛО:** `page.click(\"#a\");`\n"
+        "**СТАЛО:**\n```java\npage.click(\"#b\");\nx = a ** b;\n```\n"
+        "**ПОЧЕМУ:** локатор устарел\n"
+    )
+    proposal = parse_proposal(text)
+    assert proposal.file == "src/My Tests/OrderTest.java" and proposal.line == 6
+    assert proposal.before == ['page.click("#a");']
+    assert proposal.after == ['page.click("#b");', "x = a ** b;"]  # «**» в коде не потерян
+    assert proposal.why == "локатор устарел"

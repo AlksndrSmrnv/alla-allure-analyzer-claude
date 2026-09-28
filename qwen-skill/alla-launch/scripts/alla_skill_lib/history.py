@@ -1,42 +1,25 @@
 """Локальная история разборов: ``alla-reports/history.jsonl``.
 
 После каждого завершённого разбора сюда дописывается по строке на кластер.
-Следующий ``prepare`` находит прошлые разборы той же ошибки (по сигнатуре,
-грубому ключу или записи базы знаний) и показывает повторы в задании и
-отчёте. История локальная и в git не попадает (``alla-reports/.gitignore``).
+Следующий ``prepare`` находит прошлые разборы той же ошибки (по точной
+сигнатуре или подтверждённой записи базы знаний) и показывает число
+повторов в задании и отчёте. Прошлые выводы модели в задание не подаются:
+непроверенная догадка иначе стала бы якорем для следующего разбора.
+История локальная и в git не попадает (``alla-reports/.gitignore``).
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-import re
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-from alla_skill_lib.kb import normalize_fp
 
 if TYPE_CHECKING:
     from alla_skill_lib.analysis_format import ClusterAnalysis
 
 HISTORY_FILE = "history.jsonl"
 MAX_CAUSE_CHARS = 200
-
-_FRAME_RE = re.compile(r"^\s*(?:at\s|File\s\")")
-
-
-def loose_key(message: str, trace: str) -> str | None:
-    """Грубый ключ ошибки: первая строка сообщения (или исключения) без чисел и ID."""
-    line = next((item.strip() for item in message.splitlines() if item.strip()), "")
-    if not line:
-        line = next(
-            (item.strip() for item in trace.splitlines() if item.strip() and not _FRAME_RE.match(item)),
-            "",
-        )
-    if not line:
-        return None
-    return hashlib.sha1(normalize_fp(line).encode("utf-8")).hexdigest()[:16]
-
 
 def load_history(reports_dir: Path) -> list[dict[str, Any]]:
     """Записи истории; битые строки пропускаются."""
@@ -59,7 +42,6 @@ def recurrence(
     *,
     launch_id: int,
     signature: str | None,
-    loose: str | None,
     kb_ids: set[str],
 ) -> dict[str, Any] | None:
     """Сводка прошлых разборов той же ошибки в других прогонах (None — не встречалась)."""
@@ -68,23 +50,16 @@ def recurrence(
         if record.get("launch_id") != launch_id
         and (
             (signature and record.get("signature") == signature)
-            or (loose and record.get("loose_key") == loose)
             or (record.get("kb_entry") and record.get("kb_entry") in kb_ids)
         )
     ]
     if not matches:
         return None
     matches.sort(key=lambda record: str(record.get("date", "")))
-    last = matches[-1]
     return {
         "launches": len({record["launch_id"] for record in matches}),
         "first_date": matches[0].get("date"),
-        "last": {
-            "date": last.get("date"),
-            "launch_id": last.get("launch_id"),
-            "category": last.get("category"),
-            "cause": last.get("cause"),
-        },
+        "last_date": matches[-1].get("date"),
     }
 
 
@@ -108,7 +83,6 @@ def run_records(
             "run": run_name,
             "file_id": entry["file_id"],
             "signature": entry["signature"],
-            "loose_key": entry.get("loose_key"),
             "label": str(entry["label"])[:MAX_CAUSE_CHARS],
             "category": analysis.category if trusted and analysis else None,
             "cause": " ".join(analysis.cause_reason.split())[:MAX_CAUSE_CHARS]
@@ -123,8 +97,15 @@ def append_run(reports_dir: Path, records: list[dict[str, Any]]) -> None:
     """Дописать записи одного разбора одним вызовом записи."""
     if not records:
         return
+    path = reports_dir / HISTORY_FILE
     lines = "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records)
-    with (reports_dir / HISTORY_FILE).open("a", encoding="utf-8") as stream:
+    # Оборванная прошлая запись без перевода строки иначе склеилась бы со следующей.
+    if path.is_file() and path.stat().st_size:
+        with path.open("rb") as stream:
+            stream.seek(-1, os.SEEK_END)
+            if stream.read(1) != b"\n":
+                lines = "\n" + lines
+    with path.open("a", encoding="utf-8", newline="\n") as stream:
         stream.write(lines)
 
 
@@ -134,18 +115,10 @@ def render_recurrence(info: dict[str, Any], *, has_exact_kb: bool) -> list[str]:
     where = "другом прогоне" if launches % 10 == 1 and launches % 100 != 11 else "других прогонах"
     lines = [
         "--- Прошлые разборы этой ошибки ---",
-        f"Встречалась в {launches} {where}, впервые {format_date(info['first_date'])}.",
+        f"Встречалась в {launches} {where}, впервые разобрана {format_date(info['first_date'])}.",
     ]
     if has_exact_kb:
         lines.append("Подтверждённая причина — в базе знаний проекта выше.")
-        return lines
-    last = info["last"]
-    if last.get("category"):
-        lines.append(
-            f"Последний вывод (прогон #{last['launch_id']}, {format_date(last['date'])}; "
-            f"вывод прошлого разбора, пользователем не подтверждён): "
-            f"{last['category']} — {last.get('cause') or ''}".rstrip(" —")
-        )
     return lines
 
 

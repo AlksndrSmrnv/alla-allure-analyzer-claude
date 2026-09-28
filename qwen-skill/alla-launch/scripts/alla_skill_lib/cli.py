@@ -7,11 +7,11 @@
   печатает, что агенту делать дальше;
 * ``skip NN`` — пропустить кластер по просьбе пользователя;
 * ``remember NN`` / ``reject NN <id>`` — обратная связь в базу знаний проекта;
-* ``apply NN [--yes]`` — показать или применить предложенную правку автотеста;
+* ``apply NN [--yes --diff ХЭШ]`` / ``revert NN`` — показать, применить или откатить правку автотеста;
 * ``check`` — проверить окружение и доступ к TestOps; ``clean`` — удалить старые разборы.
 
 Первая строка вывода всегда ``STATUS: <статус>``:
-analyze | fix | propose | summary | done | diff | applied | saved | ready | error.
+analyze | fix | propose | summary | done | diff | applied | reverted | saved | ready | error.
 Код возврата 0 всегда, кроме ``error``: статус с инструкцией — не авария.
 """
 
@@ -52,7 +52,7 @@ from alla_skill_lib.cluster_task import (
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
 from alla_skill_lib.errors import fetch_error_hint
 from alla_skill_lib.feedback import find_entry, remember, reject
-from alla_skill_lib.history import append_run, load_history, loose_key, recurrence, run_records
+from alla_skill_lib.history import append_run, load_history, recurrence, run_records
 from alla_skill_lib.kb import (
     ProjectKB,
     cluster_evidence,
@@ -63,10 +63,13 @@ from alla_skill_lib.kb import (
 )
 from alla_skill_lib.pipeline import LaunchData, collect_launch
 from alla_skill_lib.proposals import (
+    ApplyResult,
     Proposal,
+    ProposalFiles,
     apply_proposal,
     is_applied,
     parse_proposal,
+    revert_proposal,
     validate_proposal,
 )
 from alla_skill_lib.report import build_summary_task, render_green_report, render_report
@@ -167,7 +170,11 @@ def _dispatch(argv: list[str] | None) -> int:
         ))
     if args.command == "apply":
         return _cluster_command(args, reports_dir, lambda paths, run, entry: _apply(
-            paths, run, entry, confirm=args.yes
+            paths, run, entry, confirm=args.yes, diff_hash=args.diff_hash
+        ))
+    if args.command == "revert":
+        return _cluster_command(args, reports_dir, lambda paths, run, entry: _revert(
+            paths, run, entry
         ))
     raise AssertionError(f"неизвестная команда {args.command}")
 
@@ -261,6 +268,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "apply", parents=[common, run_option], help="показать или применить правку автотеста",
     )
     apply.add_argument("--yes", action="store_true", help="применить (только после согласия пользователя)")
+    apply.add_argument(
+        "--diff", dest="diff_hash",
+        help="хэш diff, который только что показала команда без --yes (применяется ровно он)",
+    )
+    commands.add_parser(
+        "revert", parents=[common, run_option],
+        help="вернуть файл, изменённый командой apply, если его после этого не меняли",
+    )
     return parser
 
 
@@ -401,7 +416,6 @@ def _write_run(
             "member_count": cluster.member_count,
             "auto": auto,
             "signature": None,
-            "loose_key": None,
             "fingerprint": "",
             "kb": [],
             "history": None,
@@ -417,17 +431,14 @@ def _write_run(
             ws.write_text(paths.evidence(file_id), evidence)
             signature = cluster_signature(cluster, tests_by_id)
             kb_matches = match_cluster(kb_records, signature, evidence)
-            loose = loose_key(message, trace)
             entry.update({
                 "signature": signature,
-                "loose_key": loose,
                 "fingerprint": default_fingerprint(message, trace, representative_log),
                 "kb": kb_matches,
                 "history": recurrence(
                     history,
                     launch_id=triage.launch_id,
                     signature=signature,
-                    loose=loose,
                     kb_ids={match["id"] for match in kb_matches},
                 ),
             })
@@ -466,7 +477,7 @@ def _write_run(
                 "помечен «неизвестно»."
             )
             entry.update(
-                auto=True, signature=None, loose_key=None, fingerprint="", kb=[], history=None
+                auto=True, signature=None, fingerprint="", kb=[], history=None
             )
             paths.evidence(file_id).unlink(missing_ok=True)
             paths.cluster_task(file_id).unlink(missing_ok=True)
@@ -615,7 +626,7 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
     fixes = {file_id: p for file_id, p in proposals.items() if p.is_fix}
     applied = {
         file_id for file_id, p in fixes.items()
-        if is_applied(p, project_root, paths.proposal_record(file_id))
+        if is_applied(p, project_root, _proposal_files(paths, file_id))
     }
     console, full = render_report(run, analyses, flagged, summary, paths, fixes, applied, notes)
     ws.write_text(paths.report, full)
@@ -638,7 +649,7 @@ def _proposal_step(
         return "propose", _propose_body(paths, entry, position, total)
     proposal = parse_proposal(text)
     errors = validate_proposal(proposal, project_root)
-    if not errors or is_applied(proposal, project_root, paths.proposal_record(file_id)):
+    if not errors or is_applied(proposal, project_root, _proposal_files(paths, file_id)):
         return proposal
     attempt, unchanged = _register_invalid(state, f"proposal-{file_id}", text, paths)
     if attempt < MAX_FIX_ATTEMPTS:
@@ -654,6 +665,14 @@ def _proposal_step(
             f"Затем выполни: {paths.next_command()}",
         ])
     return None
+
+
+def _proposal_files(paths: ws.RunPaths, file_id: str) -> ProposalFiles:
+    return ProposalFiles(
+        record=paths.proposal_record(file_id),
+        backup=paths.proposal_backup(file_id),
+        patch=paths.proposal_patch(file_id),
+    )
 
 
 def _has_text(path: Path) -> bool:
@@ -834,23 +853,49 @@ def _apply(
     entry: dict[str, Any],
     *,
     confirm: bool,
+    diff_hash: str | None,
 ) -> tuple[str, str]:
-    path = paths.proposal(entry["file_id"])
+    file_id = entry["file_id"]
+    path = paths.proposal(file_id)
     if not path.is_file():
-        return "error", f"Для проблемы №{int(entry['file_id'])} нет предложения правки."
-    status, body = apply_proposal(
+        return "error", f"Для проблемы №{int(file_id)} нет предложения правки."
+    result = apply_proposal(
         parse_proposal(ws.read_text(path)),
         Path(run["project_root"]),
         confirm=confirm,
-        record=paths.proposal_record(entry["file_id"]),
+        diff_hash=diff_hash,
+        files=_proposal_files(paths, file_id),
     )
-    if status == "diff":
-        body += (
-            "\nПокажи этот diff пользователю. Применить: "
-            + ws.skill_command("apply", entry["file_id"], "--run", str(paths.root), "--yes")
-            + " — только после явного «да»."
+    if result.status == "diff":
+        return "diff", result.text + _apply_hint(paths, file_id, result)
+    if result.changed:
+        return "applied", (
+            result.text
+            + "\nОткатить: " + ws.skill_command("revert", file_id, "--run", str(paths.root))
+            + "\nТесты не запускай: предложи пользователю запустить исправленный тест."
         )
-    return status, body
+    return result.status, result.text
+
+
+def _apply_hint(paths: ws.RunPaths, file_id: str, result: ApplyResult) -> str:
+    command = ws.skill_command(
+        "apply", file_id, "--run", str(paths.root), "--yes", "--diff", str(result.diff_hash)
+    )
+    return (
+        "\nПокажи этот diff пользователю (и строки «Проверь:», если есть). Применить: "
+        f"{command} — только после явного «да»."
+    )
+
+
+def _revert(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> tuple[str, str]:
+    file_id = entry["file_id"]
+    path = paths.proposal(file_id)
+    if not path.is_file():
+        return "error", f"Для проблемы №{int(file_id)} нет предложения правки."
+    result = revert_proposal(
+        parse_proposal(ws.read_text(path)), Path(run["project_root"]), _proposal_files(paths, file_id)
+    )
+    return result.status, result.text
 
 
 def _skip(paths: ws.RunPaths, entry: dict[str, Any], reason: str) -> tuple[str, str]:

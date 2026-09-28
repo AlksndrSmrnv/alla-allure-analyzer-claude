@@ -31,7 +31,8 @@ from alla_core.knowledge.feedback_signature import (
 )
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
-from alla_core.utils.text_normalization import normalize_text
+from alla_core.utils.text_normalization import canonicalize_kb_error_example, normalize_text
+from alla_skill_lib import workspace as ws
 
 KB_DIRNAME = "alla-kb"
 MAX_MATCHES = 3
@@ -43,17 +44,30 @@ KB_TO_CATEGORY = {value: key for key, value in CATEGORY_TO_KB.items()}
 _ID_RE = re.compile(r"^[a-z0-9_]{1,100}$")
 _NUMBER_RE = re.compile(r"\b\d+\b|<NUM>")
 _TRUNCATION_MARKERS = ("...[обрезано]", "[…]", "…")
-# Секрет как ключ со значением в любом виде: password=…, token: …,
-# "access_token": "…" (кавычка между ключом и разделителем), Authorization: …,
-# а также «Bearer <значение>» и JWT. Проза вроде «Authorization failed» или
-# «token expired» — обычный текст ошибки, его признаком оставлять можно.
+# Секрет как ключ со значением: password=…, "access_token": "…" (кавычка между
+# ключом и разделителем), Authorization: …, «Bearer <значение>», JWT, пароль в
+# URL, ключи AWS/GitHub/Slack, PEM. «token: expired» и «Authorization failed» —
+# обычный текст ошибки: слово-ключ через «:» считается секретом только для
+# «сильных» ключей (password, secret, api-key) или если значение похоже на
+# токен (цифра или 16+ символов).
+_STRONG_KEY = r"(?:passw(?:or)?d|pwd|пароль|secret|секрет|api[_-]?key|private[_-]?key)"
+_WEAK_KEY = r"(?:token|токен|session[_-]?id)"
 _SECRET_RE = re.compile(
     r"\bbearer\s+\S"
-    r"|(?:authorization|cookie|passw(?:or)?d|pwd|token|secret|api[_-]?key|private[_-]?key"
-    r"|session[_-]?id)[\"']?\s*[=:]"
-    r"|\beyJ[\w-]{10,}\.[\w-]{10,}",
+    r"|\b(?:authorization|cookie)[\"']?\s*[=:]"
+    rf"|(?:{_STRONG_KEY}|{_WEAK_KEY})[\"']?\s*=\s*\S"
+    rf"|{_STRONG_KEY}[\"']?\s*:\s*\S"
+    rf"|{_WEAK_KEY}[\"']?\s*:\s*[\"']?(?=\S*\d|\S{{16}})\S+"
+    rf"|(?:{_STRONG_KEY}|{_WEAK_KEY})[\"']\s*:\s*[\"']"
+    r"|\beyJ[\w-]{10,}\.[\w-]{10,}"
+    r"|://[^/\s:@]+:[^/\s@]+@"
+    r"|\bAKIA[0-9A-Z]{16}\b"
+    r"|\bgh[pousr]_[A-Za-z0-9]{20,}"
+    r"|\bxox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----",
     re.IGNORECASE,
 )
+_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")
 _FRAME_RE = re.compile(r"^\s*(?:at\s|File\s\"|\.\.\.\s*\d+\s+more)")
 _GENERIC_MESSAGE_RE = re.compile(
     r"expected|but was|assertionerror|assertion failed|ожидал|не равно", re.IGNORECASE
@@ -66,6 +80,11 @@ _TRANSLIT = dict(zip(
      "r", "s", "t", "u", "f", "h", "ts", "ch", "sh", "sch", "", "y", "", "e", "yu", "ya"],
     strict=True,
 ))
+
+_KNOWN_FIELDS = frozenset({
+    "id", "title", "category", "description", "resolution_steps", "error_example",
+    "confirmed_signatures", "rejected_signatures", "created",
+})
 
 README = """\
 # База знаний alla-launch
@@ -110,7 +129,18 @@ def cluster_evidence(
 def normalize_fp(text: str) -> str:
     """Нормализация для признаков: без ID/времени/чисел, пробелы схлопнуты."""
     text = normalize_text(text.replace("\r\n", "\n").replace("\r", "\n"))
-    return " ".join(_NUMBER_RE.sub("<#>", text).split())
+    return " ".join(_NUMBER_RE.sub("<#>", _EMAIL_RE.sub("<EMAIL>", text)).split())
+
+
+def store_fingerprint(fingerprint: str) -> str:
+    """Признак для записи в ``alla-kb/``: без ID, дат и адресов почты.
+
+    ``alla-kb/`` коммитится, а в тексте ошибки бывают UUID, e-mail и другие
+    данные конкретного прогона. Сравнение нормализует обе стороны, поэтому
+    сохранённая нормализованная строка совпадает так же, как исходная.
+    """
+    text = canonicalize_kb_error_example("\n".join(fingerprint_lines(fingerprint)))
+    return _EMAIL_RE.sub("<EMAIL>", text)
 
 
 def fingerprint_lines(fingerprint: str) -> list[str]:
@@ -128,7 +158,11 @@ def fingerprint_lines(fingerprint: str) -> list[str]:
 
 def missing_fingerprint_lines(fingerprint: str, text: str) -> list[str]:
     """Строки признака, которых нет в тексте (пусто — признак совпал)."""
-    haystack = normalize_fp(text)
+    return _missing_in(fingerprint, normalize_fp(text))
+
+
+def _missing_in(fingerprint: str, haystack: str) -> list[str]:
+    """То же для уже нормализованного текста: его нормализуют один раз на кластер."""
     return [line for line in fingerprint_lines(fingerprint) if normalize_fp(line) not in haystack]
 
 
@@ -191,6 +225,8 @@ class KBRecord:
     confirmed_signatures: list[str] = field(default_factory=list)
     rejected_signatures: list[str] = field(default_factory=list)
     created: dict[str, Any] = field(default_factory=dict)
+    # Поля, добавленные руками (jira, owner, tags…): при перезаписи не теряются.
+    extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, data: Any) -> KBRecord:
@@ -220,17 +256,18 @@ class KBRecord:
             confirmed_signatures=sorted({str(s) for s in data.get("confirmed_signatures", [])}),
             rejected_signatures=sorted({str(s) for s in data.get("rejected_signatures", [])}),
             created=dict(data.get("created", {})),
+            extra={key: value for key, value in data.items() if key not in _KNOWN_FIELDS},
         )
 
     def to_json(self) -> dict[str, Any]:
         return {
+            **self.extra,
             "id": self.id,
             "title": self.title,
             "category": self.category,
             "description": self.description,
             "resolution_steps": self.resolution_steps,
             "error_example": self.error_example,
-            "step_path": None,
             "confirmed_signatures": sorted(set(self.confirmed_signatures)),
             "rejected_signatures": sorted(set(self.rejected_signatures)),
             "created": self.created,
@@ -273,32 +310,36 @@ class ProjectKB:
             return records, warnings
         for path in sorted(self.directory.glob("*.json")):
             try:
-                text = path.read_text(encoding="utf-8")
-                if _CONFLICT_RE.search(text):
-                    raise ValueError("маркеры конфликта git")
-                record = KBRecord.from_json(json.loads(text))
-                if record.id != path.stem:
-                    raise ValueError(f"id {record.id!r} не совпадает с именем файла")
+                records.append(self._read(path))
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 warnings.append(f"База знаний: пропущен {path.name} — {exc}")
-                continue
-            records.append(record)
         return records, warnings
 
     def get(self, entry_id: str) -> KBRecord | None:
         path = self.path_for(entry_id)
         if not path.is_file():
             return None
-        return KBRecord.from_json(json.loads(path.read_text(encoding="utf-8")))
+        return self._read(path)
+
+    @staticmethod
+    def _read(path: Path) -> KBRecord:
+        """Запись из файла; конфликт слияния и несовпадение id — ``ValueError``."""
+        text = path.read_text(encoding="utf-8-sig")
+        if _CONFLICT_RE.search(text):
+            raise ValueError("маркеры конфликта git — разреши конфликт в файле")
+        record = KBRecord.from_json(json.loads(text))
+        if record.id != path.stem:
+            raise ValueError(f"id {record.id!r} не совпадает с именем файла")
+        return record
 
     def save(self, record: KBRecord) -> Path:
         path = self.path_for(record.id)
         self.directory.mkdir(parents=True, exist_ok=True)
         readme = self.directory / "README.md"
         if not readme.exists():
-            readme.write_text(README, encoding="utf-8")
+            ws.write_atomic(readme, README)
         text = json.dumps(record.to_json(), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        path.write_text(text, encoding="utf-8")
+        ws.write_atomic(path, text)
         return path
 
 
@@ -323,12 +364,13 @@ def match_cluster(
     """Снимки подходящих записей: сначала точные, затем по признаку; не больше 3."""
     exact: list[dict[str, Any]] = []
     by_fingerprint: list[dict[str, Any]] = []
+    haystack = normalize_fp(evidence)  # один раз на кластер, а не на каждую запись
     for record in records:
         if signature and signature in record.rejected_signatures:
             continue
         if signature and signature in record.confirmed_signatures:
             exact.append(_snapshot(record, "exact"))
-        elif fingerprint_hits(record.error_example, evidence):
+        elif fingerprint_lines(record.error_example) and not _missing_in(record.error_example, haystack):
             by_fingerprint.append(_snapshot(record, "fingerprint"))
     return (exact + by_fingerprint)[:MAX_MATCHES]
 

@@ -264,17 +264,34 @@ def test_test_cluster_gets_fix_proposal_and_apply(project: Path, testops: FakeTe
     code, diff = _run(["apply", "1", "--run", str(run_dir)], capsys)
     assert code == 0 and diff.startswith("STATUS: diff")
     assert "+        assertEquals(201, api.create().status());" in diff
+    assert "Проверь: меняется ожидаемое значение в проверке (200 → 201)" in diff
+    assert "assertEquals(200" in test_file.read_text(encoding="utf-8")
+    assert (run_dir / "proposals" / f"{order}.patch").is_file()
+    confirm = next(line for line in diff.splitlines() if "--yes --diff" in line)
+    diff_hash = confirm.split("--diff ")[1].split()[0]
+
+    # --yes без хэша показанного diff не пишет в файл, а показывает diff снова.
+    code, out = _run(["apply", "1", "--run", str(run_dir), "--yes"], capsys)
+    assert code == 0 and out.startswith("STATUS: diff") and "Хэш --diff не совпал" in out
     assert "assertEquals(200" in test_file.read_text(encoding="utf-8")
 
-    code, out = _run(["apply", "1", "--run", str(run_dir), "--yes"], capsys)
-    assert code == 0 and out.startswith("STATUS: applied")
+    code, out = _run(["apply", "1", "--run", str(run_dir), "--yes", "--diff", diff_hash], capsys)
+    assert code == 0 and out.startswith("STATUS: applied") and "Откатить:" in out
     assert "assertEquals(201" in test_file.read_text(encoding="utf-8")
     assert (run_dir / "proposals" / f"{order}.applied.json").is_file()
+    assert (run_dir / "proposals" / f"{order}.orig").is_file()
     assert "(уже применено)" in _next(run_dir, capsys)
 
-    code, out = _run(["apply", "1", "--run", str(run_dir), "--yes"], capsys)
+    code, out = _run(["apply", "1", "--run", str(run_dir), "--yes", "--diff", diff_hash], capsys)
     assert code == 0 and "уже применена" in out
-    assert test_file.read_text(encoding="utf-8").count("assertEquals(201") == 1
+
+    code, out = _run(["revert", "1", "--run", str(run_dir)], capsys)
+    assert code == 0 and out.startswith("STATUS: reverted")
+    assert "assertEquals(200" in test_file.read_text(encoding="utf-8")
+    assert "(уже применено)" not in _next(run_dir, capsys)
+    code, out = _run(["revert", "1", "--run", str(run_dir)], capsys)
+    assert code == 1 and out.startswith("STATUS: error") and "откатывать нечего" in out
+    assert test_file.read_text(encoding="utf-8").count("assertEquals(201") == 0
 
 
 def test_feedback_is_remembered_and_recognized_next_launch(
