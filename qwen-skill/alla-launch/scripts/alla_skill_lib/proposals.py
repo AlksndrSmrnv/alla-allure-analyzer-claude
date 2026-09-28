@@ -135,13 +135,17 @@ def validate_proposal(proposal: Proposal, project_root: Path) -> list[str]:
         return ["«СТАЛО:» совпадает с «БЫЛО:» — правки нет"]
 
     lines = _read_lines(target)
-    positions = find_block(lines, proposal.before)
-    near = [p for p in positions if proposal.line is None or abs(p + 1 - proposal.line) <= LINE_WINDOW]
-    if not near:
+    location = _locate(lines, proposal)
+    where = f" рядом со строкой {proposal.line}" if proposal.line else ""
+    if location.state == "missing":
         errors.append(
-            f"строки «БЫЛО:» не найдены в {proposal.file}"
-            + (f" рядом со строкой {proposal.line}" if proposal.line else "")
-            + " — скопируй их из файла дословно, с отступами. Фрагмент файла:\n"
+            f"строки «БЫЛО:» не найдены в {proposal.file}{where} — скопируй их из файла "
+            "дословно, с отступами. Фрагмент файла:\n" + _excerpt(lines, proposal.line)
+        )
+    elif location.state == "ambiguous":
+        errors.append(
+            f"в {proposal.file}{where} несколько одинаковых мест для «БЫЛО:» — добавь в БЫЛО "
+            "и СТАЛО соседнюю строку, чтобы место было однозначным. Фрагмент файла:\n"
             + _excerpt(lines, proposal.line)
         )
     errors.extend(weakening_errors(proposal.before, proposal.after))
@@ -180,21 +184,18 @@ def apply_proposal(proposal: Proposal, project_root: Path, *, confirm: bool) -> 
     if not proposal.is_fix:
         return "error", "Это предложение — «не трогать», применять нечего."
     target = _resolve(proposal, project_root, [])
-    if target is None or errors and not _already_applied(proposal, target):
+    if target is None or errors:
         return "error", "Правка не проходит проверку:\n" + "\n".join(f"- {e}" for e in errors)
 
     # read_text переводит \r\n в \n — стиль переводов строк смотрим по байтам.
     newline = "\r\n" if b"\r\n" in target.read_bytes() else "\n"
     lines = _read_lines(target)
-    if _already_applied(proposal, target):
+    location = _locate(lines, proposal)
+    if location.state == "applied":
         return "applied", f"Правка уже применена: {proposal.file}"
-    positions = _pending_positions(lines, proposal)
-    if len(positions) != 1:
-        return "error", (
-            f"«БЫЛО:» встречается в {proposal.file} {len(positions)} раз — "
-            "код изменился или фрагмент неоднозначен, правка не применена."
-        )
-    start = positions[0]
+    if location.state != "pending" or location.position is None:
+        return "error", "Место правки не определено однозначно — правка не применена."
+    start = location.position
     updated = lines[:start] + proposal.after + lines[start + len(proposal.before):]
     diff = "".join(difflib.unified_diff(
         [line + "\n" for line in lines],
@@ -212,28 +213,49 @@ def apply_proposal(proposal: Proposal, project_root: Path, *, confirm: bool) -> 
 
 
 def is_applied(proposal: Proposal, project_root: Path) -> bool:
-    """Правка уже в файле: СТАЛО есть, БЫЛО нет."""
+    """Место правки (у указанной строки) уже исправлено."""
     if not proposal.is_fix or not proposal.after:
         return False
     target = _resolve(proposal, project_root, [])
-    return target is not None and _already_applied(proposal, target)
+    return target is not None and _locate(_read_lines(target), proposal).state == "applied"
 
 
-def _pending_positions(lines: list[str], proposal: Proposal) -> list[int]:
-    """Места БЫЛО, ещё не заменённые правкой.
+@dataclass(frozen=True)
+class _Location:
+    """Место правки: pending — ещё БЫЛО, applied — уже СТАЛО, missing/ambiguous."""
 
-    СТАЛО может содержать БЫЛО целиком (``click()`` → ``waitUntilReady();
-    click()``): такое вхождение БЫЛО внутри уже вставленного СТАЛО — часть
-    применённой правки, а не место для повторной замены.
+    state: str
+    position: int | None = None
+
+
+def _locate(lines: list[str], proposal: Proposal) -> _Location:
+    """Одно место правки — общее для проверки, замены и отметки «применено».
+
+    Кандидаты — не исправленные вхождения БЫЛО и уже вставленные блоки СТАЛО.
+    БЫЛО внутри вставленного СТАЛО (``click()`` → ``waitUntilReady(); click()``)
+    — часть применённой правки, а не новое место. Берётся кандидат, ближайший
+    к указанной строке (в пределах ±LINE_WINDOW): если там правка уже стоит,
+    другое совпадение в другом месте файла не заменяется.
     """
     offsets = find_block(proposal.after, proposal.before)
-    covered = {start + offset for start in find_block(lines, proposal.after) for offset in offsets}
-    return [position for position in find_block(lines, proposal.before) if position not in covered]
-
-
-def _already_applied(proposal: Proposal, target: Path) -> bool:
-    lines = _read_lines(target)
-    return bool(find_block(lines, proposal.after)) and not _pending_positions(lines, proposal)
+    after_positions = find_block(lines, proposal.after)
+    covered = {start + offset for start in after_positions for offset in offsets}
+    candidates = [(p, "pending") for p in find_block(lines, proposal.before) if p not in covered]
+    candidates += [(p, "applied") for p in after_positions]
+    if proposal.line is not None:
+        line = proposal.line
+        candidates = [c for c in candidates if abs(c[0] + 1 - line) <= LINE_WINDOW]
+        if candidates:
+            best = min(abs(position + 1 - line) for position, _ in candidates)
+            candidates = [c for c in candidates if abs(c[0] + 1 - line) == best]
+    if not candidates:
+        return _Location("missing")
+    states = {state for _, state in candidates}
+    if states == {"applied"}:
+        return _Location("applied", candidates[0][0])
+    if states == {"pending"} and len(candidates) == 1:
+        return _Location("pending", candidates[0][0])
+    return _Location("ambiguous")
 
 
 def _resolve(proposal: Proposal, project_root: Path, errors: list[str]) -> Path | None:
@@ -284,16 +306,25 @@ def _durations(lines: list[str]) -> tuple[list[float], list[float]]:
 
 
 def _timeouts_increased(before: list[str], after: list[str]) -> bool:
-    """Какое-то значение ожидания заменено большим (с учётом единиц).
+    """Какое-то ожидание заменено большим (с учётом единиц).
 
-    Сравниваются отдельные значения, а не максимумы: неизменный большой
-    таймаут не скрывает увеличение соседнего. Новое ожидание без замены
-    старого (явное ожидание условия вместо его отсутствия) — не увеличение.
+    Ожидания сопоставляются по одному, а не по максимумам: уменьшение одного
+    не скрывает увеличение другого (60→30 с и 1→5 с), неизменный большой
+    таймаут — тоже. При том же числе ожиданий пары берутся по порядку
+    появления (если набор значений вообще изменился — перестановка строк не
+    увеличение). Если ожиданий стало больше или меньше, изменённые значения
+    сопоставляются по возрастанию. Новое ожидание без замены старого (явное
+    ожидание условия вместо его отсутствия) — не увеличение.
     """
     for old, new in zip(_durations(before), _durations(after), strict=True):
-        removed = Counter(old) - Counter(new)
-        added = Counter(new) - Counter(old)
-        if removed and added and max(added) > max(removed):
+        removed = sorted((Counter(old) - Counter(new)).elements())
+        added = sorted((Counter(new) - Counter(old)).elements())
+        if not removed or not added:
+            continue
+        if len(old) == len(new):
+            if any(new_value > old_value for old_value, new_value in zip(old, new)):
+                return True
+        elif any(new_value > old_value for old_value, new_value in zip(removed, added)):
             return True
     return False
 

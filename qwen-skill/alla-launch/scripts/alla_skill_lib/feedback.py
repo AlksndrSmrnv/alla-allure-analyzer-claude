@@ -71,12 +71,16 @@ def remember(
         return "error", blocked
 
     feedback_path = paths.feedback(file_id)
-    from_feedback = feedback_path.is_file() and bool(feedback_path.read_text(encoding="utf-8").strip())
-    if not from_feedback and not from_analysis:
+    has_feedback = feedback_path.is_file() and bool(feedback_path.read_text(encoding="utf-8").strip())
+    if not has_feedback and not from_analysis:
         return "fix", _fix_body(paths, file_id, [
             f"нет файла обратной связи {feedback_path} — запиши его со слов пользователя; "
             "если пользователь подтвердил разбор как есть, повтори команду с --from-analysis"
         ], entry_id)
+    # Флаг выбирает источник явно: файл обратной связи мог остаться от прошлого
+    # обсуждения и противоречить разбору, который пользователь только что подтвердил.
+    from_feedback = has_feedback and not from_analysis
+    ignored_feedback = has_feedback and from_analysis
     source = feedback_path if from_feedback else paths.analysis(file_id)
     parsed = parse_analysis(source.read_text(encoding="utf-8"))
     project_root = Path(run["project_root"])
@@ -173,6 +177,10 @@ def remember(
             changed.append(kb.save(other))
     return "saved", "\n".join([
         f"Запомнено в базе знаний ({action}): {record.id} — «{record.title}»",
+        *(
+            [f"Источник — разбор модели (--from-analysis); файл {feedback_path} не использован."]
+            if ignored_feedback else []
+        ),
         "Изменены файлы:",
         *(f"- {path}" for path in changed),
         "Скажи пользователю, что рецепт сохранён, и напомни закоммитить папку "

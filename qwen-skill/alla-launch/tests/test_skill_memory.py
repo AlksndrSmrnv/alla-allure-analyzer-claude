@@ -348,13 +348,49 @@ def test_apply_refuses_when_code_changed_or_ambiguous(java_project: Path) -> Non
     target.write_text(JAVA.replace("#submit-old", "#changed"), encoding="utf-8")
     assert apply_proposal(proposal, java_project, confirm=True)[0] == "error"
 
-    doubled = JAVA.replace(
+    # Два одинаковых места на равном расстоянии от указанной строки — неоднозначно.
+    around = JAVA.replace(
         '        page.click("#submit-old");\n',
-        '        page.click("#submit-old");\n        page.click("#submit-old");\n',
+        '        page.click("#submit-old");\n        page.log();\n        page.click("#submit-old");\n',
     )
-    target.write_text(doubled, encoding="utf-8")
-    status, message = apply_proposal(proposal, java_project, confirm=True)
-    assert status == "error" and "2 раз" in message
+    target.write_text(around, encoding="utf-8")
+    equidistant = parse_proposal(
+        _proposal('        page.click("#submit-old");', '        page.click("#submit");', line=5)
+    )
+    status, message = apply_proposal(equidistant, java_project, confirm=True)
+    assert status == "error" and "несколько одинаковых мест" in message
+    assert target.read_text(encoding="utf-8") == around
+
+
+def test_apply_touches_only_the_stated_place(tmp_path: Path) -> None:
+    """Правка у строки 10 уже стоит — совпадение в другом тесте (строка 100) не трогается."""
+    body = (
+        ["class T {"] + ["    // filler"] * 7
+        + ["    void a() {", "        page.waitUntilReady();", "        page.click();", "    }"]
+        + ["    // filler"] * 86
+        + ["    void b() {", "        page.click();", "    }", "}"]
+    )
+    target = tmp_path / "T.java"
+    target.write_text("\n".join(body) + "\n", encoding="utf-8")
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:10\nБЫЛО:\n        page.click();\n"
+        "СТАЛО:\n        page.waitUntilReady();\n        page.click();\nПОЧЕМУ: нет ожидания"
+    )
+    before = target.read_text(encoding="utf-8")
+
+    assert is_applied(proposal, tmp_path)
+    status, message = apply_proposal(proposal, tmp_path, confirm=True)
+    assert status == "applied" and "уже применена" in message
+    assert target.read_text(encoding="utf-8") == before
+
+    # Та же правка, указанная на строку 100, меняет только b().
+    at_b = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:100\nБЫЛО:\n        page.click();\n"
+        "СТАЛО:\n        page.waitUntilReady();\n        page.click();\nПОЧЕМУ: нет ожидания"
+    )
+    assert apply_proposal(at_b, tmp_path, confirm=True)[0] == "applied"
+    lines = target.read_text(encoding="utf-8").split("\n")
+    assert [i + 1 for i, line in enumerate(lines) if "waitUntilReady" in line] == [10, 100]
 
 
 def test_apply_when_after_contains_before_is_not_repeated(tmp_path: Path) -> None:
@@ -386,6 +422,11 @@ def test_apply_when_after_contains_before_is_not_repeated(tmp_path: Path) -> Non
         ("wait(Duration.ofSeconds(30));", "wait(Duration.ofMillis(500));", False),
         ('waitForElement("#item-3", 10)', 'waitForElement("#item-4", 10)', False),
         ("timeout(60, SECONDS)", "timeout(60, SECONDS)  // тот же", False),
+        # уменьшение одного ожидания не скрывает увеличение другого
+        ("a(Duration.ofSeconds(60)); b(Duration.ofSeconds(1));",
+         "a(Duration.ofSeconds(30)); b(Duration.ofSeconds(5));", True),
+        ("a(Duration.ofSeconds(60)); b(Duration.ofSeconds(10));",
+         "a(Duration.ofSeconds(30)); b(Duration.ofSeconds(5));", False),
     ],
 )
 def test_timeout_increase_respects_units(before: str, after: str, increased: bool) -> None:
@@ -396,4 +437,10 @@ def test_timeout_increase_respects_units(before: str, after: str, increased: boo
 def test_new_explicit_wait_is_not_a_timeout_increase() -> None:
     before = ["page.click();"]
     after = ["wait.until(visible(el), Duration.ofSeconds(10));", "page.click();"]
+    assert weakening_errors(before, after) == []
+
+
+def test_reordered_waits_are_not_an_increase() -> None:
+    before = ["a(Duration.ofSeconds(60));", "b(Duration.ofSeconds(1));"]
+    after = ["b(Duration.ofSeconds(1));", "a(Duration.ofSeconds(60));"]
     assert weakening_errors(before, after) == []

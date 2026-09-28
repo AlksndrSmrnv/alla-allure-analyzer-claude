@@ -373,7 +373,17 @@ def test_feedback_commands_require_run_and_explicit_analysis_confirmation(
     assert code == 1 and out.startswith("STATUS: fix") and "--from-analysis" in out
     assert not (project / "alla-kb").exists()
 
+    # Старый файл обратной связи противоречит подтверждённому разбору — флаг
+    # явно выбирает разбор.
+    (run_dir / "feedback" / f"{login}.md").write_text(
+        "НАЗВАНИЕ: Старая версия\nПРИЧИНА: данные — устаревшая причина\n"
+        "КАК ИСПРАВИТЬ:\n1. Устаревший рецепт\n",
+        encoding="utf-8",
+    )
     code, out = _run(["remember", "3", "--run", str(run_dir), "--from-analysis"], capsys)
     assert code == 0 and out.startswith("STATUS: saved"), out
+    assert "не использован" in out
     [kb_file] = (project / "alla-kb").glob("*.json")
-    assert json.loads(kb_file.read_text(encoding="utf-8"))["category"] == "env"
+    saved = json.loads(kb_file.read_text(encoding="utf-8"))
+    assert saved["category"] == "env"
+    assert saved["resolution_steps"] == ["Поднять auth-service на стенде."]
