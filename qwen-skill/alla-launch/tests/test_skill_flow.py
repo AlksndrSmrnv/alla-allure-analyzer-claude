@@ -39,8 +39,12 @@ def _run(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, str]
     return code, capsys.readouterr().out
 
 
-def _prepare(project: Path, capsys: pytest.CaptureFixture[str]) -> tuple[Path, dict, str]:
-    code, out = _run(["prepare", "777", "--project-root", str(project)], capsys)
+def _prepare(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+    launch_id: int = 777,
+) -> tuple[Path, dict, str]:
+    code, out = _run(["prepare", str(launch_id), "--project-root", str(project)], capsys)
     assert code == 0, out
     run_dir = Path(next(line for line in out.splitlines() if line.startswith("Папка разбора:"))
                    .split(":", 1)[1].strip())
@@ -198,3 +202,143 @@ def test_next_without_runs(project: Path, capsys) -> None:
     code, out = _run(["next", "--project-root", str(project)], capsys)
     assert code == 1
     assert out.startswith("STATUS: error") and "prepare" in out
+
+
+# --- правки автотестов, обратная связь, история ---------------------------------
+
+TEST_ANALYSIS = (
+    "ЧТО СЛОМАЛОСЬ: Тест ждёт код 200, а API создания заказа теперь отвечает 201.\n"
+    "ПРИЧИНА: тест — ожидаемый код ответа устарел.\n"
+    "КАК ИСПРАВИТЬ:\n1. Ожидать 201 Created в OrderTest.createOrder.\n"
+    "КОД: src/test/java/ru/company/orders/OrderTest.java:6 — assertEquals(200, …)\n"
+)
+PROPOSAL = (
+    "РЕШЕНИЕ: исправить\n"
+    "ФАЙЛ: src/test/java/ru/company/orders/OrderTest.java:6\n"
+    "БЫЛО:\n        assertEquals(200, api.create().status());\n"
+    "СТАЛО:\n        assertEquals(201, api.create().status());\n"
+    "ПОЧЕМУ: API создания заказа по контракту возвращает 201 Created\n"
+)
+FEEDBACK = (
+    "НАЗВАНИЕ: NPE в OrderService при пустом customer\n"
+    "ПРИЧИНА: приложение — сервис заказов не проверяет customer\n"
+    "КАК ИСПРАВИТЬ:\n1. Передавать customer в запросе создания заказа\n"
+)
+
+
+def _finish(run_dir: Path, capsys: pytest.CaptureFixture[str], analyses: dict[str, str]) -> str:
+    for file_id, text in analyses.items():
+        (run_dir / "analyses" / f"{file_id}.md").write_text(text, encoding="utf-8")
+    out = _next(run_dir, capsys)
+    assert out.startswith("STATUS: summary"), out
+    (run_dir / "summary.md").write_text("Итог прогона.", encoding="utf-8")
+    out = _next(run_dir, capsys)
+    assert out.startswith("STATUS: done"), out
+    return out
+
+
+def test_test_cluster_gets_fix_proposal_and_apply(project: Path, testops: FakeTestOps, capsys) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    test_file = project / "src/test/java/ru/company/orders/OrderTest.java"
+
+    (run_dir / "analyses" / f"{order}.md").write_text(TEST_ANALYSIS, encoding="utf-8")
+    out = _next(run_dir, capsys)
+    assert out.startswith("STATUS: propose")
+    assert str(run_dir / "proposals" / f"{order}.md") in out and "НЕ меняй" in out
+
+    proposal = run_dir / "proposals" / f"{order}.md"
+    proposal.write_text(PROPOSAL.replace("assertEquals(200", "assertEqual(200", 1), encoding="utf-8")
+    out = _next(run_dir, capsys)
+    assert out.startswith("STATUS: fix") and "не найдены" in out
+    assert "6:         assertEquals(200, api.create().status());" in out  # настоящие строки
+
+    proposal.write_text(PROPOSAL, encoding="utf-8")
+    out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    assert "### Можно исправить в автотестах" in out
+    assert "1. src/test/java/ru/company/orders/OrderTest.java:6 — API создания заказа" in out
+    assert "apply 01 --run" in out and "--yes" in out
+
+    code, diff = _run(["apply", "1", "--run", str(run_dir)], capsys)
+    assert code == 0 and diff.startswith("STATUS: diff")
+    assert "+        assertEquals(201, api.create().status());" in diff
+    assert "assertEquals(200" in test_file.read_text(encoding="utf-8")
+
+    code, out = _run(["apply", "1", "--run", str(run_dir), "--yes"], capsys)
+    assert code == 0 and out.startswith("STATUS: applied")
+    assert "assertEquals(201" in test_file.read_text(encoding="utf-8")
+    assert "(уже применено)" in _next(run_dir, capsys)
+
+
+def test_feedback_is_remembered_and_recognized_next_launch(
+    project: Path, testops: FakeTestOps, monkeypatch, capsys
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    out = _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    assert "Обратная связь:" in out and "remember" in out
+    history = (project / "alla-reports" / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(history) == 2  # кластер без данных в историю не пишется
+    _next(run_dir, capsys)
+    assert len((project / "alla-reports" / "history.jsonl").read_text(encoding="utf-8").splitlines()) == 2
+
+    feedback = run_dir / "feedback" / f"{order}.md"
+    feedback.write_text(FEEDBACK.replace("приложение", "неизвестно"), encoding="utf-8")
+    code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
+    assert code == 1 and out.startswith("STATUS: fix") and "«неизвестно» запоминать нельзя" in out
+
+    feedback.write_text(FEEDBACK + "ПРИЗНАК: Payment gateway declined\n", encoding="utf-8")
+    code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
+    assert code == 1 and "строки признака нет в данных кластера" in out
+
+    feedback.write_text(FEEDBACK, encoding="utf-8")
+    code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    [kb_file] = (project / "alla-kb").glob("*.json")
+    entry_id = kb_file.stem
+    data = json.loads(kb_file.read_text(encoding="utf-8"))
+    order_entry = next(e for e in run["clusters"] if e["file_id"] == order)
+    assert data["category"] == "service"
+    assert data["confirmed_signatures"] == [order_entry["signature"]]
+    assert data["error_example"] == order_entry["fingerprint"]
+    assert data["resolution_steps"] == ["Передавать customer в запросе создания заказа"]
+    assert (project / "alla-kb" / "README.md").is_file()
+
+    code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
+    assert code == 1 and "уже подтверждали" in out and f"--entry {entry_id}" in out
+
+    # Следующий прогон с теми же падениями: ошибка узнаётся точно и видна как повтор.
+    FakeTestOps(default_launch(778)).install(monkeypatch)
+    run_dir2, run2, _ = _prepare(project, capsys, launch_id=778)
+    order2 = next(e for e in run2["clusters"] if e["file_id"] == order)
+    assert order2["kb"][0]["id"] == entry_id and order2["kb"][0]["origin"] == "exact"
+    assert order2["history"]["launches"] == 1
+    task = (run_dir2 / "clusters" / f"{order}.md").read_text(encoding="utf-8")
+    assert "ТОЧНОЕ" in task and entry_id in task and "БАЗА ЗНАНИЙ:" in task
+
+    (run_dir2 / "analyses" / f"{order}.md").write_text(
+        VALID_ANALYSIS + "БАЗА ЗНАНИЙ: unknown_entry\n", encoding="utf-8"
+    )
+    assert "не предлагалась" in _next(run_dir2, capsys)
+    out = _finish(run_dir2, capsys, {
+        order: VALID_ANALYSIS + f"БАЗА ЗНАНИЙ: {entry_id}\n", login: MARKDOWN_ANALYSIS,
+    })
+    assert f"· известная: {entry_id}" in out and "· повтор: 1 прогон с" in out
+
+    # Пользователь сказал, что запись здесь ни при чём — в следующий раз её нет.
+    code, out = _run(["reject", "1", entry_id, "--run", str(run_dir2)], capsys)
+    assert code == 0 and out.startswith("STATUS: saved")
+    FakeTestOps(default_launch(779)).install(monkeypatch)
+    _, run3, _ = _prepare(project, capsys, launch_id=779)
+    assert next(e for e in run3["clusters"] if e["file_id"] == order)["kb"] == []
+
+
+def test_schema_1_run_still_reaches_done(project: Path, testops: FakeTestOps, capsys) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    run["schema"] = 1
+    (run_dir / "run.json").write_text(json.dumps(run, ensure_ascii=False), encoding="utf-8")
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+
+    out = _finish(run_dir, capsys, {order: TEST_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    assert "Обратная связь:" not in out and "Можно исправить" not in out
+    assert not (project / "alla-reports" / "history.jsonl").exists()

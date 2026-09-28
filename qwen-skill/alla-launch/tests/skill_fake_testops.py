@@ -56,8 +56,11 @@ def _order_result(result_id: int, method: str, line: int) -> dict[str, Any]:
     }
 
 
-def default_launch() -> LaunchFixture:
-    """Прогон: 2 одинаковых падения, 1 broken, 1 без данных, muted, hidden, passed, skipped."""
+def default_launch(launch_id: int = 777) -> LaunchFixture:
+    """Прогон: 2 одинаковых падения, 1 broken, 1 без данных, muted, hidden, passed, skipped.
+
+    Другой ``launch_id`` — «следующий прогон» с теми же падениями.
+    """
     results = [
         _order_result(101, "createOrder", 6),
         _order_result(102, "updateOrder", 11),
@@ -87,7 +90,7 @@ def default_launch() -> LaunchFixture:
         "statusDetails": {"message": "expected: <200> but was: <500>"},
     }
     return LaunchFixture(
-        launch={"id": 777, "name": "Regression nightly", "projectId": 5},
+        launch={"id": launch_id, "name": "Regression nightly", "projectId": 5},
         results=results,
         executions={101: [step], 102: [step]},
         details={108: {"id": 108, "name": "silent", "status": "failed"}},

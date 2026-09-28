@@ -35,6 +35,7 @@ def project_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "autotests"
     orders = root / "src" / "test" / "java" / "ru" / "company" / "orders"
     orders.mkdir(parents=True)
+    (root / ".git").mkdir()  # alla-kb ищется в корне git-репозитория
     (orders / "OrderTest.java").write_text(
         "package ru.company.orders;\n"
         "\n"

@@ -7,6 +7,10 @@
     КАК ИСПРАВИТЬ:
     1. ...
     КОД: path/to/Test.java:42 — ...   (необязательно)
+    БАЗА ЗНАНИЙ: <id записи> | нет     (если задание предлагало записи)
+
+Тот же парсер читает обратную связь пользователя (``feedback/NN.md``),
+где ещё бывают ``НАЗВАНИЕ:`` и ``ПРИЗНАК:``.
 
 Парсер прощает markdown-оформление (``**ПРИЧИНА:**``, ``### Что сломалось``)
 и регистр. Проверяется только наличие разделов, категория и существование
@@ -49,11 +53,16 @@ _SECTIONS = {
     "причина": "cause",
     "как исправить": "fix",
     "код": "code",
+    "база знаний": "kb",
+    "название": "title",
+    "признак": "fingerprint",
 }
 _HEADER_RE = re.compile(
-    r"^(что сломалось|причина|как исправить|код)\s*(?:[:：]\s*(.*)|$)",
+    r"^(что сломалось|причина|как исправить|код|база знаний|название|признак)"
+    r"\s*(?:[:：]\s*(.*)|$)",
     re.IGNORECASE,
 )
+_NO_KB = {"нет", "-", "—", "none", "no"}
 _DECOR_RE = re.compile(r"^[\s#>*_`-]+")
 _PATH_RE = re.compile(r"(?P<path>[\w.\-/\\]+\.[A-Za-z0-9]{1,8})(?::(?P<line>\d+))?")
 _CONFIG_EXTENSIONS = frozenset({
@@ -75,6 +84,9 @@ class ClusterAnalysis:
     category: str | None = None
     fix: str = ""
     code: list[str] = field(default_factory=list)
+    kb_ref: str | None = None
+    title: str = ""
+    fingerprint: str = ""
 
     @property
     def cause_reason(self) -> str:
@@ -128,7 +140,18 @@ def parse_analysis(text: str) -> ClusterAnalysis:
     analysis.fix = _join(buckets["fix"])
     analysis.code = [line.strip(" -*") for line in buckets["code"] if line.strip(" -*")]
     analysis.category = detect_category(analysis.cause)
+    analysis.kb_ref = _kb_ref(_join(buckets["kb"]))
+    analysis.title = _one_line(_join(buckets["title"]))
+    analysis.fingerprint = _join(buckets["fingerprint"])
     return analysis
+
+
+def _kb_ref(value: str) -> str | None:
+    """id записи из строки «БАЗА ЗНАНИЙ:»; «нет»/«-» — None."""
+    words = value.strip().strip("`[]«»\"'()").split()
+    if not words or words[0].lower().strip(".,") in _NO_KB:
+        return None
+    return words[0].strip("`[]«»\"'().,;:").lower()
 
 
 def detect_category(cause: str) -> str | None:
@@ -142,7 +165,11 @@ def detect_category(cause: str) -> str | None:
     return None
 
 
-def validate_analysis(analysis: ClusterAnalysis, project_root: Path) -> list[str]:
+def validate_analysis(
+    analysis: ClusterAnalysis,
+    project_root: Path,
+    offered_kb: frozenset[str] = frozenset(),
+) -> list[str]:
     """Список проблем формата (пусто — анализ принят)."""
     errors: list[str] = []
     if not analysis.what:
@@ -157,6 +184,12 @@ def validate_analysis(analysis: ClusterAnalysis, project_root: Path) -> list[str
     if not analysis.fix:
         errors.append("нет раздела «КАК ИСПРАВИТЬ:» с шагами исправления")
     errors.extend(code_ref_errors(analysis, project_root))
+    if analysis.kb_ref and analysis.kb_ref not in offered_kb:
+        offered = ", ".join(sorted(offered_kb)) or "в задании записей не было"
+        errors.append(
+            f"в «БАЗА ЗНАНИЙ:» запись «{analysis.kb_ref}» не предлагалась для этого "
+            f"кластера ({offered}) — укажи id из задания или «нет»"
+        )
     return errors
 
 

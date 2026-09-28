@@ -17,9 +17,15 @@ from alla_core.services.prompt_builder_service import build_launch_summary_promp
 
 from alla_skill_lib.analysis_format import CATEGORIES, ClusterAnalysis
 from alla_skill_lib.cluster_task import UNTRUSTED_NOTE
+from alla_skill_lib.history import format_date
+from alla_skill_lib.proposals import Proposal
 from alla_skill_lib.workspace import RunPaths
 
 MAX_FLAGGED_SUMMARY_CHARS = 300
+FEEDBACK_INVITATION = (
+    "Обратная связь: назовите номер проблемы и её причину или рецепт исправления — "
+    "сохраню в базу знаний проекта (alla-kb/) для следующих разборов."
+)
 MAX_CONSOLE_CLUSTERS = 20
 MAX_REPORT_TESTS = 5
 MAX_CAUSE_CHARS = 220
@@ -92,8 +98,12 @@ def render_report(
     flagged: set[str],
     summary: str,
     paths: RunPaths,
+    fixes: dict[str, Proposal] | None = None,
+    applied: set[str] | None = None,
 ) -> tuple[str, str]:
     """Вернуть (краткий текст для консоли, полный текст report.md)."""
+    fixes = fixes or {}
+    applied = applied or set()
     brief = _header(run)
     brief += ["", "### Общий анализ", summary.strip(), "", "### Кластеры"]
     for position, entry in enumerate(run["clusters"], start=1):
@@ -107,6 +117,16 @@ def render_report(
         if reason:
             brief.append(f"   {_truncate(reason, MAX_CAUSE_CHARS)}")
     brief += ["", _category_totals(run, analyses)]
+    if fixes:
+        brief += ["", "### Можно исправить в автотестах"]
+        for file_id, proposal in fixes.items():
+            state = " (уже применено)" if file_id in applied else ""
+            location = f"{proposal.file}:{proposal.line}" if proposal.line else str(proposal.file)
+            brief.append(
+                f"{int(file_id)}. {location} — {_truncate(proposal.why, MAX_CAUSE_CHARS)}{state}"
+            )
+    if int(run.get("schema", 1)) >= 2:
+        brief += ["", FEEDBACK_INVITATION]
 
     console = "\n".join([*brief, "", f"Полный отчёт: {paths.report}"])
     full = "\n".join([
@@ -116,6 +136,7 @@ def render_report(
         "",
         "## Детали кластеров",
         *_cluster_details(run, analyses, flagged),
+        *_proposal_details(fixes, applied),
     ])
     return console, full + "\n"
 
@@ -160,6 +181,15 @@ def _cluster_title(
     label = " ".join(str(entry["label"]).split())
     size = entry["member_count"]
     title = f"{position}. [{category}] {label} — {size} {_plural(size, 'тест', 'теста', 'тестов')}"
+    if not flagged and analysis.kb_ref:
+        title += f" · известная: {analysis.kb_ref}"
+    history = entry.get("history")
+    if history:
+        launches = history["launches"]
+        title += (
+            f" · повтор: {launches} {_plural(launches, 'прогон', 'прогона', 'прогонов')} "
+            f"с {format_date(history['first_date'])}"
+        )
     if flagged:
         title += " (формат разбора нарушен)"
     return title
@@ -214,6 +244,29 @@ def _cluster_details(
             lines.append(f"- [{name}]({test['link']})" if test.get("link") else f"- {name}")
         if len(member_ids) > MAX_REPORT_TESTS:
             lines.append(f"- … и ещё {len(member_ids) - MAX_REPORT_TESTS}")
+    return lines
+
+
+def _proposal_details(fixes: dict[str, Proposal], applied: set[str]) -> list[str]:
+    if not fixes:
+        return []
+    lines = ["", "## Предложенные правки автотестов"]
+    for file_id, proposal in fixes.items():
+        state = " — уже применено" if file_id in applied else ""
+        location = f"{proposal.file}:{proposal.line}" if proposal.line else str(proposal.file)
+        lines += [
+            "",
+            f"### Проблема {int(file_id)}: {location}{state}",
+            f"**Почему:** {proposal.why}",
+            "**Было:**",
+            "```",
+            *proposal.before,
+            "```",
+            "**Стало:**",
+            "```",
+            *proposal.after,
+            "```",
+        ]
     return lines
 
 

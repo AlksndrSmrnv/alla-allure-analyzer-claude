@@ -19,16 +19,22 @@ TestOps.
 
 ### Скилл `alla-launch` (v2, ветка `claude/qwen-skill-v2`)
 
-`qwen-skill/alla-launch/` — проектный скилл Qwen Code (без базы знаний).
-Анализ кластеров и прогона пишет модель Qwen Code, Python готовит данные.
+`qwen-skill/alla-launch/` — проектный скилл Qwen Code. Анализ кластеров и
+прогона пишет модель Qwen Code, Python готовит данные. База знаний —
+проектная (`alla-kb/` в репозитории автотестов, наполняется обратной связью
+пользователя), серверная PostgreSQL база знаний не используется.
 
 - `scripts/alla_skill.py` — точка входа (Python 3.8+), перезапускает себя в
   `.venv` скилла; `setup` создаёт venv и после успешного pip install пишет
   `.venv/.alla-setup-complete` (хэш `requirements.txt`) — без него команды
   отвечают `STATUS: setup_required`. Команды: `prepare <launch_id>`,
-  `next [run_dir]`; первая строка вывода — `STATUS: analyze|fix|summary|done|error`.
+  `next [run_dir]`, `apply N [--yes]`, `remember N [--entry ID]`,
+  `reject N <id>`; первая строка вывода — `STATUS: analyze|fix|propose|summary|
+  done|diff|applied|saved|error`. `run.json` схемы 1 (до базы знаний) доходит
+  до `done` без propose/истории.
 - `scripts/alla_core/` — **GENERATED** копия чистых модулей `src/alla`
-  (клиент TestOps, триаж, логи, кластеризация, prompt builder) с импортами
+  (клиент TestOps, триаж, логи, кластеризация, prompt builder, стабильная
+  сигнатура `knowledge/feedback_signature.py`) с импортами
   `alla_core.*`. Не править руками: после изменений в этих модулях запускать
   `python tools/sync_qwen_skill.py` (`--check` — проверка дрейфа, её же делает
   `tests/test_qwen_skill_sync.py`). Рукописный только `alla_core/config.py`
@@ -42,8 +48,22 @@ TestOps.
   не режется по началу: блоки отбираются по связи с ошибкой, пропуски и не
   вошедшие вложения помечаются), `code_hints`, `analysis_format` (прощающий
   парсер ЧТО СЛОМАЛОСЬ / ПРИЧИНА / КАК ИСПРАВИТЬ / КОД; файл и номер строки
-  в КОД проверяются), `report` (в задание сводки идут только сжатые разборы),
-  `cli`.
+  в КОД проверяются; `БАЗА ЗНАНИЙ: <id>` — только из предложенных записей),
+  `report` (в задание сводки идут только сжатые разборы), `cli`.
+- Память скилла (отличается от сервера намеренно):
+  - `kb` — `alla-kb/<id>.json` в корне git; узнавание точно по сигнатуре
+    `v<версия>:<hash>` (`confirmed_signatures`/`rejected_signatures`) или по
+    короткому признаку `error_example` (все строки есть в данных кластера,
+    без учёта чисел/ID/времени). Серверный `TextMatcher` не используется.
+    Golden-тест фиксирует хэш сигнатуры: смена версии после синхронизации
+    ядра должна быть осознанной.
+  - `feedback` — `remember`/`reject` из `feedback/NN.md` (или подтверждённого
+    разбора); признак проверяется по `evidence/NN.txt`, секреты не пишутся.
+  - `history` — `alla-reports/history.jsonl` (локально), повторы по
+    сигнатуре, грубому ключу или записи базы знаний; другой `launch_id`.
+  - `proposals` — статус `propose` для кластеров «тест» с `КОД:` (до 5 на
+    прогон): БЫЛО/СТАЛО, проверки на ослабление теста; `apply` меняет файл
+    только с `--yes`, ровно одно место, повторно не применяет.
 - Тесты скилла — `qwen-skill/alla-launch/tests/`; фикстуры в
   `skill_fixtures.py`, а не `conftest.py`: второй модуль `conftest` ломает
   `from conftest import ...` в тестах репозитория. Оба каталога в `testpaths`.

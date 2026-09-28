@@ -36,6 +36,8 @@ MANIFEST: tuple[str, ...] = (
     "clients/auth.py",
     "clients/base.py",
     "clients/testops_client.py",
+    "knowledge/feedback_models.py",
+    "knowledge/feedback_signature.py",
     "knowledge/models.py",
     "models/clustering.py",
     "models/common.py",

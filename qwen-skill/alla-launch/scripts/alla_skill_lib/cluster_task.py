@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from alla_core.config import Settings
 from alla_core.models.clustering import FailureCluster
@@ -17,6 +18,7 @@ from alla_core.models.testops import FailedTestSummary
 from alla_core.services.prompt_builder_service import build_cluster_analysis_prompt
 
 from alla_skill_lib.code_hints import CodeHint
+from alla_skill_lib.history import render_recurrence
 from alla_skill_lib.log_focus import focus_log
 
 MAX_LISTED_TESTS = 20
@@ -47,6 +49,10 @@ CODE_LINE_NOTE = """\
 вывод, добавь последней строкой
 КОД: <путь относительно корня проекта>:<строка> — <что там происходит>
 Если код не открывал или он ничего не дал — строку КОД не добавляй."""
+
+KB_LINE_NOTE = """\
+Если причину подтверждает запись из раздела «База знаний проекта», добавь
+строку БАЗА ЗНАНИЙ: <id записи>; если ни одна не подходит — БАЗА ЗНАНИЙ: нет."""
 
 # Серверное задание рассчитано на базу знаний (в скилле её пока нет) и на
 # четыре категории. Фразы про записи базы знаний убираются, а в строку
@@ -159,6 +165,8 @@ def build_cluster_task(
     frames: list[str],
     hints: list[CodeHint],
     settings: Settings,
+    kb_matches: list[dict[str, Any]] | None = None,
+    recurrence: dict[str, Any] | None = None,
 ) -> str:
     """Собрать markdown-задание на анализ одного кластера.
 
@@ -204,6 +212,11 @@ def build_cluster_task(
     ]
     if cluster.example_correlation:
         sections += ["--- Корреляция запроса ---", cluster.example_correlation, ""]
+    if kb_matches:
+        sections += [*render_kb_section(kb_matches), ""]
+    if recurrence:
+        has_exact = any(match["origin"] == "exact" for match in kb_matches or [])
+        sections += [*render_recurrence(recurrence, has_exact_kb=has_exact), ""]
     sections += [_render_members(cluster, tests_by_id)]
     if frames:
         sections += ["", "--- Кадры стека из кода проекта ---", *frames]
@@ -214,7 +227,34 @@ def build_cluster_task(
             *(f"- {hint.render()}" for hint in hints),
         ]
     sections += ["", task_part, "", CODE_LINE_NOTE]
+    if kb_matches:
+        sections.append(KB_LINE_NOTE)
     return "\n".join(sections) + "\n"
+
+
+def render_kb_section(matches: list[dict[str, Any]]) -> list[str]:
+    """Записи базы знаний проекта, подходящие кластеру (снимок из run.json)."""
+    lines = ["--- База знаний проекта (alla-kb) ---"]
+    for index, match in enumerate(matches, start=1):
+        lines.append(f"[{index}] {match['id']} — «{match['title']}» ({match['category']})")
+        if match["origin"] == "exact":
+            lines.append(
+                "    ТОЧНОЕ: эту ошибку уже подтверждали — это основная причина, "
+                "если данные ей не противоречат."
+            )
+        else:
+            lines.append(
+                "    ПРИЗНАК НАЙДЕН в данных кластера — сильный кандидат; "
+                "проверь, что ситуация та же."
+            )
+        if match.get("description"):
+            lines.append(f"    Причина: {' '.join(str(match['description']).split())}")
+        for number, step in enumerate(match.get("steps") or [], start=1):
+            lines.append(f"    Рецепт {number}: {step}")
+        fingerprint = "; ".join(str(match.get("fingerprint", "")).splitlines())
+        if fingerprint:
+            lines.append(f"    Признак: {fingerprint}")
+    return lines
 
 
 def split_prompt(user_prompt: str) -> tuple[str, str]:

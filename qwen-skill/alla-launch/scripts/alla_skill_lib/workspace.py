@@ -18,7 +18,7 @@ from typing import Any
 
 REPORTS_DIRNAME = "alla-reports"
 LAST_RUN_FILE = ".last_run"
-RUN_SCHEMA = 1
+RUN_SCHEMA = 2  # 2: сигнатуры, база знаний, история, предложения правок
 
 SKILL_DIR = Path(__file__).resolve().parents[2]
 ENTRYPOINT = SKILL_DIR / "scripts" / "alla_skill.py"
@@ -84,11 +84,24 @@ class RunPaths:
     def report(self) -> Path:
         return self.root / "report.md"
 
+    @property
+    def reports_dir(self) -> Path:
+        return self.root.parent
+
     def cluster_task(self, file_id: str) -> Path:
         return self.clusters_dir / f"{file_id}.md"
 
     def analysis(self, file_id: str) -> Path:
         return self.analyses_dir / f"{file_id}.md"
+
+    def evidence(self, file_id: str) -> Path:
+        return self.root / "evidence" / f"{file_id}.txt"
+
+    def proposal(self, file_id: str) -> Path:
+        return self.root / "proposals" / f"{file_id}.md"
+
+    def feedback(self, file_id: str) -> Path:
+        return self.root / "feedback" / f"{file_id}.md"
 
     def next_command(self) -> str:
         return skill_command("next", str(self.root))
@@ -109,7 +122,8 @@ def create_run_dir(reports_dir: Path, launch_id: int, now: datetime) -> RunPaths
         root = reports_dir / f"{base}-{suffix}"
     paths = RunPaths(root.resolve())
     paths.clusters_dir.mkdir(parents=True)
-    paths.analyses_dir.mkdir()
+    for name in ("analyses", "evidence", "proposals", "feedback"):
+        (paths.root / name).mkdir()
     return paths
 
 
