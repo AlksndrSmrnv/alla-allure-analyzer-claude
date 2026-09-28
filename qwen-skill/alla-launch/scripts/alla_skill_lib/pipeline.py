@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from alla_core.clients.auth import AllureAuthManager
@@ -34,8 +35,17 @@ class LaunchData:
     warnings: list[str] = field(default_factory=list)
 
 
-async def collect_launch(launch_id: int, settings: Settings) -> LaunchData:
-    """Получить результаты прогона из TestOps, обогатить логами и кластеризовать."""
+async def collect_launch(
+    launch_id: int,
+    settings: Settings,
+    progress: Callable[[str], None] | None = None,
+) -> LaunchData:
+    """Получить результаты прогона из TestOps, обогатить логами и кластеризовать.
+
+    ``progress`` получает короткие строки о стадиях: выгрузка большого прогона
+    идёт минуты, и без них не понять, что скрипт жив.
+    """
+    say = progress or (lambda message: None)
     auth = AllureAuthManager(
         endpoint=settings.endpoint,
         api_token=settings.token,
@@ -44,8 +54,14 @@ async def collect_launch(launch_id: int, settings: Settings) -> LaunchData:
     )
     warnings: list[str] = []
     async with AllureTestOpsClient(settings, auth) as client:
+        say(f"Получаю результаты прогона #{launch_id} из TestOps…")
         triage = await TriageService(client, settings).analyze_launch(launch_id)
+        say(
+            f"Результатов: {triage.total_results}, активных падений: "
+            f"{len(triage.failed_tests)}"
+        )
         if triage.failed_tests:
+            say("Загружаю логи из вложений упавших тестов…")
             log_service = LogExtractionService(
                 client,
                 LogExtractionConfig(
@@ -59,6 +75,8 @@ async def collect_launch(launch_id: int, settings: Settings) -> LaunchData:
                 logger.warning("Логи из вложений не получены: %s", exc)
                 warnings.append(f"Логи из вложений не получены: {exc}")
 
+    if triage.failed_tests:
+        say(f"Кластеризую {len(triage.failed_tests)} падений…")
     return LaunchData(
         triage=triage,
         clustering=cluster_failures(launch_id, triage, settings),

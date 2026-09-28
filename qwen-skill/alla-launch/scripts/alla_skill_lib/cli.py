@@ -1,14 +1,18 @@
 """CLI скилла alla-launch.
 
-* ``prepare <launch_id>`` — получить прогон из TestOps, кластеризовать падения,
-  сопоставить с базой знаний проекта и историей, разложить задания;
+* ``prepare <launch_id|URL>`` — получить прогон из TestOps, кластеризовать
+  падения, сопоставить с базой знаний проекта и историей, разложить задания;
+  неоконченный разбор того же прогона продолжает (``--fresh`` — начать заново);
 * ``next [run_dir]`` — конечный автомат: смотрит на файлы в папке разбора и
   печатает, что агенту делать дальше;
+* ``skip NN`` — пропустить кластер по просьбе пользователя;
 * ``remember NN`` / ``reject NN <id>`` — обратная связь в базу знаний проекта;
-* ``apply NN [--yes]`` — показать или применить предложенную правку автотеста.
+* ``apply NN [--yes]`` — показать или применить предложенную правку автотеста;
+* ``check`` — проверить окружение и доступ к TestOps; ``clean`` — удалить старые разборы.
 
 Первая строка вывода всегда ``STATUS: <статус>``:
-analyze | fix | propose | summary | done | diff | applied | saved | error.
+analyze | fix | propose | summary | done | diff | applied | saved | ready | error.
+Код возврата 0 всегда, кроме ``error``: статус с инструкцией — не авария.
 """
 
 from __future__ import annotations
@@ -17,7 +21,10 @@ import argparse
 import asyncio
 import hashlib
 import logging
+import re
+import shutil
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -27,15 +34,23 @@ import httpx
 from alla_core.config import Settings
 from alla_core.exceptions import AllaError, ConfigurationError
 from alla_skill_lib import workspace as ws
-from alla_skill_lib.analysis_format import ClusterAnalysis, parse_analysis, validate_analysis
+from alla_skill_lib.analysis_format import (
+    ClusterAnalysis,
+    parse_analysis,
+    parse_summary,
+    validate_analysis,
+)
 from alla_skill_lib.cluster_task import (
     build_cluster_task,
+    failed_prepare_analysis,
     has_evidence,
     no_evidence_analysis,
+    skipped_analysis,
     project_frames,
     select_log_and_trace,
 )
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
+from alla_skill_lib.errors import fetch_error_hint
 from alla_skill_lib.feedback import find_entry, remember, reject
 from alla_skill_lib.history import append_run, load_history, loose_key, recurrence, run_records
 from alla_skill_lib.kb import (
@@ -60,6 +75,10 @@ logger = logging.getLogger(__name__)
 
 MAX_FIX_ATTEMPTS = 3
 MAX_PROPOSALS = 5
+# Модель, которая не меняет файл, но снова зовёт next: после стольких вызовов
+# подряд без правки попытка засчитывается, и разбор не зависает навсегда.
+UNCHANGED_CALLS_PER_ATTEMPT = 3
+_LAUNCH_URL_RE = re.compile(r"/launch(?:es)?/(\d+)")
 REPORT_BEGIN = "===ОТЧЁТ==="
 REPORT_END = "===КОНЕЦ==="
 EXPECTED_FORMAT = """\
@@ -98,6 +117,25 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    try:
+        return _dispatch(argv)
+    except Exception as exc:  # без STATUS модель не поймёт, что делать дальше
+        logger.exception("Необработанная ошибка скилла")
+        print("STATUS: error")
+        print(f"Внутренняя ошибка скилла: {type(exc).__name__}: {exc}")
+        print(
+            "Подробности (traceback) — в stderr. Покажи это пользователю и остановись; "
+            "команду вслепую не повторяй."
+        )
+        return 1
+
+
+def _exit_code(status: str) -> int:
+    """Только ``error`` — авария; остальные статусы несут инструкцию для агента."""
+    return 1 if status == "error" else 0
+
+
+def _dispatch(argv: list[str] | None) -> int:
     args = _build_parser().parse_args(argv)
     project_root = (
         Path(args.project_root).resolve() if args.project_root else ws.detect_project_root()
@@ -108,9 +146,13 @@ def main(argv: list[str] | None = None) -> int:
         else project_root / ws.REPORTS_DIRNAME
     )
     if args.command == "prepare":
-        return cmd_prepare(args.launch_id, project_root, reports_dir)
+        return cmd_prepare(args.launch_id, project_root, reports_dir, fresh=args.fresh)
     if args.command == "next":
-        return cmd_next(args.run_dir, reports_dir)
+        return cmd_next(args.run_dir or args.run, reports_dir)
+    if args.command == "check":
+        return cmd_check(project_root, reports_dir)
+    if args.command == "clean":
+        return cmd_clean(reports_dir, args.older_than_days, dry_run=args.dry_run)
     if args.command == "remember":
         return _cluster_command(args, reports_dir, lambda paths, run, entry: remember(
             paths, run, entry, args.entry, date.today(), from_analysis=args.from_analysis
@@ -119,11 +161,38 @@ def main(argv: list[str] | None = None) -> int:
         return _cluster_command(args, reports_dir, lambda paths, run, entry: reject(
             paths, run, entry, args.entry_id
         ))
+    if args.command == "skip":
+        return _cluster_command(args, reports_dir, lambda paths, run, entry: _skip(
+            paths, entry, args.reason
+        ))
     if args.command == "apply":
         return _cluster_command(args, reports_dir, lambda paths, run, entry: _apply(
             paths, run, entry, confirm=args.yes
         ))
     raise AssertionError(f"неизвестная команда {args.command}")
+
+
+class _Parser(argparse.ArgumentParser):
+    """Ошибка аргументов тоже начинается с ``STATUS:`` — так её видит агент."""
+
+    def error(self, message: str) -> Any:
+        print("STATUS: error")
+        print(f"Неверные аргументы команды: {message}")
+        print(self.format_usage().strip())
+        raise SystemExit(2)
+
+
+def _launch_id(text: str) -> int:
+    """Номер запуска: ``12345``, ``#12345`` или ссылка ``…/launch/12345``."""
+    value = text.strip().lstrip("#")
+    if value.isdigit():
+        return int(value)
+    match = _LAUNCH_URL_RE.search(value)
+    if match:
+        return int(match.group(1))
+    raise argparse.ArgumentTypeError(
+        f"не вижу номера запуска в «{text}»: нужен ID числом или ссылка вида …/launch/12345"
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -136,14 +205,30 @@ def _build_parser() -> argparse.ArgumentParser:
         "--reports-dir",
         help="папка отчётов (по умолчанию <project>/alla-reports)",
     )
-    parser = argparse.ArgumentParser(prog="alla_skill.py", description=__doc__.splitlines()[0])
+    parser = _Parser(prog="alla_skill.py", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     prepare = commands.add_parser(
         "prepare", parents=[common], help="получить прогон из TestOps и подготовить задания"
     )
-    prepare.add_argument("launch_id", type=int, help="ID прогона (launch) в Allure TestOps")
+    prepare.add_argument(
+        "launch_id", type=_launch_id, help="ID прогона (launch) в Allure TestOps или ссылка на него"
+    )
+    prepare.add_argument(
+        "--fresh",
+        action="store_true",
+        help="начать разбор заново, даже если есть неоконченный разбор этого прогона",
+    )
     step = commands.add_parser("next", parents=[common], help="следующий шаг разбора")
     step.add_argument("run_dir", nargs="?", help="папка разбора (по умолчанию последняя)")
+    step.add_argument("--run", help="то же, что позиционная папка разбора")
+    commands.add_parser(
+        "check", parents=[common], help="проверить окружение, настройки и доступ к TestOps"
+    )
+    cleaner = commands.add_parser("clean", parents=[common], help="удалить старые папки разборов")
+    cleaner.add_argument(
+        "--older-than-days", type=int, default=14, help="старше скольки дней (по умолчанию 14)"
+    )
+    cleaner.add_argument("--dry-run", action="store_true", help="только показать, что будет удалено")
 
     # Папка разбора обязательна: после нового prepare «последний» разбор — уже
     # другой прогон, и обратная связь или правка ушли бы не туда.
@@ -167,6 +252,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="запомнить, что запись базы знаний к этой ошибке не относится",
     )
     drop.add_argument("entry_id", help="id записи базы знаний")
+    skipper = commands.add_parser(
+        "skip", parents=[common, run_option],
+        help="пропустить кластер без разбора (только по просьбе пользователя)",
+    )
+    skipper.add_argument("--reason", default="", help="почему пропущен (попадёт в отчёт)")
     apply = commands.add_parser(
         "apply", parents=[common, run_option], help="показать или применить правку автотеста",
     )
@@ -179,7 +269,23 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
-def cmd_prepare(launch_id: int, project_root: Path, reports_dir: Path) -> int:
+def _progress(message: str) -> None:
+    """Стадии выгрузки — в stderr, чтобы первой строкой stdout оставался STATUS."""
+    print(message, file=sys.stderr, flush=True)
+
+
+def cmd_prepare(
+    launch_id: int,
+    project_root: Path,
+    reports_dir: Path,
+    *,
+    fresh: bool = False,
+) -> int:
+    if not fresh:
+        unfinished = ws.find_unfinished_run(reports_dir, launch_id)
+        if unfinished is not None:
+            return _resume(unfinished, launch_id, reports_dir)
+
     env_file = ws.SKILL_DIR / ".env"
     try:
         settings = Settings.load(env_file=env_file)
@@ -193,15 +299,21 @@ def cmd_prepare(launch_id: int, project_root: Path, reports_dir: Path) -> int:
         return 2
 
     try:
-        data = asyncio.run(collect_launch(launch_id, settings))
+        data = asyncio.run(collect_launch(launch_id, settings, progress=_progress))
     except (AllaError, httpx.HTTPError) as exc:
-        print("STATUS: error")
-        print(f"Не удалось получить прогон #{launch_id} из TestOps: {exc}")
-        return 1
+        return _fetch_failed(launch_id, exc, settings, env_file)
     except Exception as exc:  # неожиданный ответ API и т.п. — traceback в stderr
         logger.exception("Сбой при получении прогона")
         print("STATUS: error")
         print(f"Сбой при получении прогона #{launch_id}: {type(exc).__name__}: {exc}")
+        return 1
+
+    if data.triage.total_results == 0:
+        print("STATUS: error")
+        print(
+            f"В прогоне #{launch_id} нет ни одного результата: он пуст или ещё не начался. "
+            "Проверь номер запуска и проект."
+        )
         return 1
 
     paths = ws.create_run_dir(reports_dir, launch_id, datetime.now())
@@ -219,8 +331,41 @@ def cmd_prepare(launch_id: int, project_root: Path, reports_dir: Path) -> int:
         + (f", из них с записями базы знаний: {known}." if known else ".")
     )
     print(f"Папка разбора: {paths.root}")
+    for warning in run["warnings"]:
+        print(f"Внимание: {warning}")
     print(body)
     return 0
+
+
+def _fetch_failed(
+    launch_id: int,
+    exc: BaseException,
+    settings: Settings,
+    env_file: Path,
+) -> int:
+    print("STATUS: error")
+    print(f"Не удалось получить прогон #{launch_id} из TestOps: {exc}")
+    hint = fetch_error_hint(exc, settings, env_file)
+    if hint:
+        print(hint)
+    return 1
+
+
+def _resume(paths: ws.RunPaths, launch_id: int, reports_dir: Path) -> int:
+    """Продолжить неоконченный разбор вместо нового: выгрузка не повторяется."""
+    ws.remember_last_run(reports_dir, paths)
+    run = ws.read_json(paths.run_json)
+    status, body = next_step(paths)
+    name = f" «{run['launch_name']}»" if run.get("launch_name") else ""
+    print(f"STATUS: {status}")
+    print(
+        f"Продолжаю неоконченный разбор прогона #{launch_id}{name} "
+        f"(создан {run.get('created_at', '?')}); данные из TestOps заново не запрашиваю."
+    )
+    print(f"Начать заново: {ws.skill_command('prepare', str(launch_id), '--fresh')}")
+    print(f"Папка разбора: {paths.root}")
+    print(body)
+    return _exit_code(status)
 
 
 def _write_run(
@@ -238,6 +383,7 @@ def _write_run(
     history = load_history(paths.reports_dir)
     width = max(2, len(str(len(clusters))))
     entries: list[dict[str, Any]] = []
+    local_warnings: list[str] = []
 
     for position, cluster in enumerate(clusters, start=1):
         file_id = str(position).zfill(width)
@@ -265,53 +411,66 @@ def _write_run(
             ws.write_text(paths.analysis(file_id), no_evidence_analysis())
             continue
 
-        message, trace, representative_log = cluster_evidence(cluster, tests_by_id)
-        evidence = "\n".join(part for part in (message, trace, representative_log) if part)
-        ws.write_text(paths.evidence(file_id), evidence)
-        signature = cluster_signature(cluster, tests_by_id)
-        kb_matches = match_cluster(kb_records, signature, evidence)
-        loose = loose_key(message, trace)
-        entry.update({
-            "signature": signature,
-            "loose_key": loose,
-            "fingerprint": default_fingerprint(message, trace, representative_log),
-            "kb": kb_matches,
-            "history": recurrence(
-                history,
-                launch_id=triage.launch_id,
-                signature=signature,
-                loose=loose,
-                kb_ids={match["id"] for match in kb_matches},
-            ),
-        })
+        try:
+            message, trace, representative_log = cluster_evidence(cluster, tests_by_id)
+            evidence = "\n".join(part for part in (message, trace, representative_log) if part)
+            ws.write_text(paths.evidence(file_id), evidence)
+            signature = cluster_signature(cluster, tests_by_id)
+            kb_matches = match_cluster(kb_records, signature, evidence)
+            loose = loose_key(message, trace)
+            entry.update({
+                "signature": signature,
+                "loose_key": loose,
+                "fingerprint": default_fingerprint(message, trace, representative_log),
+                "kb": kb_matches,
+                "history": recurrence(
+                    history,
+                    launch_id=triage.launch_id,
+                    signature=signature,
+                    loose=loose,
+                    kb_ids={match["id"] for match in kb_matches},
+                ),
+            })
 
-        member_ids = sorted(
-            cluster.member_test_ids,
-            key=lambda test_id: test_id != cluster.representative_test_id,
-        )
-        full_names = [
-            tests_by_id[test_id].full_name or ""
-            for test_id in member_ids[:5]
-            if test_id in tests_by_id
-        ]
-        frames = project_frames(full_trace)
-        task = build_cluster_task(
-            cluster=cluster,
-            position=position,
-            total=len(clusters),
-            launch_id=triage.launch_id,
-            answer_path=str(paths.analysis(file_id)),
-            next_command=paths.next_command(),
-            tests_by_id=tests_by_id,
-            log_snippet=log_snippet,
-            full_trace=full_trace,
-            frames=frames,
-            hints=hints_for_cluster(index, [name for name in full_names if name], frames),
-            settings=settings,
-            kb_matches=kb_matches,
-            recurrence=entry["history"],
-        )
-        ws.write_text(paths.cluster_task(file_id), task)
+            member_ids = sorted(
+                cluster.member_test_ids,
+                key=lambda test_id: test_id != cluster.representative_test_id,
+            )
+            full_names = [
+                tests_by_id[test_id].full_name or ""
+                for test_id in member_ids[:5]
+                if test_id in tests_by_id
+            ]
+            frames = project_frames(full_trace)
+            task = build_cluster_task(
+                cluster=cluster,
+                position=position,
+                total=len(clusters),
+                launch_id=triage.launch_id,
+                answer_path=str(paths.analysis(file_id)),
+                next_command=paths.next_command(),
+                tests_by_id=tests_by_id,
+                log_snippet=log_snippet,
+                full_trace=full_trace,
+                frames=frames,
+                hints=hints_for_cluster(index, [name for name in full_names if name], frames),
+                settings=settings,
+                kb_matches=kb_matches,
+                recurrence=entry["history"],
+            )
+            ws.write_text(paths.cluster_task(file_id), task)
+        except Exception as exc:  # один битый кластер не должен ронять весь prepare
+            logger.exception("Не удалось подготовить кластер %s", file_id)
+            local_warnings.append(
+                f"Кластер {position}: задание не подготовлено ({type(exc).__name__}: {exc}) — "
+                "помечен «неизвестно»."
+            )
+            entry.update(
+                auto=True, signature=None, loose_key=None, fingerprint="", kb=[], history=None
+            )
+            paths.evidence(file_id).unlink(missing_ok=True)
+            paths.cluster_task(file_id).unlink(missing_ok=True)
+            ws.write_text(paths.analysis(file_id), failed_prepare_analysis(type(exc).__name__))
 
     run = {
         "schema": ws.RUN_SCHEMA,
@@ -331,7 +490,7 @@ def _write_run(
             "muted_failures": triage.muted_failure_count,
             "active_failures": triage.active_failure_count,
         },
-        "warnings": [*data.warnings, *kb_warnings],
+        "warnings": [*data.warnings, *kb_warnings, *local_warnings],
         "clusters": entries,
         "triage": triage.model_dump(
             mode="json",
@@ -358,9 +517,14 @@ def cmd_next(run_dir: str | None, reports_dir: Path) -> int:
         print(exc)
         return 1
     status, body = next_step(paths)
+    run = ws.read_json(paths.run_json)
+    name = f" «{run['launch_name']}»" if run.get("launch_name") else ""
+    source = "" if run_dir else " · взят последний разбор — если работаешь с другим, укажи его папку"
     print(f"STATUS: {status}")
+    # Каждый вывод называет прогон: после сжатия контекста легко продолжить чужой.
+    print(f"Прогон #{run['launch_id']}{name} · папка {paths.root}{source}")
     print(body)
-    return 0
+    return _exit_code(status)
 
 
 def next_step(paths: ws.RunPaths) -> tuple[str, str]:
@@ -371,56 +535,79 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
         ws.write_text(paths.report, full)
         return "done", _done_body(console, paths, {})
 
-    schema = int(run.get("schema", 1))
     project_root = Path(run["project_root"])
     state = ws.read_json(paths.state_json) if paths.state_json.is_file() else {}
     state.setdefault("attempts", {})
     entries = run["clusters"]
     total = len(entries)
+    manual_total = sum(1 for item in entries if not item["auto"])
     analyses: dict[str, ClusterAnalysis] = {}
     flagged: set[str] = set()
     proposals: dict[str, Proposal] = {}
+    notes: list[str] = []
     candidates = 0
 
     for position, entry in enumerate(entries, start=1):
         file_id = entry["file_id"]
         analysis_path = paths.analysis(file_id)
-        text = analysis_path.read_text(encoding="utf-8") if analysis_path.is_file() else ""
+        text = ws.read_text(analysis_path) if analysis_path.is_file() else ""
         if not text.strip():
-            done = sum(1 for item in entries if _has_text(paths.analysis(item["file_id"])))
-            return "analyze", _analyze_body(paths, entry, position, total, done)
+            done = sum(
+                1 for item in entries
+                if not item["auto"] and _has_text(paths.analysis(item["file_id"]))
+            )
+            return "analyze", _analyze_body(paths, entry, position, total, done, manual_total)
 
         analysis = parse_analysis(text)
         offered = frozenset(match["id"] for match in entry.get("kb", []))
         errors = validate_analysis(analysis, project_root, offered)
         if errors:
-            attempt = _register_invalid(state, file_id, text, paths)
+            attempt, unchanged = _register_invalid(state, file_id, text, paths)
             if attempt < MAX_FIX_ATTEMPTS:
-                return "fix", _fix_body(paths, entry, position, total, errors, attempt)
+                return "fix", _fix_body(
+                    paths, entry, position, total, errors, attempt, analysis, unchanged
+                )
             flagged.add(file_id)
         analyses[file_id] = analysis
 
         if (
-            schema >= 2
-            and file_id not in flagged
+            file_id not in flagged
             and not entry["auto"]
             and analysis.category == "тест"
             and analysis.code
         ):
             candidates += 1
-            if candidates <= MAX_PROPOSALS:
-                outcome = _proposal_step(paths, state, entry, position, total, project_root)
-                if isinstance(outcome, tuple):
-                    return outcome
-                if outcome is not None:
-                    proposals[file_id] = outcome
+            if candidates > MAX_PROPOSALS:
+                notes.append(
+                    f"Проблема {int(file_id)}: правку не предлагали — лимит "
+                    f"{MAX_PROPOSALS} предложений на разбор."
+                )
+                continue
+            outcome = _proposal_step(paths, state, entry, position, total, project_root)
+            if isinstance(outcome, tuple):
+                return outcome
+            if outcome is None:
+                notes.append(
+                    f"Проблема {int(file_id)}: предложение правки не прошло проверку "
+                    f"за {MAX_FIX_ATTEMPTS} попытки и отброшено."
+                )
+            else:
+                proposals[file_id] = outcome
 
-    summary = paths.summary.read_text(encoding="utf-8") if paths.summary.is_file() else ""
+    skipped = [file_id for file_id in state.get("skipped", []) if file_id in analyses]
+    if skipped:
+        notes.append(
+            "Пропущено без разбора по просьбе пользователя: "
+            + ", ".join(str(int(file_id)) for file_id in skipped)
+            + "."
+        )
+
+    summary = ws.read_text(paths.summary) if paths.summary.is_file() else ""
     if not summary.strip():
         ws.write_text(paths.summary_task, build_summary_task(run, analyses, flagged, paths))
         return "summary", _summary_body(paths, total)
 
-    if schema >= 2 and not state.get("history_written"):
+    if not state.get("history_written"):
         append_run(paths.reports_dir, run_records(run, analyses, flagged, paths.root.name))
         state["history_written"] = True
         ws.write_json(paths.state_json, state)
@@ -430,9 +617,9 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
         file_id for file_id, p in fixes.items()
         if is_applied(p, project_root, paths.proposal_record(file_id))
     }
-    console, full = render_report(run, analyses, flagged, summary, paths, fixes, applied)
+    console, full = render_report(run, analyses, flagged, summary, paths, fixes, applied, notes)
     ws.write_text(paths.report, full)
-    return "done", _done_body(console, paths, fixes, schema >= 2)
+    return "done", _done_body(console, paths, fixes, feedback=True)
 
 
 def _proposal_step(
@@ -446,19 +633,20 @@ def _proposal_step(
     """Шаг предложения правки: (статус, текст), принятое предложение или None (отброшено)."""
     file_id = entry["file_id"]
     path = paths.proposal(file_id)
-    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    text = ws.read_text(path) if path.is_file() else ""
     if not text.strip():
         return "propose", _propose_body(paths, entry, position, total)
     proposal = parse_proposal(text)
     errors = validate_proposal(proposal, project_root)
     if not errors or is_applied(proposal, project_root, paths.proposal_record(file_id)):
         return proposal
-    attempt = _register_invalid(state, f"proposal-{file_id}", text, paths)
+    attempt, unchanged = _register_invalid(state, f"proposal-{file_id}", text, paths)
     if attempt < MAX_FIX_ATTEMPTS:
         return "fix", "\n".join([
             f"{_cluster_caption(entry, position, total)} — предложение правки не прошло "
             f"проверку (попытка {attempt} из {MAX_FIX_ATTEMPTS}):",
             *(f"- {error}" for error in errors),
+            *([UNCHANGED_NOTE] if unchanged >= 2 else []),
             f"Исправь файл: {path}",
             "Если уверенности нет — запиши «РЕШЕНИЕ: не трогать» и «ПОЧЕМУ: …».",
             "Формат:",
@@ -469,7 +657,7 @@ def _proposal_step(
 
 
 def _has_text(path: Path) -> bool:
-    return path.is_file() and bool(path.read_text(encoding="utf-8").strip())
+    return path.is_file() and bool(ws.read_text(path).strip())
 
 
 def _register_invalid(
@@ -477,15 +665,33 @@ def _register_invalid(
     key: str,
     text: str,
     paths: ws.RunPaths,
-) -> int:
-    """Посчитать попытку исправления; одна и та же версия файла считается один раз."""
+) -> tuple[int, int]:
+    """Посчитать попытку исправления: (номер попытки, вызовов ``next`` на этой версии).
+
+    Новая версия файла — новая попытка. Тот же файл при повторных вызовах
+    попыткой не считается, но только пока модель не зовёт ``next`` снова и
+    снова, ничего не меняя: тогда каждый третий вызов засчитывается, и разбор
+    доходит до пометки «формат нарушен», а не крутится вечно.
+    """
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    record = state["attempts"].get(key, {"count": 0, "hash": None})
+    record = dict(state["attempts"].get(key, {"count": 0, "hash": None, "calls": 0}))
     if record["hash"] != digest:
-        record = {"count": record["count"] + 1, "hash": digest}
-        state["attempts"][key] = record
-        ws.write_json(paths.state_json, state)
-    return int(record["count"])
+        record = {"count": record["count"] + 1, "hash": digest, "calls": 1}
+    else:
+        calls = int(record.get("calls", 1)) + 1
+        if calls >= UNCHANGED_CALLS_PER_ATTEMPT:
+            record["count"] += 1
+            calls = 1
+        record["calls"] = calls
+    state["attempts"][key] = record
+    ws.write_json(paths.state_json, state)
+    return int(record["count"]), int(record["calls"])
+
+
+UNCHANGED_NOTE = (
+    "Файл не изменился с прошлого вызова next. Сначала исправь его (write_file), "
+    "потом вызывай next; повторы без правки засчитываются как попытки."
+)
 
 
 def _cluster_caption(entry: dict[str, Any], position: int, total: int) -> str:
@@ -501,9 +707,14 @@ def _analyze_body(
     position: int,
     total: int,
     done: int,
+    manual_total: int,
 ) -> str:
+    automatic = total - manual_total
+    progress = f"Готово разборов: {done} из {manual_total}"
+    if automatic:
+        progress += f" (ещё {automatic} без данных об ошибке разобраны автоматически)"
     return "\n".join([
-        f"{_cluster_caption(entry, position, total)}. Готово разборов: {done} из {total}.",
+        f"{_cluster_caption(entry, position, total)}. {progress}.",
         f"1. Прочитай задание: {paths.cluster_task(entry['file_id'])}",
         f"2. Запиши разбор в файл: {paths.analysis(entry['file_id'])}",
         f"3. Выполни: {paths.next_command()}",
@@ -517,11 +728,15 @@ def _fix_body(
     total: int,
     errors: list[str],
     attempt: int,
+    analysis: ClusterAnalysis,
+    unchanged: int,
 ) -> str:
     return "\n".join([
         f"{_cluster_caption(entry, position, total)} — разбор не прошёл проверку "
         f"(попытка {attempt} из {MAX_FIX_ATTEMPTS}):",
         *(f"- {error}" for error in errors),
+        parse_summary(analysis),
+        *([UNCHANGED_NOTE] if unchanged >= 2 else []),
         f"Исправь файл: {paths.analysis(entry['file_id'])}",
         f"Задание кластера: {paths.cluster_task(entry['file_id'])}",
         "Ожидаемый формат:",
@@ -610,7 +825,7 @@ def _cluster_command(args: argparse.Namespace, reports_dir: Path, action: Any) -
     status, body = action(paths, run, entry)
     print(f"STATUS: {status}")
     print(body)
-    return 0 if status in ("saved", "diff", "applied") else 1
+    return _exit_code(status)
 
 
 def _apply(
@@ -624,7 +839,7 @@ def _apply(
     if not path.is_file():
         return "error", f"Для проблемы №{int(entry['file_id'])} нет предложения правки."
     status, body = apply_proposal(
-        parse_proposal(path.read_text(encoding="utf-8")),
+        parse_proposal(ws.read_text(path)),
         Path(run["project_root"]),
         confirm=confirm,
         record=paths.proposal_record(entry["file_id"]),
@@ -636,6 +851,103 @@ def _apply(
             + " — только после явного «да»."
         )
     return status, body
+
+
+def _skip(paths: ws.RunPaths, entry: dict[str, Any], reason: str) -> tuple[str, str]:
+    """Записать заглушку разбора: кластер пропущен по просьбе пользователя."""
+    file_id = entry["file_id"]
+    if entry.get("auto"):
+        return "error", f"Проблема №{int(file_id)} без данных об ошибке уже разобрана автоматически."
+    ws.write_text(paths.analysis(file_id), skipped_analysis(reason))
+    state = ws.read_json(paths.state_json) if paths.state_json.is_file() else {}
+    state.setdefault("attempts", {})
+    state["skipped"] = sorted({*state.get("skipped", []), file_id})
+    ws.write_json(paths.state_json, state)
+    return "saved", "\n".join([
+        f"Кластер №{int(file_id)} пропущен и попадёт в отчёт как «неизвестно».",
+        f"Продолжи разбор: {paths.next_command()}",
+    ])
+
+
+# ---------------------------------------------------------------------------
+# check / clean
+# ---------------------------------------------------------------------------
+
+
+def cmd_check(project_root: Path, reports_dir: Path) -> int:
+    """Проверить окружение и доступ к TestOps, ничего не создавая."""
+    env_file = ws.SKILL_DIR / ".env"
+    lines = [
+        f"Python: {sys.version.split()[0]} ({sys.executable})",
+        f"Проект автотестов: {project_root}",
+        f"Файл настроек: {env_file} — "
+        + ("есть" if env_file.is_file() else "нет (значения берутся из переменных окружения)"),
+    ]
+    try:
+        settings = Settings.load(env_file=env_file)
+    except ConfigurationError as exc:
+        print("STATUS: error")
+        print(*lines, sep="\n")
+        print(f"Ошибка конфигурации: {exc}")
+        print(f"Заполни {env_file} по образцу .env.example. Содержимое .env не читай и не выводи.")
+        return 2
+    lines += [
+        f"ALLURE_ENDPOINT: {settings.endpoint}",
+        "ALLURE_TOKEN: задан (значение не показывается)",
+        f"Проверка TLS: {'включена' if settings.ssl_verify else 'отключена (ALLURE_SSL_VERIFY=false)'}",
+    ]
+    kb_records, kb_warnings = ProjectKB(find_kb_dir(project_root)).load()
+    lines.append(f"База знаний: {find_kb_dir(project_root)} — записей {len(kb_records)}")
+    lines += [f"Внимание: {warning}" for warning in kb_warnings]
+    try:
+        asyncio.run(_ping_testops(settings))
+    except (AllaError, httpx.HTTPError) as exc:
+        print("STATUS: error")
+        print(*lines, sep="\n")
+        print(f"TestOps недоступен или токен не принят: {exc}")
+        hint = fetch_error_hint(exc, settings, env_file)
+        if hint:
+            print(hint)
+        return 1
+    print("STATUS: ready")
+    print(*lines, sep="\n")
+    print("Доступ к TestOps: токен принят.")
+    return 0
+
+
+async def _ping_testops(settings: Settings) -> None:
+    from alla_core.clients.auth import AllureAuthManager
+
+    auth = AllureAuthManager(
+        endpoint=settings.endpoint,
+        api_token=settings.token,
+        timeout=settings.request_timeout,
+        ssl_verify=settings.ssl_verify,
+    )
+    await auth.get_auth_header()
+
+
+def cmd_clean(reports_dir: Path, older_than_days: int, *, dry_run: bool) -> int:
+    """Удалить папки разборов старше N дней; ``history.jsonl`` и ``.last_run`` остаются."""
+    if not reports_dir.is_dir():
+        print("STATUS: done")
+        print(f"Папки отчётов {reports_dir} нет — удалять нечего.")
+        return 0
+    limit = time.time() - max(older_than_days, 0) * 86400
+    removed: list[Path] = []
+    for path in sorted(reports_dir.iterdir()):
+        if not (path / "run.json").is_file():
+            continue  # не папка разбора alla-launch
+        if (path / "run.json").stat().st_mtime < limit:
+            removed.append(path)
+    for path in removed:
+        if not dry_run:
+            shutil.rmtree(path, ignore_errors=True)
+    verb = "Будут удалены" if dry_run else "Удалены"
+    print("STATUS: done")
+    print(f"{verb} папки разборов старше {older_than_days} дн.: {len(removed)}")
+    print(*(f"- {path}" for path in removed), sep="\n")
+    return 0
 
 
 if __name__ == "__main__":

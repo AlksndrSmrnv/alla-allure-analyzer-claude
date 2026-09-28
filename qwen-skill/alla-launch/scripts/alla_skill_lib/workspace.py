@@ -11,6 +11,8 @@ import json
 import os
 import shlex
 import sys
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +20,7 @@ from typing import Any
 
 REPORTS_DIRNAME = "alla-reports"
 LAST_RUN_FILE = ".last_run"
+RESUME_WINDOW_HOURS = 24  # неоконченный разбор того же прогона продолжается, а не дублируется
 RUN_SCHEMA = 2  # 2: сигнатуры, база знаний, история, предложения правок
 
 SKILL_DIR = Path(__file__).resolve().parents[2]
@@ -121,18 +124,46 @@ def create_run_dir(reports_dir: Path, launch_id: int, now: datetime) -> RunPaths
     base = f"{launch_id}-{now.strftime('%Y%m%d-%H%M%S')}"
     root = reports_dir / base
     suffix = 1
-    while root.exists():
-        suffix += 1
-        root = reports_dir / f"{base}-{suffix}"
+    while True:
+        try:
+            root.mkdir()  # без exist_ok: два prepare в одну секунду не должны делить папку
+            break
+        except FileExistsError:
+            suffix += 1
+            root = reports_dir / f"{base}-{suffix}"
     paths = RunPaths(root.resolve())
-    paths.clusters_dir.mkdir(parents=True)
+    paths.clusters_dir.mkdir()
     for name in ("analyses", "evidence", "proposals", "feedback"):
         (paths.root / name).mkdir()
     return paths
 
 
+def find_unfinished_run(
+    reports_dir: Path,
+    launch_id: int,
+    now: datetime | None = None,
+) -> RunPaths | None:
+    """Свежий разбор этого прогона без ``report.md`` — его стоит продолжить.
+
+    Повторный ``prepare`` после таймаута или сжатия контекста иначе создаёт
+    дубль и бросает уже сделанные разборы.
+    """
+    if not reports_dir.is_dir():
+        return None
+    limit = (now.timestamp() if now else time.time()) - RESUME_WINDOW_HOURS * 3600
+    candidates: list[tuple[float, RunPaths]] = []
+    for path in reports_dir.glob(f"{launch_id}-*"):
+        paths = RunPaths(path.resolve())
+        if not paths.run_json.is_file() or paths.report.exists():
+            continue
+        created = paths.run_json.stat().st_mtime
+        if created >= limit:
+            candidates.append((created, paths))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
 def remember_last_run(reports_dir: Path, paths: RunPaths) -> None:
-    (reports_dir / LAST_RUN_FILE).write_text(str(paths.root), encoding="utf-8")
+    write_atomic(reports_dir / LAST_RUN_FILE, str(paths.root))
 
 
 def resolve_run(run_dir: str | None, reports_dir: Path) -> RunPaths:
@@ -149,19 +180,37 @@ def resolve_run(run_dir: str | None, reports_dir: Path) -> RunPaths:
         root = Path(marker.read_text(encoding="utf-8").strip())
     paths = RunPaths(root)
     if not paths.run_json.is_file():
+        if not root.exists():
+            raise RunNotFoundError(
+                f"Папка разбора {root} удалена. Выполни: {skill_command('prepare', '<launch_id>')}"
+            )
         raise RunNotFoundError(f"В {root} нет run.json — это не папка разбора alla-launch")
     return paths
 
 
+def write_atomic(path: Path, text: str) -> None:
+    """Записать файл целиком через временный файл рядом (без обрыва посередине)."""
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def write_json(path: Path, data: Any) -> None:
     """Атомарно записать JSON (через временный файл)."""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    write_atomic(path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_text(path: Path) -> str:
+    """Файл, написанный моделью: BOM и «битые» байты не должны ронять скрипт."""
+    return path.read_text(encoding="utf-8-sig", errors="replace")
 
 
 def write_text(path: Path, text: str) -> None:

@@ -16,7 +16,7 @@ from alla_core.config import Settings
 from alla_core.exceptions import ConfigurationError
 from alla_core.models.clustering import ClusterSignature, FailureCluster
 from alla_core.services.prompt_builder_service import build_cluster_analysis_prompt
-from alla_skill_lib.analysis_format import parse_analysis, validate_analysis
+from alla_skill_lib.analysis_format import parse_analysis, parse_summary, validate_analysis
 from alla_skill_lib.cluster_task import adapt_task, project_frames, split_prompt
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
 from alla_skill_lib.log_focus import FOCUS_NOTE, focus_log
@@ -48,7 +48,13 @@ def test_parse_plain_format() -> None:
         ("Автотест: устаревший локатор", "тест"),
         ("тестовые данные — нет клиента", "данные"),
         ("неизвестно — мало данных", "неизвестно"),
-        ("Сервис упал", "приложение"),
+        ("Приложение вернуло 500", "приложение"),
+        ("Сервис упал", None),
+        ("Сервис авторизации недоступен (окружение)", None),
+        ("Приложение или окружение — не ясно", None),
+        ("тест/данные — не ясно", None),
+        ("Test environment is down", None),
+        ("Data validation error in API", None),
         ("тестовый стенд лежит", None),
         ("баг", None),
     ],
@@ -69,6 +75,130 @@ def test_parse_markdown_decorations() -> None:
     assert analysis.category == "окружение"
     assert "Код ответа: 504" in analysis.fix  # «Код ответа:» — не раздел КОД
     assert analysis.code == []
+
+
+def test_parse_numbered_and_dash_headers() -> None:
+    analysis = parse_analysis(
+        "1. ЧТО СЛОМАЛОСЬ: Тест получил 500.\n"
+        "2. **Причина** — приложение: NPE в сервисе\n"
+        "3) Как исправить:\n1. Починить сервис.\n"
+        "4. КОД: OrderTest.java:6 — вызов\n"
+    )
+    assert analysis.what == "Тест получил 500."
+    assert analysis.category == "приложение"
+    assert analysis.cause == "приложение: NPE в сервисе"
+    assert analysis.fix == "1. Починить сервис."
+    assert analysis.code == ["OrderTest.java:6 — вызов"]
+
+
+def test_parse_ignores_bom_and_crlf() -> None:
+    analysis = parse_analysis(
+        "\ufeffЧТО СЛОМАЛОСЬ: x\r\nПРИЧИНА: тест — y\r\nКАК ИСПРАВИТЬ:\r\n1. z\r\n"
+    )
+    assert (analysis.what, analysis.category, analysis.fix) == ("x", "тест", "1. z")
+
+
+def test_plain_list_item_in_fix_steps_is_not_a_header() -> None:
+    analysis = parse_analysis(
+        "ЧТО СЛОМАЛОСЬ: x\nПРИЧИНА: тест — y\n"
+        "КАК ИСПРАВИТЬ:\n"
+        "1. Открыть тест.\n"
+        "- Код: обновить локатор\n"
+        "2. Причина: см. выше\n"
+        "3. Проверить.\n"
+        "КОД: Test.java:3 — локатор\n"
+    )
+    assert "обновить локатор" in analysis.fix
+    assert "3. Проверить." in analysis.fix
+    assert analysis.cause == "y" or analysis.cause.endswith("y")
+    assert analysis.code == ["Test.java:3 — локатор"]
+
+
+def test_emphasised_header_in_list_is_still_a_header() -> None:
+    analysis = parse_analysis(
+        "ЧТО СЛОМАЛОСЬ: x\nПРИЧИНА: тест — y\nКАК ИСПРАВИТЬ:\n1. z\n"
+        "- **КОД:** Test.java:3 — локатор\n"
+    )
+    assert analysis.code == ["Test.java:3 — локатор"]
+    assert analysis.fix == "1. z"
+
+
+def test_header_words_inside_text_are_not_headers() -> None:
+    analysis = parse_analysis(
+        "ЧТО СЛОМАЛОСЬ: Код-ревью не проведён.\nКод ответа: 504\n"
+        "ПРИЧИНА: окружение — причина-следствие не ясна\nКАК ИСПРАВИТЬ:\n1. a\n"
+    )
+    assert "Код-ревью" in analysis.what and "Код ответа: 504" in analysis.what
+    assert analysis.category == "окружение"
+
+
+def test_header_accepted_once_except_code() -> None:
+    analysis = parse_analysis(
+        "ЧТО СЛОМАЛОСЬ: a\nПРИЧИНА: тест — б\nКАК ИСПРАВИТЬ:\n1. в\n"
+        "КОД: A.java:1\nКОД: B.java:2\nПРИЧИНА: окружение — повтор\n"
+    )
+    assert analysis.category == "тест"  # повтор ПРИЧИНЫ не перезаписывает первую
+    assert analysis.code[:2] == ["A.java:1", "B.java:2"]  # а КОД бывает несколько раз
+
+
+def test_header_rest_keeps_underscores() -> None:
+    analysis = parse_analysis("КОД: tests/__init__.py:4 — импорт\nПРИЧИНА: **тест** — y")
+    assert analysis.code == ["tests/__init__.py:4 — импорт"]
+    assert analysis.category == "тест"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("нет", None),
+        ("подходящих записей нет", None),
+        ("не применимо", None),
+        ("not applicable", None),
+        ("-", None),
+        ("timeout_in_login_1a2b3c4d", "timeout_in_login_1a2b3c4d"),
+        ("`timeout_in_login_1a2b3c4d`", "timeout_in_login_1a2b3c4d"),
+        ("timeout_in_login_1a2b3c4d — признак совпал", "timeout_in_login_1a2b3c4d"),
+        ("timeout_in_login_1a2b3c4d подходит", "timeout_in_login_1a2b3c4d"),
+    ],
+)
+def test_kb_reference_parsing(value: str, expected: str | None) -> None:
+    assert parse_analysis(f"БАЗА ЗНАНИЙ: {value}").kb_ref == expected
+
+
+def test_parse_summary_shows_what_was_understood() -> None:
+    analysis = parse_analysis(
+        "ЧТО ПОШЛО НЕ ТАК: всё\nПРИЧИНА: сервис лежит\nВЫВОД: плохо\n"
+    )
+    summary = parse_summary(analysis)
+    assert "ЧТО СЛОМАЛОСЬ ✗" in summary
+    assert "ПРИЧИНА ✓ (категория: не распознана)" in summary
+    assert "КАК ИСПРАВИТЬ ✗" in summary
+    assert "ЧТО ПОШЛО НЕ ТАК: всё" in summary
+
+
+def test_ambiguous_category_error_asks_for_one(tmp_path: Path) -> None:
+    analysis = parse_analysis(
+        "ЧТО СЛОМАЛОСЬ: x\nПРИЧИНА: приложение или окружение\nКАК ИСПРАВИТЬ:\n1. z\n"
+    )
+    errors = validate_analysis(analysis, tmp_path)
+    assert len(errors) == 1 and "одна категория" in errors[0]
+
+
+def test_code_basename_resolves_when_unique(tmp_path: Path) -> None:
+    (tmp_path / "src" / "a").mkdir(parents=True)
+    (tmp_path / "src" / "b").mkdir(parents=True)
+    (tmp_path / "src" / "a" / "OrderTest.java").write_text("1\n2\n3\n", encoding="utf-8")
+    (tmp_path / "src" / "a" / "Dup.java").write_text("x\n", encoding="utf-8")
+    (tmp_path / "src" / "b" / "Dup.java").write_text("y\n", encoding="utf-8")
+    base = "ЧТО СЛОМАЛОСЬ: x\nПРИЧИНА: тест — y\nКАК ИСПРАВИТЬ:\n1. z\n"
+
+    assert validate_analysis(parse_analysis(base + "КОД: OrderTest.java:2 — ok\n"), tmp_path) == []
+    too_far = validate_analysis(parse_analysis(base + "КОД: OrderTest.java:9 — ok\n"), tmp_path)
+    assert too_far and "вне файла" in too_far[0]
+    ambiguous = validate_analysis(parse_analysis(base + "КОД: Dup.java:1 — ok\n"), tmp_path)
+    assert ambiguous and "нескольких файлах" in ambiguous[0]
+    missing = validate_analysis(parse_analysis(base + "КОД: Nope.java:1 — ok\n"), tmp_path)
+    assert missing and "не найден" in missing[0]
 
 
 def test_validate_reports_missing_sections(tmp_path: Path) -> None:
@@ -472,7 +602,7 @@ def test_entrypoint_requires_complete_setup(tmp_path: Path, state: str, message:
 
     result = _run_stub(stub, "prepare", "123")
 
-    assert result.returncode == 3
+    assert result.returncode == 0
     assert result.stdout.startswith("STATUS: setup_required")
     assert message in result.stdout
     assert f"{stub} setup" in result.stdout

@@ -153,7 +153,9 @@ def test_fix_loop_counts_distinct_attempts(project: Path, testops: FakeTestOps, 
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: fix") and "попытка 1 из 3" in out
     assert "нет раздела «ПРИЧИНА:»" in out
-    assert _next(run_dir, capsys) == out  # та же версия файла не считается новой попыткой
+    assert "Разобрано: ЧТО СЛОМАЛОСЬ ✓, ПРИЧИНА ✗, КАК ИСПРАВИТЬ ✓" in out
+    again = _next(run_dir, capsys)  # та же версия файла — не новая попытка, но с предупреждением
+    assert "попытка 1 из 3" in again and "Файл не изменился с прошлого вызова next" in again
 
     analysis.write_text(VALID_ANALYSIS.replace("OrderTest.java:6", "Missing.java:1")
                         .replace("src/test/java/ru/company/orders/", ""), encoding="utf-8")
@@ -290,11 +292,11 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     feedback = run_dir / "feedback" / f"{order}.md"
     feedback.write_text(FEEDBACK.replace("приложение", "неизвестно"), encoding="utf-8")
     code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
-    assert code == 1 and out.startswith("STATUS: fix") and "«неизвестно» запоминать нельзя" in out
+    assert code == 0 and out.startswith("STATUS: fix") and "«неизвестно» запоминать нельзя" in out
 
     feedback.write_text(FEEDBACK + "ПРИЗНАК: Payment gateway declined\n", encoding="utf-8")
     code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
-    assert code == 1 and "строки признака нет в данных кластера" in out
+    assert code == 0 and "строки признака нет в данных кластера" in out
 
     feedback.write_text(FEEDBACK, encoding="utf-8")
     code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
@@ -310,13 +312,14 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     assert (project / "alla-kb" / "README.md").is_file()
 
     code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
-    assert code == 1 and "уже подтверждали" in out and f"--entry {entry_id}" in out
+    assert code == 1 and out.startswith("STATUS: error")
+    assert "уже подтверждали" in out and f"--entry {entry_id}" in out
 
     # Уточнение записи с ошибкой: секрет в рецепте не сохраняется, а повтор
     # предлагается с тем же --entry, чтобы обновить именно эту запись.
     feedback.write_text(FEEDBACK + '2. Взять "password": "hunter2" из vault\n', encoding="utf-8")
     code, out = _run(["remember", "1", "--entry", entry_id, "--run", str(run_dir)], capsys)
-    assert code == 1 and out.startswith("STATUS: fix")
+    assert code == 0 and out.startswith("STATUS: fix")
     assert "«КАК ИСПРАВИТЬ:» строка похожа на секрет" in out
     assert f"remember 01 --entry {entry_id} --run" in out
     assert "hunter2" not in kb_file.read_text(encoding="utf-8")
@@ -348,17 +351,6 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     assert next(e for e in run3["clusters"] if e["file_id"] == order)["kb"] == []
 
 
-def test_schema_1_run_still_reaches_done(project: Path, testops: FakeTestOps, capsys) -> None:
-    run_dir, run, _ = _prepare(project, capsys)
-    run["schema"] = 1
-    (run_dir / "run.json").write_text(json.dumps(run, ensure_ascii=False), encoding="utf-8")
-    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
-
-    out = _finish(run_dir, capsys, {order: TEST_ANALYSIS, login: MARKDOWN_ANALYSIS})
-    assert "Обратная связь:" not in out and "Можно исправить" not in out
-    assert not (project / "alla-reports" / "history.jsonl").exists()
-
-
 def test_feedback_commands_require_run_and_explicit_analysis_confirmation(
     project: Path, testops: FakeTestOps, capsys
 ) -> None:
@@ -369,13 +361,15 @@ def test_feedback_commands_require_run_and_explicit_analysis_confirmation(
 
     # Без --run команда не угадывает разбор по .last_run.
     for argv in (["remember", "3"], ["reject", "3", "some_id"], ["apply", "1"]):
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as raised:
             cli.main([*argv, "--project-root", str(project)])
-    capsys.readouterr()
+        assert raised.value.code == 2
+        printed = capsys.readouterr().out
+        assert printed.startswith("STATUS: error") and "--run" in printed
 
     # Нет файла обратной связи — разбор модели не сохраняется «молча».
     code, out = _run(["remember", "3", "--run", str(run_dir)], capsys)
-    assert code == 1 and out.startswith("STATUS: fix") and "--from-analysis" in out
+    assert code == 0 and out.startswith("STATUS: fix") and "--from-analysis" in out
     assert not (project / "alla-kb").exists()
 
     # Старый файл обратной связи противоречит подтверждённому разбору — флаг

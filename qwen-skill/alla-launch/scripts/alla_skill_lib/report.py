@@ -100,6 +100,7 @@ def render_report(
     paths: RunPaths,
     fixes: dict[str, Proposal] | None = None,
     applied: set[str] | None = None,
+    notes: list[str] | None = None,
 ) -> tuple[str, str]:
     """Вернуть (краткий текст для консоли, полный текст report.md)."""
     fixes = fixes or {}
@@ -125,8 +126,9 @@ def render_report(
             brief.append(
                 f"{int(file_id)}. {location} — {_truncate(proposal.why, MAX_CAUSE_CHARS)}{state}"
             )
-    if int(run.get("schema", 1)) >= 2:
-        brief += ["", FEEDBACK_INVITATION]
+    if notes:
+        brief += ["", "### Замечания", *(f"- {note}" for note in notes)]
+    brief += ["", FEEDBACK_INVITATION]
 
     console = "\n".join([*brief, "", f"Полный отчёт: {paths.report}"])
     full = "\n".join([

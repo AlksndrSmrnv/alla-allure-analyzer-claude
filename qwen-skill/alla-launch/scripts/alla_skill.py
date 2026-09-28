@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Точка входа скилла alla-launch.
 
-    python3 .qwen/skills/alla-launch/scripts/alla_skill.py setup
+    python3 .qwen/skills/alla-launch/scripts/alla_skill.py setup [--python PATH] [-- pip-аргументы]
     python3 .qwen/skills/alla-launch/scripts/alla_skill.py prepare <launch_id>
     python3 .qwen/skills/alla-launch/scripts/alla_skill.py next [run_dir]
 
@@ -90,10 +90,33 @@ def find_base_python(explicit=None):
     return None
 
 
-def setup(argv):
+def split_setup_args(argv):
+    """``[--python PATH] [-- pip-аргументы]`` → (PATH или None, аргументы pip)."""
+    argv = list(argv)
+    pip_args = []
+    if "--" in argv:
+        cut = argv.index("--")
+        argv, pip_args = argv[:cut], argv[cut + 1:]
     explicit = None
     if argv[:1] == ["--python"] and len(argv) > 1:
         explicit = argv[1]
+    return explicit, pip_args
+
+
+def create_env_file():
+    """``.env`` из образца, чтобы пользователю оставалось вписать endpoint и токен."""
+    env_file = SKILL_DIR / ".env"
+    example = SKILL_DIR / ".env.example"
+    if env_file.exists() or not example.exists():
+        return None
+    shutil.copyfile(str(example), str(env_file))
+    if os.name != "nt":
+        os.chmod(str(env_file), 0o600)
+    return env_file
+
+
+def setup(argv):
+    explicit, pip_args = split_setup_args(argv)
     base = find_base_python(explicit)
     if base is None:
         print("STATUS: error")
@@ -116,22 +139,45 @@ def setup(argv):
         SETUP_MARKER.unlink()
     except FileNotFoundError:
         pass
-    print("Ставлю зависимости из {}".format(REQUIREMENTS), flush=True)
+    print(
+        "Ставлю зависимости из {} (numpy, scipy, scikit-learn — это 1–3 минуты, "
+        "не прерывай).".format(REQUIREMENTS),
+        flush=True,
+    )
     code = subprocess.call([
         str(target), "-m", "pip", "install", "--disable-pip-version-check",
-        "-q", "-r", str(REQUIREMENTS),
-    ])
+        "-r", str(REQUIREMENTS),
+    ] + pip_args)
     if code != 0:
         print("STATUS: error")
-        print("pip install завершился с кодом {}. Проверь доступ к индексу пакетов.".format(code))
+        print(
+            "pip install завершился с кодом {}. Проверь доступ к индексу пакетов; для зеркала "
+            "или прокси добавь pip-аргументы: {} -- --index-url <URL> --proxy <URL>".format(
+                code, self_command("setup")
+            )
+        )
         return 1
     SETUP_MARKER.write_text(requirements_digest() + "\n", encoding="utf-8")
     print("STATUS: ready")
     print("Окружение скилла готово: {}".format(VENV_DIR))
+    created = create_env_file()
+    if created is not None:
+        print(
+            "Создан {}: впиши ALLURE_ENDPOINT и ALLURE_TOKEN (токен в чат не пиши).".format(created)
+        )
     return 0
 
 
+def configure_stdio():
+    """UTF-8 для вывода: консоль Windows по умолчанию не UTF-8, а сообщения русские."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv):
+    configure_stdio()
     if argv[:1] == ["setup"]:
         return setup(argv[1:])
 
@@ -145,7 +191,7 @@ def main(argv):
         print(self_command("setup"))
         print("Затем повтори команду:")
         print(self_command(*argv))
-        return 3
+        return 0  # статус с инструкцией, а не авария: агент должен выполнить setup
 
     if running_in_venv() or os.environ.get(CHILD_MARKER):
         sys.path.insert(0, str(SCRIPTS_DIR))

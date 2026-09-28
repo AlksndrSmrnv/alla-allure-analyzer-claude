@@ -20,34 +20,30 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 
-from alla_skill_lib.code_hints import SOURCE_EXTENSIONS
+from alla_skill_lib.code_hints import SOURCE_EXTENSIONS, ProjectIndex
 
 CATEGORIES = ("тест", "приложение", "окружение", "данные", "неизвестно")
+# Только слова, которые однозначно называют категорию. «сервис», «app», «test»
+# и подобные не берём: «Сервис авторизации недоступен (окружение)» — это не
+# приложение, а молчаливая ошибка в итогах, истории и базе знаний.
 _CATEGORY_ALIASES = {
     "тестовые данные": "данные",
     "не определено": "неизвестно",
     "автотест": "тест",
     "тест": "тест",
-    "test": "тест",
     "приложение": "приложение",
-    "продукт": "приложение",
-    "сервис": "приложение",
-    "бэкенд": "приложение",
-    "service": "приложение",
-    "app": "приложение",
     "окружение": "окружение",
     "инфраструктура": "окружение",
     "стенд": "окружение",
-    "env": "окружение",
-    "environment": "окружение",
     "данные": "данные",
-    "data": "данные",
     "неизвестно": "неизвестно",
-    "unknown": "неизвестно",
 }
+# «приложение или окружение», «тест/данные» — модель не выбрала категорию.
+_AMBIGUOUS_AFTER_CATEGORY_RE = re.compile(r"^\s*(?:[/\\|]|или\b)")
 _SECTIONS = {
     "что сломалось": "what",
     "причина": "cause",
@@ -57,13 +53,25 @@ _SECTIONS = {
     "название": "title",
     "признак": "fingerprint",
 }
+SECTION_TITLES = {
+    "what": "ЧТО СЛОМАЛОСЬ",
+    "cause": "ПРИЧИНА",
+    "fix": "КАК ИСПРАВИТЬ",
+}
+_HEADER_NAMES = "|".join(sorted(_SECTIONS, key=len, reverse=True))
+# Оформление и нумерация перед именем раздела («### », «- **», «1. **»), затем
+# «:» или тире с пробелами. «Код-ревью» и «Код ответа: 504» заголовком не являются.
 _HEADER_RE = re.compile(
-    r"^(что сломалось|причина|как исправить|код|база знаний|название|признак)"
-    r"\s*(?:[:：]\s*(.*)|$)",
+    rf"^[\s#>*_`\-•]*(?:\d+[.)]\s*)?[\s#>*_`]*(?P<name>{_HEADER_NAMES})[*_`]*\s*"
+    r"(?:[:：][*_`]*\s*(?P<colon>.*)|[—–-]+\s+(?P<dash>.*)|$)",
     re.IGNORECASE,
 )
+_LIST_MARKER_RE = re.compile(r"(?:^|(?<=\s))(?:[-*•]|\d+[.)])(?=\s)")
+# Строка, похожая на заголовок раздела (ЗАГЛАВНЫМИ), но с неизвестным названием.
+_UNKNOWN_HEADER_RE = re.compile(r"^\W*\d*\W*([А-ЯЁ][А-ЯЁ ]{3,40}?)\s*[:：]")
+_ID_TOKEN_RE = re.compile(r"^[a-z0-9_]{1,100}$")
 _NO_KB = {"нет", "-", "—", "none", "no"}
-_DECOR_RE = re.compile(r"^[\s#>*_`-]+")
+_BOLD_RE = re.compile(r"\*\*")
 _PATH_RE = re.compile(r"(?P<path>[\w.\-/\\]+\.[A-Za-z0-9]{1,8})(?::(?P<line>\d+))?")
 _CONFIG_EXTENSIONS = frozenset({
     ".yaml", ".yml", ".json", ".xml", ".properties", ".conf", ".cfg", ".ini",
@@ -87,6 +95,8 @@ class ClusterAnalysis:
     kb_ref: str | None = None
     title: str = ""
     fingerprint: str = ""
+    # Строки вида «ЧТО ПОШЛО НЕ ТАК:», похожие на заголовок, но не из формата.
+    unrecognized: list[str] = field(default_factory=list)
 
     @property
     def cause_reason(self) -> str:
@@ -119,21 +129,32 @@ class ClusterAnalysis:
 
 
 def parse_analysis(text: str) -> ClusterAnalysis:
-    """Разобрать текст анализа на разделы (неизвестный текст до разделов игнорируется)."""
+    """Разобрать текст анализа на разделы (неизвестный текст до разделов игнорируется).
+
+    Заголовок раздела принимается один раз (кроме ``КОД``, который бывает в
+    нескольких строках). Пункт списка с обычным написанием — ``- Код: …`` или
+    ``2. Причина: …`` — внутри шагов исправления остаётся текстом шага.
+    """
     analysis = ClusterAnalysis(raw=text.strip())
     buckets: dict[str, list[str]] = {key: [] for key in _SECTIONS.values()}
+    seen: set[str] = set()
     current: str | None = None
-    for raw_line in text.splitlines():
-        cleaned = _DECOR_RE.sub("", raw_line.replace("**", "").replace("__", "")).strip()
-        header = _HEADER_RE.match(cleaned)
-        if header:
-            current = _SECTIONS[header.group(1).lower()]
-            rest = (header.group(2) or "").strip()
+    for raw_line in text.lstrip("\ufeff").splitlines():
+        header = _match_header(raw_line, current, seen)
+        if header is not None:
+            current, rest = header
+            seen.add(current)
             if rest:
                 buckets[current].append(rest)
             continue
         if current is not None:
             buckets[current].append(raw_line.rstrip())
+        if (
+            len(analysis.unrecognized) < 3
+            and _HEADER_RE.match(raw_line) is None
+            and _UNKNOWN_HEADER_RE.match(raw_line)
+        ):
+            analysis.unrecognized.append(raw_line.strip()[:80])
 
     analysis.what = _join(buckets["what"])
     analysis.cause = _join(buckets["cause"])
@@ -146,22 +167,82 @@ def parse_analysis(text: str) -> ClusterAnalysis:
     return analysis
 
 
+def _match_header(
+    raw_line: str,
+    current: str | None,
+    seen: set[str],
+) -> tuple[str, str] | None:
+    """(раздел, остаток строки) или None, если строка не заголовок раздела."""
+    match = _HEADER_RE.match(raw_line)
+    if match is None:
+        return None
+    key = _SECTIONS[match.group("name").lower()]
+    if key in seen and key != "code":
+        return None
+    if current == "fix" and _is_plain_list_item(raw_line, match):
+        return None
+    rest = match.group("colon") if match.group("colon") is not None else match.group("dash")
+    return key, _BOLD_RE.sub("", rest or "").strip()
+
+
+def _is_plain_list_item(raw_line: str, match: re.Match[str]) -> bool:
+    """«- Код: …» или «2. Причина: …» без жирного и ЗАГЛАВНЫХ — шаг, а не раздел."""
+    prefix = raw_line[: match.start("name")]
+    if not _LIST_MARKER_RE.search(prefix):
+        return False
+    written = raw_line[match.start("name"): match.end("name")]
+    emphasised = bool(re.search(r"[*_#]", _LIST_MARKER_RE.sub("", prefix, count=1))) or bool(
+        re.match(r"[*_]", raw_line[match.end("name"):])
+    )
+    return not (written.isupper() or emphasised)
+
+
+def parse_summary(analysis: ClusterAnalysis) -> str:
+    """Что парсер понял в разборе: подсказка модели, когда формат не принят."""
+    parts = []
+    for key, title in SECTION_TITLES.items():
+        value = getattr(analysis, key)
+        part = f"{title} {'✓' if value else '✗'}"
+        if key == "cause" and value:
+            part += f" (категория: {analysis.category or 'не распознана'})"
+        parts.append(part)
+    line = "Разобрано: " + ", ".join(parts)
+    if analysis.unrecognized:
+        line += (
+            "\nСтроки, похожие на разделы, но не из формата (названия разделов "
+            "менять нельзя): " + "; ".join(analysis.unrecognized)
+        )
+    return line
+
+
 def _kb_ref(value: str) -> str | None:
-    """id записи из строки «БАЗА ЗНАНИЙ:»; «нет»/«-» — None."""
+    """id записи из строки «БАЗА ЗНАНИЙ:»; «нет», «-» и любая фраза — None."""
     words = value.strip().strip("`[]«»\"'()").split()
     if not words or words[0].lower().strip(".,") in _NO_KB:
         return None
-    return words[0].strip("`[]«»\"'().,;:").lower()
+    first = words[0].strip("`[]«»\"'().,;:").lower()
+    if not _ID_TOKEN_RE.match(first):
+        return None  # «подходящих записей нет», «не применимо»
+    if len(words) > 1 and words[1][:1].isalnum() and not re.search(r"[_\d]", first):
+        return None  # «not applicable»: у настоящих id есть «_» и хэш
+    return first
 
 
 def detect_category(cause: str) -> str | None:
-    """Категория из начала раздела ПРИЧИНА: ``приложение — ...``, ``[тест] ...``."""
-    head = cause.strip().lstrip("[«\"'(*`").lower()
+    """Категория из начала раздела ПРИЧИНА: ``приложение — ...``, ``[тест] ...``.
+
+    ``None``, если первое слово не категория или названо сразу две
+    («приложение или окружение», «тест/данные»).
+    """
+    head = cause.strip().lstrip("[«\"'(*`_").lower()
     for alias in sorted(_CATEGORY_ALIASES, key=len, reverse=True):
         if head.startswith(alias):
             following = head[len(alias):len(alias) + 1]
-            if not following or not following.isalnum():
-                return _CATEGORY_ALIASES[alias]
+            if following and following.isalnum():
+                continue
+            if _AMBIGUOUS_AFTER_CATEGORY_RE.match(head[len(alias):].lstrip("]»\"')*`_")):
+                return None
+            return _CATEGORY_ALIASES[alias]
     return None
 
 
@@ -178,8 +259,9 @@ def validate_analysis(
         errors.append("нет раздела «ПРИЧИНА:»")
     elif analysis.category is None:
         errors.append(
-            "в «ПРИЧИНА:» первым словом должна идти категория: "
+            "в «ПРИЧИНА:» первым словом должна идти одна категория: "
             + " / ".join(CATEGORIES)
+            + " (без «или» и «/»; например «ПРИЧИНА: окружение — стенд недоступен»)"
         )
     if not analysis.fix:
         errors.append("нет раздела «КАК ИСПРАВИТЬ:» с шагами исправления")
@@ -212,6 +294,18 @@ def code_ref_errors(analysis: ClusterAnalysis, project_root: Path) -> list[str]:
             inside = resolved == root or root in resolved.parents
         except OSError:
             inside = False
+        if inside and not resolved.is_file() and "/" not in raw and suffix in SOURCE_EXTENSIONS:
+            # «OrderTest.java:6» из кадра стека: без пути принимаем однозначное имя файла.
+            found = [c for c in _index(root).candidates(PurePath(raw).stem) if c.name == raw]
+            if len(found) > 1:
+                options = ", ".join(sorted(c.as_posix() for c in found)[:3])
+                errors.append(
+                    f"в «КОД:» имя «{raw}» встречается в нескольких файлах ({options}) — "
+                    "укажи путь относительно корня проекта"
+                )
+                continue
+            if found:
+                resolved = (root / found[0]).resolve()
         if not inside or not resolved.is_file():
             errors.append(
                 f"в «КОД:» файл «{raw}» не найден в проекте {root} — "
@@ -228,6 +322,20 @@ def code_ref_errors(analysis: ClusterAnalysis, project_root: Path) -> list[str]:
     return errors
 
 
+_INDEX_TTL_SECONDS = 30.0
+_index_cache: dict[Path, tuple[float, ProjectIndex]] = {}
+
+
+def _index(root: Path) -> ProjectIndex:
+    """Индекс исходников проекта; `next` проверяет все разборы подряд, обход диска один."""
+    now = time.monotonic()
+    cached = _index_cache.get(root)
+    if cached is None or now - cached[0] > _INDEX_TTL_SECONDS:
+        cached = (now, ProjectIndex(root))
+        _index_cache[root] = cached
+    return cached[1]
+
+
 def _line_count(path: Path) -> int | None:
     try:
         if path.stat().st_size > MAX_CHECKED_FILE_BYTES:
@@ -241,12 +349,12 @@ def _strip_category(cause: str) -> str:
     category = detect_category(cause)
     if category is None:
         return cause.strip()
-    head = cause.strip().lstrip("[«\"'(*`")
+    head = cause.strip().lstrip("[«\"'(*`_")
     for alias in sorted(_CATEGORY_ALIASES, key=len, reverse=True):
         if head.lower().startswith(alias):
             head = head[len(alias):]
             break
-    return head.lstrip(" ]»\"')*`—–-:").strip()
+    return head.lstrip(" ]»\"')*`_—–-:").strip()
 
 
 def _join(lines: list[str]) -> str:
