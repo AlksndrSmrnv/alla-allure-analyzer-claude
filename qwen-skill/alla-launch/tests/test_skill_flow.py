@@ -130,13 +130,19 @@ def test_full_flow_until_done(project: Path, testops: FakeTestOps, capsys) -> No
     brief = out.split("===ОТЧЁТ===\n", 1)[1].split("\n===КОНЕЦ===", 1)[0]
     assert "Разбор прогона #777 — Regression nightly" in brief
     assert "Главная — NPE в OrderService." in brief
-    assert "[приложение] expected: <200> but was: <500> — 2 теста" in brief
-    assert "[окружение]" in brief
-    assert "[неизвестно] silent — нет данных об ошибке — 1 тест" in brief
-    assert "По категориям:" in brief
+    assert "**Проблема 1** — 2 теста · возможная ошибка приложения" in brief
+    assert "· проблема стенда или окружения" in brief
+    assert "· причина не ясна" in brief
+    assert "[silent](https://testops.example/launch/777/testresult/108)" in brief
+    # Разделы по тому, кто что делает; ошибки приложения — первыми.
+    assert "### Что делать" in brief and "### Требуют вашего внимания (2)" in brief
+    assert brief.index("Требуют вашего внимания (2)") < brief.index("Стенд и тестовые данные (1)")
+    assert brief.index("возможная ошибка приложения") < brief.index("причина не ясна")
+    assert "По категориям" not in brief and "[приложение]" not in brief
     report = (run_dir / "report.md").read_text(encoding="utf-8")
     assert report.startswith(brief.rsplit("\n\nПолный отчёт:", 1)[0])
-    assert "## Детали кластеров" in report
+    assert "## Подробности по проблемам" in report
+    assert "- **Ошибка в TestOps:** expected: <200> but was: <500>" in report
     assert "[createOrder](https://testops.example/launch/777/testresult/101)" in report
 
     # Повторный next без аргумента берёт последний разбор и ничего не ломает.
@@ -173,7 +179,8 @@ def test_fix_loop_counts_distinct_attempts(project: Path, testops: FakeTestOps, 
     (run_dir / "summary.md").write_text("Итог.", encoding="utf-8")
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: done")
-    assert "(формат разбора нарушен)" in out
+    assert "причина не ясна — разбор не прошёл проверку формата" in out
+    assert "Разбор не прошёл проверку формата, вот его начало: ПРИЧИНА: баг" in out
 
 
 def test_green_launch_is_done_immediately(project: Path, monkeypatch, capsys) -> None:
@@ -181,7 +188,7 @@ def test_green_launch_is_done_immediately(project: Path, monkeypatch, capsys) ->
     code, out = _run(["prepare", "778", "--project-root", str(project)], capsys)
     assert code == 0
     assert out.startswith("STATUS: done")
-    assert "Активных падений нет" in out
+    assert "Упавших тестов нет — разбирать нечего." in out
 
 
 def test_auth_failure_reports_error(project: Path, monkeypatch, capsys) -> None:
@@ -257,8 +264,10 @@ def test_test_cluster_gets_fix_proposal_and_apply(project: Path, testops: FakeTe
 
     proposal.write_text(PROPOSAL, encoding="utf-8")
     out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
-    assert "### Можно исправить в автотестах" in out
-    assert "1. src/test/java/ru/company/orders/OrderTest.java:6 — API создания заказа" in out
+    assert "### Агент может поправить сам (1)" in out
+    assert "**Проблема 1** — `src/test/java/ru/company/orders/OrderTest.java:6` · 2 теста" in out
+    assert "- Почему это ошибка теста: API создания заказа" in out
+    assert "- Статус: ждёт вашего «да»" in out
     assert "apply 01 --run" in out and "--yes" in out
 
     code, diff = _run(["apply", "1", "--run", str(run_dir)], capsys)
@@ -280,7 +289,7 @@ def test_test_cluster_gets_fix_proposal_and_apply(project: Path, testops: FakeTe
     assert "assertEquals(201" in test_file.read_text(encoding="utf-8")
     assert (run_dir / "proposals" / f"{order}.applied.json").is_file()
     assert (run_dir / "proposals" / f"{order}.orig").is_file()
-    assert "(уже применено)" in _next(run_dir, capsys)
+    assert "- Статус: уже применено" in _next(run_dir, capsys)
 
     code, out = _run(["apply", "1", "--run", str(run_dir), "--yes", "--diff", diff_hash], capsys)
     assert code == 0 and "уже применена" in out
@@ -288,10 +297,56 @@ def test_test_cluster_gets_fix_proposal_and_apply(project: Path, testops: FakeTe
     code, out = _run(["revert", "1", "--run", str(run_dir)], capsys)
     assert code == 0 and out.startswith("STATUS: reverted")
     assert "assertEquals(200" in test_file.read_text(encoding="utf-8")
-    assert "(уже применено)" not in _next(run_dir, capsys)
+    assert "- Статус: уже применено" not in _next(run_dir, capsys)
     code, out = _run(["revert", "1", "--run", str(run_dir)], capsys)
     assert code == 1 and out.startswith("STATUS: error") and "откатывать нечего" in out
     assert test_file.read_text(encoding="utf-8").count("assertEquals(201") == 0
+
+
+def _test_cluster_without_fix(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> tuple[Path, str, str]:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    (run_dir / "analyses" / f"{order}.md").write_text(TEST_ANALYSIS, encoding="utf-8")
+    assert _next(run_dir, capsys).startswith("STATUS: propose")
+    return run_dir, order, login
+
+
+def test_report_says_why_agent_declined_to_fix(project: Path, testops: FakeTestOps, capsys) -> None:
+    run_dir, order, login = _test_cluster_without_fix(project, capsys)
+    (run_dir / "proposals" / f"{order}.md").write_text(
+        "РЕШЕНИЕ: не трогать\nПОЧЕМУ: ожидаемый код задан в общем контракте\n", encoding="utf-8"
+    )
+    out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    assert "### Автотест сломан, но править вручную (1)" in out
+    assert "- Почему агент не правил сам: агент решил не трогать код: ожидаемый код задан" in out
+    assert "### Агент может поправить сам" not in out and "apply 01" not in out
+
+
+def test_report_says_why_proposal_was_dropped(project: Path, testops: FakeTestOps, capsys) -> None:
+    run_dir, order, login = _test_cluster_without_fix(project, capsys)
+    proposal = run_dir / "proposals" / f"{order}.md"
+    for typo in ("assertEqual(200", "assertEqua(200", "assertEq(200"):
+        proposal.write_text(PROPOSAL.replace("assertEquals(200", typo, 1), encoding="utf-8")
+        out = _next(run_dir, capsys)
+    assert out.startswith("STATUS: analyze")  # третья неудача: предложение отброшено
+    out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    assert "- Почему агент не правил сам: предложение правки не прошло проверку за 3 попытки" in out
+    assert "### Замечания" not in out  # причина видна прямо у проблемы
+
+
+def test_report_says_when_proposal_limit_is_reached(
+    project: Path, testops: FakeTestOps, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    monkeypatch.setattr(cli, "MAX_PROPOSALS", 0)
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    (run_dir / "analyses" / f"{order}.md").write_text(TEST_ANALYSIS, encoding="utf-8")
+    out = _next(run_dir, capsys)
+    assert out.startswith("STATUS: analyze")  # правку не предлагали — сразу к следующему
+    out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    assert "- Почему агент не правил сам: лимит — не больше 0 предложений правок" in out
 
 
 def test_feedback_is_remembered_and_recognized_next_launch(
@@ -358,7 +413,8 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     out = _finish(run_dir2, capsys, {
         order: VALID_ANALYSIS + f"БАЗА ЗНАНИЙ: {entry_id}\n", login: MARKDOWN_ANALYSIS,
     })
-    assert f"· известная: {entry_id}" in out and "· повтор: 1 прогон с" in out
+    assert f"- Известная проблема: {entry_id}" in out
+    assert "- Повторяется: уже была в 1 другом прогоне, впервые" in out
 
     # Пользователь сказал, что запись здесь ни при чём — в следующий раз её нет.
     code, out = _run(["reject", "1", entry_id, "--run", str(run_dir2)], capsys)

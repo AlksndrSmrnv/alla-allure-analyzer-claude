@@ -478,8 +478,8 @@ def _write_run(
         except Exception as exc:  # один битый кластер не должен ронять весь prepare
             logger.exception("Не удалось подготовить кластер %s", file_id)
             local_warnings.append(
-                f"Кластер {position}: задание не подготовлено ({type(exc).__name__}: {exc}) — "
-                "помечен «неизвестно»."
+                f"Проблема {position}: задание не подготовлено ({type(exc).__name__}: {exc}) — "
+                "причина не определена."
             )
             entry.update(
                 auto=True, signature=None, fingerprint="", kb=[], history=None
@@ -560,6 +560,7 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
     analyses: dict[str, ClusterAnalysis] = {}
     flagged: set[str] = set()
     proposals: dict[str, Proposal] = {}
+    not_proposed: dict[str, str] = {}
     notes: list[str] = []
     candidates = 0
 
@@ -594,18 +595,17 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
         ):
             candidates += 1
             if candidates > MAX_PROPOSALS:
-                notes.append(
-                    f"Проблема {int(file_id)}: правку не предлагали — лимит "
-                    f"{MAX_PROPOSALS} предложений на разбор."
+                not_proposed[file_id] = (
+                    f"лимит — не больше {MAX_PROPOSALS} предложений правок на один разбор"
                 )
                 continue
             outcome = _proposal_step(paths, state, entry, position, total, project_root)
             if isinstance(outcome, tuple):
                 return outcome
             if outcome is None:
-                notes.append(
-                    f"Проблема {int(file_id)}: предложение правки не прошло проверку "
-                    f"за {MAX_FIX_ATTEMPTS} попытки и отброшено."
+                not_proposed[file_id] = (
+                    f"предложение правки не прошло проверку за {MAX_FIX_ATTEMPTS} "
+                    "попытки и отброшено"
                 )
             else:
                 proposals[file_id] = outcome
@@ -641,7 +641,9 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
                 "менялся и участок правки изменён — стоит ли она, неизвестно. Проверь файл "
                 "(git diff); apply повторно её не применит."
             )
-    console, full = render_report(run, analyses, flagged, summary, paths, fixes, applied, notes)
+    console, full = render_report(
+        run, analyses, flagged, summary, paths, proposals, applied, notes, not_proposed
+    )
     ws.write_text(paths.report, full)
     return "done", _done_body(console, paths, fixes, feedback=True)
 
@@ -812,7 +814,8 @@ def _done_body(
 ) -> str:
     lines = [
         f"Отчёт сохранён: {paths.report}",
-        "Выведи пользователю текст между маркерами дословно, без сокращений:",
+        "Выведи пользователю текст между маркерами дословно, без сокращений, пересказа и "
+        "собственных выводов — подробности лежат в файле отчёта:",
         REPORT_BEGIN,
         console,
         REPORT_END,

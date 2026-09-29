@@ -211,10 +211,10 @@ def test_broken_cluster_degrades_to_unknown(
 
     assert all(entry["auto"] for entry in run["clusters"])
     assert any("задание не подготовлено (ValueError: битый кластер)" in w for w in run["warnings"])
-    assert "Внимание: Кластер 1: задание не подготовлено" in out
+    assert "Внимание: Проблема 1: задание не подготовлено" in out
     assert out.startswith("STATUS: summary")
     first = (run_dir / "analyses" / f"{run['clusters'][0]['file_id']}.md").read_text(encoding="utf-8")
-    assert "Не удалось подготовить данные этого кластера (ValueError)" in first
+    assert "Не удалось подготовить данные этой проблемы (ValueError)" in first
 
 
 # --- skip ---------------------------------------------------------------------------

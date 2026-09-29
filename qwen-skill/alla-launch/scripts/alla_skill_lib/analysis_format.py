@@ -80,6 +80,10 @@ _CONFIG_EXTENSIONS = frozenset({
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s")
 _STEP_PREFIX_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 MAX_CHECKED_FILE_BYTES = 5_000_000
+# Потолки полей сжатого разбора: сводка по прогону не должна раздувать контекст модели.
+COMPACT_CAUSE_CHARS = 240
+COMPACT_WHAT_CHARS = 160
+COMPACT_STEP_CHARS = 160
 
 
 @dataclass
@@ -109,16 +113,21 @@ class ClusterAnalysis:
 
         Причина с категорией, первое предложение «что сломалось» и первый шаг
         исправления — из них сводка собирает ключевые проблемы и приоритетные
-        исправления, не тратя контекст на полные разборы.
+        исправления, не тратя контекст на полные разборы. Каждое поле
+        обрезано: длинная причина одного кластера не должна вытеснять остальные.
         """
-        lines = [f"ПРИЧИНА: {_one_line(self.cause)}"]
-        what = _SENTENCE_END_RE.split(_one_line(self.what), maxsplit=1)[0]
+        lines = [f"ПРИЧИНА: {_clip(_one_line(self.cause), COMPACT_CAUSE_CHARS)}"]
+        what = _clip(self.what_first_sentence(), COMPACT_WHAT_CHARS)
         if what:
             lines.append(f"ЧТО СЛОМАЛОСЬ: {what}")
-        step = self.first_fix_step()
+        step = _clip(self.first_fix_step(), COMPACT_STEP_CHARS)
         if step:
             lines.append(f"ПЕРВЫЙ ШАГ ИСПРАВЛЕНИЯ: {step}")
         return "\n".join(lines)
+
+    def what_first_sentence(self) -> str:
+        """Первое предложение «ЧТО СЛОМАЛОСЬ» в одну строку."""
+        return _SENTENCE_END_RE.split(_one_line(self.what), maxsplit=1)[0]
 
     def first_fix_step(self) -> str:
         for line in self.fix.splitlines():
@@ -363,3 +372,7 @@ def _join(lines: list[str]) -> str:
 
 def _one_line(text: str) -> str:
     return " ".join(text.split())
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
