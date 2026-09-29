@@ -67,7 +67,7 @@ from alla_skill_lib.proposals import (
     Proposal,
     ProposalFiles,
     apply_proposal,
-    is_applied,
+    applied_state,
     parse_proposal,
     revert_proposal,
     validate_proposal,
@@ -624,10 +624,18 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
         ws.write_json(paths.state_json, state)
 
     fixes = {file_id: p for file_id, p in proposals.items() if p.is_fix}
-    applied = {
-        file_id for file_id, p in fixes.items()
-        if is_applied(p, project_root, _proposal_files(paths, file_id))
+    states = {
+        file_id: applied_state(p, project_root, _proposal_files(paths, file_id))
+        for file_id, p in fixes.items()
     }
+    applied = {file_id for file_id, state in states.items() if state == "applied"}
+    for file_id, state in states.items():
+        if state == "unknown":
+            notes.append(
+                f"Проблема {int(file_id)}: правка применялась командой apply, но файл потом "
+                "менялся и участок правки изменён — стоит ли она, неизвестно. Проверь файл "
+                "(git diff); apply повторно её не применит."
+            )
     console, full = render_report(run, analyses, flagged, summary, paths, fixes, applied, notes)
     ws.write_text(paths.report, full)
     return "done", _done_body(console, paths, fixes, feedback=True)
@@ -649,7 +657,11 @@ def _proposal_step(
         return "propose", _propose_body(paths, entry, position, total)
     proposal = parse_proposal(text)
     errors = validate_proposal(proposal, project_root)
-    if not errors or is_applied(proposal, project_root, _proposal_files(paths, file_id)):
+    # Применённая (или применённая и потом изменённая) правка перепроверки БЫЛО не проходит:
+    # файл уже другой, и модель не должна переписывать из-за этого предложение.
+    if not errors or applied_state(
+        proposal, project_root, _proposal_files(paths, file_id)
+    ) in ("applied", "unknown"):
         return proposal
     attempt, unchanged = _register_invalid(state, f"proposal-{file_id}", text, paths)
     if attempt < MAX_FIX_ATTEMPTS:

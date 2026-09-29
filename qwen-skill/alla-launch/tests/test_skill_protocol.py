@@ -10,7 +10,16 @@ import httpx
 import pytest
 from skill_fake_testops import TOKEN, FakeTestOps, LaunchFixture, default_launch
 from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
-from test_skill_flow import MARKDOWN_ANALYSIS, VALID_ANALYSIS, _finish, _next, _prepare, _run
+from test_skill_flow import (
+    MARKDOWN_ANALYSIS,
+    PROPOSAL,
+    TEST_ANALYSIS,
+    VALID_ANALYSIS,
+    _finish,
+    _next,
+    _prepare,
+    _run,
+)
 
 from alla_core.config import Settings
 from alla_core.exceptions import AllureApiError, AuthenticationError, PaginationLimitError
@@ -307,3 +316,27 @@ def test_setup_creates_env_from_example_once(tmp_path: Path, monkeypatch: pytest
     created.write_text("ALLURE_TOKEN=already-filled\n", encoding="utf-8")
     assert alla_skill.create_env_file() is None  # существующий .env не перезаписывается
     assert "already-filled" in created.read_text(encoding="utf-8")
+
+
+def test_unknown_fix_state_is_reported_and_blocks_reapply(project: Path, testops: FakeTestOps, capsys) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = _clusters(run)
+    test_file = project / "src/test/java/ru/company/orders/OrderTest.java"
+    (run_dir / "analyses" / f"{order}.md").write_text(TEST_ANALYSIS, encoding="utf-8")
+    assert _next(run_dir, capsys).startswith("STATUS: propose")
+    (run_dir / "proposals" / f"{order}.md").write_text(PROPOSAL, encoding="utf-8")
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+
+    _, diff = _run(["apply", "1", "--run", str(run_dir)], capsys)
+    digest = next(line for line in diff.splitlines() if "--yes --diff" in line).split("--diff ")[1].split()[0]
+    assert _run(["apply", "1", "--run", str(run_dir), "--yes", "--diff", digest], capsys)[1].startswith("STATUS: applied")
+
+    # Строку правки потом изменили иначе, чем откатом: ни «применена», ни «нет» сказать нельзя.
+    edited = test_file.read_text(encoding="utf-8").replace("assertEquals(201", "assertEquals(202")
+    test_file.write_text(edited, encoding="utf-8")
+    out = _next(run_dir, capsys)
+    assert "(уже применено)" not in out and "стоит ли она, неизвестно" in out
+
+    code, out = _run(["apply", "1", "--run", str(run_dir), "--yes", "--diff", digest], capsys)
+    assert code == 1 and out.startswith("STATUS: error") and "Не удалось определить" in out
+    assert test_file.read_text(encoding="utf-8") == edited

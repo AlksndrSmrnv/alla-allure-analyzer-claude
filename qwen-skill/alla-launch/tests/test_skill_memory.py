@@ -33,6 +33,7 @@ from alla_skill_lib.kb import (
 from alla_skill_lib.proposals import (
     ProposalFiles,
     apply_proposal,
+    applied_state,
     is_applied,
     parse_proposal,
     revert_proposal,
@@ -923,3 +924,112 @@ def test_old_format_mark_confirms_only_the_exact_recorded_line(tmp_path: Path) -
         encoding="utf-8",
     )
     assert not is_applied(proposal, tmp_path, files)  # соседнее СТАЛО в b() не в счёт
+
+
+ASSERTED_CLICKS = (
+    "class T {\n    void t() {\n        assertEquals(1, a());\n        page.click();\n"
+    "        page.click();\n        page.click();\n        assertEquals(2, b());\n    }\n}\n"
+)
+REMOVE_DOUBLE_CLICK = (
+    "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:4\nБЫЛО:\n        page.click();\n        page.click();\n"
+    "СТАЛО:\n        page.click();\nПОЧЕМУ: двойной клик отправляет форму дважды"
+)
+
+
+@pytest.mark.parametrize(
+    "edits",
+    [
+        [("assertEquals(2, b())", "assertEquals(9, b())")],  # соседняя строка ниже
+        [("assertEquals(1, a())", "assertEquals(7, a())")],  # соседняя строка выше
+        [("assertEquals(1, a())", "assertEquals(7, a())"), ("assertEquals(2, b())", "assertEquals(9, b())")],
+        [("void t() {", "// заметка\n    void t() {")],  # строка вставлена вплотную к правке
+    ],
+)
+def test_edits_next_to_the_fix_do_not_reopen_it(tmp_path: Path, edits: list[tuple[str, str]]) -> None:
+    """Оставшиеся два click() совпадают с БЫЛО, но правка стоит — как бы ни менялись соседние строки."""
+    target = tmp_path / "T.java"
+    target.write_text(ASSERTED_CLICKS, encoding="utf-8")
+    files = _files(tmp_path)
+    proposal = parse_proposal(REMOVE_DOUBLE_CLICK)
+    assert _apply(proposal, tmp_path, files)[1].changed
+    backup = files.backup.read_bytes()
+
+    for old, new in edits:
+        target.write_text(target.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    assert applied_state(proposal, tmp_path, files) == "applied"
+    again = apply_proposal(proposal, tmp_path, confirm=True, files=files)
+    assert again.status == "applied" and not again.changed
+    assert target.read_text(encoding="utf-8").count("page.click();") == 2
+    assert files.backup.read_bytes() == backup  # исходный бэкап не перезаписан
+
+
+def _copies_of_one_block() -> str:
+    block = ["// x1", "// x2", "// x3", "page.click();", "// y1", "// y2", "// y3"]
+    return "\n".join(["class T {", *block, "// sep", *block, "}"]) + "\n"
+
+
+def test_identical_copy_elsewhere_does_not_confirm_a_reverted_place(tmp_path: Path) -> None:
+    """Два участка с одинаковыми тремя строками до и после: откатили первый, у второго такое же СТАЛО."""
+    target = tmp_path / "T.java"
+    target.write_text(_copies_of_one_block(), encoding="utf-8")
+    files = _files(tmp_path)
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:5\nБЫЛО:\npage.click();\n"
+        "СТАЛО:\npage.wait();\npage.click();\nПОЧЕМУ: нет ожидания"
+    )
+    assert _apply(proposal, tmp_path, files)[1].changed
+
+    text = target.read_text(encoding="utf-8").replace("page.wait();\npage.click();", "page.click();", 1)
+    text = text.replace(
+        "// sep\n// x1\n// x2\n// x3\npage.click();",
+        "// sep\n// x1\n// x2\n// x3\npage.wait();\npage.click();",
+    )
+    target.write_text(text + "// другая правка\n", encoding="utf-8")
+
+    assert applied_state(proposal, tmp_path, files) == "not_applied"
+    _, result = _apply(proposal, tmp_path, files)
+    assert result.changed
+    fixed = target.read_text(encoding="utf-8").split("\n")
+    assert fixed[4:6] == ["page.wait();", "page.click();"]  # снова исправлен первый участок
+    assert target.read_text(encoding="utf-8").count("page.wait();") == 2
+
+
+def test_customised_fix_is_unknown_and_is_never_repeated(tmp_path: Path) -> None:
+    """Строку правки изменили иначе, чем откатом: неизвестно, стоит ли она; повтор запрещён."""
+    target = tmp_path / "T.java"
+    target.write_text(TWO_METHODS, encoding="utf-8")
+    files = _files(tmp_path)
+    proposal = parse_proposal(WAIT_BEFORE_CLICK)
+    assert _apply(proposal, tmp_path, files)[1].changed
+    backup = files.backup.read_bytes()
+
+    customised = target.read_text(encoding="utf-8").replace(
+        "        page.waitUntilReady();\n        page.click();\n    }\n    // filler",
+        "        page.waitForLongLoad();\n        page.click();\n    }\n    // filler", 1,
+    )
+    target.write_text(customised, encoding="utf-8")
+
+    assert applied_state(proposal, tmp_path, files) == "unknown"
+    assert not is_applied(proposal, tmp_path, files)
+    for confirm in (False, True):
+        result = apply_proposal(proposal, tmp_path, confirm=confirm, diff_hash="x", files=files)
+        assert result.status == "error" and "Не удалось определить" in result.text
+    assert target.read_text(encoding="utf-8") == customised and files.backup.read_bytes() == backup
+
+    files.record.unlink()  # так и предлагает поступить сообщение, если правка нужна заново
+    assert apply_proposal(proposal, tmp_path, files=files).status == "diff"
+
+
+def test_unreadable_snapshot_falls_back_to_the_recorded_line(tmp_path: Path) -> None:
+    target = tmp_path / "T.java"
+    target.write_text(TWO_METHODS, encoding="utf-8")
+    files = _files(tmp_path)
+    proposal = parse_proposal(WAIT_BEFORE_CLICK)
+    assert _apply(proposal, tmp_path, files)[1].changed
+    target.write_text(target.read_text(encoding="utf-8") + "// правка\n", encoding="utf-8")
+    files.backup.write_bytes(b"\xff\xfe not the original")  # копия повреждена или подменена
+
+    # Без надёжной копии верим только СТАЛО ровно на записанной строке.
+    assert applied_state(proposal, tmp_path, files) == "applied"
+    target.write_text(target.read_text(encoding="utf-8").replace("        page.waitUntilReady();\n", "", 1), encoding="utf-8")
+    assert applied_state(proposal, tmp_path, files) == "unknown"
