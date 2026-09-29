@@ -578,7 +578,25 @@ def revert_proposal(project_root: Path, files: ProposalFiles) -> ApplyResult:
         ))
     if not files.backup.is_file():
         return ApplyResult("error", f"Нет резервной копии {files.backup} — откат невозможен.")
-    _write_bytes(target, files.backup.read_bytes(), mode_from=target)
+    try:
+        original = files.backup.read_bytes()
+    except OSError as exc:
+        return ApplyResult("error", f"Резервная копия {files.backup} не читается ({exc}) — откат невозможен.")
+    # Копию сверяем с хэшем файла до apply: повреждённая или подменённая NN.orig иначе
+    # затёрла бы исправный файл и стёрла отметку применения. Пишем ровно проверенные байты.
+    expected = data.get("sha_before")
+    if not expected:
+        return ApplyResult("error", (
+            "В отметке применения нет хэша резервной копии — проверить её нельзя, откат "
+            f"не выполнен. Файл {data['file']} не тронут; верни его вручную (git)."
+        ))
+    if hashlib.sha256(original).hexdigest() != expected:
+        return ApplyResult("error", (
+            f"Резервная копия {files.backup} не совпадает с версией файла до правки (повреждена "
+            f"или заменена) — откат не выполнен. Файл {data['file']} не тронут; верни его "
+            "вручную (git). Отметка применения сохранена."
+        ))
+    _write_bytes(target, original, mode_from=target)
     files.record.unlink(missing_ok=True)
     return ApplyResult("reverted", f"Файл {data['file']} возвращён к версии до правки.")
 

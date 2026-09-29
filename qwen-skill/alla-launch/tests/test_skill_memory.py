@@ -665,6 +665,44 @@ def test_revert_restores_original_and_refuses_after_later_edits(java_project: Pa
     assert "// manual" in target.read_text(encoding="utf-8")
 
 
+def test_revert_refuses_a_corrupted_or_replaced_backup(java_project: Path, tmp_path: Path) -> None:
+    target = java_project / "src" / "OrderTest.java"
+    files = _files(tmp_path)
+    proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
+    original = target.read_bytes()
+    assert _apply(proposal, java_project, files)[1].status == "applied"
+    applied = target.read_bytes()
+    record = files.record.read_text(encoding="utf-8")
+
+    for bad in (b"", original[:-5], b"\xff\xfe not a source file", original + b"// extra\n"):
+        files.backup.write_bytes(bad)
+        refused = revert_proposal(java_project, files)
+        assert refused.status == "error" and "не совпадает с версией файла до правки" in refused.text
+        assert target.read_bytes() == applied  # исправный файл не затёрт
+        assert files.record.read_text(encoding="utf-8") == record  # отметка применения на месте
+        assert is_applied(proposal, java_project, files)
+
+    # Настоящая копия по-прежнему откатывает.
+    files.backup.write_bytes(original)
+    assert revert_proposal(java_project, files).status == "reverted"
+    assert target.read_bytes() == original and not files.record.exists()
+
+
+def test_revert_refuses_a_record_without_backup_hash(java_project: Path, tmp_path: Path) -> None:
+    target = java_project / "src" / "OrderTest.java"
+    files = _files(tmp_path)
+    proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
+    assert _apply(proposal, java_project, files)[1].status == "applied"
+    applied = target.read_bytes()
+    data = json.loads(files.record.read_text(encoding="utf-8"))
+    del data["sha_before"]
+    files.record.write_text(json.dumps(data), encoding="utf-8")
+
+    refused = revert_proposal(java_project, files)
+    assert refused.status == "error" and "нет хэша резервной копии" in refused.text
+    assert target.read_bytes() == applied and files.record.exists()
+
+
 def test_record_is_ignored_after_revert_or_rewrite(java_project: Path, tmp_path: Path) -> None:
     target = java_project / "src" / "OrderTest.java"
     files = _files(tmp_path)
