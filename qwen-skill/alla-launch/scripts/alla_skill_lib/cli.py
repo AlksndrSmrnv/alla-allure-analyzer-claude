@@ -633,19 +633,13 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
         file_id: applied_state(p, project_root, _proposal_files(paths, file_id))
         for file_id, p in fixes.items()
     }
-    applied = {file_id for file_id, state in states.items() if state == "applied"}
-    for file_id, state in states.items():
-        if state == "unknown":
-            notes.append(
-                f"Проблема {int(file_id)}: правка применялась командой apply, но файл потом "
-                "менялся и участок правки изменён — стоит ли она, неизвестно. Проверь файл "
-                "(git diff); apply повторно её не применит."
-            )
     console, full = render_report(
-        run, analyses, flagged, summary, paths, proposals, applied, notes, not_proposed
+        run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed
     )
     ws.write_text(paths.report, full)
-    return "done", _done_body(console, paths, fixes, feedback=True)
+    # Правку с неизвестным состоянием apply не применит — модели её показывать не нужно.
+    offered = {file_id: p for file_id, p in fixes.items() if states[file_id] != "unknown"}
+    return "done", _done_body(console, paths, offered, feedback=True)
 
 
 def _proposal_step(

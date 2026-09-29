@@ -158,7 +158,7 @@ def test_problems_are_grouped_by_who_acts(tmp_path: Path) -> None:
     run = _run([5, 4, 3, 2, 1])
     console, full = _render(
         tmp_path, run, [APP, TEST, ENV, DATA, UNKNOWN],
-        proposals={"02": _proposal()}, applied=set(),
+        proposals={"02": _proposal()}, apply_states={"02": "not_applied"},
     )
 
     order = [
@@ -233,9 +233,42 @@ def test_full_report_keeps_reason_for_problems_beyond_the_console_cap(tmp_path: 
 
 def test_applied_fix_is_marked(tmp_path: Path) -> None:
     run = _run([2])
-    console, full = _render(tmp_path, run, [TEST], proposals={"01": _proposal()}, applied={"01"})
+    console, full = _render(
+        tmp_path, run, [TEST], proposals={"01": _proposal()}, apply_states={"01": "applied"}
+    )
     assert "- Статус: уже применено — запустите тест заново" in console
     assert "### Проблема 1: src/OrderTest.java:6 — уже применено" in full
+
+
+def test_unknown_fix_state_is_not_offered_as_waiting_for_consent(tmp_path: Path) -> None:
+    run = _run([3, 2])
+    console, full = _render(
+        tmp_path, run, [TEST, TEST],
+        proposals={"01": _proposal(), "02": _proposal()},
+        apply_states={"01": "unknown", "02": "not_applied"},
+    )
+    agent = _section(console, "Агент может поправить сам")
+    assert "Проблема 2" in agent and "Проблема 1" not in agent
+    manual = _section(console, "Автотест сломан, но править вручную")
+    assert "**Проблема 1** — 3 теста · ошибка в автотесте" in manual
+    assert "стоит ли она, неизвестно" in manual and "apply повторно её не применит" in manual
+    assert "ждёт вашего «да»" not in manual  # обещания правки для проблемы 1 нет
+    assert "- Посмотреть самим" not in console and "Править автотесты вручную: 1 проблема" in console
+    # Что было применено, остаётся видно в подробностях, с честной пометкой состояния.
+    assert "### Проблема 1: src/OrderTest.java:6 — состояние правки неизвестно" in full
+    assert "### Проблема 2: src/OrderTest.java:6\n" in full
+    details = full.split("## Подробности по проблемам", 1)[1]
+    assert "**Почему агент не правил сам:** правка в `src/OrderTest.java:6` применялась" in details
+
+
+def test_long_first_sentence_is_capped_in_console(tmp_path: Path) -> None:
+    blob = '{"error":' + '"x' * 400 + '"}'  # без завершающей пунктуации — одно «предложение»
+    text = f"ЧТО СЛОМАЛОСЬ: {blob}\nПРИЧИНА: приложение — сервер упал.\nКАК ИСПРАВИТЬ:\n1. Починить.\n"
+    run = _run([1])
+    console, full = _render(tmp_path, run, [text])
+    line = next(line for line in console.splitlines() if line.startswith("- Что случилось:"))
+    assert len(line) <= len("- Что случилось: ") + report.MAX_WHAT_CHARS and line.endswith("…")
+    assert blob in full  # полный текст остаётся в подробностях report.md
 
 
 def test_weakening_warning_is_visible_next_to_the_fix(tmp_path: Path) -> None:

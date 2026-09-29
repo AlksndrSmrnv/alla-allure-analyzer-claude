@@ -38,6 +38,7 @@ MAX_LISTED_NUMBERS = 8
 MAX_ITEM_TESTS = 2
 MAX_REPORT_TESTS = 5
 MAX_CAUSE_CHARS = 220
+MAX_WHAT_CHARS = 200
 MAX_TEST_NAME_CHARS = 80
 # Общий анализ: подробный разбор — у самых больших проблем, у остальных — одна строка.
 MAX_SUMMARY_DETAILED = 30
@@ -115,8 +116,12 @@ class _Problem:
     analysis: ClusterAnalysis
     flagged: bool
     proposal: Proposal | None
-    applied: bool
+    state: str  # applied_state правки: applied | not_applied | unknown
     bucket: str
+
+    @property
+    def applied(self) -> bool:
+        return self.state == "applied"
 
     @property
     def number(self) -> int:
@@ -250,20 +255,21 @@ def render_report(
     summary: str,
     paths: RunPaths,
     proposals: dict[str, Proposal] | None = None,
-    applied: set[str] | None = None,
+    apply_states: dict[str, str] | None = None,
     notes: list[str] | None = None,
     not_proposed: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     """Вернуть (краткий текст для консоли, полный текст report.md).
 
     ``proposals`` — принятые предложения (и «исправить», и «не трогать»);
+    ``apply_states`` — ``applied_state`` каждой правки (нет записи = не применена);
     ``not_proposed`` — почему по проблеме «тест» правку не предлагали.
     """
     proposals = proposals or {}
-    applied = applied or set()
+    apply_states = apply_states or {}
     tests = _Tests.of(run)
     problems = [
-        _problem(entry, analyses[entry["file_id"]], flagged, proposals, applied)
+        _problem(entry, analyses[entry["file_id"]], flagged, proposals, apply_states)
         for entry in run["clusters"]
     ]
     brief = _header(run)
@@ -307,20 +313,22 @@ def _problem(
     analysis: ClusterAnalysis,
     flagged: set[str],
     proposals: dict[str, Proposal],
-    applied: set[str],
+    apply_states: dict[str, str],
 ) -> _Problem:
     file_id = entry["file_id"]
     is_flagged = file_id in flagged
     proposal = proposals.get(file_id)
+    state = apply_states.get(file_id, "not_applied")
     if proposal is not None and proposal.is_fix and not is_flagged:
-        bucket = AGENT
+        # Состояние неизвестно: apply её не применит, обещать «агент поправит» нельзя.
+        bucket = MANUAL if state == "unknown" else AGENT
     elif is_flagged or analysis.category in (None, "приложение", "неизвестно"):
         bucket = ATTENTION
     elif analysis.category == "тест":
         bucket = MANUAL
     else:
         bucket = ENVIRONMENT
-    return _Problem(entry, analysis, is_flagged, proposal, file_id in applied, bucket)
+    return _Problem(entry, analysis, is_flagged, proposal, state, bucket)
 
 
 def _sort_key(problem: _Problem) -> tuple[int, int, int]:
@@ -412,7 +420,7 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
     else:
         what = analysis.what_first_sentence()
         if what:
-            lines.append(f"- Что случилось: {what}")
+            lines.append(f"- Что случилось: {_truncate(what, MAX_WHAT_CHARS)}")
         if problem.bucket == AGENT and problem.proposal is not None:
             lines.append(
                 "- Почему это ошибка теста: "
@@ -461,6 +469,13 @@ def _not_fixed_reason(
 ) -> str:
     """Почему агент не правил тест сам; ``limit=None`` — целиком (для report.md)."""
     proposal = problem.proposal
+    if proposal is not None and proposal.is_fix and problem.state == "unknown":
+        location = f"{proposal.file}:{proposal.line}" if proposal.line else str(proposal.file)
+        return (
+            f"правка в `{location}` применялась командой apply, но файл потом менялся и "
+            "участок правки изменён — стоит ли она, неизвестно. Проверьте файл (git diff); "
+            "apply повторно её не применит"
+        )
     if proposal is not None and not proposal.is_fix:
         why = _one_line(proposal.why)
         if limit is not None:
@@ -541,13 +556,19 @@ def _details(problems: list[_Problem], tests: _Tests, not_proposed: dict[str, st
 
 
 def _proposal_details(problems: list[_Problem], proposals: dict[str, Proposal]) -> list[str]:
-    fixes = [p for p in problems if p.bucket == AGENT and p.proposal is not None]
+    fixes = [
+        p for p in problems
+        if p.proposal is not None and p.proposal.is_fix and not p.flagged
+    ]
     if not fixes:
         return []
     lines = ["", "## Правки автотестов, которые агент может применить"]
     for problem in fixes:
         proposal = proposals[problem.entry["file_id"]]
-        state = " — уже применено" if problem.applied else ""
+        state = {
+            "applied": " — уже применено",
+            "unknown": " — состояние правки неизвестно (файл менялся после применения)",
+        }.get(problem.state, "")
         location = f"{proposal.file}:{proposal.line}" if proposal.line else str(proposal.file)
         lines += [
             "",

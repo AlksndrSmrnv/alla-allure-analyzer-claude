@@ -336,6 +336,10 @@ def test_unknown_fix_state_is_reported_and_blocks_reapply(project: Path, testops
     test_file.write_text(edited, encoding="utf-8")
     out = _next(run_dir, capsys)
     assert "(уже применено)" not in out and "стоит ли она, неизвестно" in out
+    # Отчёт не обещает правку, которую apply откажется применять, и модели её не предлагает.
+    assert "ждёт вашего «да»" not in out and "### Агент может поправить сам" not in out
+    assert "### Автотест сломан, но править вручную (1)" in out
+    assert "Правка автотеста для проблемы" not in out
 
     code, out = _run(["apply", "1", "--run", str(run_dir), "--yes", "--diff", digest], capsys)
     assert code == 1 and out.startswith("STATUS: error") and "Не удалось определить" in out
