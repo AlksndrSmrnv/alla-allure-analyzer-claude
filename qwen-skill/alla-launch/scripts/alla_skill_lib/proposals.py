@@ -465,8 +465,13 @@ def apply_proposal(
     confirm: bool = False,
     diff_hash: str | None = None,
     files: ProposalFiles | None = None,
+    repeat: bool = False,
 ) -> ApplyResult:
-    """Показать diff или, с ``confirm`` и хэшем показанного diff, применить правку."""
+    """Показать diff или, с ``confirm`` и хэшем показанного diff, применить правку.
+
+    ``repeat`` — пользователь явно разрешил применить правку ещё раз, хотя
+    скрипт не может установить, стоит ли она (состояние ``unknown``).
+    """
     if not proposal.is_fix:
         return ApplyResult("error", "Это предложение — «не трогать», применять нечего.")
     target = _resolve(proposal, project_root, [])
@@ -476,13 +481,14 @@ def apply_proposal(
             f"Правка уже применена: {proposal.file} (отметка {files.record}; чтобы вернуть файл — "  # type: ignore[union-attr]
             "команда revert)."
         ))
-    if state == "unknown":
+    if state == "unknown" and not repeat:
         return ApplyResult("error", (
             f"Не удалось определить, применена ли правка: после apply файл {proposal.file} менялся, "
-            "и участок правки изменён не так, как его вернул бы revert. Повторное применение могло "
-            "бы задвоить правку, поэтому apply ничего не делает. Проверь файл (git diff): если "
-            f"правка на месте — ничего не нужно, если нужна заново — удали {files.record} "  # type: ignore[union-attr]
-            "и повтори apply."
+            "и по файлу нельзя установить, стоит ли она (возможно, её откатили вручную вместе с "
+            "другими правками, а возможно — нет). Повторное применение могло бы задвоить правку, "
+            "поэтому apply ничего не делает. Проверь файл (git diff). Если пользователь ЯВНО "
+            "просит применить правку ещё раз — apply с флагом --repeat (покажет diff, дальше как "
+            "обычно: «да» пользователя и --yes --diff)."
         ))
     errors = validate_proposal(proposal, project_root)
     if target is None or errors:
@@ -520,11 +526,19 @@ def apply_proposal(
                 "изменились с момента показа. Покажи пользователю diff ниже заново.\n"
             )
         warnings = weakening_warnings(proposal.before, proposal.after)
+        if state == "unknown":
+            warnings.insert(0, (
+                "правка уже применялась, файл потом менялся, и скрипт не смог установить, стоит ли она "
+                "сейчас: повтор может задвоить правку (пользователь разрешил его флагом --repeat). "
+                "Сверь diff с файлом"
+            ))
         notes = "".join(f"\nПроверь: {warning}" for warning in warnings)
         return ApplyResult("diff", prefix + diff + notes, digest)
 
     encoding = "utf-8-sig" if original.startswith(b"\xef\xbb\xbf") else "utf-8"
     if files is not None:
+        if files.backup.exists():  # версия до прошлого apply не теряется
+            os.replace(files.backup, files.backup.with_name(files.backup.name + ".prev"))
         _write_bytes(files.backup, original)
     updated = updated_text.encode(encoding)
     _write_bytes(target, updated, mode_from=target)
@@ -626,14 +640,20 @@ def _record_state(proposal: Proposal, target: Path, files: ProposalFiles) -> str
 
     По содержимому БЫЛО/СТАЛО нельзя отличить «уже применено» от «такой же
     фрагмент есть рядом» (три ``click()`` подряд, правка убирает один), поэтому
-    применение записывается. Хэш файла после записи — быстрый путь.
+    применение записывается. Пока запись есть, действует правило: **близость
+    файла к какой-либо версии доказательством отката не служит.** Чужая
+    правка может вернуть часть удалённого (после двух ``click()`` добавили
+    ``focus(); click()`` — файл ближе к исходному, но правку никто не откатывал).
 
-    Если файл с тех пор менялся, он сравнивается с двумя известными версиями —
-    сразу после apply и до него (обе восстанавливаются из ``NN.orig``): правка
-    на месте, если файл ближе к первой, и откачена, если ближе ко второй.
-    Чужие правки удаляют файл от обеих версий одинаково, а разница между
-    ними — ровно сама правка. Строки вокруг и одинаковые фрагменты в других
-    местах файла ничего не решают. При равенстве — ``unknown``.
+    * хэш файла == ``sha_after`` — ``applied``; == ``sha_before`` — ``not_applied``
+      (файл побайтно исходный);
+    * файл менялся: ``applied`` только при строгом доказательстве (см.
+      :func:`_untouched`): все изменения лежат по одну сторону от строк правки,
+      и исходный файл этому условию не удовлетворяет (иначе оно ничего не
+      доказывает — так у правки-удаления);
+    * иначе ``unknown``: повтор возможен лишь по явной просьбе пользователя
+      (``apply --repeat``). Откат вручную вместе с другими правками сюда тоже
+      относится: отличить его от чужой правки по файлу нельзя.
     """
     data = _load_record(files.record)
     if data is None or data.get("proposal") != _proposal_hash(proposal):
@@ -656,12 +676,11 @@ def _record_state(proposal: Proposal, target: Path, files: ProposalFiles) -> str
         # Отметка старого формата (нет хэшей и копии): верим только СТАЛО ровно на записанной строке.
         return "applied" if start in find_block(current_lines, proposal.after) else "unknown"
     original_lines, applied_lines = versions
-    from_applied = _edit_cost(applied_lines, current_lines)
-    from_original = _edit_cost(original_lines, current_lines)
-    if from_applied < from_original:
+    end = start + len(proposal.after)
+    if _untouched(applied_lines, current_lines, start, end) and not _untouched(
+        applied_lines, original_lines, start, end
+    ):
         return "applied"
-    if from_original < from_applied:
-        return "not_applied"
     return "unknown"
 
 
@@ -686,14 +705,24 @@ def _known_versions(
     return _normalize(text).split("\n"), _normalize(rebuilt).split("\n")
 
 
-def _edit_cost(base: list[str], current: list[str]) -> int:
-    """Сколько строк отличается: размер правок, переводящих ``base`` в ``current``."""
-    matcher = difflib.SequenceMatcher(
-        None, [line.rstrip() for line in base], [line.rstrip() for line in current], autojunk=False
-    )
-    return sum(
-        max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2 in matcher.get_opcodes() if tag != "equal"
-    )
+def _untouched(base: list[str], current: list[str], start: int, end: int) -> bool:
+    """Строки ``base[start:end]`` целы в ``current``: все отличия лежат по одну сторону от них.
+
+    Общий начальный кусок версий покрывает участок (правили только ниже) либо
+    общий конечный кусок покрывает его вместе со всем, что после (правили только
+    выше, номера строк сдвинулись). Сопоставления «строка к строке» нет намеренно:
+    в повторяющемся коде оно принимает соседнюю копию за наш участок.
+    """
+    limit = min(len(base), len(current))
+    prefix = 0
+    while prefix < limit and base[prefix].rstrip() == current[prefix].rstrip():
+        prefix += 1
+    if prefix >= end:
+        return True
+    suffix = 0
+    while suffix < limit and base[-1 - suffix].rstrip() == current[-1 - suffix].rstrip():
+        suffix += 1
+    return suffix >= len(base) - start
 
 
 # ---------------------------------------------------------------------------

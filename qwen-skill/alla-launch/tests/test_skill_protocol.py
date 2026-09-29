@@ -340,3 +340,35 @@ def test_unknown_fix_state_is_reported_and_blocks_reapply(project: Path, testops
     code, out = _run(["apply", "1", "--run", str(run_dir), "--yes", "--diff", digest], capsys)
     assert code == 1 and out.startswith("STATUS: error") and "Не удалось определить" in out
     assert test_file.read_text(encoding="utf-8") == edited
+
+
+def test_repeat_flag_is_the_only_way_to_reapply_an_unknown_fix(project: Path, testops: FakeTestOps, capsys) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = _clusters(run)
+    test_file = project / "src/test/java/ru/company/orders/OrderTest.java"
+    original = test_file.read_text(encoding="utf-8")
+    (run_dir / "analyses" / f"{order}.md").write_text(TEST_ANALYSIS, encoding="utf-8")
+    assert _next(run_dir, capsys).startswith("STATUS: propose")
+    (run_dir / "proposals" / f"{order}.md").write_text(PROPOSAL, encoding="utf-8")
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+
+    _, diff = _run(["apply", "1", "--run", str(run_dir)], capsys)
+    digest = next(line for line in diff.splitlines() if "--yes --diff" in line).split("--diff ")[1].split()[0]
+    assert _run(["apply", "1", "--run", str(run_dir), "--yes", "--diff", digest], capsys)[1].startswith("STATUS: applied")
+
+    # Правку откатили вручную и заодно добавили другую строку: скрипт не может доказать ни то, ни другое.
+    test_file.write_text(original + "// другая правка\n", encoding="utf-8")
+    code, out = _run(["apply", "1", "--run", str(run_dir)], capsys)
+    assert code == 1 and out.startswith("STATUS: error") and "--repeat" in out
+    assert test_file.read_text(encoding="utf-8") == original + "// другая правка\n"
+
+    code, out = _run(["apply", "1", "--run", str(run_dir), "--repeat"], capsys)
+    assert code == 0 and out.startswith("STATUS: diff") and "пользователь разрешил его флагом --repeat" in out
+    hint = next(line for line in out.splitlines() if "--yes --diff" in line)
+    assert "--repeat" in hint  # готовая команда сохраняет разрешение
+    new_digest = hint.split("--diff ")[1].split()[0]
+
+    code, out = _run(["apply", "1", "--run", str(run_dir), "--repeat", "--yes", "--diff", new_digest], capsys)
+    assert code == 0 and out.startswith("STATUS: applied")
+    assert "assertEquals(201" in test_file.read_text(encoding="utf-8")
+    assert (run_dir / "proposals" / f"{order}.orig.prev").is_file()

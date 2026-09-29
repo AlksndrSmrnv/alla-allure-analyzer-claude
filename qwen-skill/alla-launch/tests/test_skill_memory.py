@@ -779,19 +779,20 @@ def test_applied_mark_survives_unrelated_edits_and_old_records(tmp_path: Path) -
     backup = files.backup.read_bytes()
     assert target.read_text(encoding="utf-8").count("page.click();") == 2
 
-    # Другая правка того же файла меняет хэш, но оставшиеся два click() — не новое БЫЛО.
+    # Другая правка того же файла меняет хэш. Оставшиеся два click() совпадают с БЫЛО, но правку
+    # это не откатывает: повтор запрещён, бэкап не тронут.
     target.write_text(target.read_text(encoding="utf-8") + "// другая правка\n", encoding="utf-8")
-    assert is_applied(proposal, tmp_path, files)
-    again = apply_proposal(proposal, tmp_path, confirm=True, files=files)
-    assert again.status == "applied" and not again.changed and "уже применена" in again.text
-    assert target.read_text(encoding="utf-8").count("page.click();") == 2
-    assert files.backup.read_bytes() == backup  # исходный бэкап не перезаписан
-
-    # Файл вернули к версии до правки — правка снова не применена.
-    target.write_bytes(backup)
     assert not is_applied(proposal, tmp_path, files)
+    refused = apply_proposal(proposal, tmp_path, confirm=True, files=files)
+    assert refused.status == "error" and not refused.changed
+    assert target.read_text(encoding="utf-8").count("page.click();") == 2
+    assert files.backup.read_bytes() == backup
 
-    # Отметка старого формата (только proposal/file/line) учитывается по СТАЛО у строки.
+    # Файл вернули к версии до правки (побайтно) — правка снова не применена.
+    target.write_bytes(backup)
+    assert applied_state(proposal, tmp_path, files) == "not_applied"
+
+    # Отметка старого формата (только proposal/file/line) учитывается по СТАЛО у записанной строки.
     _apply(proposal, tmp_path, files)
     files.record.write_text(json.dumps({
         "proposal": json.loads(files.record.read_text(encoding="utf-8"))["proposal"],
@@ -837,7 +838,7 @@ WAIT_BEFORE_CLICK = (
 
 def test_neighbouring_after_does_not_confirm_a_manually_reverted_place(tmp_path: Path) -> None:
     """Участок у строки 3 откатили вручную (другая правка в файле осталась), а такое же СТАЛО
-    есть в соседнем методе: применённым место не считается, apply снова предлагает его."""
+    есть в соседнем методе: ни «применено», ни автоматического повтора; повтор — по --repeat."""
     target = tmp_path / "T.java"
     target.write_text(TWO_METHODS, encoding="utf-8")
     files = _files(tmp_path)
@@ -853,8 +854,15 @@ def test_neighbouring_after_does_not_confirm_a_manually_reverted_place(tmp_path:
     assert target.read_text(encoding="utf-8").count("waitUntilReady") == 1
 
     assert not is_applied(proposal, tmp_path, files)
-    shown, result = _apply(proposal, tmp_path, files)
-    assert "@@" in shown.text and result.changed  # снова показан diff и правка сделана
+    assert applied_state(proposal, tmp_path, files) == "unknown"
+    assert apply_proposal(proposal, tmp_path, files=files).status == "error"
+
+    shown = apply_proposal(proposal, tmp_path, files=files, repeat=True)
+    assert shown.status == "diff" and "пользователь разрешил его флагом --repeat" in shown.text
+    result = apply_proposal(
+        proposal, tmp_path, confirm=True, diff_hash=shown.diff_hash, files=files, repeat=True
+    )
+    assert result.changed
     fixed = target.read_text(encoding="utf-8").split("\n")
     assert fixed[2].strip() == "page.waitUntilReady();" and fixed[3].strip() == "page.click();"
     assert target.read_text(encoding="utf-8").count("waitUntilReady") == 2
@@ -945,8 +953,9 @@ REMOVE_DOUBLE_CLICK = (
         [("void t() {", "// заметка\n    void t() {")],  # строка вставлена вплотную к правке
     ],
 )
-def test_edits_next_to_the_fix_do_not_reopen_it(tmp_path: Path, edits: list[tuple[str, str]]) -> None:
-    """Оставшиеся два click() совпадают с БЫЛО, но правка стоит — как бы ни менялись соседние строки."""
+def test_edits_next_to_a_removal_never_reopen_it(tmp_path: Path, edits: list[tuple[str, str]]) -> None:
+    """Правка-удаление: оставшиеся два click() совпадают с БЫЛО. После чужих правок рядом состояние
+    неизвестно (не «применено» по догадке), но повтора без явного разрешения нет."""
     target = tmp_path / "T.java"
     target.write_text(ASSERTED_CLICKS, encoding="utf-8")
     files = _files(tmp_path)
@@ -956,11 +965,79 @@ def test_edits_next_to_the_fix_do_not_reopen_it(tmp_path: Path, edits: list[tupl
 
     for old, new in edits:
         target.write_text(target.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    assert applied_state(proposal, tmp_path, files) == "unknown"
+    again = apply_proposal(proposal, tmp_path, confirm=True, files=files)
+    assert again.status == "error" and not again.changed
+    assert target.read_text(encoding="utf-8").count("page.click();") == 2
+    assert files.backup.read_bytes() == backup  # исходный бэкап не перезаписан
+
+
+def test_added_action_after_a_removal_is_not_a_revert(tmp_path: Path) -> None:
+    """Из трёх click() убран один; потом после оставшихся двух добавили focus() и click().
+
+    От исходного файла это одна вставленная строка, от файла после apply — две, но откатом
+    это не является: близость к исходнику не повод повторять правку и затирать бэкап.
+    """
+    target = tmp_path / "T.java"
+    target.write_text(THREE_CLICKS, encoding="utf-8")
+    files = _files(tmp_path)
+    proposal = parse_proposal(REMOVE_ONE_CLICK)
+    assert _apply(proposal, tmp_path, files)[1].changed
+    backup = files.backup.read_bytes()
+
+    target.write_text(
+        target.read_text(encoding="utf-8").replace(
+            "        page.click();\n        page.click();\n    }",
+            '        page.click();\n        page.click();\n        page.focus("#next");\n'
+            "        page.click();\n    }",
+        ),
+        encoding="utf-8",
+    )
+    edited = target.read_text(encoding="utf-8")
+
+    assert applied_state(proposal, tmp_path, files) == "unknown"
+    for confirm in (False, True):
+        result = apply_proposal(proposal, tmp_path, confirm=confirm, diff_hash="x", files=files)
+        assert result.status == "error" and "Не удалось определить" in result.text
+    assert target.read_text(encoding="utf-8") == edited and files.backup.read_bytes() == backup
+
+    # Явное разрешение пользователя: показ diff с предупреждением, затем обычное подтверждение;
+    # версия до первого apply остаётся в NN.orig.prev.
+    shown = apply_proposal(proposal, tmp_path, files=files, repeat=True)
+    assert shown.status == "diff" and "может задвоить правку" in shown.text
+    done = apply_proposal(proposal, tmp_path, confirm=True, diff_hash=shown.diff_hash, files=files, repeat=True)
+    assert done.changed
+    assert files.backup.with_name(files.backup.name + ".prev").read_bytes() == backup
+    assert files.backup.read_bytes() == edited.encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    "edits",
+    [
+        [("assertEquals(200, api.status())", "assertEquals(202, api.status())")],  # другой тест ниже
+        [("void a() {", "void a() { // комментарий")],
+        [("class T {", "// шапка\nclass T {")],  # сдвиг всех номеров строк
+    ],
+)
+def test_edits_elsewhere_keep_a_replacement_applied(tmp_path: Path, edits: list[tuple[str, str]]) -> None:
+    """Правка-замена (БЫЛО и СТАЛО не пересекаются): чужие правки в других строках её не затрагивают."""
+    target = tmp_path / "T.java"
+    target.write_text(
+        "class T {\n    void a() {\n        page.click(\"#old\");\n    }\n"
+        "    void b() {\n        assertEquals(200, api.status());\n    }\n}\n",
+        encoding="utf-8",
+    )
+    files = _files(tmp_path)
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:3\nБЫЛО:\n        page.click(\"#old\");\n"
+        "СТАЛО:\n        page.click(\"#new\");\nПОЧЕМУ: локатор устарел"
+    )
+    assert _apply(proposal, tmp_path, files)[1].changed
+    for old, new in edits:
+        target.write_text(target.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
     assert applied_state(proposal, tmp_path, files) == "applied"
     again = apply_proposal(proposal, tmp_path, confirm=True, files=files)
     assert again.status == "applied" and not again.changed
-    assert target.read_text(encoding="utf-8").count("page.click();") == 2
-    assert files.backup.read_bytes() == backup  # исходный бэкап не перезаписан
 
 
 def _copies_of_one_block() -> str:
@@ -986,8 +1063,14 @@ def test_identical_copy_elsewhere_does_not_confirm_a_reverted_place(tmp_path: Pa
     )
     target.write_text(text + "// другая правка\n", encoding="utf-8")
 
-    assert applied_state(proposal, tmp_path, files) == "not_applied"
-    _, result = _apply(proposal, tmp_path, files)
+    # Копия СТАЛО в другом методе применение первого участка не подтверждает; автоматически
+    # повторять нельзя, а по явной просьбе (--repeat) правится именно первый участок.
+    assert applied_state(proposal, tmp_path, files) == "unknown"
+    assert apply_proposal(proposal, tmp_path, files=files).status == "error"
+    shown = apply_proposal(proposal, tmp_path, files=files, repeat=True)
+    result = apply_proposal(
+        proposal, tmp_path, confirm=True, diff_hash=shown.diff_hash, files=files, repeat=True
+    )
     assert result.changed
     fixed = target.read_text(encoding="utf-8").split("\n")
     assert fixed[4:6] == ["page.wait();", "page.click();"]  # снова исправлен первый участок
@@ -1016,8 +1099,8 @@ def test_customised_fix_is_unknown_and_is_never_repeated(tmp_path: Path) -> None
         assert result.status == "error" and "Не удалось определить" in result.text
     assert target.read_text(encoding="utf-8") == customised and files.backup.read_bytes() == backup
 
-    files.record.unlink()  # так и предлагает поступить сообщение, если правка нужна заново
-    assert apply_proposal(proposal, tmp_path, files=files).status == "diff"
+    # Явное разрешение пользователя (--repeat) — единственный путь повторить правку.
+    assert apply_proposal(proposal, tmp_path, files=files, repeat=True).status == "diff"
 
 
 def test_unreadable_snapshot_falls_back_to_the_recorded_line(tmp_path: Path) -> None:

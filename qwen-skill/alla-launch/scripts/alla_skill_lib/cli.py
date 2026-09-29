@@ -7,7 +7,7 @@
   печатает, что агенту делать дальше;
 * ``skip NN`` — пропустить кластер по просьбе пользователя;
 * ``remember NN`` / ``reject NN <id>`` — обратная связь в базу знаний проекта;
-* ``apply NN [--yes --diff ХЭШ]`` / ``revert NN`` — показать, применить или откатить правку автотеста;
+* ``apply NN [--yes --diff ХЭШ] [--repeat]`` / ``revert NN`` — показать, применить или откатить правку автотеста;
 * ``check`` — проверить окружение и доступ к TestOps; ``clean`` — удалить старые разборы.
 
 Первая строка вывода всегда ``STATUS: <статус>``:
@@ -170,7 +170,7 @@ def _dispatch(argv: list[str] | None) -> int:
         ))
     if args.command == "apply":
         return _cluster_command(args, reports_dir, lambda paths, run, entry: _apply(
-            paths, run, entry, confirm=args.yes, diff_hash=args.diff_hash
+            paths, run, entry, confirm=args.yes, diff_hash=args.diff_hash, repeat=args.repeat
         ))
     if args.command == "revert":
         return _cluster_command(args, reports_dir, lambda paths, run, entry: _revert(
@@ -271,6 +271,11 @@ def _build_parser() -> argparse.ArgumentParser:
     apply.add_argument(
         "--diff", dest="diff_hash",
         help="хэш diff, который только что показала команда без --yes (применяется ровно он)",
+    )
+    apply.add_argument(
+        "--repeat", action="store_true",
+        help="повторить правку, которая уже применялась и состояние которой неизвестно "
+             "(только по явной просьбе пользователя)",
     )
     commands.add_parser(
         "revert", parents=[common, run_option],
@@ -869,6 +874,7 @@ def _apply(
     *,
     confirm: bool,
     diff_hash: str | None,
+    repeat: bool = False,
 ) -> tuple[str, str]:
     file_id = entry["file_id"]
     path = paths.proposal(file_id)
@@ -880,9 +886,10 @@ def _apply(
         confirm=confirm,
         diff_hash=diff_hash,
         files=_proposal_files(paths, file_id),
+        repeat=repeat,
     )
     if result.status == "diff":
-        return "diff", result.text + _apply_hint(paths, file_id, result)
+        return "diff", result.text + _apply_hint(paths, file_id, result, repeat)
     if result.changed:
         return "applied", (
             result.text
@@ -892,9 +899,10 @@ def _apply(
     return result.status, result.text
 
 
-def _apply_hint(paths: ws.RunPaths, file_id: str, result: ApplyResult) -> str:
+def _apply_hint(paths: ws.RunPaths, file_id: str, result: ApplyResult, repeat: bool = False) -> str:
     command = ws.skill_command(
-        "apply", file_id, "--run", str(paths.root), "--yes", "--diff", str(result.diff_hash)
+        "apply", file_id, "--run", str(paths.root), "--yes", "--diff", str(result.diff_hash),
+        *(["--repeat"] if repeat else []),
     )
     return (
         "\nПокажи этот diff пользователю (и строки «Проверь:», если есть). Применить: "
