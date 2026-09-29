@@ -537,8 +537,7 @@ def apply_proposal(
 
     encoding = "utf-8-sig" if original.startswith(b"\xef\xbb\xbf") else "utf-8"
     if files is not None:
-        if files.backup.exists():  # версия до прошлого apply не теряется
-            os.replace(files.backup, files.backup.with_name(files.backup.name + ".prev"))
+        _archive_backup(files.backup)  # версия до прошлого apply не теряется
         _write_bytes(files.backup, original)
     updated = updated_text.encode(encoding)
     _write_bytes(target, updated, mode_from=target)
@@ -765,6 +764,20 @@ def _splice(text: str, start: int, count: int, after: list[str]) -> str:
     lines[start:start + count] = after
     endings[start:start + count] = new_endings
     return "".join(line + ending for line, ending in zip(lines, endings))
+
+
+def _archive_backup(backup: Path) -> None:
+    """Прежняя резервная копия уходит в ``NN.orig.1``, ``.2``, … — существующие версии не затираются.
+
+    ``NN.orig`` всегда последняя (её возвращает ``revert``), а самая первая
+    исходная версия остаётся в ``NN.orig.1``, сколько бы повторов ни было.
+    """
+    if not backup.exists():
+        return
+    number = 1
+    while backup.with_name(f"{backup.name}.{number}").exists():
+        number += 1
+    os.replace(backup, backup.with_name(f"{backup.name}.{number}"))
 
 
 def _write_bytes(path: Path, data: bytes, *, mode_from: Path | None = None) -> None:

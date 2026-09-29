@@ -371,4 +371,4 @@ def test_repeat_flag_is_the_only_way_to_reapply_an_unknown_fix(project: Path, te
     code, out = _run(["apply", "1", "--run", str(run_dir), "--repeat", "--yes", "--diff", new_digest], capsys)
     assert code == 0 and out.startswith("STATUS: applied")
     assert "assertEquals(201" in test_file.read_text(encoding="utf-8")
-    assert (run_dir / "proposals" / f"{order}.orig.prev").is_file()
+    assert (run_dir / "proposals" / f"{order}.orig.1").is_file()

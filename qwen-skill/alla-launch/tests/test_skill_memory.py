@@ -1002,12 +1002,12 @@ def test_added_action_after_a_removal_is_not_a_revert(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == edited and files.backup.read_bytes() == backup
 
     # Явное разрешение пользователя: показ diff с предупреждением, затем обычное подтверждение;
-    # версия до первого apply остаётся в NN.orig.prev.
+    # версия до первого apply остаётся в NN.orig.1.
     shown = apply_proposal(proposal, tmp_path, files=files, repeat=True)
     assert shown.status == "diff" and "может задвоить правку" in shown.text
     done = apply_proposal(proposal, tmp_path, confirm=True, diff_hash=shown.diff_hash, files=files, repeat=True)
     assert done.changed
-    assert files.backup.with_name(files.backup.name + ".prev").read_bytes() == backup
+    assert files.backup.with_name(files.backup.name + ".1").read_bytes() == backup
     assert files.backup.read_bytes() == edited.encode("utf-8")
 
 
@@ -1116,3 +1116,35 @@ def test_unreadable_snapshot_falls_back_to_the_recorded_line(tmp_path: Path) -> 
     assert applied_state(proposal, tmp_path, files) == "applied"
     target.write_text(target.read_text(encoding="utf-8").replace("        page.waitUntilReady();\n", "", 1), encoding="utf-8")
     assert applied_state(proposal, tmp_path, files) == "unknown"
+
+
+def test_repeated_applies_never_overwrite_earlier_backups(tmp_path: Path) -> None:
+    """Три применения подряд (два повтора): каждая версия до apply лежит в своём файле, первая — в NN.orig.1."""
+    target = tmp_path / "T.java"
+    target.write_text(TWO_METHODS, encoding="utf-8")
+    files = _files(tmp_path)
+    proposal = parse_proposal(WAIT_BEFORE_CLICK)
+
+    before_each: list[bytes] = []
+    for round_number in range(3):
+        repeat = round_number > 0
+        if repeat:
+            assert applied_state(proposal, tmp_path, files) == "unknown"
+        before_each.append(target.read_bytes())
+        shown = apply_proposal(proposal, tmp_path, files=files, repeat=repeat)
+        assert shown.status == "diff"
+        assert apply_proposal(
+            proposal, tmp_path, confirm=True, diff_hash=shown.diff_hash, files=files, repeat=repeat
+        ).changed
+        # Строку правки меняют вручную: состояние неизвестно, дальнейший повтор — только с --repeat.
+        lines = target.read_text(encoding="utf-8").split("\n")
+        index = next(i for i, line in enumerate(lines) if "page.waitUntilReady();" in line)
+        lines[index] = f"        page.waitCustom{round_number}();"
+        target.write_text("\n".join(lines), encoding="utf-8")
+
+    folder = files.backup.parent
+    assert files.backup.with_name(files.backup.name + ".1").read_bytes() == before_each[0]  # самая первая
+    assert files.backup.with_name(files.backup.name + ".2").read_bytes() == before_each[1]
+    assert files.backup.read_bytes() == before_each[2]  # последняя — её вернёт revert
+    assert sorted(path.name for path in folder.glob("01.orig*")) == ["01.orig", "01.orig.1", "01.orig.2"]
+    assert len({before_each[0], before_each[1], before_each[2]}) == 3  # версии действительно разные
