@@ -184,7 +184,7 @@ def test_problems_are_grouped_by_who_acts(tmp_path: Path) -> None:
     overview = _section(console, "Что делать")
     assert "- Посмотреть самим: 2 проблемы (6 тестов) — проблемы 1, 5" in overview
     assert "- Агент поправит автотесты: 1 проблема (4 теста) — проблема 2" in overview
-    assert full.startswith(console.rsplit("\n\nПолный отчёт:", 1)[0])
+    assert full.startswith(console.split("\n\n### Что делать", 1)[0])
 
 
 def test_attention_lists_app_bugs_before_unknown_even_when_smaller(tmp_path: Path) -> None:
@@ -340,7 +340,9 @@ def test_console_lists_at_most_two_tests_per_problem(tmp_path: Path) -> None:
     console, full = _render(tmp_path, run, [APP])
     assert "- Тесты: [test_1](https://testops.example/testresult/1), [test_2]" in console
     assert "и ещё 4" in console and "test_3" not in console
-    assert full.count("   - [test_") == 5 and "   - … и ещё 1" in full  # в файле — до пяти
+    # В файле сверху до пяти тестов, а в подробностях — все.
+    assert "[test_5](https://testops.example/testresult/5) и ещё 1 (список — в подробностях" in full
+    assert full.count("   - [test_") == 6 and "test_6" in full.split("## Подробности", 1)[1]
 
 
 # --- общий анализ и контекст --------------------------------------------------------
@@ -389,3 +391,80 @@ def test_what_first_sentence() -> None:
     analysis = ClusterAnalysis(raw="", what="Тест упал. Причина в другом.")
     assert analysis.what_first_sentence() == "Тест упал."
     assert report.CATEGORY_LABELS.keys() == {"тест", "приложение", "окружение", "данные", "неизвестно"}
+
+
+# --- report.md без сокращений -------------------------------------------------------
+
+
+LONG = "очень длинное слово " * 40  # заведомо больше любого консольного потолка
+
+
+def _long_texts() -> dict[str, str]:
+    return {
+        "what": f"Тест упал. {LONG.strip()}. Вторая мысль здесь.",
+        "cause": f"приложение — {LONG.strip()}.",
+        "fix": f"1. Первый шаг {LONG.strip()}.\n2. Второй шаг — тоже важен.",
+    }
+
+
+def _long_analysis(category_line: str | None = None) -> str:
+    text = _long_texts()
+    return (
+        f"ЧТО СЛОМАЛОСЬ: {text['what']}\n"
+        f"ПРИЧИНА: {category_line or text['cause']}\n"
+        f"КАК ИСПРАВИТЬ:\n{text['fix']}\n"
+    )
+
+
+def test_report_file_keeps_full_text_while_console_is_shortened(tmp_path: Path) -> None:
+    run = _run([3])
+    run["triage"]["failed_tests"][0]["name"] = "тест с очень длинным названием " * 10
+    console, full = _render(tmp_path, run, [_long_analysis()])
+    top = full.split("\n---\n", 1)[0]
+
+    assert "…" in console  # консоль короткая
+    assert "…" not in full  # в файле нет ни одного сокращения
+    text = _long_texts()
+    assert f"- Что случилось: {' '.join(text['what'].split())}" in top  # оба предложения
+    assert f"- Почему: {' '.join(text['cause'].split()[2:])}" in top
+    assert "- Что делать:\n   1. Первый шаг" in top and "   2. Второй шаг — тоже важен." in top
+    assert " ".join(("тест с очень длинным названием " * 10).split()) in top  # имя теста целиком
+
+
+def test_report_file_shows_every_problem_and_full_reasons(tmp_path: Path) -> None:
+    count = MAX_ITEMS_PER_SECTION + 3
+    run = _run([1] * count)
+    why = "нужен доступ к боевому стенду, " * 15
+    console, full = _render(
+        tmp_path, run, [TEST] * count, proposals={"01": _proposal("skip", why)}
+    )
+    top = full.split("\n---\n", 1)[0]
+    assert top.count("**Проблема ") == count  # файл — без «… и ещё N»
+    assert "… и ещё" not in top and "и др." not in top
+    assert f"агент решил не трогать код: {why.strip()}" in top
+    assert "агент решил не трогать код: " + why.strip() not in console  # в консоли обрезано
+    assert "проблемы 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11" in top  # обзор — все номера
+    assert "и др." in console
+
+
+def test_report_file_lists_all_tests_and_points_to_testops_beyond_the_cap(tmp_path: Path) -> None:
+    size = report.MAX_DETAIL_TESTS + 5
+    run = _run([size])
+    _, full = _render(tmp_path, run, [APP])
+    details = full.split("## Подробности по проблемам", 1)[1]
+    assert details.count("   - [test_") == report.MAX_DETAIL_TESTS
+    assert "   - и ещё 5 — полный список в TestOps: https://testops.example/launch/5" in details
+
+    run = _run([12])
+    _, full = _render(tmp_path, run, [APP])
+    assert full.split("## Подробности по проблемам", 1)[1].count("   - [test_") == 12
+
+
+def test_flagged_problem_raw_text_is_in_file_details(tmp_path: Path) -> None:
+    raw = "ПРИЧИНА: тест — " + LONG
+    run = _run([2])
+    console, full = _render(tmp_path, run, [raw], flagged={"01"})
+    assert "вот его начало:" in console and "…" in console
+    top, details = full.split("\n---\n", 1)
+    assert "его текст — в подробностях ниже" in top and "…" not in top
+    assert " ".join(LONG.split()) in " ".join(details.split())

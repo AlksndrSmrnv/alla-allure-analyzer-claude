@@ -140,7 +140,9 @@ def test_full_flow_until_done(project: Path, testops: FakeTestOps, capsys) -> No
     assert brief.index("возможная ошибка приложения") < brief.index("причина не ясна")
     assert "По категориям" not in brief and "[приложение]" not in brief
     report = (run_dir / "report.md").read_text(encoding="utf-8")
-    assert report.startswith(brief.rsplit("\n\nПолный отчёт:", 1)[0])
+    assert "Полный отчёт без сокращений: " in brief and str(run_dir / "report.md") in brief
+    # Шапка и «Коротко» в файле те же; ниже файл содержит тексты без сокращений.
+    assert report.startswith(brief.split("\n\n### Что делать", 1)[0])
     assert "## Подробности по проблемам" in report
     assert "- **Ошибка в TestOps:** expected: <200> but was: <500>" in report
     assert "[createOrder](https://testops.example/launch/777/testresult/101)" in report
