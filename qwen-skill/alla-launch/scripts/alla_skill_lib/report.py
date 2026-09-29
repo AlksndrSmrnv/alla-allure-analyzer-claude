@@ -284,7 +284,7 @@ def render_report(
         "---",
         "",
         "## Подробности по проблемам",
-        *_details(problems, tests),
+        *_details(problems, tests, not_proposed or {}),
         *_proposal_details(problems, proposals),
     ])
     return console, full + "\n"
@@ -454,10 +454,17 @@ def _item_title(problem: _Problem) -> str:
     return f"**Проблема {problem.number}** — {size} · {problem.label}"
 
 
-def _not_fixed_reason(problem: _Problem, not_proposed: dict[str, str]) -> str:
+def _not_fixed_reason(
+    problem: _Problem,
+    not_proposed: dict[str, str],
+    limit: int | None = MAX_CAUSE_CHARS,
+) -> str:
+    """Почему агент не правил тест сам; ``limit=None`` — целиком (для report.md)."""
     proposal = problem.proposal
     if proposal is not None and not proposal.is_fix:
-        why = _truncate(_one_line(proposal.why), MAX_CAUSE_CHARS)
+        why = _one_line(proposal.why)
+        if limit is not None:
+            why = _truncate(why, limit)
         return f"агент решил не трогать код: {why}"
     reason = not_proposed.get(problem.entry["file_id"])
     if reason:
@@ -501,7 +508,7 @@ def _history_lines(problem: _Problem) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _details(problems: list[_Problem], tests: _Tests) -> list[str]:
+def _details(problems: list[_Problem], tests: _Tests, not_proposed: dict[str, str]) -> list[str]:
     lines: list[str] = []
     for problem in problems:
         analysis = problem.analysis
@@ -520,6 +527,9 @@ def _details(problems: list[_Problem], tests: _Tests) -> list[str]:
             ]
             if analysis.code:
                 lines.append("- **Где в коде:** " + "; ".join(analysis.code))
+        if problem.bucket == MANUAL:
+            reason = _not_fixed_reason(problem, not_proposed, limit=None)
+            lines.append(f"- **Почему агент не правил сам:** {reason}")
         lines += _history_lines(problem)
         lines.append("- **Тесты:**")
         members = tests.of_cluster(problem.entry)

@@ -208,6 +208,29 @@ def test_manual_test_fix_explains_why_agent_did_not_fix(tmp_path: Path) -> None:
     assert "Агент может поправить сам" not in console
 
 
+def test_full_report_keeps_reason_for_problems_beyond_the_console_cap(tmp_path: Path) -> None:
+    count = MAX_ITEMS_PER_SECTION + 3
+    run = _run([1] * count)
+    long_why = "нужен доступ к боевому стенду, " * 15
+    console, full = _render(
+        tmp_path, run, [TEST] * count,
+        proposals={"09": _proposal("skip", long_why)},
+        not_proposed={"10": "лимит — не больше 5 предложений правок на один разбор",
+                      "11": "предложение правки не прошло проверку за 3 попытки и отброшено"},
+    )
+    manual = _section(console, "Автотест сломан, но править вручную")
+    assert "**Проблема 9**" not in manual  # в консоли — только первые пункты
+    details = full.split("## Подробности по проблемам", 1)[1]
+    for number, reason in (
+        ("09", f"агент решил не трогать код: {long_why.strip()}"),
+        ("10", "лимит — не больше 5 предложений правок на один разбор"),
+        ("11", "предложение правки не прошло проверку за 3 попытки и отброшено"),
+    ):
+        block = details.split(f"### Проблема {int(number)} ", 1)[1].split("### Проблема", 1)[0]
+        assert f"- **Почему агент не правил сам:** {reason}" in block
+    assert details.count("Почему агент не правил сам") == count  # у каждой проблемы раздела
+
+
 def test_applied_fix_is_marked(tmp_path: Path) -> None:
     run = _run([2])
     console, full = _render(tmp_path, run, [TEST], proposals={"01": _proposal()}, applied={"01"})
