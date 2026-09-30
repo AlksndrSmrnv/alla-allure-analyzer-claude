@@ -787,6 +787,35 @@ def test_proposal_parser_handles_bold_ticks_and_spaces(tmp_path: Path) -> None:
     assert proposal.why == "локатор устарел"
 
 
+def test_inline_before_after_in_single_backticks_keep_the_code(tmp_path: Path) -> None:
+    """``БЫЛО: `код` `` без жирного: апострофы — оформление, а не часть кода."""
+    (tmp_path / "T.java").write_text("a\n    page.click();\nb\n", encoding="utf-8")
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:2\n"
+        "БЫЛО: `    page.click();`\nСТАЛО: `    page.waitUntilReady(); page.click();`\n"
+        "ПОЧЕМУ: нет ожидания\n"
+    )
+    assert proposal.before == ["    page.click();"]
+    assert proposal.after == ["    page.waitUntilReady(); page.click();"]
+    assert validate_proposal(proposal, tmp_path) == []
+
+
+def test_fence_opened_on_the_header_line_is_not_code() -> None:
+    proposal = parse_proposal(
+        "РЕШЕНИЕ: исправить\nФАЙЛ: T.java:2\nБЫЛО: ```java\nx();\n```\n"
+        "СТАЛО: ```java\ny();\n```\nПОЧЕМУ: z\n"
+    )
+    assert proposal.before == ["x();"] and proposal.after == ["y();"]
+
+
+@pytest.mark.parametrize("decision", ["исправить | не трогать", "не трогать | исправить"])
+def test_copied_decision_template_is_not_a_decision(tmp_path: Path, decision: str) -> None:
+    """Шаблон «исправить | не трогать», скопированный дословно, молча читался как «не трогать»."""
+    proposal = parse_proposal(f"РЕШЕНИЕ: {decision}\nПОЧЕМУ: потому что\n")
+    assert proposal.decision == "?"
+    assert "«РЕШЕНИЕ:» должно быть «исправить» или «не трогать»" in validate_proposal(proposal, tmp_path)[0]
+
+
 def test_applied_place_nearer_to_the_line_wins_over_a_neighbouring_before(tmp_path: Path) -> None:
     """СТАЛО уже стоит у указанной строки, а такое же БЫЛО — в 10 строках дальше: соседний участок не трогать."""
     body = (

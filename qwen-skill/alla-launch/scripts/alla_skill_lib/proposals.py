@@ -38,8 +38,10 @@ DENIED_DIRS = frozenset({
 
 _HEADER_RE = re.compile(r"^(решение|файл|было|стало|почему)\s*:\s*(.*)$", re.IGNORECASE)
 _DECOR_RE = re.compile(r"^[\s#>*_`-]+")
+# После двоеточия съедаются только «*» и «_» (закрывающий ``**``): обратные апострофы —
+# часть кода в одну строку (``БЫЛО: `click()` ``), их снимает _strip_inline_ticks.
 _INLINE_CODE_RE = re.compile(
-    r"^[\s#>*_`\-]*(?:было|стало)\s*[*_`]*\s*:\s*[*_`]*[ \t]?(.*)$", re.IGNORECASE
+    r"^[\s#>*_`\-]*(?:было|стало)\s*[*_`]*\s*:\s*[*_]*[ \t]?(.*)$", re.IGNORECASE
 )
 _FENCE_RE = re.compile(r"^\s*```")
 _FILE_LINE_RE = re.compile(
@@ -155,6 +157,8 @@ def parse_proposal(text: str) -> Proposal:
                 # убраны ``**`` и «`», которые бывают в самом коде.
                 inline = _INLINE_CODE_RE.match(raw)
                 text_after = _strip_inline_ticks(inline.group(1)) if inline else ""
+                if text_after.lstrip().startswith("```"):
+                    text_after = ""  # «БЫЛО: ```java» — открытие блока кода, а не код
                 if text_after.strip():
                     buckets[current].append(text_after.rstrip())
             elif header.group(2).strip():
@@ -164,7 +168,10 @@ def parse_proposal(text: str) -> Proposal:
             buckets[current].append(raw.rstrip())
 
     decision_text = " ".join(buckets["решение"]).lower()
-    if "не трог" in decision_text or "не исправ" in decision_text or decision_text.startswith("нет"):
+    if "|" in decision_text:
+        # шаблон «исправить | не трогать», скопированный дословно, — выбора нет
+        decision = "?"
+    elif "не трог" in decision_text or "не исправ" in decision_text or decision_text.startswith("нет"):
         decision = "skip"
     elif "исправ" in decision_text:
         decision = "fix"

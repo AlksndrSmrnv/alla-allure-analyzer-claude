@@ -17,6 +17,7 @@ from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_core.services.prompt_builder_service import build_cluster_analysis_prompt
 
+from alla_skill_lib.agent_rules import ANALYSIS_FORMAT_REF, EXECUTOR_RULES, reference_line
 from alla_skill_lib.code_hints import CodeHint
 from alla_skill_lib.history import render_recurrence
 from alla_skill_lib.log_focus import focus_log
@@ -211,6 +212,7 @@ def build_cluster_task(
         "",
         "## Правила",
         RULES,
+        EXECUTOR_RULES,
         "",
         data_part,
         "",
@@ -234,6 +236,7 @@ def build_cluster_task(
     sections += ["", task_part, "", CODE_LINE_NOTE]
     if kb_matches:
         sections.append(KB_LINE_NOTE)
+    sections += ["", reference_line(ANALYSIS_FORMAT_REF)]
     return "\n".join(sections) + "\n"
 
 

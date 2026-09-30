@@ -26,8 +26,16 @@ def _chain(exc: BaseException) -> Iterator[BaseException]:
         current = current.__cause__ or current.__context__
 
 
+# Настройки и .env меняет пользователь: модель, получив «задай ALLURE_SSL_VERIFY=false»,
+# иначе сама отключила бы проверку TLS или полезла в файл с токеном.
+USER_ACTION_NOTE = (
+    "Это настройка пользователя: скажи ему, что нужно сделать, и остановись. "
+    "Не меняй .env и переменные окружения сам, содержимое .env не читай и не выводи."
+)
+
+
 def fetch_error_hint(exc: BaseException, settings: Settings, env_file: Path) -> str:
-    """Что сделать пользователю; пустая строка, если причина неизвестна."""
+    """Что должен сделать пользователь; пустая строка, если причина неизвестна."""
     causes = list(_chain(exc))
     texts = " ".join(str(item) for item in causes)
     if any(isinstance(item, ssl.SSLError) for item in causes) or "CERTIFICATE_VERIFY_FAILED" in texts:

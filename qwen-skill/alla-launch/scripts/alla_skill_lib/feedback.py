@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from alla_skill_lib import workspace as ws
+from alla_skill_lib.agent_rules import FEEDBACK_FORMAT_REF, reference_line
 from alla_skill_lib.analysis_format import parse_analysis, validate_analysis
 from alla_skill_lib.kb import (
     CATEGORY_TO_KB,
@@ -256,6 +257,7 @@ def _fix_body(
         f"Запиши или исправь файл: {paths.feedback(file_id)}",
         "Формат:",
         FEEDBACK_FORMAT,
+        reference_line(FEEDBACK_FORMAT_REF),
         f"Затем выполни: {ws.skill_command(*retry)}",
     ])
 

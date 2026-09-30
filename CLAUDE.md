@@ -64,6 +64,21 @@ TestOps.
   `fix`/`analyze` по одному (лимит попыток прежний). Хвост меньше порога, `fix`,
   `propose`, `summary` — по-старому. `next --workers N` (1–`MAX_WORKERS`=8;
   `--serial` = 1) сохраняется в `state.json`; это запасной путь без субагентов.
+- Правила исполнителя и справочники: агент ведёт разбор строго по сценарию — не
+  правит файлы скилла, не пишет своих скриптов, о неполадках скилла сообщает блоком
+  «Проблемы скилла» (`SKILL.md`, `references/problem-report.md`). Защита только
+  текстовая; один и тот же текст правил — `alla_skill_lib/agent_rules.py`
+  (`EXECUTOR_RULES`), он подставляется в `clusters/NN.md`, `batches/N.md` и
+  `summary_task.md` и повторён в `SKILL.md`. Форматы файлов, которые пишет агент,
+  описаны в `references/`: `analysis-format.md` (`analyses/NN.md`),
+  `proposal-format.md` (`proposals/NN.md`), `summary-format.md` (`summary.md`),
+  `feedback.md` (`feedback/NN.md`), а `protocol.md` — статусы, лимиты попыток и
+  разграничение файлов. Шаблоны из констант кода (`EXPECTED_FORMAT`,
+  `PROPOSAL_FORMAT`, `FEEDBACK_FORMAT`) вставлены в справочники дословно, примеры с
+  пометкой `<!-- example: … -->` прогоняет через настоящие парсеры
+  `tests/test_skill_docs.py`: меняя формат или текст ошибки в коде, правьте справочник
+  (тест покажет расхождение). Ответ `fix` на предпоследней попытке предупреждает, что
+  третья версия разбора принимается с пометкой «формат нарушен».
 - `scripts/alla_core/` — **GENERATED** копия чистых модулей `src/alla`
   (клиент TestOps, триаж, логи, кластеризация, prompt builder, стабильная
   сигнатура `knowledge/feedback_signature.py`) с импортами

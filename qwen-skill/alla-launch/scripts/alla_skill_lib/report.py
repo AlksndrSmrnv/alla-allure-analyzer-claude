@@ -22,6 +22,7 @@ from alla_core.models.llm import LLMAnalysisResult, LLMClusterAnalysis
 from alla_core.models.testops import TriageReport
 from alla_core.services.prompt_builder_service import build_launch_summary_prompt
 
+from alla_skill_lib.agent_rules import EXECUTOR_RULES, SUMMARY_FORMAT_REF, reference_line
 from alla_skill_lib.analysis_format import ClusterAnalysis
 from alla_skill_lib.cluster_task import UNTRUSTED_NOTE, split_prompt
 from alla_skill_lib.history import format_date
@@ -230,11 +231,14 @@ def build_summary_task(
         "",
         "## Правила",
         SUMMARY_RULES,
+        EXECUTOR_RULES,
         "",
         data_part,
         "",
         "## Задание",
         SUMMARY_TASK,
+        "",
+        reference_line(SUMMARY_FORMAT_REF, "Формат итога с примером"),
     ]) + "\n"
 
 

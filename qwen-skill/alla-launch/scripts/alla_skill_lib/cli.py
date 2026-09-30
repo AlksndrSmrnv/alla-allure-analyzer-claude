@@ -37,6 +37,16 @@ import httpx
 from alla_core.config import Settings
 from alla_core.exceptions import AllaError, ConfigurationError
 from alla_skill_lib import workspace as ws
+from alla_skill_lib.agent_rules import (
+    ANALYSIS_FORMAT_REF,
+    FEEDBACK_FORMAT_REF,
+    MAX_PROJECT_FILES,
+    PROBLEM_PREFIX,
+    PROBLEM_REPORT_REF,
+    PROPOSAL_FORMAT_REF,
+    SUMMARY_FORMAT_REF,
+    reference_line,
+)
 from alla_skill_lib.analysis_format import (
     EXPECTED_FORMAT,
     ClusterAnalysis,
@@ -55,7 +65,7 @@ from alla_skill_lib.cluster_task import (
     select_log_and_trace,
 )
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
-from alla_skill_lib.errors import fetch_error_hint
+from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
 from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, reject
 from alla_skill_lib.history import append_run, load_history, recurrence, run_records
 from alla_skill_lib.kb import (
@@ -114,6 +124,18 @@ PROPOSAL_RULES = """\
 добавлять sleep или увеличивать таймауты. Сомневаешься — «не трогать».
 Файлы проекта сейчас НЕ меняй: правку применит команда apply после согласия
 пользователя."""
+LAST_ATTEMPT_ANALYSIS = (
+    "Это последняя попытка: если и она не пройдёт проверку, разбор останется как есть, "
+    "а в отчёте у проблемы будет пометка «формат нарушен»."
+)
+LAST_ATTEMPT_PROPOSAL = (
+    "Это последняя попытка: если и она не пройдёт проверку, предложение правки "
+    "будет отброшено, а в отчёте останется пометка."
+)
+FORMAT_MISMATCH_NOTE = (
+    "Если файл точно соответствует справочнику формата, а проверка его отклоняет, это "
+    f"неполадка скилла: не обходи её, продолжай по сценарию и в конце сообщи «{PROBLEM_PREFIX} …»."
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -132,6 +154,10 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "Подробности (traceback) — в stderr. Покажи это пользователю и остановись; "
             "команду вслепую не повторяй."
+        )
+        print(
+            "Это ошибка самого скилла: сообщи о ней блоком «Проблемы скилла» (SKILL.md, "
+            f"«{PROBLEM_PREFIX} …»). Файлы скилла не правь и обходных скриптов не пиши."
         )
         return 1
 
@@ -336,8 +362,8 @@ def cmd_prepare(
         print("STATUS: error")
         print(f"Ошибка конфигурации: {exc}")
         print(
-            f"Заполни {env_file} по образцу .env.example или задай переменные "
-            "окружения ALLURE_ENDPOINT и ALLURE_TOKEN. Содержимое .env не читай и не выводи."
+            f"Пользователю нужно заполнить {env_file} по образцу .env.example или задать "
+            "переменные окружения ALLURE_ENDPOINT и ALLURE_TOKEN. " + USER_ACTION_NOTE
         )
         return 2
 
@@ -391,6 +417,7 @@ def _fetch_failed(
     hint = fetch_error_hint(exc, settings, env_file)
     if hint:
         print(hint)
+        print(USER_ACTION_NOTE)
     return 1
 
 
@@ -791,10 +818,13 @@ def _proposal_step(
             f"проверку (попытка {attempt} из {MAX_FIX_ATTEMPTS}):",
             *(f"- {error}" for error in errors),
             *([UNCHANGED_NOTE] if unchanged >= 2 else []),
+            *([LAST_ATTEMPT_PROPOSAL] if attempt == MAX_FIX_ATTEMPTS - 1 else []),
             f"Исправь файл: {path}",
             "Если уверенности нет — запиши «РЕШЕНИЕ: не трогать» и «ПОЧЕМУ: …».",
             "Формат:",
             PROPOSAL_FORMAT,
+            reference_line(PROPOSAL_FORMAT_REF),
+            FORMAT_MISMATCH_NOTE,
             f"Затем выполни: {paths.next_command()}",
         ])
     return None
@@ -869,6 +899,7 @@ def _analyze_body(
         f"{_cluster_caption(entry, position, total)}. {progress}.",
         f"1. Прочитай задание: {paths.cluster_task(entry['file_id'])}",
         f"2. Запиши разбор в файл: {paths.analysis(entry['file_id'])}",
+        reference_line(ANALYSIS_FORMAT_REF, "   Формат с примерами (прочитай один раз)"),
         f"3. Выполни: {paths.next_command()}",
     ])
 
@@ -904,8 +935,9 @@ def _batch_body(
         ]
     lines += [
         "2. Дождись, пока завершатся все субагенты. Их ответы не пересказывай и не перепроверяй: "
-        "проверку сделает next. Один и тот же пакет повторно не выдаётся: что субагенты не "
-        "запишут, разберётся по одному.",
+        "проверку сделает next. Исключение — строки «Проблема скилла: …» в ответах: запомни их "
+        "дословно для итогового блока «Проблемы скилла». Один и тот же пакет повторно не "
+        "выдаётся: что субагенты не запишут, разберётся по одному.",
         f"3. Выполни: {paths.next_command()}",
         "Если инструмента agent нет или запустить субагентов не получилось — не пиши свои циклы, "
         "а переключись на разбор по одному: "
@@ -930,10 +962,13 @@ def _fix_body(
         *(f"- {error}" for error in errors),
         parse_summary(analysis),
         *([UNCHANGED_NOTE] if unchanged >= 2 else []),
+        *([LAST_ATTEMPT_ANALYSIS] if attempt == MAX_FIX_ATTEMPTS - 1 else []),
         f"Исправь файл: {paths.analysis(entry['file_id'])}",
         f"Задание кластера: {paths.cluster_task(entry['file_id'])}",
         "Ожидаемый формат:",
         EXPECTED_FORMAT,
+        reference_line(ANALYSIS_FORMAT_REF),
+        FORMAT_MISMATCH_NOTE,
         f"Затем выполни: {paths.next_command()}",
     ])
 
@@ -943,11 +978,13 @@ def _propose_body(paths: ws.RunPaths, entry: dict[str, Any], position: int, tota
         f"{_cluster_caption(entry, position, total)}: по разбору виноват автотест. "
         "Реши, можно ли исправить его код.",
         PROPOSAL_RULES,
-        f"1. Посмотри код из строки «КОД:» разбора: {paths.analysis(entry['file_id'])}",
+        f"1. Посмотри код из строки «КОД:» разбора (не больше {MAX_PROJECT_FILES} файлов, "
+        f"только чтение): {paths.analysis(entry['file_id'])}",
         f"2. Запиши решение в файл: {paths.proposal(entry['file_id'])}",
         "Формат:",
         PROPOSAL_FORMAT,
         "Для «не трогать» достаточно РЕШЕНИЕ и ПОЧЕМУ.",
+        reference_line(PROPOSAL_FORMAT_REF),
         f"3. Выполни: {paths.next_command()}",
     ])
 
@@ -957,6 +994,7 @@ def _summary_body(paths: ws.RunPaths, total: int) -> str:
         f"Все кластеры разобраны ({total}). Осталось написать общий анализ прогона.",
         f"1. Прочитай задание: {paths.summary_task}",
         f"2. Запиши общий анализ в файл: {paths.summary}",
+        reference_line(SUMMARY_FORMAT_REF, "   Формат итога с примером"),
         f"3. Выполни: {paths.next_command()}",
     ])
 
@@ -975,6 +1013,8 @@ def _done_body(
         REPORT_BEGIN,
         console,
         REPORT_END,
+        "Если по ходу работы были неполадки скилла (SKILL.md, «Проблемы скилла») — после отчёта "
+        "добавь отдельный блок «Проблемы скилла». " + reference_line(PROBLEM_REPORT_REF, "Формат блока"),
     ]
     if fixes or feedback:
         lines.append("После отчёта:")
@@ -992,6 +1032,7 @@ def _done_body(
             "разбор) — сохрани их. Файл обратной связи пиши со слов пользователя, не додумывай; "
             "формат:",
             *(f"    {line}" for line in FEEDBACK_FORMAT.splitlines()),
+            reference_line(FEEDBACK_FORMAT_REF, "  Правила и пример"),
             "  Команды для ЭТОГО разбора (всегда с этим --run):",
             f"  файл обратной связи: {paths.root / 'feedback'}/NN.md",
             f"  {ws.skill_command('remember', 'N', '--run', run)}",
@@ -1165,7 +1206,7 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
         print("STATUS: error")
         print(*lines, sep="\n")
         print(f"Ошибка конфигурации: {exc}")
-        print(f"Заполни {env_file} по образцу .env.example. Содержимое .env не читай и не выводи.")
+        print(f"Пользователю нужно заполнить {env_file} по образцу .env.example. " + USER_ACTION_NOTE)
         return 2
     lines += [
         f"ALLURE_ENDPOINT: {settings.endpoint}",
@@ -1184,6 +1225,7 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
         hint = fetch_error_hint(exc, settings, env_file)
         if hint:
             print(hint)
+            print(USER_ACTION_NOTE)
         return 1
     print("STATUS: ready")
     print(*lines, sep="\n")

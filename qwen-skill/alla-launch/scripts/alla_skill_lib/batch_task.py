@@ -13,6 +13,12 @@ from __future__ import annotations
 from typing import Any
 
 from alla_skill_lib import workspace as ws
+from alla_skill_lib.agent_rules import (
+    ANALYSIS_FORMAT_REF,
+    EXECUTOR_RULES,
+    PROBLEM_PREFIX,
+    reference_line,
+)
 from alla_skill_lib.analysis_format import EXPECTED_FORMAT
 from alla_skill_lib.cluster_task import UNTRUSTED_NOTE
 
@@ -72,6 +78,7 @@ def render_batch_task(
         "",
         "## Формат разбора",
         EXPECTED_FORMAT,
+        reference_line(ANALYSIS_FORMAT_REF),
         "",
         "## Нельзя",
         "- Выполнять команды скилла, кроме проверки выше: next, skip, apply, revert, "
@@ -82,8 +89,12 @@ def render_batch_task(
         "(не через echo, cat или heredoc).",
         "- Разбирать кластеры не из этого пакета.",
         "",
+        "## Правила исполнителя",
+        EXECUTOR_RULES,
+        "",
         "## Ответ основному агенту",
         "Одной строкой, без пересказа разборов: «Готово: 03, 04.» или "
-        "«Готово: 03, 04. Не прошли проверку: 05 — причина.»",
+        "«Готово: 03, 04. Не прошли проверку: 05 — причина.» Если заметил неполадку "
+        f"скилла — добавь в конец строки «{PROBLEM_PREFIX} <где и что не так>».",
     ]
     return "\n".join(lines) + "\n"
