@@ -5,10 +5,11 @@
 что нужно править вручную и что похоже на стенд или данные. Раздел определяет
 код (категория разбора и наличие принятой правки), а не модель.
 
-Краткий текст (шапка, общий анализ, разделы с проблемами) агент выводит
-пользователю; ``report.md`` содержит его же плюс подробности по каждой
-проблеме. Потолки на число пунктов и длину строк держат вывод небольшим —
-он повторно попадает в контекст модели при каждом ``next``.
+В терминал агент выводит краткий разбор: шапка, общий анализ и по одной строке
+на проблему в каждом разделе, а в конце — ссылка на ``report.md``. Полный разбор
+(тексты целиком, все шаги, все тесты, правки БЫЛО/СТАЛО) лежит в ``report.md``.
+Краткий текст повторно попадает в контекст модели при каждом ``next``, поэтому
+на него действуют потолки; файл в контекст не попадает и ничем не ограничен.
 """
 
 from __future__ import annotations
@@ -29,19 +30,16 @@ from alla_skill_lib.workspace import RunPaths
 
 MAX_FLAGGED_SUMMARY_CHARS = 300
 FEEDBACK_INVITATION = (
-    "Обратная связь: если причина определена неверно или вы знаете точную — назовите "
-    "номер проблемы и что на самом деле. Я сохраню это в базу знаний проекта "
-    "(alla-kb/), и в следующих разборах это будет учтено."
+    "Обратная связь: если причина указана неверно или вы знаете точную — назовите номер "
+    "проблемы и что на самом деле, я сохраню это в базу знаний проекта (alla-kb/)."
 )
-MAX_ITEMS_PER_SECTION = 8
-MAX_LISTED_NUMBERS = 8
-MAX_ITEM_TESTS = 2
+# Краткий разбор в терминале: по строке на проблему, не больше пяти на раздел.
+MAX_BRIEF_ITEMS = 5
+BRIEF_TEXT_CHARS = 160
+BRIEF_WARNING_CHARS = 140
 MAX_REPORT_TESTS = 5
 # Подробности в report.md: список тестов проблемы целиком, но не бесконечный.
 MAX_DETAIL_TESTS = 200
-MAX_CAUSE_CHARS = 220
-MAX_WHAT_CHARS = 200
-MAX_TEST_NAME_CHARS = 80
 # Общий анализ: подробный разбор — у самых больших проблем, у остальных — одна строка.
 MAX_SUMMARY_DETAILED = 30
 SUMMARY_SHORT_CAUSE_CHARS = 160
@@ -108,25 +106,6 @@ CATEGORY_LABELS = {
     "неизвестно": "причина не ясна",
 }
 FLAGGED_LABEL = "причина не ясна — разбор не прошёл проверку формата"
-
-
-@dataclass(frozen=True)
-class _View:
-    """Как показывать отчёт.
-
-    Консольный текст короткий: модель повторяет его дословно и получает снова при
-    каждом ``next``, поэтому длинные поля обрезаются. ``report.md`` в контекст не
-    попадает — там тексты приведены целиком, без многоточий.
-    """
-
-    full: bool
-
-    def clip(self, text: str, limit: int) -> str:
-        return text if self.full else _truncate(text, limit)
-
-
-CONSOLE = _View(full=False)
-FILE = _View(full=True)
 
 
 @dataclass
@@ -294,34 +273,44 @@ def render_report(
         for entry in run["clusters"]
     ]
     reasons = not_proposed or {}
+    link = _report_link(paths)
 
-    def top(view: _View) -> list[str]:
-        lines = _header(run)
-        lines += ["", "### Коротко", summary.strip()]
-        lines += ["", *_overview(problems, view)]
-        for bucket, title, _, hint in SECTIONS:
-            group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
-            if group:
-                lines += ["", *_section(title, hint, group, tests, reasons, view)]
-        if notes:
-            lines += ["", "### Замечания", *(f"- {note}" for note in notes)]
-        return [*lines, "", FEEDBACK_INVITATION]
+    brief = _header(run)
+    brief += ["", "### Коротко", summary.strip()]
+    for bucket, title, _, _ in SECTIONS:
+        group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
+        if group:
+            brief += ["", *_brief_section(title, group)]
+    if notes:
+        brief += ["", "### Замечания", *(f"- {note}" for note in notes)]
+    brief += ["", FEEDBACK_INVITATION, "", link]
 
-    console = "\n".join([
-        *top(CONSOLE),
+    full = _header(run)
+    full += ["", "### Коротко", summary.strip()]
+    full += ["", *_overview(problems)]
+    for bucket, title, _, hint in SECTIONS:
+        group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
+        if group:
+            full += ["", *_section(title, hint, group, tests, reasons)]
+    if notes:
+        full += ["", "### Замечания", *(f"- {note}" for note in notes)]
+    full += [
         "",
-        f"Строки с «…» и часть пунктов сокращены. Полный отчёт без сокращений: {paths.report}",
-    ])
-    full = "\n".join([
-        *top(FILE),
+        FEEDBACK_INVITATION,
         "",
         "---",
         "",
         "## Подробности по проблемам",
         *_details(problems, tests, reasons, run["launch_url"]),
         *_proposal_details(problems, proposals),
-    ])
-    return console, full + "\n"
+    ]
+    return "\n".join(brief), "\n".join(full) + "\n"
+
+
+def _report_link(paths: RunPaths) -> str:
+    """Ссылка на полный разбор: кликабельная ``file://`` и путь, который можно скопировать."""
+    report = paths.report.absolute()
+    return f"Полный разбор со всеми подробностями: [{report.name}]({report.as_uri()})\nФайл: {report}"
 
 
 def render_green_report(run: dict[str, Any], paths: RunPaths) -> tuple[str, str]:
@@ -332,7 +321,7 @@ def render_green_report(run: dict[str, Any], paths: RunPaths) -> tuple[str, str]
     else:
         message = "Упавших тестов нет — разбирать нечего."
     lines = [*_header(run), "", message]
-    console = "\n".join([*lines, "", f"Полный отчёт: {paths.report}"])
+    console = "\n".join([*lines, "", _report_link(paths)])
     return console, "\n".join(lines) + "\n"
 
 
@@ -399,7 +388,7 @@ def _header(run: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _overview(problems: list[_Problem], view: _View) -> list[str]:
+def _overview(problems: list[_Problem]) -> list[str]:
     lines = ["### Что делать"]
     for bucket, _, overview, _ in SECTIONS:
         group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
@@ -408,15 +397,14 @@ def _overview(problems: list[_Problem], view: _View) -> list[str]:
         tests = sum(p.size for p in group)
         lines.append(
             f"- {overview}: {len(group)} {_plural(len(group), 'проблема', 'проблемы', 'проблем')} "
-            f"({tests} {_plural(tests, 'тест', 'теста', 'тестов')}) — {_numbers(group, view)}"
+            f"({tests} {_plural(tests, 'тест', 'теста', 'тестов')}) — {_numbers(group)}"
         )
     return lines
 
 
-def _numbers(group: list[_Problem], view: _View) -> str:
-    shown = group if view.full else group[:MAX_LISTED_NUMBERS]
+def _numbers(group: list[_Problem]) -> str:
     word = "проблема" if len(group) == 1 else "проблемы"
-    return f"{word} {', '.join(str(p.number) for p in shown)}" + (" и др." if len(shown) < len(group) else "")
+    return f"{word} {', '.join(str(p.number) for p in group)}"
 
 
 def _section(
@@ -425,46 +413,28 @@ def _section(
     group: list[_Problem],
     tests: _Tests,
     not_proposed: dict[str, str],
-    view: _View,
 ) -> list[str]:
     lines = [f"### {title} ({len(group)})", hint]
-    shown = group if view.full else group[:MAX_ITEMS_PER_SECTION]
-    for problem in shown:
-        lines += ["", *_item(problem, tests, not_proposed, view)]
-    rest = group[len(shown):]
-    if rest:
-        numbers = ", ".join(str(p.number) for p in rest[:MAX_LISTED_NUMBERS])
-        more = "…" if len(rest) > MAX_LISTED_NUMBERS else ""
-        lines += ["", f"… и ещё {len(rest)} (проблемы {numbers}{more}) — подробности в полном отчёте."]
+    for problem in group:
+        lines += ["", *_item(problem, tests, not_proposed)]
     return lines
 
 
-def _item(
-    problem: _Problem,
-    tests: _Tests,
-    not_proposed: dict[str, str],
-    view: _View,
-) -> list[str]:
+def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> list[str]:
     analysis = problem.analysis
     lines = [_item_title(problem)]
     if problem.flagged:
-        lines.append(
-            "- Разбор не прошёл проверку формата, его текст — в подробностях ниже."
-            if view.full
-            else "- Разбор не прошёл проверку формата, вот его начало: "
-            + _truncate(_one_line(analysis.raw), MAX_CAUSE_CHARS)
-        )
+        lines.append("- Разбор не прошёл проверку формата, его текст — в подробностях ниже.")
     else:
-        what = _one_line(analysis.what) if view.full else analysis.what_first_sentence()
+        what = _one_line(analysis.what)
         if what:
-            lines.append(f"- Что случилось: {view.clip(what, MAX_WHAT_CHARS)}")
+            lines.append(f"- Что случилось: {what}")
         if problem.bucket == AGENT and problem.proposal is not None:
-            why = view.clip(_one_line(problem.proposal.why), MAX_CAUSE_CHARS)
-            lines.append(f"- Почему это ошибка теста: {why}")
+            lines.append(f"- Почему это ошибка теста: {_one_line(problem.proposal.why)}")
         else:
             reason = _one_line(analysis.cause_reason)
             if reason:
-                lines.append(f"- Почему: {view.clip(reason, MAX_CAUSE_CHARS)}")
+                lines.append(f"- Почему: {reason}")
     if problem.bucket == AGENT and problem.proposal is not None:
         lines += [
             f"- Обратите внимание: {warning}"
@@ -476,26 +446,73 @@ def _item(
             else "- Статус: ждёт вашего «да» — агент покажет изменения перед записью"
         )
     elif not problem.flagged:
-        lines += _fix_lines(analysis, view)
+        lines += _fix_lines(analysis)
     if problem.bucket == MANUAL:
-        reason = _not_fixed_reason(problem, not_proposed, view)
-        lines.append(f"- Почему агент не правил сам: {reason}")
-    listed = _test_links(tests.of_cluster(problem.entry), problem.size, view)
+        lines.append(f"- Почему агент не правил сам: {_not_fixed_reason(problem, not_proposed)}")
+    listed = _test_links(tests.of_cluster(problem.entry), problem.size)
     if listed:
         lines.append(f"- Тесты: {listed}")
     lines += _history_lines(problem)
     return lines
 
 
-def _fix_lines(analysis: ClusterAnalysis, view: _View) -> list[str]:
-    """«Что делать»: в консоли первый шаг, в файле — все шаги разбора."""
-    if not view.full:
-        step = analysis.first_fix_step()
-        return [f"- Что делать: {_truncate(step, MAX_CAUSE_CHARS)}"] if step else []
+def _fix_lines(analysis: ClusterAnalysis) -> list[str]:
+    """«Что делать»: все шаги разбора."""
     steps = [line for line in analysis.fix.splitlines() if line.strip()]
     if len(steps) <= 1:
         return [f"- Что делать: {_one_line(analysis.fix)}"] if steps else []
     return ["- Что делать:", *(f"   {line.strip()}" for line in steps)]
+
+
+# --- краткий разбор для терминала -------------------------------------------
+
+
+def _brief_section(title: str, group: list[_Problem]) -> list[str]:
+    lines = [f"### {title} ({len(group)})"]
+    for problem in group[:MAX_BRIEF_ITEMS]:
+        lines += _brief_item(problem)
+    rest = group[MAX_BRIEF_ITEMS:]
+    if rest:
+        numbers = ", ".join(str(p.number) for p in rest)
+        lines.append(f"- … и ещё {len(rest)} (проблемы {numbers}) — в полном разборе")
+    return lines
+
+
+def _brief_item(problem: _Problem) -> list[str]:
+    """Проблема одной строкой (для правки — плюс строка «Проверьте», если она есть)."""
+    size = f"{problem.size} {_plural(problem.size, 'тест', 'теста', 'тестов')}"
+    head = f"- **Проблема {problem.number}** · {size} · "
+    extra: list[str] = []
+    proposal = problem.proposal
+    if problem.bucket == AGENT and proposal is not None:
+        location = f"{proposal.file}:{proposal.line}" if proposal.line else str(proposal.file)
+        status = "уже применено" if problem.applied else "ждёт вашего «да»"
+        line = f"{head}`{location}` — {_truncate(_one_line(proposal.why), BRIEF_TEXT_CHARS)} ({status})"
+        extra = [
+            f"  Проверьте: {_truncate(warning, BRIEF_WARNING_CHARS)}"
+            for warning in weakening_warnings(proposal.before, proposal.after)[:1]
+        ]
+    else:
+        line = head + problem.label
+        what = "" if problem.flagged else problem.analysis.what_first_sentence()
+        if what:
+            line += f" — {_truncate(what, BRIEF_TEXT_CHARS)}"
+    tags = _brief_tags(problem)
+    return [line + "".join(f" · {tag}" for tag in tags), *extra]
+
+
+def _brief_tags(problem: _Problem) -> list[str]:
+    tags: list[str] = []
+    history = problem.entry.get("history")
+    if history:
+        launches = history["launches"]
+        tags.append(
+            f"повторяется (уже была в {launches} "
+            f"{_plural(launches, 'другом прогоне', 'других прогонах', 'других прогонах')})"
+        )
+    if not problem.flagged and problem.analysis.kb_ref:
+        tags.append(f"известная проблема: {problem.analysis.kb_ref}")
+    return tags
 
 
 def _item_title(problem: _Problem) -> str:
@@ -507,12 +524,8 @@ def _item_title(problem: _Problem) -> str:
     return f"**Проблема {problem.number}** — {size} · {problem.label}"
 
 
-def _not_fixed_reason(
-    problem: _Problem,
-    not_proposed: dict[str, str],
-    view: _View = FILE,
-) -> str:
-    """Почему агент не правил тест сам (в консоли обрезано, в файле — целиком)."""
+def _not_fixed_reason(problem: _Problem, not_proposed: dict[str, str]) -> str:
+    """Почему агент не правил тест сам."""
     proposal = problem.proposal
     if proposal is not None and proposal.is_fix and problem.state == "unknown":
         location = f"{proposal.file}:{proposal.line}" if proposal.line else str(proposal.file)
@@ -522,8 +535,7 @@ def _not_fixed_reason(
             "apply повторно её не применит"
         )
     if proposal is not None and not proposal.is_fix:
-        why = view.clip(_one_line(proposal.why), MAX_CAUSE_CHARS)
-        return f"агент решил не трогать код: {why}"
+        return f"агент решил не трогать код: {_one_line(proposal.why)}"
     reason = not_proposed.get(problem.entry["file_id"])
     if reason:
         return reason
@@ -532,17 +544,16 @@ def _not_fixed_reason(
     return "правка не предлагалась"
 
 
-def _test_links(tests: list[dict[str, Any]], total: int, view: _View) -> str:
-    limit = MAX_REPORT_TESTS if view.full else MAX_ITEM_TESTS
-    text = ", ".join(_test_link(test, view) for test in tests[:limit])
-    rest = total - min(len(tests), limit)
+def _test_links(tests: list[dict[str, Any]], total: int) -> str:
+    text = ", ".join(_test_link(test) for test in tests[:MAX_REPORT_TESTS])
+    rest = total - min(len(tests), MAX_REPORT_TESTS)
     if text and rest > 0:
-        text += f" и ещё {rest}" + (" (список — в подробностях ниже)" if view.full else "")
+        text += f" и ещё {rest} (список — в подробностях ниже)"
     return text
 
 
-def _test_link(test: dict[str, Any], view: _View = FILE) -> str:
-    name = view.clip(_one_line(str(test.get("name") or test["test_result_id"])), MAX_TEST_NAME_CHARS)
+def _test_link(test: dict[str, Any]) -> str:
+    name = _one_line(str(test.get("name") or test["test_result_id"]))
     return f"[{name}]({test['link']})" if test.get("link") else name
 
 
@@ -591,13 +602,13 @@ def _details(
             if analysis.code:
                 lines.append("- **Где в коде:** " + "; ".join(analysis.code))
         if problem.bucket == MANUAL:
-            reason = _not_fixed_reason(problem, not_proposed, FILE)
+            reason = _not_fixed_reason(problem, not_proposed)
             lines.append(f"- **Почему агент не правил сам:** {reason}")
         lines += _history_lines(problem)
         lines.append("- **Тесты:**")
         members = tests.of_cluster(problem.entry)
         for test in members[:MAX_DETAIL_TESTS]:
-            lines.append(f"   - {_test_link(test, FILE)}")
+            lines.append(f"   - {_test_link(test)}")
         if problem.size > len(members[:MAX_DETAIL_TESTS]):
             hidden = problem.size - len(members[:MAX_DETAIL_TESTS])
             lines.append(f"   - и ещё {hidden} — полный список в TestOps: {launch_url}")
