@@ -99,6 +99,40 @@ def default_launch(launch_id: int = 777) -> LaunchFixture:
     )
 
 
+_WORDS = (
+    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india",
+    "juliet", "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo",
+    "sierra", "tango", "uniform", "victor", "whiskey", "xray", "yankee", "zulu",
+)
+
+
+def many_launch(count: int, launch_id: int = 900) -> LaunchFixture:
+    """Прогон из ``count`` падений, каждое — свой кластер (у всех разные шаг и сообщение)."""
+    results: list[dict[str, Any]] = []
+    executions: dict[int, list[dict[str, Any]]] = {}
+    for index in range(count):
+        word = _WORDS[index % len(_WORDS)] + _WORDS[(index // len(_WORDS)) % len(_WORDS)]
+        result_id = 1000 + index
+        message = f"{word} service returned {index} unexpected records for {word} account"
+        results.append({
+            "id": result_id,
+            "name": f"check_{word}",
+            "fullName": f"ru.company.misc.{word.title()}Test.check_{word}",
+            "status": "failed",
+            "statusDetails": {"message": message, "trace": f"java.lang.IllegalStateException: {message}\n"},
+        })
+        executions[result_id] = [{
+            "name": f"Step {word} {'x' * (index % 7)} {index * 37}",
+            "status": "failed",
+            "statusDetails": {"message": message},
+        }]
+    return LaunchFixture(
+        launch={"id": launch_id, "name": "Big regression", "projectId": 5},
+        results=results,
+        executions=executions,
+    )
+
+
 def green_launch() -> LaunchFixture:
     return LaunchFixture(
         launch={"id": 778, "name": "Smoke", "projectId": 5},

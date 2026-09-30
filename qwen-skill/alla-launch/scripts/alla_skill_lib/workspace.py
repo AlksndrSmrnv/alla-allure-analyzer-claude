@@ -97,6 +97,10 @@ class RunPaths:
     def analysis(self, file_id: str) -> Path:
         return self.analyses_dir / f"{file_id}.md"
 
+    def batch(self, number: int) -> Path:
+        """Задание субагенту на пакет кластеров (создаётся при первом пакетном ``next``)."""
+        return self.root / "batches" / f"{number}.md"
+
     def evidence(self, file_id: str) -> Path:
         return self.root / "evidence" / f"{file_id}.txt"
 

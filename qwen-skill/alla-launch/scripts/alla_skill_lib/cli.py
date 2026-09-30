@@ -3,15 +3,18 @@
 * ``prepare <launch_id|URL>`` — получить прогон из TestOps, кластеризовать
   падения, сопоставить с базой знаний проекта и историей, разложить задания;
   неоконченный разбор того же прогона продолжает (``--fresh`` — начать заново);
-* ``next [run_dir]`` — конечный автомат: смотрит на файлы в папке разбора и
-  печатает, что агенту делать дальше;
+* ``next [run_dir] [--workers N | --serial]`` — конечный автомат: смотрит на файлы в
+  папке разбора и печатает, что агенту делать дальше; когда кластеров без разбора много
+  (``PARALLEL_MIN_PENDING`` и больше), раздаёт их пакетами субагентам (``analyze_batch``);
+* ``verify NN [NN…] --run DIR`` — только читающая проверка разборов (для субагентов пакета);
 * ``skip NN`` — пропустить кластер по просьбе пользователя;
 * ``remember NN`` / ``reject NN <id>`` — обратная связь в базу знаний проекта;
 * ``apply NN [--yes --diff ХЭШ] [--repeat]`` / ``revert NN`` — показать, применить или откатить правку автотеста;
 * ``check`` — проверить окружение и доступ к TestOps; ``clean`` — удалить старые разборы.
 
 Первая строка вывода всегда ``STATUS: <статус>``:
-analyze | fix | propose | summary | done | diff | applied | reverted | saved | ready | error.
+analyze | analyze_batch | fix | propose | summary | done | diff | applied | reverted | saved |
+ok | ready | error.
 Код возврата 0 всегда, кроме ``error``: статус с инструкцией — не авария.
 """
 
@@ -35,11 +38,13 @@ from alla_core.config import Settings
 from alla_core.exceptions import AllaError, ConfigurationError
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.analysis_format import (
+    EXPECTED_FORMAT,
     ClusterAnalysis,
     parse_analysis,
     parse_summary,
     validate_analysis,
 )
+from alla_skill_lib.batch_task import render_batch_task
 from alla_skill_lib.cluster_task import (
     build_cluster_task,
     failed_prepare_analysis,
@@ -78,19 +83,17 @@ logger = logging.getLogger(__name__)
 
 MAX_FIX_ATTEMPTS = 3
 MAX_PROPOSALS = 5
+# Много неразобранных кластеров раздаются субагентам пакетами (SKILL.md, STATUS: analyze_batch).
+PARALLEL_MIN_PENDING = 10  # с такого числа кластеров без разбора включается пакетный режим
+BATCH_SIZE = 6  # кластеров в пакете одного субагента
+DEFAULT_WORKERS = 4  # пакетов (субагентов) за одну волну; 1 — кластеры по одному
+MAX_WORKERS = 8
 # Модель, которая не меняет файл, но снова зовёт next: после стольких вызовов
 # подряд без правки попытка засчитывается, и разбор не зависает навсегда.
 UNCHANGED_CALLS_PER_ATTEMPT = 3
 _LAUNCH_URL_RE = re.compile(r"/launch(?:es)?/(\d+)")
 REPORT_BEGIN = "===ОТЧЁТ==="
 REPORT_END = "===КОНЕЦ==="
-EXPECTED_FORMAT = """\
-ЧТО СЛОМАЛОСЬ: <1–2 предложения>
-ПРИЧИНА: <тест|приложение|окружение|данные|неизвестно> — <обоснование>
-КАК ИСПРАВИТЬ:
-1. <шаг>
-КОД: <путь от корня проекта>:<строка> — <что там>   (необязательно)
-БАЗА ЗНАНИЙ: <id записи> | нет   (только если задание предлагало записи)"""
 PROPOSAL_FORMAT = """\
 РЕШЕНИЕ: исправить | не трогать
 ФАЙЛ: <путь от корня проекта>:<строка>
@@ -151,7 +154,11 @@ def _dispatch(argv: list[str] | None) -> int:
     if args.command == "prepare":
         return cmd_prepare(args.launch_id, project_root, reports_dir, fresh=args.fresh)
     if args.command == "next":
-        return cmd_next(args.run_dir or args.run, reports_dir)
+        return cmd_next(
+            args.run_dir or args.run, reports_dir, workers=1 if args.serial else args.workers
+        )
+    if args.command == "verify":
+        return cmd_verify(args.run, args.clusters, reports_dir)
     if args.command == "check":
         return cmd_check(project_root, reports_dir)
     if args.command == "clean":
@@ -228,6 +235,22 @@ def _build_parser() -> argparse.ArgumentParser:
     step = commands.add_parser("next", parents=[common], help="следующий шаг разбора")
     step.add_argument("run_dir", nargs="?", help="папка разбора (по умолчанию последняя)")
     step.add_argument("--run", help="то же, что позиционная папка разбора")
+    mode = step.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--workers", type=int,
+        help=f"сколько субагентов разбирают кластеры параллельно (1–{MAX_WORKERS}; по умолчанию "
+             f"{DEFAULT_WORKERS}); значение запоминается для этого разбора",
+    )
+    mode.add_argument(
+        "--serial", action="store_true",
+        help="разбирать кластеры по одному, без субагентов (то же, что --workers 1)",
+    )
+    check_run = commands.add_parser(
+        "verify", parents=[common],
+        help="проверить формат разборов кластеров, ничего не меняя (для субагентов пакета)",
+    )
+    check_run.add_argument("--run", required=True, help="папка разбора")
+    check_run.add_argument("clusters", nargs="+", help="номера проблем из пакета: 3 или 03")
     commands.add_parser(
         "check", parents=[common], help="проверить окружение, настройки и доступ к TestOps"
     )
@@ -525,13 +548,21 @@ def _write_run(
 # ---------------------------------------------------------------------------
 
 
-def cmd_next(run_dir: str | None, reports_dir: Path) -> int:
+def cmd_next(run_dir: str | None, reports_dir: Path, workers: int | None = None) -> int:
     try:
         paths = ws.resolve_run(run_dir, reports_dir)
     except ws.RunNotFoundError as exc:
         print("STATUS: error")
         print(exc)
         return 1
+    if workers is not None:
+        if not 1 <= workers <= MAX_WORKERS:
+            print("STATUS: error")
+            print(f"--workers: нужно число от 1 до {MAX_WORKERS} (1 — по одному, без субагентов).")
+            return 1
+        state = _read_state(paths)
+        state["workers"] = workers
+        ws.write_json(paths.state_json, state)
     status, body = next_step(paths)
     run = ws.read_json(paths.run_json)
     name = f" «{run['launch_name']}»" if run.get("launch_name") else ""
@@ -552,11 +583,17 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
         return "done", _done_body(console, paths, {})
 
     project_root = Path(run["project_root"])
-    state = ws.read_json(paths.state_json) if paths.state_json.is_file() else {}
-    state.setdefault("attempts", {})
+    state = _read_state(paths)
     entries = run["clusters"]
     total = len(entries)
     manual_total = sum(1 for item in entries if not item["auto"])
+    pending = [
+        item["file_id"] for item in entries
+        if not item["auto"] and not _has_text(paths.analysis(item["file_id"]))
+    ]
+    workers = int(state.get("workers", DEFAULT_WORKERS))
+    if workers > 1 and len(pending) >= PARALLEL_MIN_PENDING:
+        return "analyze_batch", _batch_body(paths, run, pending, manual_total, workers)
     analyses: dict[str, ClusterAnalysis] = {}
     flagged: set[str] = set()
     proposals: dict[str, Proposal] = {}
@@ -575,9 +612,7 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
             )
             return "analyze", _analyze_body(paths, entry, position, total, done, manual_total)
 
-        analysis = parse_analysis(text)
-        offered = frozenset(match["id"] for match in entry.get("kb", []))
-        errors = validate_analysis(analysis, project_root, offered)
+        analysis, errors = _check_analysis(text, entry, project_root)
         if errors:
             attempt, unchanged = _register_invalid(state, file_id, text, paths)
             if attempt < MAX_FIX_ATTEMPTS:
@@ -640,6 +675,34 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
     # Правку с неизвестным состоянием apply не применит — модели её показывать не нужно.
     offered = {file_id: p for file_id, p in fixes.items() if states[file_id] != "unknown"}
     return "done", _done_body(console, paths, offered, feedback=True)
+
+
+def _read_state(paths: ws.RunPaths) -> dict[str, Any]:
+    state = ws.read_json(paths.state_json) if paths.state_json.is_file() else {}
+    state.setdefault("attempts", {})
+    return state
+
+
+def _check_analysis(
+    text: str,
+    entry: dict[str, Any],
+    project_root: Path,
+) -> tuple[ClusterAnalysis, list[str]]:
+    """Разобрать текст разбора кластера и проверить его; пустой список ошибок — принят."""
+    analysis = parse_analysis(text)
+    offered = frozenset(match["id"] for match in entry.get("kb", []))
+    return analysis, validate_analysis(analysis, project_root, offered)
+
+
+def plan_batches(pending: list[str], size: int, workers: int) -> list[list[str]]:
+    """Пакеты для одной волны: первые ``workers`` кусков по ``size`` кластеров, по порядку номеров.
+
+    Считается заново из оставшихся кластеров при каждом ``next`` — состояния пакетов
+    не хранится. Пусто, если пакетный режим выключен (``workers <= 1``).
+    """
+    if workers <= 1 or size < 1:
+        return []
+    return [pending[start:start + size] for start in range(0, len(pending), size)][:workers]
 
 
 def _proposal_step(
@@ -753,6 +816,47 @@ def _analyze_body(
     ])
 
 
+def _batch_body(
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    pending: list[str],
+    manual_total: int,
+    workers: int,
+) -> str:
+    by_id = {entry["file_id"]: entry for entry in run["clusters"]}
+    batches = plan_batches(pending, BATCH_SIZE, workers)
+    paths.batch(1).parent.mkdir(parents=True, exist_ok=True)
+    taken = sum(len(ids) for ids in batches)
+    lines = [
+        f"Кластеров без разбора много: {len(pending)} из {manual_total}. Разбери их параллельно, "
+        "раздав пакеты субагентам; сам эти кластеры не разбирай, скрипты-обёртки не пиши.",
+        f"В этой волне: пакетов — {len(batches)}, кластеров — {taken}"
+        + (f"; остальные ({len(pending) - taken}) — в следующей." if taken < len(pending) else "."),
+        "1. Запусти субагентов инструментом agent — по одному на пакет, ВСЕ вызовы в одном "
+        "сообщении, без subagent_type, с run_in_background: false. prompt каждого — дословно:",
+    ]
+    for number, ids in enumerate(batches, start=1):
+        ws.write_text(
+            paths.batch(number),
+            render_batch_task(paths, number, [by_id[file_id] for file_id in ids], run["launch_id"]),
+        )
+        lines += [
+            f"   Пакет {number} (кластеры {', '.join(ids)}):",
+            "   «Ты — субагент разбора кластеров alla. Прочитай файл "
+            f"{paths.batch(number)} и выполни его инструкции целиком. Больше ничего не делай. "
+            "В ответе — одна строка.»",
+        ]
+    lines += [
+        "2. Дождись, пока завершатся все субагенты. Их ответы не пересказывай и не перепроверяй: "
+        "проверку сделает next.",
+        f"3. Выполни: {paths.next_command()}",
+        "Если инструмента agent нет или запустить субагентов не получилось — не пиши свои циклы, "
+        "а переключись на разбор по одному: "
+        f"{ws.skill_command('next', str(paths.root), '--serial')}",
+    ]
+    return "\n".join(lines)
+
+
 def _fix_body(
     paths: ws.RunPaths,
     entry: dict[str, Any],
@@ -841,6 +945,62 @@ def _done_body(
 
 
 # ---------------------------------------------------------------------------
+# verify
+# ---------------------------------------------------------------------------
+
+
+def cmd_verify(run_dir: str | None, clusters: list[str], reports_dir: Path) -> int:
+    """Проверить разборы кластеров, ничего не записывая.
+
+    Для субагентов пакета: ``next`` они вызывать не должны, потому что он пишет
+    ``state.json`` и считает попытки исправления — параллельно это гонка.
+    """
+    try:
+        paths = ws.resolve_run(run_dir, reports_dir)
+    except ws.RunNotFoundError as exc:
+        print("STATUS: error")
+        print(exc)
+        return 1
+    run = ws.read_json(paths.run_json)
+    entries = [find_entry(run, cluster) for cluster in clusters]
+    unknown = [cluster for cluster, entry in zip(clusters, entries) if entry is None]
+    if unknown:
+        print("STATUS: error")
+        print(f"В разборе {paths.root} нет проблем: {', '.join(unknown)}.")
+        return 1
+    project_root = Path(run["project_root"])
+    lines: list[str] = []
+    failed = 0
+    for entry in entries:
+        assert entry is not None
+        file_id = entry["file_id"]
+        path = paths.analysis(file_id)
+        text = ws.read_text(path) if path.is_file() else ""
+        if not text.strip():
+            failed += 1
+            lines.append(f"Кластер {file_id}: файл разбора пуст или не создан — запиши {path}")
+            continue
+        analysis, errors = _check_analysis(text, entry, project_root)
+        if errors:
+            failed += 1
+            lines += [
+                f"Кластер {file_id}: разбор не прошёл проверку:",
+                *(f"- {error}" for error in errors),
+                parse_summary(analysis),
+                f"Исправь файл: {path}",
+            ]
+        else:
+            lines.append(f"Кластер {file_id}: принят.")
+    print("STATUS: fix" if failed else "STATUS: ok")
+    print("\n".join(lines))
+    if failed:
+        print("Ожидаемый формат:")
+        print(EXPECTED_FORMAT)
+        print("После исправления повтори ту же команду проверки.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # remember / reject / apply
 # ---------------------------------------------------------------------------
 
@@ -919,8 +1079,7 @@ def _skip(paths: ws.RunPaths, entry: dict[str, Any], reason: str) -> tuple[str, 
     if entry.get("auto"):
         return "error", f"Проблема №{int(file_id)} без данных об ошибке уже разобрана автоматически."
     ws.write_text(paths.analysis(file_id), skipped_analysis(reason))
-    state = ws.read_json(paths.state_json) if paths.state_json.is_file() else {}
-    state.setdefault("attempts", {})
+    state = _read_state(paths)
     state["skipped"] = sorted({*state.get("skipped", []), file_id})
     ws.write_json(paths.state_json, state)
     return "saved", "\n".join([

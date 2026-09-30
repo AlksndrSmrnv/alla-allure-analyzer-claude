@@ -29,20 +29,38 @@ TestOps.
   успешного pip install пишет `.venv/.alla-setup-complete` (хэш
   `requirements.txt`) и создаёт `.env` из образца — без маркера команды
   отвечают `STATUS: setup_required`. Команды: `prepare <id|URL> [--fresh]`,
-  `next [run_dir | --run DIR]`, `skip N --run DIR`, `check`, `clean`,
+  `next [run_dir | --run DIR] [--workers N | --serial]`, `verify N [N…] --run DIR`,
+  `skip N --run DIR`, `check`, `clean`,
   `apply N --run DIR [--yes --diff ХЭШ] [--repeat]`, `revert N --run DIR`,
   `remember N --run DIR [--entry ID] [--from-analysis]`,
   `reject N <id> --run DIR` (`--run` обязателен: `.last_run` после нового
   prepare — другой прогон; разбор модели сохраняется в базу знаний только с
   явным `--from-analysis`, который выбирает разбор даже при наличии
-  `feedback/NN.md`). Первая строка вывода — `STATUS: analyze|fix|propose|
-  summary|done|diff|applied|reverted|saved|ready|setup_required|error`; ошибка
+  `feedback/NN.md`). Первая строка вывода — `STATUS: analyze|analyze_batch|
+  fix|propose|summary|done|diff|applied|reverted|saved|ok|ready|setup_required|error`; ошибка
   аргументов и любое необработанное исключение тоже дают `STATUS: error`.
   Код возврата 0 у всех статусов, кроме `error` (статус с инструкцией — не
   авария). `prepare` продолжает свежий (<24 ч) незавершённый разбор того же
   прогона без обращения к TestOps (`--fresh` — заново); стадии выгрузки идут в
   stderr; пустой прогон — `error`; ошибка одного кластера деградирует его до
   «неизвестно» с предупреждением, а не роняет prepare.
+- Параллельный разбор больших прогонов (`cli.next_step`, `batch_task`): когда
+  кластеров без разбора ≥ `PARALLEL_MIN_PENDING` (10) и рабочих > 1, `next`
+  отвечает `STATUS: analyze_batch` вместо `analyze`: неразобранные кластеры
+  (порядок номеров, не `auto`) режутся по `BATCH_SIZE` (6) в пакеты, за одну
+  волну — не больше `DEFAULT_WORKERS` (4) пакетов; файл каждого пакета
+  `batches/N.md` самодостаточен (правила, кластер → задание → файл разбора,
+  формат, команда проверки) и пишется заново каждой волной, пакеты считаются
+  из диска при каждом `next` (состояния пакетов нет, переживает сжатие
+  контекста). Основной агент раздаёт пакеты субагентам Qwen Code (`agent`, все
+  вызовы в одном сообщении, `run_in_background: false`), ждёт всех и зовёт
+  `next`. Субагент `next` не вызывает: `verify N [N…] --run DIR` — только
+  читающая проверка (те же parse/validate, что в `next`; `state.json`, история и
+  файлы не трогаются, попытки не считаются), `STATUS: ok|fix`. `state.json` пишет
+  только основной агент; невалидный/недописанный разбор возвращается обычным
+  `fix`/`analyze` по одному (лимит попыток прежний). Хвост меньше порога, `fix`,
+  `propose`, `summary` — по-старому. `next --workers N` (1–`MAX_WORKERS`=8;
+  `--serial` = 1) сохраняется в `state.json`; это запасной путь без субагентов.
 - `scripts/alla_core/` — **GENERATED** копия чистых модулей `src/alla`
   (клиент TestOps, триаж, логи, кластеризация, prompt builder, стабильная
   сигнатура `knowledge/feedback_signature.py`) с импортами
