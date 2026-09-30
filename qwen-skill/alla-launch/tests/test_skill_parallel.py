@@ -194,6 +194,70 @@ def test_resume_after_interruption_issues_only_unfinished_clusters(
     assert out.startswith("STATUS: analyze\n") and f"Кластер {int(second)} из" in out
 
 
+# --- неудачная волна не повторяется -----------------------------------------------
+
+
+def test_failed_wave_is_not_issued_again(
+    project: Path, testops: FakeTestOps, small_batches: None, capsys
+) -> None:
+    run_dir, run, out = _prepare(project, capsys)
+    assert out.startswith("STATUS: analyze_batch\n")
+    first, _ = _manual_ids(run)
+
+    # субагенты ничего не записали: пакетов больше нет, кластеры идут по одному
+    for _ in range(3):
+        out = _next(run_dir, capsys)
+        assert out.startswith("STATUS: analyze\n")
+        assert f"Кластер {int(first)} из" in out
+    assert json.loads((run_dir / "state.json").read_text(encoding="utf-8"))["workers"] == 1
+
+
+def test_failed_wave_notice_is_shown_once(
+    project: Path, testops: FakeTestOps, small_batches: None, capsys
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    first, second = _manual_ids(run)
+    out = _next(run_dir, capsys)
+    assert "Прошлая волна не записала ни одного разбора" in out
+    assert f"кластеры {first}, {second}" in out and "--workers N" in out
+    assert "Прошлая волна" not in _next(run_dir, capsys)
+
+
+def test_workers_flag_issues_a_failed_wave_again(
+    project: Path, testops: FakeTestOps, small_batches: None, capsys
+) -> None:
+    run_dir, _, _ = _prepare(project, capsys)
+    assert _next(run_dir, capsys).startswith("STATUS: analyze\n")  # волна не удалась
+    out = _next(run_dir, capsys, "--workers", "2")  # явная просьба — пакеты выдаются заново
+    assert out.startswith("STATUS: analyze_batch\n") and "Пакет 1" in out
+    assert _next(run_dir, capsys).startswith("STATUS: analyze\n")  # и снова не больше одного раза
+
+
+def test_partial_wave_leftovers_go_one_by_one(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    FakeTestOps(many_launch(40)).install(monkeypatch)
+    run_dir, run, _ = _prepare(project, capsys, launch_id=900)
+    manual = _manual_ids(run)
+    _answer(run_dir, manual[:20])  # из волны 01–24 субагенты не записали 21–24
+
+    out = _next(run_dir, capsys)
+    assert out.startswith("STATUS: analyze_batch\n")
+    assert "Субагенты прошлой волны не записали разборы кластеров 21, 22, 23, 24" in out
+    assert "16 из 40" in out
+    issued = "".join(
+        path.read_text(encoding="utf-8") for path in (run_dir / "batches").glob("*.md")
+    )
+    assert f"кластеры {', '.join(manual[24:30])}" in (run_dir / "batches" / "1.md").read_text(encoding="utf-8")
+    assert all(f"clusters/{file_id}.md" not in (run_dir / "batches" / "1.md").read_text(encoding="utf-8")
+               for file_id in manual[20:24])
+    assert issued  # пакеты волны 2 записаны
+
+    _answer(run_dir, manual[24:])
+    out = _next(run_dir, capsys)  # осталось четыре невыданных повторно кластера — по одному
+    assert out.startswith("STATUS: analyze\n") and "Кластер 21 из 40" in out
+
+
 # --- serial / workers -------------------------------------------------------------
 
 
@@ -212,11 +276,13 @@ def test_workers_limit_the_wave(
     project: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     FakeTestOps(many_launch(40)).install(monkeypatch)
-    run_dir, _, _ = _prepare(project, capsys, launch_id=900)
+    run_dir, run, _ = _prepare(project, capsys, launch_id=900)
     out = _next(run_dir, capsys, "--workers", "2")
     assert "В этой волне: пакетов — 2, кластеров — 12" in out
     assert "Пакет 3" not in out
-    assert _next(run_dir, capsys).count("Пакет ") >= 2  # значение сохранено
+    _answer(run_dir, _manual_ids(run)[:12])
+    out = _next(run_dir, capsys)  # значение сохранено: снова два пакета
+    assert "В этой волне: пакетов — 2, кластеров — 12" in out and "Пакет 3" not in out
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "99"])
@@ -287,11 +353,12 @@ def test_verify_is_read_only(
     _answer(run_dir, [first])
     _answer(run_dir, [second], "битый разбор")
     before = sorted(str(path.relative_to(run_dir)) for path in run_dir.rglob("*"))
+    state_before = (run_dir / "state.json").read_text(encoding="utf-8")
     contents = (run_dir / "analyses" / f"{second}.md").read_text(encoding="utf-8")
     for _ in range(4):  # повторные проверки не считаются попытками исправления
         _run(["verify", first, second, "--run", str(run_dir)], capsys)
     assert sorted(str(path.relative_to(run_dir)) for path in run_dir.rglob("*")) == before
-    assert not (run_dir / "state.json").exists()
+    assert (run_dir / "state.json").read_text(encoding="utf-8") == state_before
     assert not (project / "alla-reports" / "history.jsonl").exists()
     assert (run_dir / "analyses" / f"{second}.md").read_text(encoding="utf-8") == contents
     out = _next(run_dir, capsys)  # next по-прежнему на первой попытке

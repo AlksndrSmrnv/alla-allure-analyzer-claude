@@ -562,6 +562,9 @@ def cmd_next(run_dir: str | None, reports_dir: Path, workers: int | None = None)
             return 1
         state = _read_state(paths)
         state["workers"] = workers
+        # явный запрос числа субагентов: выданные раньше пакеты можно раздать заново
+        state.pop("batched", None)
+        state.pop("wave", None)
         ws.write_json(paths.state_json, state)
     status, body = next_step(paths)
     run = ws.read_json(paths.run_json)
@@ -575,7 +578,18 @@ def cmd_next(run_dir: str | None, reports_dir: Path, workers: int | None = None)
 
 
 def next_step(paths: ws.RunPaths) -> tuple[str, str]:
-    """Определить следующий шаг по состоянию файлов. Идемпотентно."""
+    """Определить следующий шаг по состоянию файлов.
+
+    Всё берётся с диска, кроме учёта пакетов, уже выданных субагентам
+    (``state.json``): кластер раздаётся пакетом не больше одного раза, поэтому
+    неудачная волна не повторяется бесконечно.
+    """
+    notices: list[str] = []
+    status, body = _next_step(paths, notices)
+    return status, "\n".join([*notices, body]) if notices else body
+
+
+def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     run = ws.read_json(paths.run_json)
     if not run["clusters"]:
         console, full = render_green_report(run, paths)
@@ -591,9 +605,16 @@ def next_step(paths: ws.RunPaths) -> tuple[str, str]:
         item["file_id"] for item in entries
         if not item["auto"] and not _has_text(paths.analysis(item["file_id"]))
     ]
-    workers = int(state.get("workers", DEFAULT_WORKERS))
-    if workers > 1 and len(pending) >= PARALLEL_MIN_PENDING:
-        return "analyze_batch", _batch_body(paths, run, pending, manual_total, workers)
+    workers = _settle_last_wave(paths, state, pending, notices)
+    handed_out = set(state.get("batched", []))
+    fresh = [file_id for file_id in pending if file_id not in handed_out]
+    if workers > 1 and len(fresh) >= PARALLEL_MIN_PENDING:
+        batches = plan_batches(fresh, BATCH_SIZE, workers)
+        wave = [file_id for batch in batches for file_id in batch]
+        state["batched"] = sorted(handed_out | set(wave))
+        state["wave"] = wave
+        ws.write_json(paths.state_json, state)
+        return "analyze_batch", _batch_body(paths, run, batches, len(fresh), manual_total)
     analyses: dict[str, ClusterAnalysis] = {}
     flagged: set[str] = set()
     proposals: dict[str, Proposal] = {}
@@ -692,6 +713,42 @@ def _check_analysis(
     analysis = parse_analysis(text)
     offered = frozenset(match["id"] for match in entry.get("kb", []))
     return analysis, validate_analysis(analysis, project_root, offered)
+
+
+def _settle_last_wave(
+    paths: ws.RunPaths,
+    state: dict[str, Any],
+    pending: list[str],
+    notices: list[str],
+) -> int:
+    """Учесть итог прошлой волны и вернуть число субагентов для следующей.
+
+    Кластеры прошлой волны, которые остались без разбора, повторно пакетами не
+    выдаются: их разберёт обычный ``analyze`` по одному. Если не записан ни один
+    разбор волны, субагенты, скорее всего, не работают (не запускались, нет прав
+    на запись) — пакетный режим выключается до явного ``next --workers N``.
+    """
+    workers = int(state.get("workers", DEFAULT_WORKERS))
+    wave = state.pop("wave", [])
+    if not wave:
+        return workers
+    missing = [file_id for file_id in wave if file_id in set(pending)]
+    if missing:
+        listed = ", ".join(missing)
+        if len(missing) == len(wave):
+            workers = state["workers"] = 1
+            notices.append(
+                f"Прошлая волна не записала ни одного разбора (кластеры {listed}). Субагентов "
+                "больше не запускай: эти кластеры пойдут по одному. Если субагенты просто не "
+                "успели стартовать, `next --workers N` выдаст пакеты заново."
+            )
+        else:
+            notices.append(
+                f"Субагенты прошлой волны не записали разборы кластеров {listed}: повторно "
+                "пакетами они не выдаются, эти кластеры пойдут по одному."
+            )
+    ws.write_json(paths.state_json, state)
+    return workers
 
 
 def plan_batches(pending: list[str], size: int, workers: int) -> list[list[str]]:
@@ -819,19 +876,18 @@ def _analyze_body(
 def _batch_body(
     paths: ws.RunPaths,
     run: dict[str, Any],
-    pending: list[str],
+    batches: list[list[str]],
+    fresh_count: int,
     manual_total: int,
-    workers: int,
 ) -> str:
     by_id = {entry["file_id"]: entry for entry in run["clusters"]}
-    batches = plan_batches(pending, BATCH_SIZE, workers)
     paths.batch(1).parent.mkdir(parents=True, exist_ok=True)
     taken = sum(len(ids) for ids in batches)
     lines = [
-        f"Кластеров без разбора много: {len(pending)} из {manual_total}. Разбери их параллельно, "
+        f"Кластеров без разбора много: {fresh_count} из {manual_total}. Разбери их параллельно, "
         "раздав пакеты субагентам; сам эти кластеры не разбирай, скрипты-обёртки не пиши.",
         f"В этой волне: пакетов — {len(batches)}, кластеров — {taken}"
-        + (f"; остальные ({len(pending) - taken}) — в следующей." if taken < len(pending) else "."),
+        + (f"; остальные ({fresh_count - taken}) — в следующей." if taken < fresh_count else "."),
         "1. Запусти субагентов инструментом agent — по одному на пакет, ВСЕ вызовы в одном "
         "сообщении, без subagent_type, с run_in_background: false. prompt каждого — дословно:",
     ]
@@ -848,7 +904,8 @@ def _batch_body(
         ]
     lines += [
         "2. Дождись, пока завершатся все субагенты. Их ответы не пересказывай и не перепроверяй: "
-        "проверку сделает next.",
+        "проверку сделает next. Один и тот же пакет повторно не выдаётся: что субагенты не "
+        "запишут, разберётся по одному.",
         f"3. Выполни: {paths.next_command()}",
         "Если инструмента agent нет или запустить субагентов не получилось — не пиши свои циклы, "
         "а переключись на разбор по одному: "
