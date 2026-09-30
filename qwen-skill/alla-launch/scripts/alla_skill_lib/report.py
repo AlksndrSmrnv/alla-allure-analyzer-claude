@@ -35,8 +35,12 @@ FEEDBACK_INVITATION = (
 )
 # Краткий разбор в терминале: по строке на проблему, не больше пяти на раздел.
 MAX_BRIEF_ITEMS = 5
+MAX_BRIEF_NUMBERS = 8
 BRIEF_TEXT_CHARS = 160
 BRIEF_WARNING_CHARS = 140
+# Предупреждения и замечания в терминале: число и длина ограничены — их повторяет каждый next.
+MAX_BRIEF_NOTES = 5
+BRIEF_NOTE_CHARS = 300
 MAX_REPORT_TESTS = 5
 # Подробности в report.md: список тестов проблемы целиком, но не бесконечный.
 MAX_DETAIL_TESTS = 200
@@ -275,14 +279,14 @@ def render_report(
     reasons = not_proposed or {}
     link = _report_link(paths)
 
-    brief = _header(run)
+    brief = _header(run, brief=True)
     brief += ["", "### Коротко", summary.strip()]
     for bucket, title, _, _ in SECTIONS:
         group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
         if group:
             brief += ["", *_brief_section(title, group)]
     if notes:
-        brief += ["", "### Замечания", *(f"- {note}" for note in notes)]
+        brief += ["", "### Замечания", *_brief_lines(notes, "- ", "замечаний")]
     brief += ["", FEEDBACK_INVITATION, "", link]
 
     full = _header(run)
@@ -356,7 +360,7 @@ def _sort_key(problem: _Problem) -> tuple[int, int, int]:
     return (0 if likely_bug else 1, -problem.size, problem.number)
 
 
-def _header(run: dict[str, Any]) -> list[str]:
+def _header(run: dict[str, Any], brief: bool = False) -> list[str]:
     counts = run["counts"]
     title = f"## Разбор прогона #{run['launch_id']}"
     if run.get("launch_name"):
@@ -384,8 +388,8 @@ def _header(run: dict[str, Any]) -> list[str]:
                 " не учитываем)"
             )
         lines.append(scope + ".")
-    lines += [f"Внимание: {warning}" for warning in run.get("warnings", [])]
-    return lines
+    warnings = [f"Внимание: {warning}" for warning in run.get("warnings", [])]
+    return lines + (_brief_lines(warnings, "", "предупреждений") if brief else warnings)
 
 
 def _overview(problems: list[_Problem]) -> list[str]:
@@ -473,8 +477,19 @@ def _brief_section(title: str, group: list[_Problem]) -> list[str]:
         lines += _brief_item(problem)
     rest = group[MAX_BRIEF_ITEMS:]
     if rest:
-        numbers = ", ".join(str(p.number) for p in rest)
-        lines.append(f"- … и ещё {len(rest)} (проблемы {numbers}) — в полном разборе")
+        # Номера — только первые несколько: при тысячах проблем список рос бы с каждым next.
+        numbers = ", ".join(str(p.number) for p in rest[:MAX_BRIEF_NUMBERS])
+        more = " и др." if len(rest) > MAX_BRIEF_NUMBERS else ""
+        lines.append(f"- … и ещё {len(rest)} (проблемы {numbers}{more}) — в полном разборе")
+    return lines
+
+
+def _brief_lines(items: list[str], prefix: str, what: str) -> list[str]:
+    """Предупреждения/замечания для терминала: не больше пяти, каждое не длиннее лимита."""
+    lines = [prefix + _truncate(_one_line(item), BRIEF_NOTE_CHARS) for item in items[:MAX_BRIEF_NOTES]]
+    rest = len(items) - MAX_BRIEF_NOTES
+    if rest > 0:
+        lines.append(f"{prefix}… и ещё {rest} {what} — в полном разборе")
     return lines
 
 

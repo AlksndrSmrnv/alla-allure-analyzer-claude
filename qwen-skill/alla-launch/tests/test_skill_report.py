@@ -228,6 +228,39 @@ def test_terminal_brief_stays_small_on_a_huge_launch(tmp_path: Path) -> None:
     assert len(console) < 6_000 < len(full)
 
 
+def test_terminal_brief_does_not_grow_with_the_number_of_problems(tmp_path: Path) -> None:
+    count = 2_000
+    run = _run([1] * count)
+    console, full = _render(tmp_path, run, [APP] * count)
+    attention = _section(console, "Требуют вашего внимания")
+    assert attention.count("- **Проблема ") == MAX_BRIEF_ITEMS
+    assert (
+        f"- … и ещё {count - MAX_BRIEF_ITEMS} (проблемы 6, 7, 8, 9, 10, 11, 12, 13 и др.) — в полном разборе"
+        in attention
+    )
+    assert "14, 15" not in attention  # номера не перечисляются целиком
+    assert len(console) < 3_500 < len(full)
+    assert "проблемы 1, 2, 3" in full and str(count) in full  # в файле — все номера
+
+
+def test_terminal_brief_limits_warnings_and_notes_but_file_keeps_them(tmp_path: Path) -> None:
+    warnings = [f"Проблема {n}: задание не подготовлено — " + "причина " * 60 for n in range(1, 201)]
+    run = _run([2], warnings=warnings)
+    notes = ["Пропущено без разбора по просьбе пользователя: " + ", ".join(map(str, range(1, 400))) + "."]
+    console, full = _render(tmp_path, run, [APP], notes=notes)
+
+    assert console.count("Внимание: ") == report.MAX_BRIEF_NOTES
+    assert "… и ещё 195 предупреждений — в полном разборе" in console
+    assert all(len(line) <= report.BRIEF_NOTE_CHARS + len("Внимание: ") for line in console.splitlines()
+               if line.startswith("Внимание: "))
+    notes_block = _section(console, "Замечания")
+    assert len(notes_block) < report.BRIEF_NOTE_CHARS + 60 and notes_block.rstrip().endswith("…")
+    assert len(console) < 4_000
+    # В файле — ничего не потеряно.
+    assert full.count("Внимание: ") == 200
+    assert "395, 396, 397, 398, 399." in full
+
+
 def test_long_first_sentence_is_clipped_in_terminal_but_full_in_file(tmp_path: Path) -> None:
     blob = '{"error":' + '"x' * 400 + '"}'  # без завершающей пунктуации — одно «предложение»
     text = f"ЧТО СЛОМАЛОСЬ: {blob}\nПРИЧИНА: приложение — сервер упал.\nКАК ИСПРАВИТЬ:\n1. Починить.\n"
