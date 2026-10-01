@@ -39,6 +39,9 @@ DENIED_DIRS = frozenset({
 # Оформление между названием и «:» (``**БЫЛО**:``, «`БЫЛО`:») заголовок не ломает.
 _HEADER_RE = re.compile(r"^(решение|файл|было|стало|почему)[*_`]*\s*:\s*(.*)$", re.IGNORECASE)
 _DECOR_RE = re.compile(r"^[\s#>*_`-]+")
+# Маркер списка перед заголовком («* `БЫЛО:` …», «- **БЫЛО:** …»): он не оформление,
+# и закрывающей пары у него нет. «**БЫЛО:**» маркером не считается: за «*» нет пробела.
+_LIST_MARKER_RE = re.compile(r"^[\s#>]*[-*+•](?=\s)")
 # Заголовок БЫЛО/СТАЛО как есть: оформление до названия, до «:» и остаток строки после него.
 _CODE_HEADER_RE = re.compile(
     r"^(?P<pre>[\s#>*_`\-]*)(?:было|стало)(?P<mid>[*_`]*)\s*:(?P<rest>.*)$", re.IGNORECASE
@@ -198,7 +201,8 @@ def _inline_code(raw: str) -> str:
     match = _CODE_HEADER_RE.match(raw)
     if match is None:
         return ""
-    opening = "".join(char for char in match.group("pre") if char in "*_`")
+    pre = _LIST_MARKER_RE.sub("", match.group("pre"), count=1)
+    opening = "".join(char for char in pre if char in "*_`")
     closing = opening[::-1][len(match.group("mid")):]
     rest = match.group("rest")
     if closing and rest.startswith(closing):
