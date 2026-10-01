@@ -1,8 +1,7 @@
 """Сбор данных прогона: триаж → логи из вложений → кластеризация.
 
-Повторяет начало серверного pipeline (``alla/orchestrator.py``:
-``TriageService`` → ``_enrich_with_logs`` → ``_cluster_failures``) на
-вендоренном ядре. Только чтение из TestOps: ни комментариев, ни ссылок.
+Использует ядро ``alla_core``: ``TriageService`` → извлечение логов
+→ ``ClusteringService``. Только чтение из TestOps: ни комментариев, ни ссылок.
 """
 
 from __future__ import annotations
@@ -89,7 +88,7 @@ def cluster_failures(
     triage: TriageReport,
     settings: Settings,
 ) -> ClusteringReport | None:
-    """Кластеризовать активные падения с теми же параметрами, что и сервер."""
+    """Кластеризовать активные падения с параметрами кластеризации из настроек."""
     if not triage.failed_tests:
         return None
     service = ClusteringService(

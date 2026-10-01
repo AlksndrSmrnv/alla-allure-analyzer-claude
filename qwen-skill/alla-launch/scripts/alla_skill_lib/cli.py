@@ -462,7 +462,7 @@ def _write_run(
         label = cluster.label
         representative = tests_by_id.get(cluster.representative_test_id or -1)
         if auto and representative is not None:
-            # Сервер подписывает такие кластеры «Тест: <id>» — имя теста понятнее.
+            # Ядро подписывает такие кластеры «Тест: <id>» — имя теста понятнее.
             label = f"{representative.name} — нет данных об ошибке"
         entry: dict[str, Any] = {
             "file_id": file_id,
