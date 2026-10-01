@@ -67,6 +67,6 @@ python3.11 -m venv .venv
 ## История
 
 Раньше в репозитории был ещё серверный инструмент `alla` (CLI, FastAPI, MCP,
-PostgreSQL база знаний, GigaChat, HTML-отчёт, dashboard). В этой ветке он удалён;
-последний коммит с ним — `e100909` (`git show e100909:src/alla/<файл>`); серверный
-инструмент остаётся и в `main`. Первая версия скилла — ветка `codex/experiment-qwen-skill-v1`.
+PostgreSQL база знаний, GigaChat, HTML-отчёт, dashboard). Он удалён; в истории git
+последний коммит с ним — `e100909` (`git show e100909:src/alla/<файл>`). Первая версия
+скилла — ветка `codex/experiment-qwen-skill-v1`.

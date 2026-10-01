@@ -10,16 +10,15 @@ launch ID или ссылке на запуск он получает резул
 
 ## Состояние репозитория
 
-В ветке `claude/qwen-skill-v2` остался **только скилл** (`qwen-skill/alla-launch/`).
+В репозитории (`main`) остался **только скилл** (`qwen-skill/alla-launch/`).
 Серверный инструмент (CLI `alla`, FastAPI `alla-server`, MCP, PostgreSQL база
-знаний, GigaChat, HTML-отчёт, dashboard, Docker/Jenkins) удалён: он остаётся в
-`main`, а последний коммит этой ветки с ним — `e100909`
-(`git show e100909:src/alla/<файл>`). Серверный код и пакет `alla` в эту ветку не
-возвращать без явного решения пользователя. Первая версия скилла — ветка
-`codex/experiment-qwen-skill-v1`; не восстанавливать скилл в `main` без явного
-решения пользователя.
+знаний, GigaChat, HTML-отчёт, dashboard, Docker/Jenkins) удалён; он доступен только
+в истории git — последний коммит с ним `e100909`
+(`git show e100909:src/alla/<файл>`). Серверный код и пакет `alla` в репозиторий не
+возвращать без явного решения пользователя. Первая версия скилла осталась в ветке
+`codex/experiment-qwen-skill-v1`.
 
-## Скилл `alla-launch` (v2, ветка `claude/qwen-skill-v2`)
+## Скилл `alla-launch` (v2)
 
 `qwen-skill/alla-launch/` — проектный скилл Qwen Code. Анализ кластеров и
 прогона пишет модель Qwen Code, Python готовит данные. База знаний —
