@@ -75,6 +75,19 @@ def project_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
+@pytest.fixture(name="nested_project")
+def nested_project_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Репозиторий с единственным Maven-проектом ``autotests/pom.xml``; скилл стоит в корне."""
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    _write(root / "autotests" / "pom.xml", "<project/>\n")
+    java = root / "autotests" / "src" / "test" / "java" / "ru" / "company"
+    _write(java / "orders" / "OrderTest.java", ORDER_TEST_JAVA)
+    _write(java / "auth" / "LoginTest.java", LOGIN_TEST_JAVA)
+    _isolate_skill(tmp_path, monkeypatch)
+    return root
+
+
 @pytest.fixture(name="multimodule_project")
 def multimodule_project_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Многомодульный Gradle/Maven-проект: ``orders`` (Gradle Kotlin DSL) и ``auth`` (Maven)."""

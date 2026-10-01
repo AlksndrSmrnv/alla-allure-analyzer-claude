@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from skill_fixtures import (  # noqa: F401
     multimodule_project_fixture,
+    nested_project_fixture,
     project_fixture,
     testops_fixture,
     without_libmagic,
@@ -668,3 +669,52 @@ def test_check_lists_every_knowledge_base(
     assert code == 0 and out.startswith("STATUS: ready"), out
     assert f"База знаний: {root / 'alla-kb'} — записей 0" in out
     assert f"База знаний: {root / 'orders' / 'alla-kb'} — записей 0" in out
+
+
+NESTED_ANALYSIS = VALID_ANALYSIS.replace("src/test/java", "autotests/src/test/java")
+
+
+def test_single_project_in_a_nested_folder_keeps_the_root_knowledge_base(
+    nested_project: Path, testops: FakeTestOps, capsys
+) -> None:
+    repo = nested_project
+    run_dir, run, _ = _prepare(repo, capsys)
+    # ``autotests/pom.xml`` — не повод переезжать: иначе прежние записи и история пропадут.
+    assert {entry["module"] for entry in run["clusters"]} == {""}
+    assert {entry["kb_dir"] for entry in run["clusters"]} == {str(repo / "alla-kb")}
+
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    _finish(run_dir, capsys, {order: NESTED_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    (run_dir / "feedback" / f"{order}.md").write_text(FEEDBACK, encoding="utf-8")
+    code, out = _run(["remember", order, "--run", str(run_dir)], capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    assert len(list((repo / "alla-kb").glob("*.json"))) == 1
+    assert not (repo / "autotests" / "alla-kb").exists()
+
+    testops.fixture = default_launch(779)
+    _, run2, _ = _prepare(repo, capsys, launch_id=779)
+    again = next(entry for entry in run2["clusters"] if entry["signature"] == run["clusters"][0]["signature"])
+    assert again["kb"] and again["history"]["launches"] == 1
+
+
+def test_same_class_in_two_modules_goes_to_the_root_knowledge_base(
+    multimodule_project: Path, testops: FakeTestOps, capsys
+) -> None:
+    project = multimodule_project
+    # ``OrderTest`` есть и в ``orders``, и в ``legacy``: по имени теста модуль не определить,
+    # а единственный определившийся модуль прогона (``auth``) среди кандидатов не значится.
+    _write_module_file(
+        project / "legacy" / "src" / "test" / "java" / "ru" / "company" / "orders" / "OrderTest.java"
+    )
+    _write_module_file(project / "legacy" / "pom.xml")
+
+    _, run, _ = _prepare(project, capsys)
+
+    order = next(entry for entry in run["clusters"] if entry["member_count"] == 2)
+    assert order["module"] == "" and order["kb_dir"] == str(project / "alla-kb")
+    assert _entry_by_module(run, "auth")["kb_dir"] == str(project / "auth" / "alla-kb")
+
+
+def _write_module_file(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("<project/>\n" if path.suffix == ".xml" else "class OrderTest {}\n", encoding="utf-8")

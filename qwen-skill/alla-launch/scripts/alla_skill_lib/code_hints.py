@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
@@ -70,38 +71,51 @@ class ProjectIndex:
                     return index
         return index
 
-    def candidates(self, stem: str) -> list[PurePath]:
+    def _by_stem_index(self) -> dict[str, list[PurePath]]:
         if self._by_stem is None:
             self._by_stem = self._build()
-        return self._by_stem.get(stem, [])
+        return self._by_stem
 
-    def best_match(self, parts: tuple[str, ...], *, need_suffix: int = 1) -> PurePath | None:
-        """Файл, путь которого совпадает с ``parts`` по самому длинному хвосту.
+    def candidates(self, stem: str) -> list[PurePath]:
+        return self._by_stem_index().get(stem, [])
+
+    def source_paths(self) -> Iterator[PurePath]:
+        """Все проиндексированные исходники (пути от корня проекта)."""
+        for paths in self._by_stem_index().values():
+            yield from paths
+
+    def best_matches(self, parts: tuple[str, ...], *, need_suffix: int = 1) -> list[PurePath]:
+        """Все файлы, путь которых одинаково лучше всех совпадает с ``parts`` по хвосту.
 
         ``parts`` — компоненты пути (последний — имя файла, расширение может
         отсутствовать). Совпадение только по имени файла принимается, если
-        кандидат единственный.
+        кандидат единственный. Больше одного файла — совпадение неоднозначно
+        (одинаковый класс в разных модулях); пусто — ничего подходящего.
         """
         if not parts:
-            return None
+            return []
         name = parts[-1]
         stem = PurePath(name).stem if PurePath(name).suffix else name
-        best: PurePath | None = None
+        best: list[PurePath] = []
         best_score = 0
-        tie = False
         for candidate in self.candidates(stem):
             if PurePath(name).suffix and candidate.name != name:
                 continue
             score = _common_tail(candidate.with_suffix("").parts, _strip_suffix(parts))
             if score > best_score:
-                best, best_score, tie = candidate, score, False
-            elif score == best_score:
-                tie = True
-        if best is None or best_score < need_suffix:
-            return None
-        if tie and best_score == 1:
-            return None
+                best, best_score = [candidate], score
+            elif score == best_score and score > 0:
+                best.append(candidate)
+        if not best or best_score < need_suffix:
+            return []
+        if len(best) > 1 and best_score == 1:
+            return []
         return best
+
+    def best_match(self, parts: tuple[str, ...], *, need_suffix: int = 1) -> PurePath | None:
+        """Первый из лучших файлов (для подсказки, где искать код, этого достаточно)."""
+        matches = self.best_matches(parts, need_suffix=need_suffix)
+        return matches[0] if matches else None
 
     def find_line(self, rel: PurePath, symbol: str) -> int | None:
         """Первая строка, где ``symbol`` встречается как вызов/объявление."""
@@ -144,40 +158,45 @@ def hints_for_cluster(
     return hints
 
 
-def source_of_test(index: ProjectIndex, full_name: str) -> PurePath | None:
-    """Исходник теста по ``full_name`` (путь от корня проекта) или None."""
+def sources_of_test(index: ProjectIndex, full_name: str) -> list[PurePath]:
+    """Исходники теста по ``full_name`` (пути от корня проекта).
+
+    Пусто — не нашёлся; больше одного — неоднозначно (одинаковый класс в
+    разных модулях).
+    """
     return _match_full_name(index, full_name)[0]
 
 
-def _match_full_name(index: ProjectIndex, full_name: str) -> tuple[PurePath | None, str | None]:
-    """Исходник теста и имя метода (если оно видно в ``full_name``)."""
+def _match_full_name(index: ProjectIndex, full_name: str) -> tuple[list[PurePath], str | None]:
+    """Исходники теста и имя метода (если оно видно в ``full_name``)."""
     full_name = full_name.strip()
     if not full_name or " " in full_name.split("::")[0]:
-        return None, None
+        return [], None
     if "::" in full_name:
         # pytest node id: tests/api/test_x.py::TestClass::test_method[param]
         file_part, *rest = full_name.split("::")
-        match = index.best_match(PurePath(file_part.replace("\\", "/")).parts)
+        matches = index.best_matches(PurePath(file_part.replace("\\", "/")).parts)
         symbol = _PARAMS_RE.sub("", rest[-1]) if rest else None
     else:
         # ru.x.y.TestClass#method, ru.x.y.TestClass.method, tests.test_x.TestC.test_m
         dotted, _, method = full_name.partition("#")
         parts = [p for p in _PARAMS_RE.sub("", dotted).split(".") if p]
-        match = None
+        matches = []
         symbol = _PARAMS_RE.sub("", method) or None
         for end in range(len(parts), 0, -1):
-            match = index.best_match(tuple(parts[:end]), need_suffix=min(2, end))
-            if match is not None:
+            matches = index.best_matches(tuple(parts[:end]), need_suffix=min(2, end))
+            if matches:
                 if not symbol and end < len(parts):
                     symbol = parts[end] if end == len(parts) - 1 else parts[-1]
                 break
-    return match, symbol
+    return matches, symbol
 
 
 def _hint_from_full_name(index: ProjectIndex, full_name: str) -> CodeHint | None:
-    match, symbol = _match_full_name(index, full_name)
-    if match is None:
+    matches, symbol = _match_full_name(index, full_name)
+    if not matches:
         return None
+    match = matches[0]
     line = index.find_line(match, symbol) if symbol else None
     return CodeHint(match.as_posix(), line, "код теста (по full_name)")
 
