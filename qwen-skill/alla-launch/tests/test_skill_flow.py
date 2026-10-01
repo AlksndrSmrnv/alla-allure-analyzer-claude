@@ -414,6 +414,7 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
     assert code == 1 and out.startswith("STATUS: error")
     assert "уже подтверждали" in out and f"--entry {entry_id}" in out
+    assert "--from-analysis" not in out  # источник — feedback/NN.md, как и в исходной команде
 
     # Уточнение записи с ошибкой: секрет в рецепте не сохраняется, а повтор
     # предлагается с тем же --entry, чтобы обновить именно эту запись.
@@ -453,6 +454,44 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     FakeTestOps(default_launch(779)).install(monkeypatch)
     _, run3, _ = _prepare(project, capsys, launch_id=779)
     assert next(e for e in run3["clusters"] if e["file_id"] == order)["kb"] == []
+
+
+def test_update_suggestions_keep_the_source_the_user_chose(
+    project: Path, testops: FakeTestOps, capsys
+) -> None:
+    """«Чтобы обновить запись» не должно подменять подтверждённый разбор старым feedback/NN.md."""
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    base = ["remember", "1", "--run", str(run_dir), "--from-analysis"]
+    stale = run_dir / "feedback" / f"{order}.md"
+    stale.write_text(FEEDBACK, encoding="utf-8")  # старый файл: он не должен победить
+
+    code, out = _run(base, capsys)
+    assert code == 0 and out.startswith("STATUS: saved") and "feedback" in out, out
+    [kb_file] = (project / "alla-kb").glob("*.json")
+    entry_id = kb_file.stem
+    assert "OrderService.create падает" in json.loads(kb_file.read_text(encoding="utf-8"))["description"]
+
+    # Ошибку уже подтверждали: предложенная команда обновления сохраняет --from-analysis.
+    code, out = _run(base, capsys)
+    suggested = next(line for line in out.splitlines() if "уже подтверждали" in line)
+    assert code == 1 and f"--entry {entry_id}" in suggested and suggested.endswith("--from-analysis")
+
+    # Запись с таким id уже есть, но сигнатура не подтверждена: то же самое.
+    data = json.loads(kb_file.read_text(encoding="utf-8"))
+    data["confirmed_signatures"] = []
+    kb_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    code, out = _run(base, capsys)
+    suggested = next(line for line in out.splitlines() if "уже есть" in line)
+    assert code == 1 and f"--entry {entry_id}" in suggested and suggested.endswith("--from-analysis")
+
+    # Предложенная команда обновляет запись по разбору, а не по старому feedback/NN.md.
+    code, out = _run(["remember", "1", "--entry", entry_id, *base[2:]], capsys)
+    assert code == 0 and out.startswith("STATUS: saved") and "запись обновлена" in out, out
+    updated = json.loads(kb_file.read_text(encoding="utf-8"))
+    assert "OrderService.create падает" in updated["description"]
+    assert "сервис заказов не проверяет customer" not in updated["description"]
 
 
 def test_feedback_commands_require_run_and_explicit_analysis_confirmation(

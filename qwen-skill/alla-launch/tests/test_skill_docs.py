@@ -105,6 +105,14 @@ def test_skill_md_states_the_executor_rules() -> None:
         assert keyword in text
 
 
+def test_fix_instructions_do_not_send_feedback_back_to_next() -> None:
+    """`next` обратную связь не сохраняет: после fix по feedback нужен повторный remember."""
+    skill = " ".join(_read(SKILL_MD).split())
+    protocol = " ".join(_read(REFERENCES / "protocol.md").split())
+    for text in (skill, protocol):
+        assert "повторный `remember" in text and "Затем выполни" in text
+
+
 def test_problem_block_template_is_identical_in_skill_md_and_reference() -> None:
     template = _text_block(_read(SKILL_MD), "Проблемы скилла:")
     assert template == _text_block(_read(REFERENCES / "problem-report.md"), "Проблемы скилла:")
