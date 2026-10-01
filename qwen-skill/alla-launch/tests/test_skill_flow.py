@@ -88,12 +88,14 @@ def test_prepare_builds_run(project: Path, testops: FakeTestOps, capsys) -> None
     assert "customer is null" in first  # лог из вложения
     assert "2026-09-01 10:00:01 [ERROR] OrderService" in first  # время не стёрто
     assert "<TS>" not in first and "<ID>" not in first
-    assert "данные / неизвестно («неизвестно» — только если" in first
+    assert "«неизвестно» — только если ни одну из четырёх остальных нельзя обосновать" in first
     assert "ru.company.orders.OrderTest.createOrder" in first
     assert "at ru.company.orders.OrderTest.createOrder(OrderTest.java:6)" in first
     assert "org.junit.Assert" not in first.split("--- Кадры стека из кода проекта ---")[1]
     assert "src/test/java/ru/company/orders/OrderTest.java:5 — код теста" in first
-    assert "КОД: <путь относительно корня проекта>" in first
+    assert "КОД: <путь от корня проекта>:<строка>" in first
+    assert "testresult/101" not in first  # ссылки на тесты модели не нужны: их строит отчёт
+    assert "| шаг:" not in first  # шаг теста уже назван в данных кластера
 
     auto = [entry for entry in run["clusters"] if entry["auto"]]
     assert len(auto) == 1

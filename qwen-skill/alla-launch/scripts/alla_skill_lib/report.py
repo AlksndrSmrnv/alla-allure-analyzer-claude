@@ -24,7 +24,7 @@ from alla_core.services.prompt_builder_service import build_launch_summary_promp
 
 from alla_skill_lib.agent_rules import EXECUTOR_RULES, SUMMARY_FORMAT_REF, reference_line
 from alla_skill_lib.analysis_format import ClusterAnalysis
-from alla_skill_lib.cluster_task import UNTRUSTED_NOTE, split_prompt
+from alla_skill_lib.cluster_task import UNTRUSTED_NOTE
 from alla_skill_lib.history import format_date
 from alla_skill_lib.proposals import Proposal, weakening_warnings
 from alla_skill_lib.workspace import RunPaths
@@ -217,7 +217,6 @@ def build_summary_task(
         for cluster in clustering.clusters
     ]})
     prompt = build_launch_summary_prompt(clustering, triage, llm_result)
-    data_part, _server_task = split_prompt(prompt.user_prompt)
     return "\n".join([
         f"# Общий анализ прогона #{run['launch_id']}",
         "",
@@ -233,7 +232,7 @@ def build_summary_task(
         SUMMARY_RULES,
         EXECUTOR_RULES,
         "",
-        data_part,
+        prompt.user_prompt,
         "",
         "## Задание",
         SUMMARY_TASK,

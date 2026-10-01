@@ -14,10 +14,8 @@ from skill_fixtures import without_libmagic  # noqa: F401
 
 from alla_core.config import Settings
 from alla_core.exceptions import ConfigurationError
-from alla_core.models.clustering import ClusterSignature, FailureCluster
-from alla_core.services.prompt_builder_service import build_cluster_analysis_prompt
 from alla_skill_lib.analysis_format import parse_analysis, parse_summary, validate_analysis
-from alla_skill_lib.cluster_task import adapt_task, project_frames, split_prompt
+from alla_skill_lib.cluster_task import project_frames
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
 from alla_skill_lib.log_focus import FOCUS_NOTE, focus_log
 
@@ -258,32 +256,6 @@ def test_compact_keeps_cause_sentence_and_first_step() -> None:
         "ЧТО СЛОМАЛОСЬ: Первое.\n"
         "ПЕРВЫЙ ШАГ ИСПРАВЛЕНИЯ: Создать клиента в стенде."
     )
-
-
-# --- задание кластера -----------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("message", "log"),
-    [("expected 200 but was 500", "ERROR NPE"), (None, "ERROR NPE"), ("boom", None)],
-)
-def test_task_has_no_knowledge_base_mentions(message: str | None, log: str | None) -> None:
-    cluster = FailureCluster(
-        cluster_id="c1",
-        label="boom",
-        signature=ClusterSignature(),
-        member_count=1,
-        example_message=message,
-        example_step_path="Шаг",
-    )
-    prompt = build_cluster_analysis_prompt(cluster, None, log_snippet=log)
-    _, task = split_prompt(prompt.user_prompt)
-    assert task.startswith("═")
-    cleaned = adapt_task(task)
-    assert "знаний" not in cleaned
-    assert "ЧТО СЛОМАЛОСЬ:" in cleaned
-    cause_line = next(line for line in cleaned.splitlines() if line.startswith("ПРИЧИНА:"))
-    assert "данные / неизвестно («неизвестно» — только если" in cause_line
 
 
 # --- отбор лога -------------------------------------------------------------

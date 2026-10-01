@@ -1,0 +1,111 @@
+"""Задание на кластер: каждое сочетание данных сохраняет все ключевые директивы.
+
+Текст «Правил» и «Задания» сокращали, убирая повторы. Этот тест — страховка: если
+правка потеряет инструкцию, от которой зависит качество разбора, он покажет, какую.
+Формулировки проверяются по ключевым словам, а не по точному тексту.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from alla_skill_lib.agent_rules import EXECUTOR_RULES
+from alla_skill_lib.cluster_task import RULES, build_task_text
+
+VARIANTS = {
+    "symptom+log": {"has_symptom": True, "has_log": True},
+    "log only": {"has_symptom": False, "has_log": True},
+    "symptom only": {"has_symptom": True, "has_log": False},
+}
+CATEGORIES = ("тест", "приложение", "окружение", "данные", "неизвестно")
+
+
+def _task(variant: str, *, low_evidence: bool = False, has_kb: bool = False) -> str:
+    return build_task_text(low_evidence=low_evidence, has_kb=has_kb, **VARIANTS[variant])
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+@pytest.mark.parametrize("has_kb", [False, True])
+def test_every_variant_keeps_the_answer_format_and_step_rules(variant: str, has_kb: bool) -> None:
+    task = _task(variant, has_kb=has_kb)
+    for marker in ("ЧТО СЛОМАЛОСЬ:", "ПРИЧИНА:", "КАК ИСПРАВИТЬ:", "КОД:", "без вступления"):
+        assert marker in task, marker
+    assert "<тест|приложение|окружение|данные|неизвестно>" in task
+    assert "только если ты открывал код проекта" in task
+    # Шаги: действие с глагола, без «проверьте», без абстрактных советов и выдумок.
+    for phrase in ("начинай с глагола", "«проверьте»", "абстрактных советов", "Не выдумывай"):
+        assert phrase in task, phrase
+    # Ни слова про базу знаний, пока записей нет; с записями — строка БАЗА ЗНАНИЙ.
+    assert ("БАЗА ЗНАНИЙ:" in task) is has_kb
+    if not has_kb:
+        assert "знаний" not in task
+
+
+def test_symptom_and_log_task_asks_for_a_quote_and_prefers_the_log() -> None:
+    task = _task("symptom+log")
+    assert "2 предложения" in task and "дословной цитатой" in task
+    assert "по первопричине из лога приложения, а не по тексту assertion" in task
+    # Все четыре примера выбора категории.
+    for example in ("→ приложение", "→ тест", "→ окружение", "→ данные"):
+        assert example in task, example
+    assert "первый шаг — с конкретикой из лога" in task
+
+
+def test_log_only_task_says_there_is_no_symptom_and_does_not_invent_one() -> None:
+    task = _task("log only")
+    assert "стек-трейса нет, анализ построен по логу" in task
+    assert "дословная цитата" in task and "Симптом со стороны теста не выдумывай" in task
+    assert "первый шаг — с конкретикой из лога" in task
+
+
+def test_symptom_only_task_says_the_log_is_empty_and_does_not_invent_it() -> None:
+    task = _task("symptom only")
+    assert "лог приложения пуст / без явных ошибок" in task
+    assert "Содержимое лога не выдумывай" in task
+    assert "с учётом «Шага теста»" in task
+    assert "первый шаг" not in task  # про лог в шагах говорить нечего
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_unknown_category_needs_both_data_and_code_to_fail(variant: str) -> None:
+    task = _task(variant)
+    cause_line = next(line for line in task.splitlines() if line.startswith("ПРИЧИНА:"))
+    assert "«неизвестно» — только если ни одну из четырёх остальных нельзя обосновать" in cause_line
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_low_evidence_adds_the_step_hint(variant: str) -> None:
+    assert "Шаг теста" not in _task(variant).split("КОД:", 1)[1]
+    note = _task(variant, low_evidence=True)
+    assert "Данных об ошибке немного" in note and "не выдумывай по нему деталей" in note
+
+
+def test_rules_keep_the_core_directives() -> None:
+    text = " ".join(RULES.split())
+    for phrase in (
+        "по-русски", "простым языком", "без жаргона", "стек-трейс не пересказывай",
+        "ничего не додумывай", "категория «неизвестно»", "чего не хватает",  # мало данных
+        "симптом", "поведение системы", "первопричина", "свяжи их",
+        "игнорировать нельзя", "важнее текста assertion",
+        "Лог пуст или без ошибок", "«Шаг теста» — вспомогательный контекст",
+        "Где искать код автотеста", "не больше 3 файлов", "Ничего не изменяй",
+        "тесты и сборку не запускай", "Код мог измениться после прогона",
+    ):
+        assert phrase in text, phrase
+
+
+def test_categories_in_the_format_match_the_validator() -> None:
+    from alla_skill_lib.analysis_format import CATEGORIES as accepted
+
+    assert tuple(accepted) == CATEGORIES
+    assert all(f"{c}" in _task("symptom+log") for c in CATEGORIES)
+
+
+def test_executor_rules_name_every_prohibition() -> None:
+    text = " ".join(EXECUTOR_RULES.split())
+    for phrase in (
+        "только то, что сказано", "ничего не добавляй", "только читай", "Своих скриптов не пиши",
+        "python -c", "heredoc", "write_file", ".env", "run.json", "evidence/", "не обходи",
+        "Проблема скилла:",
+    ):
+        assert phrase in text, phrase
