@@ -2,33 +2,205 @@
 
 ## Что это
 
-`alla` — AI-агент триажа упавших автотестов из Allure TestOps. По launch ID
-или точному имени запуска он получает результаты, извлекает ошибки и логи,
-кластеризует активные failed/broken падения, ищет совпадения в PostgreSQL базе
-знаний, запускает GigaChat-анализ при наличии конфигурации, генерирует
-self-contained HTML-отчёт и может записать рекомендации/ссылку обратно в
-TestOps.
+`alla` — скилл Qwen Code для триажа упавших автотестов из Allure TestOps. По
+launch ID или ссылке на запуск он получает результаты, извлекает ошибки и логи,
+кластеризует активные failed/broken падения; анализ пишет модель Qwen Code по
+заданиям скилла. Результат — краткий разбор в терминале, `report.md` и
+предложения правок автотестов. Скилл только читает TestOps.
 
-## Эксперименты со скиллом
+## Состояние репозитория
 
-Первая версия проектного Qwen-скилла вынесена из `main` в ветку
-`codex/experiment-qwen-skill-v1`. Реализация и её тесты сохранены там полностью.
-Это эксперимент, не финальный интерфейс. Новые подходы разрабатываются в
-отдельных ветках; не восстанавливать скилл в `main` без явного решения пользователя.
-Серверные исправления и API остаются частью основной ветки.
+В репозитории (`main`) остался **только скилл** (`qwen-skill/alla-launch/`).
+Серверный инструмент (CLI `alla`, FastAPI `alla-server`, MCP, PostgreSQL база
+знаний, GigaChat, HTML-отчёт, dashboard, Docker/Jenkins) удалён; он доступен только
+в истории git — последний коммит с ним `e100909`
+(`git show e100909:src/alla/<файл>`). Серверный код и пакет `alla` в репозиторий не
+возвращать без явного решения пользователя. Первая версия скилла осталась в ветке
+`codex/experiment-qwen-skill-v1`.
 
-## Pipeline серверного инструмента (CLI/REST/MCP)
+## Скилл `alla-launch` (v2)
 
-`TriageService`
-→ `LogExtractionService`
-→ `ClusteringService`
-→ merge rules
-→ база знаний + exact feedback memory
-→ `LLMService`
-→ LLM push или fallback KB push
-→ HTML/report link
+`qwen-skill/alla-launch/` — проектный скилл Qwen Code. Анализ кластеров и
+прогона пишет модель Qwen Code, Python готовит данные. База знаний —
+проектная (`alla-kb/` в репозитории автотестов, наполняется обратной связью
+пользователя).
 
-Важные детали:
+- `scripts/alla_skill.py` — точка входа (Python 3.8+), перезапускает себя в
+  `.venv` скилла; `setup [--python P] [-- pip-аргументы]` создаёт venv, после
+  успешного pip install пишет `.venv/.alla-setup-complete` (хэш
+  `requirements.txt`) и создаёт `.env` из образца — без маркера команды
+  отвечают `STATUS: setup_required`. Команды: `prepare <id|URL> [--fresh]`,
+  `next [run_dir | --run DIR] [--workers N | --serial]`, `verify N [N…] --run DIR`,
+  `skip N --run DIR`, `check`, `clean`,
+  `apply N --run DIR [--yes --diff ХЭШ] [--repeat]`, `revert N --run DIR`,
+  `remember N --run DIR [--entry ID] [--from-analysis]`,
+  `reject N <id> --run DIR` (`--run` обязателен: `.last_run` после нового
+  prepare — другой прогон; разбор модели сохраняется в базу знаний только с
+  явным `--from-analysis`, который выбирает разбор даже при наличии
+  `feedback/NN.md`). Первая строка вывода — `STATUS: analyze|analyze_batch|
+  fix|propose|summary|done|diff|applied|reverted|saved|ok|ready|setup_required|error`; ошибка
+  аргументов и любое необработанное исключение тоже дают `STATUS: error`.
+  Код возврата 0 у всех статусов, кроме `error` (статус с инструкцией — не
+  авария). `prepare` продолжает свежий (<24 ч) незавершённый разбор того же
+  прогона без обращения к TestOps (`--fresh` — заново); стадии выгрузки идут в
+  stderr; пустой прогон — `error`; ошибка одного кластера деградирует его до
+  «неизвестно» с предупреждением, а не роняет prepare.
+- Параллельный разбор больших прогонов (`cli.next_step`, `batch_task`): когда
+  кластеров без разбора ≥ `PARALLEL_MIN_PENDING` (10) и рабочих > 1, `next`
+  отвечает `STATUS: analyze_batch` вместо `analyze`: неразобранные кластеры
+  (порядок номеров, не `auto`) режутся по `BATCH_SIZE` (6) в пакеты, за одну
+  волну — не больше `DEFAULT_WORKERS` (4) пакетов; файл каждого пакета
+  `batches/N.md` самодостаточен (правила, кластер → задание → файл разбора,
+  формат, команда проверки) и пишется заново каждой волной. Состав волны
+  считается из диска, но выданные кластеры запоминаются в `state.json`
+  (`batched`, `wave`): кластер раздаётся пакетом не больше одного раза. Что
+  волна не записала, идёт обычным `analyze` по одному; если не записан ни один
+  разбор волны, пакетный режим выключается (`workers=1`, в ответе `next`
+  пояснение), включить снова — `next --workers N` (сбрасывает `batched`). Основной агент раздаёт пакеты субагентам Qwen Code (`agent`, все
+  вызовы в одном сообщении, `run_in_background: false`), ждёт всех и зовёт
+  `next`. Субагент `next` не вызывает: `verify N [N…] --run DIR` — только
+  читающая проверка (те же parse/validate, что в `next`; `state.json`, история и
+  файлы не трогаются, попытки не считаются), `STATUS: ok|fix`. `state.json` пишет
+  только основной агент; невалидный/недописанный разбор возвращается обычным
+  `fix`/`analyze` по одному (лимит попыток прежний). Хвост меньше порога, `fix`,
+  `propose`, `summary` — по-старому. `next --workers N` (1–`MAX_WORKERS`=8;
+  `--serial` = 1) сохраняется в `state.json`; это запасной путь без субагентов.
+- Правила исполнителя и справочники: агент ведёт разбор строго по сценарию — не
+  правит файлы скилла, не пишет своих скриптов, о неполадках скилла сообщает блоком
+  «Проблемы скилла» (`SKILL.md`, `references/problem-report.md`). Защита только
+  текстовая; один и тот же текст правил — `alla_skill_lib/agent_rules.py`
+  (`EXECUTOR_RULES`), он подставляется в `clusters/NN.md`, `batches/N.md` и
+  `summary_task.md` и повторён в `SKILL.md`. Форматы файлов, которые пишет агент,
+  описаны в `references/`: `analysis-format.md` (`analyses/NN.md`),
+  `proposal-format.md` (`proposals/NN.md`), `summary-format.md` (`summary.md`),
+  `feedback.md` (`feedback/NN.md`), а `protocol.md` — статусы, лимиты попыток и
+  разграничение файлов. Шаблоны из констант кода (`EXPECTED_FORMAT`,
+  `PROPOSAL_FORMAT`, `FEEDBACK_FORMAT`) вставлены в справочники дословно, примеры с
+  пометкой `<!-- example: … -->` прогоняет через настоящие парсеры
+  `tests/test_skill_docs.py`: меняя формат или текст ошибки в коде, правьте справочник
+  (тест покажет расхождение). Ответ `fix` на предпоследней попытке предупреждает, что
+  третья версия разбора принимается с пометкой «формат нарушен».
+- `scripts/alla_core/` — ядро скилла: клиент TestOps, триаж, логи, кластеризация,
+  prompt builder, стабильная сигнатура `knowledge/feedback_signature.py`. Изначально
+  вендорено из серверного `src/alla` (коммит `e100909`), теперь **обычный рукописный
+  код скилла**: генератора, пометок GENERATED и drift-теста нет, правится напрямую
+  (с тестами). `config.py` — `Settings`: читает `<skill>/.env` + env `ALLURE_*`, чужие
+  ключи игнорирует; `BOUNDS` — допустимые ge/le. Унаследованное от сервера, что скиллу
+  может быть не нужно (поля под PostgreSQL, LLM-модели), удалять осознанно, сверяясь с
+  импортами `alla_skill_lib` и тестами. Подробности — раздел «Ядро `alla_core`» ниже.
+- `scripts/alla_skill_lib/` — логика скилла: `pipeline` (триаж → логи →
+  кластеризация), `cluster_task` (задание `clusters/NN.md`
+  из промпта ядра с `normalize_evidence=False` — ID и время в логе
+  сохраняются; без упоминаний базы знаний, с категорией «неизвестно»; правило
+  «пиши простым языком» — тексты разборов попадают в отчёт как есть; + тесты,
+  корреляция, кадры стека, подсказки по коду), `log_focus` (лог длиннее лимита
+  не режется по началу: блоки отбираются по связи с ошибкой, пропуски и не
+  вошедшие вложения помечаются), `code_hints`, `analysis_format` (прощающий
+  парсер ЧТО СЛОМАЛОСЬ / ПРИЧИНА / КАК ИСПРАВИТЬ / КОД: `1.`-нумерация и «—»
+  после заголовка; заголовок принимается один раз; пункт списка `- Код: …`
+  внутри шагов — текст, а не раздел; категория — первое слово из пяти, без
+  «или»/«/»; файл и номер строки в КОД проверяются, имя файла без пути
+  принимается, если однозначно; `БАЗА ЗНАНИЙ: <id>` — только id из
+  предложенных записей, любая фраза = «нет»; `parse_summary` показывает
+  модели, что распознано),
+  `report` (читаемый отчёт простым языком: проблемы («кластер» в тексте для
+  человека не пишем) раскладывает по разделам код, а не модель — «Требуют
+  вашего внимания» (приложение, неизвестно, «формат нарушен»; ошибки приложения
+  первыми), «Агент может поправить сам» (принятая правка `is_fix` с состоянием
+  `applied`/`not_applied`), «Автотест сломан, но править вручную» (категория
+  «тест» без правки или правка в состоянии `unknown` + причина: агент решил не
+  трогать / нет `КОД:` / лимит / отброшено проверкой / файл менялся после
+  apply; причина есть и в `report.md` для каждой проблемы, `unknown`-правку
+  модели в «После отчёта» не предлагают), «Стенд и
+  тестовые данные». В терминал идёт краткий разбор (модель повторяет его
+  дословно и получает при каждом `next`): шапка, «Коротко», по одной строке на
+  проблему (не больше 5 на раздел и не больше 8 номеров в «… и ещё N»; предупреждения
+  и замечания — не больше 5 по ≤300 символов; «что случилось» ≤160 символов, метки
+  «повторяется»/«известная проблема», у правки — статус и одна строка «Проверьте»)
+  и в конце ссылка `file://` на `report.md` плюс обычный путь. `report.md` в
+  контекст не попадает и без сокращений: обзор «Что делать», те же разделы со
+  всеми пунктами, полные «Что случилось»/«Почему»/шаги/причины, ниже «Подробности
+  по проблемам» со списком тестов (до 200, дальше ссылка на запуск в TestOps); «Коротко» пишет модель — «ЗАДАНИЕ» сводки из ядра заменено
+  своим, в задание идут сжатые разборы: 30 самых больших проблем подробно, у
+  остальных одна строка причины, чтобы задание не росло с числом проблем),
+  `errors` (подсказки
+  по сбоям выгрузки: токен, TLS, таймаут, лимит страниц, 404), `cli`.
+- Память скилла:
+  - `kb` — `alla-kb/<id>.json` в корне git; узнавание точно по сигнатуре
+    `v<версия>:<hash>` (`confirmed_signatures`/`rejected_signatures`) или по
+    короткому признаку `error_example` (все строки есть в данных кластера,
+    без учёта чисел/ID/времени/e-mail; хранится нормализованным). Свои поля записи (`jira`, `owner`…)
+    сохраняются при перезаписи; запись — атомарная, LF; сканер секретов
+    отклоняет пароли, токены, ключи AWS/GitHub, пароль в URL, PEM.
+    Golden-тест фиксирует хэш сигнатуры: смена версии после синхронизации
+    ядра должна быть осознанной.
+  - `feedback` — `remember`/`reject` из `feedback/NN.md` (или подтверждённого
+    разбора); признак проверяется по `evidence/NN.txt`, секреты не пишутся.
+  - `history` — `alla-reports/history.jsonl` (локально), повторы по точной
+    сигнатуре или записи базы знаний из другого `launch_id`; в задание идёт
+    только число повторов и дата, прошлые выводы модели не подаются (анкерят
+    её на непроверенной догадке).
+  - `proposals` — статус `propose` для кластеров «тест» с `КОД:` (до 5 на
+    прогон; лишние и отброшенные после 3 попыток видны в отчёте у самой
+    проблемы — «Почему агент не правил сам»): БЫЛО/СТАЛО. Явное ослабление теста отклоняется (удалены/
+    закомментированы вызовы проверок, отключение/`@Retry`, пустой catch, новый
+    sleep; комментарии режутся с учётом строк — `#id`/`http://` в кавычках не
+    комментарий); смена ожидаемого значения и рост таймаута (с единицами
+    измерения и по «владельцу» ожидания — вызову или ключу) — «Проверь:»
+    рядом с diff, не отказ. Место правки одно (`_locate`): ближайший к указанной строке
+    (±20) из ещё не исправленных БЫЛО и уже стоящих СТАЛО; если ближайшее —
+    СТАЛО, соседнее БЫЛО не трогается (БЫЛО внутри СТАЛО и СТАЛО внутри БЫЛО
+    не считаются). `apply` без `--yes` печатает diff и его хэш (пишет
+    `proposals/NN.patch`), с `--yes --diff ХЭШ` записывает ровно показанный
+    diff: бэкап `NN.orig`, атомарная запись, окончания строк и BOM
+    сохраняются. `NN.applied.json` хранит хэши файла до/после, строку и файл;
+    «применено» определяется по записи
+    (`applied_state`: applied | not_applied | unknown): хэш файла == `sha_after`
+    — применено, == `sha_before` — нет. Если файл менялся, «не применено» по
+    содержимому НЕ выводится никогда (близость к исходной версии
+    доказательством отката не служит: чужая правка может вернуть часть
+    удалённого); «применено» — только при строгом доказательстве (`_untouched`:
+    общий префикс версий «после apply» и текущей покрывает строки СТАЛО либо
+    общий суффикс — все отличия по одну сторону; и версия «до apply» этому же
+    условию не удовлетворяет, иначе оно ничего не доказывает — так у
+    правки-удаления). Обе версии восстанавливаются из `NN.orig`. Всё
+    остальное — `unknown` (в том числе ручной откат вместе с другими
+    правками, изменённая строка правки, недоступная копия, отметка старого
+    формата с СТАЛО не на записанной строке): `apply` отказывается («не удалось
+    определить»), повтор только по явному `--repeat` (агент — лишь по прямой
+    просьбе пользователя; прежняя `NN.orig` уходит в `NN.orig.1`, `.2`…, ничего не затирается), `next` не
+    заставляет модель переписывать предложение, а отчёт объясняет состояние у самой проблемы.
+    Без записи (`revert`, ручное применение) «применено» — по СТАЛО, ближайшему
+    к указанной строке (`_locate`). `revert` берёт файл из записи применения (не из предложения) и
+    возвращает бэкап, только если файл не менялся после `apply` и сам бэкап
+    совпадает с `sha_before` из записи (повреждённая или подменённая `NN.orig` —
+    отказ, файл и запись не трогаются). Править можно
+    только `SOURCE_EXTENSIONS` вне dot-папок и `alla-kb`/`alla-reports`; файл не в
+    UTF-8 скилл не трогает.
+- Тесты скилла — `qwen-skill/alla-launch/tests/` (единственный каталог в `testpaths`
+  корневого `pyproject.toml`, который содержит только конфиг ruff/mypy/pytest):
+  `test_skill_*.py` — логика скилла на фейковом TestOps, `test_core_*.py` — ядро
+  `alla_core` (кластеризация и step-path gate, извлечение логов и вложений,
+  декодирование, триаж, клиент TestOps, auth, `log_utils`; перенесены из серверных
+  тестов `e100909` с импортами `alla_core`). Фикстуры в `skill_fixtures.py`, фабрики
+  моделей ядра в `skill_factories.py`, а не `conftest.py`, чтобы папка скилла
+  оставалась самодостаточной; импортировать их нужно раньше `alla_core` —
+  `skill_fixtures` добавляет `scripts/` в `sys.path`. libmagic в окружении скилла нет:
+  автоматически включается фикстура `without_libmagic`, а ветку с `magic` тесты ядра
+  проверяют через фейковый модуль (`_fake_magic`). Зависимости тестов —
+  `requirements-dev.txt` (pytest, pytest-asyncio); запуск: `python -m pytest` из корня
+  репозитория.
+
+
+## Ядро `alla_core`
+
+`scripts/alla_core/` — слой доступа к TestOps и анализа падений, на котором стоит
+`alla_skill_lib`.
+
+### Сбор данных
+
+`TriageService` → `LogExtractionService` → `ClusteringService`
+(склеены в `alla_skill_lib/pipeline.py`).
 
 - `hidden` results исключаются из статистики и анализа как retry/non-final.
 - muted failed/broken считаются отдельно и не попадают в активные кластеры.
@@ -36,221 +208,48 @@ TestOps.
   fallback `GET /api/testresult/{id}`.
 - Логи берутся из processable attachments: text, JSON, XML, NDJSON и unknown
   text-like. Binary attachments пропускаются.
-- KB push выполняется только как fallback, если LLM не дал успешного результата.
 
-## Слои
+### Настройки
 
-| Пакет | Назначение |
-|---|---|
-| `alla/cli.py` | CLI: анализ, удаление комментариев |
-| `alla/server.py` | FastAPI REST API, HTML reports, feedback API, merge rules, dashboard, MCP mount |
-| `alla/mcp_app.py` | MCP streamable HTTP tools `analyze_launch`, `analyze_launch_html` |
-| `alla/app_support.py` | Общие helpers CLI/HTTP: settings, JSON response, HTML, report persistence/link |
-| `alla/orchestrator.py` | Общий pipeline CLI/сервер/MCP |
-| `alla/services/` | Триаж, логи, кластеризация, LLM, push, delete comments, merge |
-| `alla/clients/` | Allure TestOps, auth, GigaChat, Protocol interfaces |
-| `alla/knowledge/` | PostgreSQL база знаний, matcher, feedback memory, merge rules models/store |
-| `alla/report/` | HTML-отчёт и PostgreSQL report store |
-| `alla/dashboard/` | Dashboard HTML, stats store |
-| `alla/models/` | Pydantic/domain models |
-| `alla/config.py` | `Settings(BaseSettings)`, env prefix `ALLURE_` |
-
-## CLI
-
-```bash
-alla 12345
-alla --launch-name "Regression 2026-05-02" --project-id 1
-alla 12345 --output-format json
-alla 12345 --log-level DEBUG --page-size 200
-alla 12345 --html-report-file alla-report.html --report-url https://ci/alla-report.html
-alla delete 12345 --dry-run
-alla delete 12345
-```
-
-Обычный `alla <launch_id>` всегда сохраняет HTML. Если `--html-report-file`
-не указан, файл называется `alla_report_<launch_id>.html`.
-
-## HTTP API
-
-| Метод | Путь | Описание |
-|---|---|---|
-| `GET` | `/health` | `{"status":"ok","version":...,"mcp":true}` |
-| `GET` | `/api/v1/launch/resolve?name=&project_id=` | Точное имя запуска → `launch_id` |
-| `POST` | `/api/v1/analyze/{launch_id}` | Pipeline анализа → JSON |
-| `POST` | `/api/v1/analyze/{launch_id}/html` | Pipeline анализа → HTML; header `X-Report-URL` если ссылка есть |
-| `GET` | `/reports/{filename}` | Отдать сохранённый HTML из PostgreSQL или `ALLURE_REPORTS_DIR` |
-| `DELETE` | `/api/v1/comments/{launch_id}?dry_run=true` | Удалить комментарии с префиксом `[alla]` |
-| `POST` | `/api/v1/kb/entries` | Создать project/global запись базы знаний |
-| `PUT` | `/api/v1/kb/entries/{entry_id}` | Обновить запись базы знаний |
-| `POST` | `/api/v1/kb/feedback` | UPSERT like/dislike exact feedback memory |
-| `POST` | `/api/v1/kb/feedback/resolve` | Вернуть сохранённые голоса для HTML-отчёта |
-| `POST` | `/api/v1/merge-rules` | Сохранить пары сигнатур для объединения кластеров |
-| `GET` | `/api/v1/merge-rules?project_id=` | Список merge rules проекта |
-| `DELETE` | `/api/v1/merge-rules/{rule_id}` | Удалить merge rule |
-| `GET` | `/api/v1/dashboard/stats?days=30` | KPI, per-project rollup, series |
-| `POST` | `/api/v1/skill/runs` | Skill: persist run (merge rules→KB→onboarding→create_run), вход — сериализованные triage+clustering |
-| `GET` | `/api/v1/skill/runs/{run_id}` | Skill: полная сериализация skill_run |
-| `GET` | `/api/v1/skill/runs/{run_id}/clusters/{cluster_id}/context` | Skill: контекст + промпт кластера |
-| `POST` | `/api/v1/skill/runs/{run_id}/summary-context` | Skill: промпт launch summary |
-| `POST` | `/api/v1/skill/runs/{run_id}/analysis` | Skill: валидация + сохранение агентского анализа |
-| `POST` | `/api/v1/skill/runs/{run_id}/report` | Skill: рендер HTML, сохранение в alla.report, возврат HTML |
-| `POST` | `/api/v1/skill/runs/{run_id}/push-result` | Skill: зафиксировать результат push'а |
-| `GET` | `/dashboard` | Self-contained dashboard UI |
-| `ANY` | `/mcp` | MCP streamable HTTP transport |
-| `GET` | `/docs` | Swagger UI |
-
-Query-параметры `push_comments` и `push_report_link` у
-`/api/v1/analyze/...` переопределяют `ALLURE_PUSH_COMMENTS` и
-`ALLURE_PUSH_REPORT_LINK` соответственно для одного запроса.
-
-## MCP
-
-MCP сервер монтируется в `alla-server` на `/mcp`.
-
-| Tool | Описание |
-|---|---|
-| `analyze_launch(launch_id, push_comments?, push_report_link?)` | Компактный JSON: launch, total_failed, clusters, top совпадения базы знаний, LLM verdicts |
-| `analyze_launch_html(launch_id, push_comments?, push_report_link?)` | То же + сохранение HTML в `ALLURE_REPORTS_DIR` и/или PostgreSQL, `report_url`/`hint` |
-
-MCP tools не принимают launch name. Для имени используйте REST
-`/api/v1/launch/resolve`.
-
-## Конфигурация
-
-Все переменные имеют префикс `ALLURE_`, читаются из env или `.env`.
+Поля `alla_core/config.py::Settings`; читаются из `<skill>/.env` и переменных
+окружения с префиксом `ALLURE_` (окружение важнее файла).
 
 | Переменная | Обязательная | По умолчанию | Описание |
 |---|:---:|---|---|
-| `ALLURE_ENDPOINT` | да | — | URL Allure TestOps |
-| `ALLURE_TOKEN` | да* | `""` | API token; может прийти из Vault |
-| `ALLURE_PROJECT_ID` | нет | `None` | Default project scope для поиска запуска по имени |
-| `ALLURE_VAULT_URL` | нет | `""` | Vault Proxy; загружает token, PostgreSQL DSN, GigaChat cert/key |
+| `ALLURE_ENDPOINT` | да | — | URL Allure TestOps без `/api` |
+| `ALLURE_TOKEN` | да | `""` | API token |
 | `ALLURE_REQUEST_TIMEOUT` | нет | `30` | HTTP timeout к TestOps |
 | `ALLURE_PAGE_SIZE` | нет | `100` | Размер страницы TestOps API |
 | `ALLURE_MAX_PAGES` | нет | `50` | Защита пагинации |
 | `ALLURE_DETAIL_CONCURRENCY` | нет | `10` | Параллелизм details/comments |
-| `ALLURE_LOG_LEVEL` | нет | `INFO` | DEBUG/INFO/WARNING/ERROR |
 | `ALLURE_SSL_VERIFY` | нет | `true` | Проверка TLS |
-| `ALLURE_CLUSTERING_THRESHOLD` | нет | `0.60` | Порог similarity; ниже = агрессивнее объединение |
-| `ALLURE_CLUSTERING_STEP_STRICT_THRESHOLD` | нет | `0.95` | Hard gate по step path: если у обоих падений есть `failed_step_path` и step similarity ниже порога — кластера не сливаются (до message/log gates, log override НЕ обходит). `0.0` отключает gate, `1.0` режет при любом отличии. Откатить разделение можно merge rule с `rule_kind="step"` |
 | `ALLURE_LOGS_CONCURRENCY` | нет | `5` | Параллелизм скачивания attachments |
+| `ALLURE_LOGS_MAX_ATTACHMENT_BYTES` | нет | `10485760` | Максимум байт из одного аттачмента (stream-чтение с обрезкой) |
+| `ALLURE_LOGS_MAX_SNIPPET_CHARS` | нет | `65536` | Максимум символов финального `log_snippet` одного теста |
+| `ALLURE_CLUSTERING_THRESHOLD` | нет | `0.60` | Порог similarity; ниже = агрессивнее объединение |
+| `ALLURE_CLUSTERING_STEP_STRICT_THRESHOLD` | нет | `0.95` | Hard gate по step path: если у обоих падений есть `failed_step_path` и step similarity ниже порога — кластеры не сливаются (до message/log gates, log override НЕ обходит). `0.0` отключает gate, `1.0` режет при любом отличии |
 | `ALLURE_LOGS_CLUSTERING_WEIGHT` | нет | `0.15` | Вес log channel в кластеризации |
-| `ALLURE_LOGS_MAX_ATTACHMENT_BYTES` | нет | `10485760` | Максимум байт, читаемых из одного аттачмента (stream-чтение с обрезкой). Защита памяти пода |
-| `ALLURE_LOGS_MAX_SNIPPET_CHARS` | нет | `65536` | Максимум символов финального `log_snippet` одного теста (обрезка после извлечения ошибок) |
-| `ALLURE_KB_POSTGRES_DSN` | нет | `""` | Включает PostgreSQL базу знаний, feedback, merge rules, dashboard |
-| `ALLURE_KB_MIN_SCORE` | нет | `0.15` | Минимальный score совпадения базы знаний |
-| `ALLURE_KB_MAX_RESULTS` | нет | `5` | Максимум совпадений на кластер |
-| `ALLURE_FEEDBACK_SERVER_URL` | нет | `""` | Base URL `alla-server` для интерактивных кнопок HTML-отчёта |
-| `ALLURE_GIGACHAT_BASE_URL` | нет | `""` | GigaChat API URL |
-| `ALLURE_GIGACHAT_CERT_B64` | нет | `""` | mTLS cert PEM в base64 |
-| `ALLURE_GIGACHAT_KEY_B64` | нет | `""` | mTLS key PEM в base64 |
-| `ALLURE_GIGACHAT_MODEL` | нет | `GigaChat-2-Max` | LLM model |
-| `ALLURE_LLM_TIMEOUT` | нет | `120` | Timeout одного LLM-запроса |
-| `ALLURE_LLM_CONCURRENCY` | нет | `3` | Параллелизм LLM cluster requests |
-| `ALLURE_LLM_REQUEST_DELAY` | нет | `2.0` | Минимальная пауза между LLM-запросами |
-| `ALLURE_LLM_MAX_RETRIES` | нет | `5` | Retry для 429/503/network |
-| `ALLURE_LLM_RETRY_BASE_DELAY` | нет | `3.0` | Exponential backoff base |
-| `ALLURE_LLM_PROMPT_MESSAGE_MAX_CHARS` | нет | `2000` | Лимит message в prompt |
-| `ALLURE_LLM_PROMPT_TRACE_MAX_CHARS` | нет | `400` | Лимит trace в prompt |
-| `ALLURE_LLM_PROMPT_LOG_MAX_CHARS` | нет | `8000` | Лимит log в prompt |
-| `ALLURE_PUSH_COMMENTS` | нет | `false` | Писать LLM/KB-комментарии к тест-кейсам в TestOps |
-| `ALLURE_PUSH_REPORT_LINK` | нет | `true` | Прикреплять ссылку на HTML-отчёт к запуску в TestOps |
-| `ALLURE_REPORT_URL` | нет | `""` | Статический URL HTML-отчёта, обычно Jenkins artifact |
-| `ALLURE_REPORT_LINK_NAME` | нет | `[Alla] HTML-отчёт запуска автотестов` | Название launch link |
-| `ALLURE_REPORTS_DIR` | нет | `""` | Сохранять HTML на диск и отдавать через `/reports` |
-| `ALLURE_REPORTS_POSTGRES` | нет | `false` | Сохранять HTML в `alla.report`, требует DSN |
-| `ALLURE_SERVER_EXTERNAL_URL` | нет | `""` | Публичный URL сервера для report links и rerun button |
-| `ALLURE_SERVER_HOST` | нет | `0.0.0.0` | Host uvicorn |
-| `ALLURE_SERVER_PORT` | нет | `8090` | Port uvicorn |
+| `ALLURE_LLM_PROMPT_MESSAGE_MAX_CHARS` | нет | `2000` | Лимит message в задании |
+| `ALLURE_LLM_PROMPT_TRACE_MAX_CHARS` | нет | `400` | Лимит trace в задании |
+| `ALLURE_LLM_PROMPT_LOG_MAX_CHARS` | нет | `8000` | Лимит log в задании |
 
-`ALLURE_TOKEN` обязателен после `resolve_secrets()`: можно задать напрямую или
-через `ALLURE_VAULT_URL`.
+Границы значений — `BOUNDS` в `config.py`.
 
-Удалённые/неиспользуемые настройки: `ALLURE_KB_ENABLED`,
-`ALLURE_KB_BACKEND`, `ALLURE_KB_PATH`, `ALLURE_KB_PUSH_ENABLED`,
-`ALLURE_CLUSTERING_ENABLED`, `ALLURE_PUSH_TO_TESTOPS` (заменён на
-`ALLURE_PUSH_COMMENTS` и `ALLURE_PUSH_REPORT_LINK`).
-
-## База знаний и feedback
-
-Текущий backend базы знаний — только PostgreSQL.
-
-Таблицы:
-
-- `alla.kb_entry`: записи базы знаний; `project_id IS NULL` = global/starter pack.
-- `alla.project_group`: проекты с общим `group_id` видят записи друг друга.
-- `alla.kb_feedback`: exact feedback memory like/dislike по stable issue signature.
-- `alla.merge_rules`: ручные правила объединения кластеров.
-- `alla.report`: HTML-отчёты и token usage, создаётся report store автоматически.
-
-Matcher:
-
-- Tier 1: normalized exact substring, score 1.0.
-- Tier 2: line match, score 0.7-0.95.
-- Tier 3: TF-IDF fallback, capped score 0.5.
-- `step_path` у записи фильтрует mismatch и даёт небольшой bonus при exact/compatible path.
-- `feedback_exact` like поднимает запись с score 1.0; dislike скрывает запись для той же signature.
-
-## HTML-отчёт
-
-HTML self-contained: inline CSS/JS, без внешних ассетов кроме embedded logo data URI.
-
-Интерактивные элементы появляются только когда есть `ALLURE_KB_POSTGRES_DSN` и
-`ALLURE_FEEDBACK_SERVER_URL`:
-
-- создать запись базы знаний для кластера;
-- обновить существующую запись;
-- like/dislike по совпадению;
-- resolve сохранённых голосов при загрузке;
-- сохранить merge rules;
-- показать starter pack в guided onboarding.
-
-Кнопка `Перезапустить анализ` появляется при `ALLURE_SERVER_EXTERNAL_URL` и
-делает `POST /api/v1/analyze/{launch_id}/html?push_comments=false&push_report_link=true`.
-Если ответ содержит `X-Report-URL`, кнопка зеленеет и по следующему клику
-открывает новый отчёт в этой же вкладке. Если публичный URL не настроен,
-JS падает обратно на старое поведение и заменяет страницу HTML-телом ответа.
-
-## Design notes
+### Design notes
 
 1. API-модели TestOps принимают неизвестные поля (`extra="allow"`) и оба стиля
    имён (`populate_by_name=True`), потому что TestOps payloads плавают.
 2. Кластеризация message-first: низкая message similarity обычно блокирует
    merge, но log override может объединить падения с одинаковой явной ошибкой
    в логе. **Step path работает как hard gate**: если у обоих падений есть
-   `failed_step_path` и step similarity ниже `step_path_strict_threshold`,
+   `failed_step_path` и step similarity ниже `clustering_step_strict_threshold`,
    пара принудительно не сливается (gate применяется до message/log, log
-   override его не обходит). Откатить разделение можно через merge rule с
-   `rule_kind="step"`.
-3. Merge rules — двух типов. `rule_kind="base"` (дефолт) ищет кластера по
-   `base_issue_signature` — используется когда у кластеров разный message/log.
-   `rule_kind="step"` ищет по `step_issue_signature` — нужен для случая, когда
-   у двух кластеров одинаковый base hash (одинаковый message+log), но разные
-   step paths. UI HTML-отчёта автоматически выбирает kind: сначала пробует
-   base pair, и если base hashes совпадают — fallback на step pair.
-4. KB query строится из message + log; trace используется только когда лога нет.
-   В текущем pipeline trace выключен для KB query (`include_trace=False`), чтобы
-   лучше совпадать с примерами, созданными из HTML-формы.
-5. LLM prompt строго требует проверять применимость неточных совпадений базы
-   знаний; высокий score без Tier 1/feedback_exact не считается доказательством.
-6. `PostgresKnowledgeBase` создаётся заново на каждый анализ, чтобы подхватывать
-   записи, добавленные из HTML-отчёта, без рестарта сервера.
+   override его не обходит).
 
-## Gotchas
+### Gotchas
 
 - В user-facing тексте писать «база знаний», не «KB».
-- Сохранённые `/api/v1/skill/...` endpoints относятся к прежнему серверному
-  API. Их трансформации остаются
-  в `alla/services/skill_api_service.py`, клиент — `AllaApiClient`.
-- `feedback_server_url` отвечает за интерактивность серверного HTML;
-  `server_external_url` — за публичные ссылки `/reports/...` и rerun button.
-- `analyze_launch_html` REST прикрепляет report link к TestOps только если есть
-  effective report URL и `push_report_link=true`.
-- MCP `analyze_launch_html` сохраняет отчёт и возвращает URL/hint, но не патчит
-  launch links напрямую.
 - `_request()` в TestOps client должен корректно обрабатывать пустые тела
   PATCH/DELETE; `_request_raw()` нужен для бинарных attachments.
-- Для запуска проекта нужен Python `>=3.11`; системный Python 3.9 падает ещё на
-  аннотациях типов.
-
-DDL сохранённого серверного `/api/v1/skill/*`: `sql/skill_run_schema.sql`, включена в `sql/setup_kb.py`.
+- Нужен Python `>=3.11` (системный 3.9 падает на аннотациях типов). Точка входа
+  `alla_skill.py` совместима с 3.8+ и перезапускает себя в `.venv` скилла.

@@ -1,150 +1,72 @@
 # alla
 
-`alla` — AI-агент для разбора упавших автотестов из Allure TestOps. По ID
-или имени запуска инструмент забирает результаты, исключает retry/hidden и
-muted-падения из активного анализа, вытаскивает ошибку и логи, группирует
-похожие падения, ищет совпадения в базе знаний, при наличии GigaChat делает
-LLM-анализ, генерирует HTML-отчёт и может записать рекомендации обратно в
-TestOps.
+`alla` — скилл [Qwen Code](https://github.com/QwenLM/qwen-code) для разбора
+упавших автотестов из Allure TestOps. По ID запуска (или ссылке на него) скилл
+забирает результаты из TestOps, группирует активные падения в кластеры и ведёт
+модель через анализ каждого кластера и всего прогона. Результат — краткий разбор
+в терминале, подробный `report.md` и предложения правок автотестов.
 
-## Что умеет сейчас
+Скилл только читает TestOps: ничего не пишет в комментарии и ссылки запуска.
+Код проекта автотестов меняется только командой `apply` после показа diff.
 
-- CLI `alla` для анализа запуска, JSON/text-вывода и локального HTML-отчёта.
-- FastAPI-сервер `alla-server` с REST API, HTML-отчётами, feedback API,
-  dashboard и MCP endpoint `/mcp`.
-- Поиск запуска по точному имени через TestOps API.
-- Очистка старых комментариев `[alla]` в TestOps.
-- PostgreSQL-база знаний: глобальные записи, проектные записи и общая
-  видимость между проектами через `alla.project_group`.
-- Интерактивный HTML-отчёт: создание и обновление записей базы знаний,
-  like/dislike по совпадениям, exact feedback memory, ручное объединение
-  кластеров, перезапуск анализа без записи комментариев в TestOps.
-- Хранение HTML-отчётов на диске или в PostgreSQL, с публичными ссылками
-  через `ALLURE_SERVER_EXTERNAL_URL`.
+## Как это работает
 
-## Pipeline анализа
+Python готовит данные, анализ пишет модель Qwen Code:
 
-1. `TriageService` получает launch metadata и все test results, отбрасывает
-   `hidden` retry-результаты, считает статусы и исключает muted failed/broken
-   из активного анализа.
-2. Для failed/broken результатов извлекается ошибка: execution tree,
-   `statusDetails`, затем fallback `GET /api/testresult/{id}`.
-3. `LogExtractionService` скачивает processable attachments, извлекает
-   `[ERROR]`-блоки из текста, HTTP 4xx/5xx контекст из JSON/XML/text и
-   correlation ids.
-4. `ClusteringService` строит message/trace/log/step каналы, нормализует
-   волатильные значения и группирует падения через TF-IDF cosine similarity
-   + agglomerative clustering.
-5. Сохранённые merge rules применяются после первичной кластеризации.
-6. Если задан `ALLURE_KB_POSTGRES_DSN`, выполняется поиск по базе знаний:
-   Tier 1 exact substring, Tier 2 line match, Tier 3 TF-IDF fallback,
-   step-aware фильтрация и exact feedback memory.
-7. Если настроен GigaChat, LLM получает данные кластера и совпадения базы
-   знаний, возвращает анализ по кластерам и summary запуска.
-8. При `ALLURE_PUSH_COMMENTS=true` в TestOps пишутся LLM-комментарии, если
-   LLM успешно отработал; иначе используется fallback KB push.
-9. Формируется self-contained HTML-отчёт и, если есть публичный URL,
-   ссылка прикрепляется к launch links в TestOps.
+1. **`prepare <id|URL>`** — выгружает прогон, исключает retry/hidden и muted,
+   извлекает ошибки и логи вложений, кластеризует падения, сопоставляет их с
+   базой знаний проекта и историей прошлых разборов.
+2. **`next`** — каждый раз сообщает через `STATUS:`, что делать дальше: написать
+   разбор кластера (`analyze`), исправить формат (`fix`), предложить правку
+   автотеста (`propose`), написать общую сводку (`summary`). Большие прогоны
+   (≥ 10 кластеров) раздаются пакетами субагентам (`analyze_batch`).
+3. **Отчёт** — читаемый разбор простым языком по разделам: «Требуют вашего
+   внимания», «Агент может поправить сам», «Автотест сломан, но править вручную»,
+   «Стенд и тестовые данные».
+4. **После отчёта** — `apply`/`revert` правок автотестов и обратная связь
+   (`remember`/`reject`), которая наполняет базу знаний проекта.
 
-## Быстрый старт
+## Память скилла
 
-```bash
-python -m pip install -e .
-cp .env.example .env
-```
+Лежит в проекте автотестов, не на сервере:
 
-Минимальная конфигурация:
+- `alla-kb/<id>.json` — база знаний проекта: причины и рецепты, которые подтвердил
+  пользователь. Общая для команды через git.
+- `alla-reports/` — разборы, отчёты и локальная история повторов
+  (`history.jsonl`); в git не попадает.
 
-```env
-ALLURE_ENDPOINT=https://allure.example.com
-ALLURE_TOKEN=...
-```
+## Установка и использование
 
-`ALLURE_PROJECT_ID` не обязателен для анализа по числовому launch ID, но
-полезен для поиска запуска по имени.
+Установка, настройки (`ALLURE_ENDPOINT`, `ALLURE_TOKEN`, …), список команд и
+ограничения — в [`qwen-skill/alla-launch/references/setup.md`](qwen-skill/alla-launch/references/setup.md).
+Коротко: скопировать `qwen-skill/alla-launch/` в `<проект автотестов>/.qwen/skills/alla-launch/`,
+выполнить `setup`, вписать токен в `.env` и позвать `/alla-launch 12345`.
 
-## CLI
+Сценарий для модели и правила исполнителя — [`SKILL.md`](qwen-skill/alla-launch/SKILL.md),
+форматы файлов и протокол — [`references/`](qwen-skill/alla-launch/references/).
+
+## Структура
+
+| Путь | Что там |
+|---|---|
+| `qwen-skill/alla-launch/SKILL.md`, `references/` | сценарий для модели, форматы файлов, протокол, установка |
+| `qwen-skill/alla-launch/scripts/alla_skill.py` | точка входа, перезапускает себя в `.venv` скилла |
+| `qwen-skill/alla-launch/scripts/alla_skill_lib/` | логика скилла: pipeline, задания, форматы, отчёт, память |
+| `qwen-skill/alla-launch/scripts/alla_core/` | ядро: клиент TestOps, триаж, логи, кластеризация, промпты |
+| `qwen-skill/alla-launch/tests/` | тесты: `test_skill_*` — скилл на фейковом TestOps (`httpx.MockTransport`), `test_core_*` — ядро `alla_core` |
+| `docs/superpowers/specs/` | дизайн-спека извлечения логов из вложений |
+
+## Тесты
 
 ```bash
-alla 12345
-alla --launch-name "Regression 2026-05-02" --project-id 1
-alla 12345 --output-format json
-alla 12345 --html-report-file alla-report.html --report-url https://ci.example/alla-report.html
-alla delete 12345 --dry-run
-alla delete 12345
+python3.11 -m venv .venv
+.venv/bin/pip install -r qwen-skill/alla-launch/requirements-dev.txt
+.venv/bin/python -m pytest
 ```
 
-Обычный анализ через CLI всегда сохраняет HTML-файл. Если
-`--html-report-file` не указан, используется `alla_report_<launch_id>.html`.
+## История
 
-## Сервер
-
-```bash
-alla-server
-```
-
-Основные endpoints:
-
-| Метод | Путь | Назначение |
-|---|---|---|
-| `GET` | `/health` | health check, версия и флаг `mcp=true` |
-| `GET` | `/api/v1/launch/resolve?name=...&project_id=...` | найти launch ID по точному имени |
-| `POST` | `/api/v1/analyze/{launch_id}` | JSON-результат анализа |
-| `POST` | `/api/v1/analyze/{launch_id}/html` | HTML-отчёт, header `X-Report-URL` при наличии публичной ссылки |
-| `GET` | `/reports/{filename}` | отдать сохранённый HTML-отчёт |
-| `DELETE` | `/api/v1/comments/{launch_id}?dry_run=true` | удалить комментарии `[alla]` у failed/broken тестов |
-| `POST` | `/api/v1/kb/entries` | создать запись базы знаний из HTML-отчёта |
-| `PUT` | `/api/v1/kb/entries/{entry_id}` | обновить запись базы знаний |
-| `POST` | `/api/v1/kb/feedback` | записать like/dislike |
-| `POST` | `/api/v1/kb/feedback/resolve` | получить сохранённые голоса для exact signature |
-| `POST` | `/api/v1/merge-rules` | сохранить правила объединения кластеров |
-| `GET` | `/api/v1/merge-rules?project_id=...` | список merge rules проекта |
-| `DELETE` | `/api/v1/merge-rules/{rule_id}` | удалить merge rule |
-| `GET` | `/api/v1/dashboard/stats?days=30` | агрегаты dashboard |
-| `GET` | `/dashboard` | self-contained dashboard UI |
-| `ANY` | `/mcp` | MCP streamable HTTP tools `analyze_launch`, `analyze_launch_html` |
-
-Query-параметры `push_comments` и `push_report_link` у analyze endpoints
-переопределяют `ALLURE_PUSH_COMMENTS` и `ALLURE_PUSH_REPORT_LINK` для одного
-запроса.
-
-## База знаний
-
-Текущий backend базы знаний — PostgreSQL. YAML backend и переменные
-`ALLURE_KB_ENABLED`, `ALLURE_KB_BACKEND`, `ALLURE_KB_PATH`,
-`ALLURE_KB_PUSH_ENABLED` больше не используются.
-
-Создать схему:
-
-```bash
-python sql/setup_kb.py
-python sql/setup_kb.py --with-starter-pack
-```
-
-Bootstrap включает `alla.skill_run` для сохранённых `/api/v1/skill/*`. DDL также доступна отдельно в `sql/skill_run_schema.sql`.
-
-Можно применять SQL-файлы вручную:
-
-```bash
-psql "$ALLURE_KB_POSTGRES_DSN" -f sql/kb_schema.sql
-psql "$ALLURE_KB_POSTGRES_DSN" -f sql/kb_feedback_schema.sql
-psql "$ALLURE_KB_POSTGRES_DSN" -f sql/merge_rules_schema.sql
-psql "$ALLURE_KB_POSTGRES_DSN" -f sql/kb_seed.sql
-```
-
-`alla.report` создаётся автоматически, когда включён
-`ALLURE_REPORTS_POSTGRES=true`.
-
-## Agent materials
-
-- `docs/USER_GUIDE.md` — пользовательская инструкция по HTML-отчёту и
-  наполнению базы знаний.
-- `CLAUDE.md` — инженерная карта проекта для будущих агентов и разработчиков.
-
-## Экспериментальный скилл
-
-Первая версия проектного скилла Qwen Code сохранена в ветке
-[`codex/experiment-qwen-skill-v1`](https://github.com/AlksndrSmrnv/alla-allure-analyzer-claude/tree/codex/experiment-qwen-skill-v1).
-Реализация, инструкции установки и тесты находятся там в `qwen-skill/alla-analysis/`.
-Версия не финальная и не входит в `main`; дальнейшие подходы разрабатываются
-в отдельных экспериментальных ветках.
+Раньше в репозитории был ещё серверный инструмент `alla` (CLI, FastAPI, MCP,
+PostgreSQL база знаний, GigaChat, HTML-отчёт, dashboard). Он удалён; в истории git
+последний коммит с ним — `e100909` (`git show e100909:src/alla/<файл>`). Первая версия
+скилла — ветка `codex/experiment-qwen-skill-v1`.
