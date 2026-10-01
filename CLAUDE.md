@@ -179,10 +179,18 @@ launch ID или ссылке на запуск он получает резул
     только `SOURCE_EXTENSIONS` вне dot-папок и `alla-kb`/`alla-reports`; файл не в
     UTF-8 скилл не трогает.
 - Тесты скилла — `qwen-skill/alla-launch/tests/` (единственный каталог в `testpaths`
-  корневого `pyproject.toml`, который содержит только конфиг ruff/mypy/pytest);
-  фикстуры в `skill_fixtures.py`, а не `conftest.py`, чтобы папка скилла
-  оставалась самодостаточной. Зависимости тестов — `requirements-dev.txt`;
-  запуск: `python -m pytest` из корня репозитория.
+  корневого `pyproject.toml`, который содержит только конфиг ruff/mypy/pytest):
+  `test_skill_*.py` — логика скилла на фейковом TestOps, `test_core_*.py` — ядро
+  `alla_core` (кластеризация и step-path gate, извлечение логов и вложений,
+  декодирование, триаж, клиент TestOps, auth, `log_utils`; перенесены из серверных
+  тестов `e100909` с импортами `alla_core`). Фикстуры в `skill_fixtures.py`, фабрики
+  моделей ядра в `skill_factories.py`, а не `conftest.py`, чтобы папка скилла
+  оставалась самодостаточной; импортировать их нужно раньше `alla_core` —
+  `skill_fixtures` добавляет `scripts/` в `sys.path`. libmagic в окружении скилла нет:
+  автоматически включается фикстура `without_libmagic`, а ветку с `magic` тесты ядра
+  проверяют через фейковый модуль (`_fake_magic`). Зависимости тестов —
+  `requirements-dev.txt` (pytest, pytest-asyncio); запуск: `python -m pytest` из корня
+  репозитория.
 
 
 ## Ядро `alla_core`

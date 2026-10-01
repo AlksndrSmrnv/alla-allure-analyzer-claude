@@ -53,7 +53,7 @@ Python готовит данные, анализ пишет модель Qwen Co
 | `qwen-skill/alla-launch/scripts/alla_skill.py` | точка входа, перезапускает себя в `.venv` скилла |
 | `qwen-skill/alla-launch/scripts/alla_skill_lib/` | логика скилла: pipeline, задания, форматы, отчёт, память |
 | `qwen-skill/alla-launch/scripts/alla_core/` | ядро: клиент TestOps, триаж, логи, кластеризация, промпты |
-| `qwen-skill/alla-launch/tests/` | тесты скилла (фейковый TestOps на `httpx.MockTransport`) |
+| `qwen-skill/alla-launch/tests/` | тесты: `test_skill_*` — скилл на фейковом TestOps (`httpx.MockTransport`), `test_core_*` — ядро `alla_core` |
 | `docs/superpowers/specs/` | дизайн-спека извлечения логов из вложений |
 
 ## Тесты
