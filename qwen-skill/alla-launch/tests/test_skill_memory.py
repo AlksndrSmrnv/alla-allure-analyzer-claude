@@ -808,6 +808,17 @@ def test_fence_opened_on_the_header_line_is_not_code() -> None:
     assert proposal.before == ["x();"] and proposal.after == ["y();"]
 
 
+@pytest.mark.parametrize("before_header", ["`БЫЛО:`", "**`БЫЛО:`**", "### `БЫЛО:`", "БЫЛО:"])
+def test_decorated_header_lines_add_no_code_lines(before_header: str) -> None:
+    """Заголовок в обратных кавычках на своей строке: закрывающая «`» — не строка кода."""
+    after_header = before_header.replace("БЫЛО", "СТАЛО")
+    proposal = parse_proposal(
+        f"РЕШЕНИЕ: исправить\nФАЙЛ: T.java:2\n{before_header}\n        x();\n"
+        f"{after_header}\n        y();\nПОЧЕМУ: z\n"
+    )
+    assert proposal.before == ["        x();"] and proposal.after == ["        y();"]
+
+
 @pytest.mark.parametrize("decision", ["исправить | не трогать", "не трогать | исправить"])
 def test_copied_decision_template_is_not_a_decision(tmp_path: Path, decision: str) -> None:
     """Шаблон «исправить | не трогать», скопированный дословно, молча читался как «не трогать»."""

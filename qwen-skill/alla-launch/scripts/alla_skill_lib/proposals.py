@@ -157,8 +157,10 @@ def parse_proposal(text: str) -> Proposal:
                 # убраны ``**`` и «`», которые бывают в самом коде.
                 inline = _INLINE_CODE_RE.match(raw)
                 text_after = _strip_inline_ticks(inline.group(1)) if inline else ""
-                if text_after.lstrip().startswith("```"):
-                    text_after = ""  # «БЫЛО: ```java» — открытие блока кода, а не код
+                if text_after.lstrip().startswith("```") or not text_after.strip(" \t`*_"):
+                    # «БЫЛО: ```java» — открытие блока кода; «`БЫЛО:`» — закрывающее
+                    # оформление заголовка. Кода на строке заголовка нет.
+                    text_after = ""
                 if text_after.strip():
                     buckets[current].append(text_after.rstrip())
             elif header.group(2).strip():

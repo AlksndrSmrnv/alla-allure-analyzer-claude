@@ -127,6 +127,15 @@ def test_reference_embeds_the_template_from_code_verbatim(reference: str, templa
     assert f"```text\n{template}\n```" in _read(REFERENCES / reference)
 
 
+def test_proposal_reference_keeps_the_unconditional_ban_on_longer_timeouts() -> None:
+    """PROPOSAL_RULES запрещает рост таймаутов без исключений; справочник не должен их выдумывать."""
+    from alla_skill_lib.cli import PROPOSAL_RULES
+
+    assert "увеличивать таймауты" in " ".join(PROPOSAL_RULES.split())
+    reference = " ".join(_read(REFERENCES / "proposal-format.md").split())
+    assert "увеличивать таймауты" in reference and "запрет безусловный" in reference
+
+
 def test_protocol_lists_every_status_the_code_prints() -> None:
     protocol = _read(REFERENCES / "protocol.md")
     for status in STATUSES:
