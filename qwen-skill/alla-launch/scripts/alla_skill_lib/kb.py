@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_core.utils.text_normalization import canonicalize_kb_error_example, normalize_text
 from alla_skill_lib import workspace as ws
+from alla_skill_lib.code_hints import SKIP_DIRS
 
 KB_DIRNAME = "alla-kb"
 MAX_MATCHES = 3
@@ -291,11 +293,41 @@ def find_kb_dir(project_root: Path) -> Path:
     return root / KB_DIRNAME
 
 
+def kb_dir_for(project_root: Path, module: str = "") -> Path:
+    """База знаний модуля: ``<модуль>/alla-kb``; без модуля — ``find_kb_dir``.
+
+    Модуль — путь от корня проекта (см. ``alla_skill_lib.modules``). Кластеры
+    разных модулей так не видят записей друг друга.
+    """
+    if not module:
+        return find_kb_dir(project_root)
+    return project_root.resolve() / module / KB_DIRNAME
+
+
+def kb_label(project_root: Path, kb_dir: Path) -> str:
+    """Как показывать базу знаний человеку: ``orders/alla-kb`` или просто ``alla-kb``."""
+    try:
+        return kb_dir.resolve().relative_to(project_root.resolve()).as_posix()
+    except ValueError:  # корень git выше корня проекта
+        return kb_dir.name
+
+
+def discover_kb_dirs(project_root: Path) -> list[Path]:
+    """Все папки ``alla-kb`` внутри проекта (в служебных и собранных папках не ищем)."""
+    found: list[Path] = []
+    for dirpath, dirnames, _filenames in os.walk(project_root):
+        if KB_DIRNAME in dirnames:
+            found.append(Path(dirpath) / KB_DIRNAME)
+        dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS and name != KB_DIRNAME]
+    return sorted(found)
+
+
 class ProjectKB:
     """Папка ``alla-kb`` с записями базы знаний."""
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(self, directory: Path, label: str | None = None) -> None:
         self.directory = directory
+        self.label = label or directory.name  # для сообщений: ``orders/alla-kb``
 
     def path_for(self, entry_id: str) -> Path:
         if not _ID_RE.match(entry_id):
@@ -312,7 +344,7 @@ class ProjectKB:
             try:
                 records.append(self._read(path))
             except (OSError, ValueError, KeyError, TypeError) as exc:
-                warnings.append(f"База знаний: пропущен {path.name} — {exc}")
+                warnings.append(f"База знаний: пропущен {self.label}/{path.name} — {exc}")
         return records, warnings
 
     def get(self, entry_id: str) -> KBRecord | None:

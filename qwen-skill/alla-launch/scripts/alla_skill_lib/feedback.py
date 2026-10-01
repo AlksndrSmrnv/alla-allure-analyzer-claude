@@ -23,6 +23,7 @@ from alla_skill_lib.kb import (
     ProjectKB,
     find_kb_dir,
     fingerprint_lines,
+    kb_label,
     make_entry_id,
     missing_fingerprint_lines,
     secret_lines,
@@ -47,8 +48,11 @@ def find_entry(run: dict[str, Any], cluster: str) -> dict[str, Any] | None:
     return next((e for e in run["clusters"] if int(e["file_id"]) == number), None)
 
 
-def project_kb(run: dict[str, Any]) -> ProjectKB:
-    return ProjectKB(Path(run.get("kb_dir") or find_kb_dir(Path(run["project_root"]))))
+def project_kb(run: dict[str, Any], entry: dict[str, Any]) -> ProjectKB:
+    """База знаний модуля кластера; разбор старой версии без ``kb_dir`` в записи — общая."""
+    project_root = Path(run["project_root"])
+    directory = Path(entry.get("kb_dir") or run.get("kb_dir") or find_kb_dir(project_root))
+    return ProjectKB(directory, kb_label(project_root, directory))
 
 
 def remember(
@@ -94,7 +98,7 @@ def remember(
                 "в файл обратной связи"
             ], entry_id)
 
-    kb = project_kb(run)
+    kb = project_kb(run, entry)
     record: KBRecord | None = None
     if entry_id:
         try:
@@ -186,7 +190,7 @@ def remember(
         "Изменены файлы:",
         *(f"- {path}" for path in changed),
         "Скажи пользователю, что рецепт сохранён, и напомни закоммитить папку "
-        f"{kb.directory.name}/, чтобы им пользовалась вся команда.",
+        f"{kb.label}/, чтобы им пользовалась вся команда.",
     ])
 
 
@@ -212,7 +216,7 @@ def reject(
     blocked = _blocked(paths, entry)
     if blocked:
         return "error", blocked
-    kb = project_kb(run)
+    kb = project_kb(run, entry)
     try:
         record = kb.get(entry_id)
     except ValueError as exc:
@@ -224,7 +228,7 @@ def reject(
     return "saved", "\n".join([
         f"Запись {record.id} больше не будет предлагаться для этой ошибки.",
         f"Изменён файл: {path}",
-        f"Напомни пользователю закоммитить папку {kb.directory.name}/.",
+        f"Напомни пользователю закоммитить папку {kb.label}/.",
     ])
 
 

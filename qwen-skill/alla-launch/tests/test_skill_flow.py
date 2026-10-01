@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 
 import pytest
-from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import (  # noqa: F401
+    multimodule_project_fixture,
+    project_fixture,
+    testops_fixture,
+    without_libmagic,
+)
 from skill_fake_testops import TOKEN, FakeTestOps, default_launch, green_launch
 
 from alla_skill_lib import cli
@@ -529,3 +534,137 @@ def test_feedback_commands_require_run_and_explicit_analysis_confirmation(
     saved = json.loads(kb_file.read_text(encoding="utf-8"))
     assert saved["category"] == "env"
     assert saved["resolution_steps"] == ["Поднять auth-service на стенде."]
+
+
+# --- база знаний по модулям --------------------------------------------------------
+
+
+MODULE_ANALYSIS = VALID_ANALYSIS.replace("src/test/java", "orders/src/test/java")
+
+
+def _entry_by_module(run: dict, module: str) -> dict:
+    return next(entry for entry in run["clusters"] if entry["module"] == module and not entry["auto"])
+
+
+def test_kb_stays_in_the_root_for_a_single_module_project(
+    project: Path, testops: FakeTestOps, capsys
+) -> None:
+    _, run, _ = _prepare(project, capsys)
+
+    assert {entry["module"] for entry in run["clusters"]} == {""}
+    assert {entry["kb_dir"] for entry in run["clusters"]} == {str(project / "alla-kb")}
+
+
+def test_kb_is_kept_per_module_and_clusters_do_not_see_other_modules(
+    multimodule_project: Path, testops: FakeTestOps, capsys
+) -> None:
+    project = multimodule_project
+    run_dir, run, _ = _prepare(project, capsys)
+    orders, auth = _entry_by_module(run, "orders"), _entry_by_module(run, "auth")
+    assert orders["kb_dir"] == str(project / "orders" / "alla-kb")
+    assert auth["kb_dir"] == str(project / "auth" / "alla-kb")
+    # Тест без данных об ошибке в прогоне из двух модулей — в общей базе корня.
+    [silent] = [entry for entry in run["clusters"] if entry["auto"]]
+    assert silent["module"] == "" and silent["kb_dir"] == str(project / "alla-kb")
+
+    _finish(run_dir, capsys, {orders["file_id"]: MODULE_ANALYSIS, auth["file_id"]: MARKDOWN_ANALYSIS})
+    (run_dir / "feedback" / f"{orders['file_id']}.md").write_text(FEEDBACK, encoding="utf-8")
+    code, out = _run(["remember", orders["file_id"], "--run", str(run_dir)], capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    assert "orders/alla-kb/" in out
+    [kb_file] = (project / "orders" / "alla-kb").glob("*.json")
+    assert (project / "orders" / "alla-kb" / "README.md").is_file()
+    assert not (project / "alla-kb").exists() and not (project / "auth" / "alla-kb").exists()
+    entry_id = kb_file.stem
+
+    # Тот же модуль в следующем прогоне запись находит, а повтор по истории виден.
+    testops.fixture = default_launch(779)
+    _, run2, _ = _prepare(project, capsys, launch_id=779)
+    again = _entry_by_module(run2, "orders")
+    assert [match["id"] for match in again["kb"]] == [entry_id]
+    assert again["history"]["launches"] == 1
+
+    # Та же ошибка (то же сообщение, трейс и лог), но тест из другого модуля:
+    # запись orders ей не подсказывается и повтором из orders не считается.
+    moved = default_launch(780)
+    for result in moved.results:
+        if result["id"] in (101, 102):
+            result["fullName"] = "ru.company.auth.LoginTest.login"
+    testops.fixture = moved
+    _, run3, _ = _prepare(project, capsys, launch_id=780)
+    foreign = next(e for e in run3["clusters"] if e["signature"] == orders["signature"])
+    assert foreign["module"] == "auth" and foreign["kb_dir"] == auth["kb_dir"]
+    assert foreign["kb"] == [] and foreign["history"] is None
+
+
+def test_reject_works_in_the_module_of_the_cluster(
+    multimodule_project: Path, testops: FakeTestOps, capsys
+) -> None:
+    project = multimodule_project
+    run_dir, run, _ = _prepare(project, capsys)
+    orders = _entry_by_module(run, "orders")
+    (run_dir / "feedback" / f"{orders['file_id']}.md").write_text(FEEDBACK, encoding="utf-8")
+    code, out = _run(["remember", orders["file_id"], "--run", str(run_dir)], capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    [kb_file] = (project / "orders" / "alla-kb").glob("*.json")
+
+    code, out = _run(["reject", orders["file_id"], kb_file.stem, "--run", str(run_dir)], capsys)
+
+    assert code == 0 and out.startswith("STATUS: saved") and "orders/alla-kb/" in out, out
+    assert json.loads(kb_file.read_text(encoding="utf-8"))["rejected_signatures"] == [orders["signature"]]
+
+
+def test_unknown_module_takes_the_run_module_or_the_root(
+    multimodule_project: Path, testops: FakeTestOps, capsys
+) -> None:
+    unresolved = default_launch()
+    for result in unresolved.results:
+        if result["id"] == 103:  # сценарий без исходника: модуль по имени не найти
+            result["fullName"] = "Scenario: user logs in"
+    unresolved.results = [r for r in unresolved.results if r["id"] != 108]
+    testops.fixture = unresolved
+
+    # В прогоне определился один модуль — безымянный тест относится к нему.
+    _, run, _ = _prepare(multimodule_project, capsys)
+    assert {entry["module"] for entry in run["clusters"]} == {"orders"}
+    assert {entry["kb_dir"] for entry in run["clusters"]} == {str(multimodule_project / "orders" / "alla-kb")}
+
+    # Определились два модуля — безымянному остаётся общая база корня.
+    mixed = default_launch(779)
+    for result in mixed.results:
+        if result["id"] == 108:
+            result["fullName"] = "Scenario: nothing to see"
+    testops.fixture = mixed
+    _, run, _ = _prepare(multimodule_project, capsys, launch_id=779)
+    silent = next(entry for entry in run["clusters"] if entry["auto"])
+    assert silent["module"] == "" and silent["kb_dir"] == str(multimodule_project / "alla-kb")
+
+
+def test_old_run_without_module_info_uses_the_common_knowledge_base(
+    multimodule_project: Path, testops: FakeTestOps, capsys
+) -> None:
+    run_dir, run, _ = _prepare(multimodule_project, capsys)
+    orders = _entry_by_module(run, "orders")
+    for entry in run["clusters"]:  # разбор, подготовленный версией скилла без модулей
+        entry.pop("module"), entry.pop("kb_dir")
+    (run_dir / "run.json").write_text(json.dumps(run, ensure_ascii=False), encoding="utf-8")
+    (run_dir / "feedback" / f"{orders['file_id']}.md").write_text(FEEDBACK, encoding="utf-8")
+
+    code, out = _run(["remember", orders["file_id"], "--run", str(run_dir)], capsys)
+
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    assert len(list((multimodule_project / "alla-kb").glob("*.json"))) == 1
+    assert not (multimodule_project / "orders" / "alla-kb").exists()
+
+
+def test_check_lists_every_knowledge_base(
+    multimodule_project: Path, testops: FakeTestOps, capsys
+) -> None:
+    root = multimodule_project.resolve()
+    (root / "orders" / "alla-kb").mkdir()
+
+    code, out = _run(["check", "--project-root", str(root)], capsys)
+
+    assert code == 0 and out.startswith("STATUS: ready"), out
+    assert f"База знаний: {root / 'alla-kb'} — записей 0" in out
+    assert f"База знаний: {root / 'orders' / 'alla-kb'} — записей 0" in out

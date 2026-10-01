@@ -43,11 +43,17 @@ def recurrence(
     launch_id: int,
     signature: str | None,
     kb_ids: set[str],
+    module: str = "",
 ) -> dict[str, Any] | None:
-    """Сводка прошлых разборов той же ошибки в других прогонах (None — не встречалась)."""
+    """Сводка прошлых разборов той же ошибки в других прогонах (None — не встречалась).
+
+    Учитываются только разборы того же модуля: одинаковый текст ошибки в разных
+    модулях — разные проблемы. Записи без поля ``module`` относятся к корню.
+    """
     matches = [
         record for record in history
         if record.get("launch_id") != launch_id
+        and record.get("module", "") == module
         and (
             (signature and record.get("signature") == signature)
             or (record.get("kb_entry") and record.get("kb_entry") in kb_ids)
@@ -83,6 +89,7 @@ def run_records(
             "run": run_name,
             "file_id": entry["file_id"],
             "signature": entry["signature"],
+            "module": entry.get("module", ""),
             "label": str(entry["label"])[:MAX_CAUSE_CHARS],
             "category": analysis.category if trusted and analysis else None,
             "cause": " ".join(analysis.cause_reason.split())[:MAX_CAUSE_CHARS]

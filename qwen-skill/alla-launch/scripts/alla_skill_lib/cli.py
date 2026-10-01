@@ -28,7 +28,9 @@ import re
 import shutil
 import sys
 import time
+from collections.abc import Iterator
 from datetime import date, datetime
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,8 @@ import httpx
 
 from alla_core.config import Settings
 from alla_core.exceptions import AllaError, ConfigurationError
+from alla_core.models.clustering import FailureCluster
+from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.agent_rules import (
     ANALYSIS_FORMAT_REF,
@@ -69,13 +73,18 @@ from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
 from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, reject
 from alla_skill_lib.history import append_run, load_history, recurrence, run_records
 from alla_skill_lib.kb import (
+    KBRecord,
     ProjectKB,
     cluster_evidence,
     cluster_signature,
     default_fingerprint,
+    discover_kb_dirs,
     find_kb_dir,
+    kb_dir_for,
+    kb_label,
     match_cluster,
 )
+from alla_skill_lib.modules import ModuleResolver, resolve_run_modules
 from alla_skill_lib.pipeline import LaunchData, collect_launch
 from alla_skill_lib.proposals import (
     ApplyResult,
@@ -449,14 +458,34 @@ def _write_run(
     tests_by_id = {test.test_result_id: test for test in triage.failed_tests}
     index = ProjectIndex(project_root)
     kb_dir = find_kb_dir(project_root)
-    kb_records, kb_warnings = ProjectKB(kb_dir).load()
     history = load_history(paths.reports_dir)
     width = max(2, len(str(len(clusters))))
     entries: list[dict[str, Any]] = []
     local_warnings: list[str] = []
 
+    # База знаний ведётся по модулям: кластер видит записи только своего модуля.
+    resolver = ModuleResolver(project_root, index)
+    modules = resolve_run_modules({
+        str(position).zfill(width): resolver.cluster_module(
+            _member_full_names(cluster, tests_by_id)
+        )
+        for position, cluster in enumerate(clusters, start=1)
+    })
+    kb_cache: dict[Path, list[KBRecord]] = {}
+    kb_warnings: list[str] = []
+
+    def load_kb(directory: Path) -> list[KBRecord]:
+        if directory not in kb_cache:
+            kb_cache[directory], warnings = ProjectKB(
+                directory, kb_label(project_root, directory)
+            ).load()
+            kb_warnings.extend(warnings)
+        return kb_cache[directory]
+
     for position, cluster in enumerate(clusters, start=1):
         file_id = str(position).zfill(width)
+        module = modules[file_id]
+        cluster_kb_dir = kb_dir_for(project_root, module)
         log_snippet, full_trace = select_log_and_trace(cluster, tests_by_id)
         auto = not has_evidence(cluster, log_snippet)
         label = cluster.label
@@ -470,6 +499,8 @@ def _write_run(
             "label": label,
             "member_count": cluster.member_count,
             "auto": auto,
+            "module": module,
+            "kb_dir": str(cluster_kb_dir),
             "signature": None,
             "fingerprint": "",
             "kb": [],
@@ -485,7 +516,7 @@ def _write_run(
             evidence = "\n".join(part for part in (message, trace, representative_log) if part)
             ws.write_text(paths.evidence(file_id), evidence)
             signature = cluster_signature(cluster, tests_by_id)
-            kb_matches = match_cluster(kb_records, signature, evidence)
+            kb_matches = match_cluster(load_kb(cluster_kb_dir), signature, evidence)
             entry.update({
                 "signature": signature,
                 "fingerprint": default_fingerprint(message, trace, representative_log),
@@ -495,18 +526,11 @@ def _write_run(
                     launch_id=triage.launch_id,
                     signature=signature,
                     kb_ids={match["id"] for match in kb_matches},
+                    module=module,
                 ),
             })
 
-            member_ids = sorted(
-                cluster.member_test_ids,
-                key=lambda test_id: test_id != cluster.representative_test_id,
-            )
-            full_names = [
-                tests_by_id[test_id].full_name or ""
-                for test_id in member_ids[:5]
-                if test_id in tests_by_id
-            ]
+            full_names = list(islice(_member_full_names(cluster, tests_by_id), 5))
             frames = project_frames(full_trace)
             task = build_cluster_task(
                 cluster=cluster,
@@ -568,6 +592,18 @@ def _write_run(
     }
     ws.write_json(paths.run_json, run)
     return run
+
+
+def _member_full_names(
+    cluster: FailureCluster,
+    tests_by_id: dict[int, FailedTestSummary],
+) -> Iterator[str]:
+    """``full_name`` участников кластера, представитель первым (пустые — как есть)."""
+    member_ids = sorted(
+        cluster.member_test_ids,
+        key=lambda test_id: test_id != cluster.representative_test_id,
+    )
+    return (tests_by_id[test_id].full_name or "" for test_id in member_ids if test_id in tests_by_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1213,9 +1249,11 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
         "ALLURE_TOKEN: задан (значение не показывается)",
         f"Проверка TLS: {'включена' if settings.ssl_verify else 'отключена (ALLURE_SSL_VERIFY=false)'}",
     ]
-    kb_records, kb_warnings = ProjectKB(find_kb_dir(project_root)).load()
-    lines.append(f"База знаний: {find_kb_dir(project_root)} — записей {len(kb_records)}")
-    lines += [f"Внимание: {warning}" for warning in kb_warnings]
+    # Корневая база показывается всегда; модульные (<модуль>/alla-kb) — если они есть.
+    for kb_dir in sorted({find_kb_dir(project_root), *discover_kb_dirs(project_root)}):
+        kb_records, kb_warnings = ProjectKB(kb_dir, kb_label(project_root, kb_dir)).load()
+        lines.append(f"База знаний: {kb_dir} — записей {len(kb_records)}")
+        lines += [f"Внимание: {warning}" for warning in kb_warnings]
     try:
         asyncio.run(_ping_testops(settings))
     except (AllaError, httpx.HTTPError) as exc:

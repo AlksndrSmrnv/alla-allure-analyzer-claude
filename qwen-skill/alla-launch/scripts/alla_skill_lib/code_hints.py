@@ -144,10 +144,16 @@ def hints_for_cluster(
     return hints
 
 
-def _hint_from_full_name(index: ProjectIndex, full_name: str) -> CodeHint | None:
+def source_of_test(index: ProjectIndex, full_name: str) -> PurePath | None:
+    """Исходник теста по ``full_name`` (путь от корня проекта) или None."""
+    return _match_full_name(index, full_name)[0]
+
+
+def _match_full_name(index: ProjectIndex, full_name: str) -> tuple[PurePath | None, str | None]:
+    """Исходник теста и имя метода (если оно видно в ``full_name``)."""
     full_name = full_name.strip()
     if not full_name or " " in full_name.split("::")[0]:
-        return None
+        return None, None
     if "::" in full_name:
         # pytest node id: tests/api/test_x.py::TestClass::test_method[param]
         file_part, *rest = full_name.split("::")
@@ -165,6 +171,11 @@ def _hint_from_full_name(index: ProjectIndex, full_name: str) -> CodeHint | None
                 if not symbol and end < len(parts):
                     symbol = parts[end] if end == len(parts) - 1 else parts[-1]
                 break
+    return match, symbol
+
+
+def _hint_from_full_name(index: ProjectIndex, full_name: str) -> CodeHint | None:
+    match, symbol = _match_full_name(index, full_name)
     if match is None:
         return None
     line = index.find_line(match, symbol) if symbol else None
