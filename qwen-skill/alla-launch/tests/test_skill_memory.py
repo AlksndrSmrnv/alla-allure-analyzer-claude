@@ -832,6 +832,11 @@ def test_decorated_header_lines_add_no_code_lines(before_header: str) -> None:
         ("*   `БЫЛО:` `    x();`", "    x();"),
         ("- `БЫЛО:` `    x();`", "    x();"),
         ("* **БЫЛО:** `    x();`", "    x();"),
+        ("+ `БЫЛО:` `    x();`", "    x();"),
+        ("• `БЫЛО:` `    x();`", "    x();"),
+        ("+ **БЫЛО:** `    x();`", "    x();"),
+        ("• БЫЛО: x();", "x();"),
+        ("+ БЫЛО: x();", "x();"),
         ("* `БЫЛО:` x();", "x();"),
         ("* *БЫЛО:* x();", "x();"),
         ("*БЫЛО:* x();", "x();"),
@@ -855,6 +860,18 @@ def test_header_decoration_is_separated_from_code_on_the_same_line(header: str, 
     )
     assert proposal.before == [expected]
     assert proposal.after == [expected.replace("x();", "y();").replace("= 1;", "= 2;")]
+
+
+@pytest.mark.parametrize("bullet", ["-", "*", "+", "•"])
+def test_every_header_may_carry_a_list_marker(bullet: str) -> None:
+    """Все заголовки, а не только БЫЛО/СТАЛО, допускают маркер списка перед названием."""
+    proposal = parse_proposal(
+        f"{bullet} РЕШЕНИЕ: исправить\n{bullet} ФАЙЛ: `src/T.java:2`\n"
+        f"{bullet} `БЫЛО:`\n    x();\n{bullet} `СТАЛО:`\n    y();\n{bullet} ПОЧЕМУ: z\n"
+    )
+    assert proposal.decision == "fix" and proposal.file == "src/T.java" and proposal.line == 2
+    assert proposal.before == ["    x();"] and proposal.after == ["    y();"]
+    assert proposal.why == "z"
 
 
 @pytest.mark.parametrize("decision", ["исправить | не трогать", "не трогать | исправить"])
