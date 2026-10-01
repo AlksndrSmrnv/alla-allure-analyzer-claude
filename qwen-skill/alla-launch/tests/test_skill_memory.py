@@ -819,6 +819,36 @@ def test_decorated_header_lines_add_no_code_lines(before_header: str) -> None:
     assert proposal.before == ["        x();"] and proposal.after == ["        y();"]
 
 
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        # код в обратных кавычках: отступы сохраняются
+        ("`БЫЛО:` `    x();`", "    x();"),
+        ("**БЫЛО:** `    x();`", "    x();"),
+        ("- **`БЫЛО:`** `    x();`", "    x();"),
+        ("### `БЫЛО:` `    x();`", "    x();"),
+        ("`БЫЛО`: `    x();`", "    x();"),
+        ("БЫЛО: `    x();`", "    x();"),
+        # обычный код на строке заголовка: ведущие пробелы после «:» не сохраняются
+        ("`БЫЛО:`    x();", "x();"),
+        ("**БЫЛО:** x();", "x();"),
+        ("**БЫЛО**: x();", "x();"),
+        ("БЫЛО: x();", "x();"),
+        # код, начинающийся со «*» или «_», разметкой не считается
+        ("БЫЛО: *ptr = 1;", "*ptr = 1;"),
+        ("**БЫЛО:** _tmp = 1;", "_tmp = 1;"),
+    ],
+)
+def test_header_decoration_is_separated_from_code_on_the_same_line(header: str, expected: str) -> None:
+    """Оформление заголовка («`», «**») не должно попадать в код БЫЛО/СТАЛО."""
+    after_header = header.replace("БЫЛО", "СТАЛО").replace("x();", "y();").replace("= 1;", "= 2;")
+    proposal = parse_proposal(
+        f"РЕШЕНИЕ: исправить\nФАЙЛ: T.java:2\n{header}\n{after_header}\nПОЧЕМУ: z\n"
+    )
+    assert proposal.before == [expected]
+    assert proposal.after == [expected.replace("x();", "y();").replace("= 1;", "= 2;")]
+
+
 @pytest.mark.parametrize("decision", ["исправить | не трогать", "не трогать | исправить"])
 def test_copied_decision_template_is_not_a_decision(tmp_path: Path, decision: str) -> None:
     """Шаблон «исправить | не трогать», скопированный дословно, молча читался как «не трогать»."""

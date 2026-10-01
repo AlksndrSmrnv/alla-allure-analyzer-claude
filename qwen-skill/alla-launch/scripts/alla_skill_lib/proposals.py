@@ -36,13 +36,16 @@ DENIED_DIRS = frozenset({
     "alla-reports", "alla-kb", "node_modules", "__pycache__", "allure-results", "allure-report",
 })
 
-_HEADER_RE = re.compile(r"^(решение|файл|было|стало|почему)\s*:\s*(.*)$", re.IGNORECASE)
+# Оформление между названием и «:» (``**БЫЛО**:``, «`БЫЛО`:») заголовок не ломает.
+_HEADER_RE = re.compile(r"^(решение|файл|было|стало|почему)[*_`]*\s*:\s*(.*)$", re.IGNORECASE)
 _DECOR_RE = re.compile(r"^[\s#>*_`-]+")
-# После двоеточия съедаются только «*» и «_» (закрывающий ``**``): обратные апострофы —
-# часть кода в одну строку (``БЫЛО: `click()` ``), их снимает _strip_inline_ticks.
-_INLINE_CODE_RE = re.compile(
-    r"^[\s#>*_`\-]*(?:было|стало)\s*[*_`]*\s*:\s*[*_]*[ \t]?(.*)$", re.IGNORECASE
+# Заголовок БЫЛО/СТАЛО как есть: оформление до названия, до «:» и остаток строки после него.
+_CODE_HEADER_RE = re.compile(
+    r"^(?P<pre>[\s#>*_`\-]*)(?:было|стало)(?P<mid>[*_`]*)\s*:(?P<rest>.*)$", re.IGNORECASE
 )
+# После заголовка: пробелы и одиночная разметка (``** ``), отделённая от кода пробелом.
+# «*p = 1;» — код, а не разметка, поэтому звёздочки без пробела за ними остаются.
+_AFTER_HEADER_RE = re.compile(r"^\s*(?:[*_]+(?=\s|$))?[ \t]?")
 _FENCE_RE = re.compile(r"^\s*```")
 _FILE_LINE_RE = re.compile(
     r"^(?P<path>.+?\.[A-Za-z0-9]{1,8})(?::(?P<line>\d+))?(?:\s+[—–-]\s.*|\s*\(.*\))?\s*$"
@@ -155,12 +158,7 @@ def parse_proposal(text: str) -> Proposal:
             if current in ("было", "стало"):
                 # Код со строки заголовка берётся из исходной строки: в очищенной
                 # убраны ``**`` и «`», которые бывают в самом коде.
-                inline = _INLINE_CODE_RE.match(raw)
-                text_after = _strip_inline_ticks(inline.group(1)) if inline else ""
-                if text_after.lstrip().startswith("```") or not text_after.strip(" \t`*_"):
-                    # «БЫЛО: ```java» — открытие блока кода; «`БЫЛО:`» — закрывающее
-                    # оформление заголовка. Кода на строке заголовка нет.
-                    text_after = ""
+                text_after = _inline_code(raw)
                 if text_after.strip():
                     buckets[current].append(text_after.rstrip())
             elif header.group(2).strip():
@@ -188,6 +186,27 @@ def parse_proposal(text: str) -> Proposal:
         after=_trim(buckets["стало"]),
         why=" ".join(line.strip() for line in buckets["почему"] if line.strip()),
     )
+
+
+def _inline_code(raw: str) -> str:
+    """Код на строке заголовка «БЫЛО: …»; оформление заголовка от кода отделяется.
+
+    Закрывающая разметка после двоеточия зеркальна открывающей перед названием:
+    для «**`БЫЛО:`** код» это «`**», а для «БЫЛО: `код`» её нет — апострофы после
+    двоеточия принадлежат коду и снимаются в :func:`_strip_inline_ticks`.
+    """
+    match = _CODE_HEADER_RE.match(raw)
+    if match is None:
+        return ""
+    opening = "".join(char for char in match.group("pre") if char in "*_`")
+    closing = opening[::-1][len(match.group("mid")):]
+    rest = match.group("rest")
+    if closing and rest.startswith(closing):
+        rest = rest[len(closing):]
+    text = _strip_inline_ticks(_AFTER_HEADER_RE.sub("", rest, count=1))
+    if text.lstrip().startswith("```") or not text.strip(" \t`*_"):
+        return ""  # «БЫЛО: ```java» — открытие блока кода; кода на строке нет
+    return text
 
 
 def _strip_inline_ticks(text: str) -> str:
