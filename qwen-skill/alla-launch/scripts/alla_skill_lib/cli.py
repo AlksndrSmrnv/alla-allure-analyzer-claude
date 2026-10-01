@@ -432,8 +432,8 @@ def _fetch_failed(
 
 def _resume(paths: ws.RunPaths, launch_id: int, reports_dir: Path) -> int:
     """Продолжить неоконченный разбор вместо нового: выгрузка не повторяется."""
-    ws.remember_last_run(reports_dir, paths)
     run = ws.read_json(paths.run_json)
+    ws.remember_last_run(reports_dir, paths)
     status, body = next_step(paths)
     name = f" «{run['launch_name']}»" if run.get("launch_name") else ""
     print(f"STATUS: {status}")
@@ -762,7 +762,16 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
 
 
 def _read_state(paths: ws.RunPaths) -> dict[str, Any]:
-    state = ws.read_json(paths.state_json) if paths.state_json.is_file() else {}
+    loaded: Any = {}
+    if paths.state_json.is_file():
+        try:
+            loaded = ws.read_json(paths.state_json)
+        except (OSError, ValueError):  # пустой или оборванный файл после сбоя записи
+            loaded = None
+        if not isinstance(loaded, dict):
+            logger.warning("%s пуст или повреждён — счётчики попыток начаты заново", paths.state_json)
+            loaded = {}
+    state: dict[str, Any] = loaded
     state.setdefault("attempts", {})
     return state
 

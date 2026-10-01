@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import sys
@@ -22,6 +23,8 @@ REPORTS_DIRNAME = "alla-reports"
 LAST_RUN_FILE = ".last_run"
 RESUME_WINDOW_HOURS = 24  # неоконченный разбор того же прогона продолжается, а не дублируется
 RUN_SCHEMA = 2  # 2: сигнатуры, база знаний, история, предложения правок
+
+logger = logging.getLogger(__name__)
 
 SKILL_DIR = Path(__file__).resolve().parents[2]
 ENTRYPOINT = SKILL_DIR / "scripts" / "alla_skill.py"
@@ -171,7 +174,16 @@ def find_unfinished_run(
         created = paths.run_json.stat().st_mtime
         if created >= limit:
             candidates.append((created, paths))
-    return max(candidates, key=lambda item: item[0])[1] if candidates else None
+    # Пустой или оборванный ``run.json`` (сбой на записи) продолжить нельзя:
+    # такая папка пропускается, берётся следующая свежая, иначе начнётся новый разбор.
+    for _, paths in sorted(candidates, key=lambda item: item[0], reverse=True):
+        try:
+            read_run(paths)
+        except RunNotFoundError as exc:
+            logger.warning("Пропускаю неоконченный разбор: %s", exc)
+            continue
+        return paths
+    return None
 
 
 def remember_last_run(reports_dir: Path, paths: RunPaths) -> None:
@@ -197,7 +209,33 @@ def resolve_run(run_dir: str | None, reports_dir: Path) -> RunPaths:
                 f"Папка разбора {root} удалена. Выполни: {skill_command('prepare', '<launch_id>')}"
             )
         raise RunNotFoundError(f"В {root} нет run.json — это не папка разбора alla-launch")
+    read_run(paths)  # битый run.json — понятная ошибка, а не traceback в любой команде
     return paths
+
+
+def read_run(paths: RunPaths) -> dict[str, Any]:
+    """Прочитать ``run.json``; пустой, оборванный или чужой файл — ``RunNotFoundError``."""
+    try:
+        run = read_json(paths.run_json)
+    except (OSError, ValueError) as exc:  # JSONDecodeError и UnicodeDecodeError — ValueError
+        reason = "пуст" if _is_empty(paths.run_json) else f"не читается ({type(exc).__name__}: {exc})"
+    else:
+        if isinstance(run, dict) and isinstance(run.get("clusters"), list):
+            return run
+        reason = "не похож на разбор alla-launch"
+    prefix = paths.root.name.partition("-")[0]
+    launch = prefix if prefix.isdigit() else "<launch_id>"
+    raise RunNotFoundError(
+        f"run.json в {paths.root} {reason} — этот разбор не продолжить (скорее всего, запись "
+        f"прервалась). Выполни: {skill_command('prepare', launch, '--fresh')}"
+    )
+
+
+def _is_empty(path: Path) -> bool:
+    try:
+        return not path.read_bytes().strip()
+    except OSError:
+        return False
 
 
 def write_atomic(path: Path, text: str) -> None:
@@ -206,6 +244,8 @@ def write_atomic(path: Path, text: str) -> None:
     try:
         with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())  # иначе после сбоя ОС rename может пережить данные: файл на 0 байт
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)

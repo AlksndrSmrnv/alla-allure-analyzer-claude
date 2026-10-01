@@ -24,6 +24,7 @@ from test_skill_flow import (
 from alla_core.config import Settings
 from alla_core.exceptions import AllureApiError, AuthenticationError, PaginationLimitError
 from alla_skill_lib import cli
+from alla_skill_lib import workspace as ws
 from alla_skill_lib.errors import fetch_error_hint
 
 
@@ -120,6 +121,95 @@ def test_prepare_starts_new_run_after_finished_or_stale(
             os.utime(path / "run.json", (old, old))
     _prepare(project, capsys)
     assert len(list((project / "alla-reports").glob("777-*"))) == 3
+
+
+def _run_dir_of(out: str) -> Path:
+    line = next(line for line in out.splitlines() if line.startswith("Папка разбора:"))
+    return Path(line.split(":", 1)[1].strip())
+
+
+def _last_run(project: Path) -> str:
+    return (project / "alla-reports" / ".last_run").read_text(encoding="utf-8").strip()
+
+
+# Сбой записи оставляет run.json пустым или оборванным: такой разбор не продолжить.
+BROKEN_RUN_JSON = ["", "  \n", '{"clusters": [', "[]", '{"launch_id": 777}']
+
+
+@pytest.mark.parametrize("content", BROKEN_RUN_JSON)
+def test_prepare_skips_unreadable_run_json(
+    project: Path, testops: FakeTestOps, capsys, content: str
+) -> None:
+    broken, _, _ = _prepare(project, capsys)
+    (broken / "run.json").write_text(content, encoding="utf-8")
+    requests_before = len(testops.requests)
+
+    code, out = _run(["prepare", "777", "--project-root", str(project)], capsys)
+    assert code == 0 and out.startswith("STATUS: analyze"), out
+    assert "Продолжаю" not in out
+    assert len(testops.requests) > requests_before  # данные получены заново
+    fresh = _run_dir_of(out)
+    assert fresh != broken and (fresh / "run.json").stat().st_size > 0
+    assert _last_run(project) == str(fresh)
+    assert len(list((project / "alla-reports").glob("777-*"))) == 2  # битая папка не удалена
+
+
+def test_prepare_resumes_older_run_when_newest_is_broken(
+    project: Path, testops: FakeTestOps, capsys
+) -> None:
+    good, _, _ = _prepare(project, capsys)
+    _, out = _run(["prepare", "777", "--fresh", "--project-root", str(project)], capsys)
+    newest = _run_dir_of(out)
+    old = time.time() - 100
+    os.utime(good / "run.json", (old, old))
+    (newest / "run.json").write_bytes(b"")
+    requests_before = len(testops.requests)
+
+    code, out = _run(["prepare", "777", "--project-root", str(project)], capsys)
+    assert code == 0 and out.startswith("STATUS: analyze")
+    assert "Продолжаю неоконченный разбор прогона #777" in out
+    assert f"Папка разбора: {good}" in out
+    assert len(testops.requests) == requests_before
+    assert _last_run(project) == str(good)
+    assert len(list((project / "alla-reports").glob("777-*"))) == 2
+
+
+def test_commands_explain_a_broken_run_json(project: Path, testops: FakeTestOps, capsys) -> None:
+    run_dir, _, _ = _prepare(project, capsys)
+    (run_dir / "run.json").write_bytes(b"")
+
+    for argv in (["next"], ["next", str(run_dir)], ["verify", "1", "--run", str(run_dir)]):
+        code, out = _run([*argv, "--project-root", str(project)], capsys)
+        assert code == 1 and out.startswith("STATUS: error"), (argv, out)
+        assert "пуст" in out and "prepare 777 --fresh" in out, (argv, out)
+        assert "Внутренняя ошибка" not in out
+
+
+@pytest.mark.parametrize("content", ["", "{", "[]"])
+def test_next_survives_unreadable_state_json(
+    project: Path, testops: FakeTestOps, capsys, content: str
+) -> None:
+    run_dir, _, _ = _prepare(project, capsys)
+    (run_dir / "state.json").write_text(content, encoding="utf-8")
+
+    assert _next(run_dir, capsys).startswith("STATUS: analyze")
+
+
+def test_write_atomic_syncs_file_before_replace(tmp_path: Path, monkeypatch) -> None:
+    synced: list[int] = []
+    real_fsync = os.fsync
+
+    def fsync(fd: int) -> None:
+        synced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    target = tmp_path / "run.json"
+    ws.write_atomic(target, "строка\n")
+
+    assert synced
+    assert target.read_bytes() == "строка\n".encode()
+    assert list(tmp_path.iterdir()) == [target]
 
 
 # --- ошибки получения прогона ----------------------------------------------------
