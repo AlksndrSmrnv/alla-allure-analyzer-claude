@@ -104,7 +104,8 @@ def test_many_clusters_are_split_into_batches(
         assert str(run_dir / "clusters" / f"{file_id}.md") in text
         assert str(run_dir / "analyses" / f"{file_id}.md") in text
         assert f"verify {file_id} --run {run_dir}" in text.replace("'", "")
-        assert "ПРИЧИНА: <тест|приложение" in text  # формат — в самом файле
+        assert "references/analysis-format.md" in text  # формат — в задании кластера и в справочнике
+        assert "ПРИЧИНА: <тест|приложение" not in text  # шаблон не дублируем: он в clusters/NN.md
         covered.append(file_id)
     assert covered == manual
     assert all(f"{file_id}.md" not in "".join(p.read_text(encoding="utf-8") for p in batch_files)
