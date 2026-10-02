@@ -5,9 +5,10 @@
 что нужно править вручную и что похоже на стенд или данные. Раздел определяет
 код (категория разбора и наличие принятой правки), а не модель.
 
-В терминал агент выводит краткий разбор: шапка, общий анализ и по одной строке
-на проблему в каждом разделе, а в конце — ссылка на ``report.md``. Полный разбор
-(тексты целиком, все шаги, все тесты, правки БЫЛО/СТАЛО) лежит в ``report.md``.
+В терминал агент выводит краткий разбор: шапка, общий анализ и по нескольку строк
+на проблему в каждом разделе — что случилось, что думает агент о причине и что
+делать, — а в конце ссылка на ``report.md``. Полный разбор (тексты целиком, все
+шаги, все тесты, правки БЫЛО/СТАЛО) лежит в ``report.md``.
 Краткий текст повторно попадает в контекст модели при каждом ``next``, поэтому
 на него действуют потолки; файл в контекст не попадает и ничем не ограничен.
 """
@@ -34,10 +35,13 @@ FEEDBACK_INVITATION = (
     "Обратная связь: если причина указана неверно или вы знаете точную — назовите номер "
     "проблемы и что на самом деле, я сохраню это в базу знаний проекта (alla-kb/)."
 )
-# Краткий разбор в терминале: по строке на проблему, не больше пяти на раздел.
+# Краткий разбор в терминале: по несколько строк на проблему, не больше пяти на раздел.
 MAX_BRIEF_ITEMS = 5
-MAX_BRIEF_NUMBERS = 8
-BRIEF_TEXT_CHARS = 160
+BRIEF_TEXT_CHARS = 160  # «что случилось»
+BRIEF_CAUSE_CHARS = 200  # «агент считает»
+BRIEF_STEP_CHARS = 140  # «что делать»
+BRIEF_REASON_CHARS = 160  # «почему агент не правил сам»
+BRIEF_TEST_NAME_CHARS = 60
 BRIEF_WARNING_CHARS = 140
 # Предупреждения и замечания в терминале: число и длина ограничены — их повторяет каждый next.
 MAX_BRIEF_NOTES = 5
@@ -73,31 +77,27 @@ AGENT = "agent"
 MANUAL = "manual"
 ENVIRONMENT = "environment"
 
-# (раздел, заголовок, строка обзора, пояснение под заголовком)
+# (раздел, заголовок, пояснение под заголовком в report.md)
 SECTIONS = (
     (
         ATTENTION,
         "Требуют вашего внимания",
-        "Посмотреть самим",
         "Похоже на ошибку приложения или причину не удалось определить — нужен взгляд инженера.",
     ),
     (
         AGENT,
         "Агент может поправить сам",
-        "Агент поправит автотесты",
         "Дефект в самом автотесте, исправление понятно. Агент покажет изменения и "
         "запишет их только после вашего «да».",
     ),
     (
         MANUAL,
         "Автотест сломан, но править вручную",
-        "Править автотесты вручную",
         "Виноват автотест, но агент не стал править его сам — нужна ваша правка.",
     ),
     (
         ENVIRONMENT,
         "Стенд и тестовые данные",
-        "Проверить стенд и тестовые данные",
         "Тесты падают из-за стенда или данных — сначала проверьте окружение, "
         "код автотестов, скорее всего, ни при чём.",
     ),
@@ -283,18 +283,17 @@ def render_report(
 
     brief = _header(run, brief=True)
     brief += ["", "### Коротко", summary.strip()]
-    for bucket, title, _, _ in SECTIONS:
+    for bucket, title, _ in SECTIONS:
         group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
         if group:
-            brief += ["", *_brief_section(title, group)]
+            brief += ["", *_brief_section(title, group, tests, reasons)]
     if notes:
         brief += ["", "### Замечания", *_brief_lines(notes, "- ", "замечаний")]
     brief += ["", FEEDBACK_INVITATION, "", link]
 
     full = _header(run)
     full += ["", "### Коротко", summary.strip()]
-    full += ["", *_overview(problems)]
-    for bucket, title, _, hint in SECTIONS:
+    for bucket, title, hint in SECTIONS:
         group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
         if group:
             full += ["", *_section(title, hint, group, tests, reasons)]
@@ -394,25 +393,6 @@ def _header(run: dict[str, Any], brief: bool = False) -> list[str]:
     return lines + (_brief_lines(warnings, "", "предупреждений") if brief else warnings)
 
 
-def _overview(problems: list[_Problem]) -> list[str]:
-    lines = ["### Что делать"]
-    for bucket, _, overview, _ in SECTIONS:
-        group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
-        if not group:
-            continue
-        tests = sum(p.size for p in group)
-        lines.append(
-            f"- {overview}: {len(group)} {_plural(len(group), 'проблема', 'проблемы', 'проблем')} "
-            f"({tests} {_plural(tests, 'тест', 'теста', 'тестов')}) — {_numbers(group)}"
-        )
-    return lines
-
-
-def _numbers(group: list[_Problem]) -> str:
-    word = "проблема" if len(group) == 1 else "проблемы"
-    return f"{word} {', '.join(str(p.number) for p in group)}"
-
-
 def _section(
     title: str,
     hint: str,
@@ -435,12 +415,7 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
         what = _one_line(analysis.what)
         if what:
             lines.append(f"- Что случилось: {what}")
-        if problem.bucket == AGENT and problem.proposal is not None:
-            lines.append(f"- Почему это ошибка теста: {_one_line(problem.proposal.why)}")
-        else:
-            reason = _one_line(analysis.cause_reason)
-            if reason:
-                lines.append(f"- Почему: {reason}")
+        lines.append(f"- Агент считает: {_opinion(problem, _reason(problem))}")
     if problem.bucket == AGENT and problem.proposal is not None:
         lines += [
             f"- Обратите внимание: {warning}"
@@ -453,6 +428,8 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
         )
     elif not problem.flagged:
         lines += _fix_lines(analysis)
+        if analysis.code:
+            lines.append("- Где в коде: " + "; ".join(analysis.code))
     if problem.bucket == MANUAL:
         lines.append(f"- Почему агент не правил сам: {_not_fixed_reason(problem, not_proposed)}")
     listed = _test_links(tests.of_cluster(problem.entry), problem.size)
@@ -465,24 +442,33 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
 def _fix_lines(analysis: ClusterAnalysis) -> list[str]:
     """«Что делать»: все шаги разбора."""
     steps = [line for line in analysis.fix.splitlines() if line.strip()]
-    if len(steps) <= 1:
-        return [f"- Что делать: {_one_line(analysis.fix)}"] if steps else []
+    if len(steps) <= 1:  # единственный шаг — в строку, без номера «1.»
+        return [f"- Что делать: {analysis.first_fix_step()}"] if steps else []
     return ["- Что делать:", *(f"   {line.strip()}" for line in steps)]
 
 
 # --- краткий разбор для терминала -------------------------------------------
 
 
-def _brief_section(title: str, group: list[_Problem]) -> list[str]:
+def _brief_section(
+    title: str,
+    group: list[_Problem],
+    tests: _Tests,
+    not_proposed: dict[str, str],
+) -> list[str]:
     lines = [f"### {title} ({len(group)})"]
     for problem in group[:MAX_BRIEF_ITEMS]:
-        lines += _brief_item(problem)
+        lines += _brief_item(problem, tests, not_proposed)
     rest = group[MAX_BRIEF_ITEMS:]
     if rest:
-        # Номера — только первые несколько: при тысячах проблем список рос бы с каждым next.
-        numbers = ", ".join(str(p.number) for p in rest[:MAX_BRIEF_NUMBERS])
-        more = " и др." if len(rest) > MAX_BRIEF_NUMBERS else ""
-        lines.append(f"- … и ещё {len(rest)} (проблемы {numbers}{more}) — в полном разборе")
+        # Без номеров: голый список номеров ничего не говорит, а при тысячах проблем
+        # рос бы с каждым next. Сколько их и где смотреть — достаточно.
+        count = sum(p.size for p in rest)
+        lines.append(
+            f"- … и ещё {len(rest)} {_plural(len(rest), 'проблема', 'проблемы', 'проблем')} "
+            f"({count} {_plural(count, 'тест', 'теста', 'тестов')}) — "
+            f"полный список в report.md, раздел «{title}»"
+        )
     return lines
 
 
@@ -495,27 +481,63 @@ def _brief_lines(items: list[str], prefix: str, what: str) -> list[str]:
     return lines
 
 
-def _brief_item(problem: _Problem) -> list[str]:
-    """Проблема одной строкой (для правки — плюс строка «Проверьте», если она есть)."""
-    size = f"{problem.size} {_plural(problem.size, 'тест', 'теста', 'тестов')}"
-    head = f"- **Проблема {problem.number}** · {size} · "
-    extra: list[str] = []
+def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> list[str]:
+    """Проблема в терминале: что случилось, что думает агент, что делать.
+
+    Для правки вместо «что делать» — где она и в каком состоянии, плюс «Проверьте»,
+    если есть; для «править вручную» — ещё и почему агент не правил сам.
+    """
+    analysis = problem.analysis
+    head = f"- **Проблема {problem.number}** · {_size_with_example(problem, tests)}"
+    tags = "".join(f" · {tag}" for tag in _brief_tags(problem))
+    if problem.flagged:
+        return [f"{head} — причина не ясна: разбор не прошёл проверку формата, текст — в report.md{tags}"]
+    what = analysis.what_first_sentence()
+    lines = [(f"{head} — {_truncate(what, BRIEF_TEXT_CHARS)}" if what else head) + tags]
+    lines.append(f"  Агент считает: {_opinion(problem, _reason(problem), BRIEF_CAUSE_CHARS)}")
     proposal = problem.proposal
     if problem.bucket == AGENT and proposal is not None:
         location = f"{proposal.file}:{proposal.line}" if proposal.line else str(proposal.file)
         status = "уже применено" if problem.applied else "ждёт вашего «да»"
-        line = f"{head}`{location}` — {_truncate(_one_line(proposal.why), BRIEF_TEXT_CHARS)} ({status})"
-        extra = [
+        lines.append(f"  Правка: `{location}` ({status})")
+        lines += [
             f"  Проверьте: {_truncate(warning, BRIEF_WARNING_CHARS)}"
             for warning in weakening_warnings(proposal.before, proposal.after)[:1]
         ]
-    else:
-        line = head + problem.label
-        what = "" if problem.flagged else problem.analysis.what_first_sentence()
-        if what:
-            line += f" — {_truncate(what, BRIEF_TEXT_CHARS)}"
-    tags = _brief_tags(problem)
-    return [line + "".join(f" · {tag}" for tag in tags), *extra]
+        return lines
+    step = analysis.first_fix_step()
+    if step:
+        lines.append(f"  Что делать: {_truncate(step, BRIEF_STEP_CHARS)}")
+    if problem.bucket == MANUAL:
+        reason = _truncate(_one_line(_not_fixed_reason(problem, not_proposed)), BRIEF_REASON_CHARS)
+        lines.append(f"  Почему агент не правил сам: {reason}")
+    return lines
+
+
+def _size_with_example(problem: _Problem, tests: _Tests) -> str:
+    """«5 тестов, напр. OrderTest.create»: масштаб проблемы и один узнаваемый тест."""
+    size = f"{problem.size} {_plural(problem.size, 'тест', 'теста', 'тестов')}"
+    members = tests.of_cluster(problem.entry)
+    if not members:
+        return size
+    name = _truncate(_one_line(str(members[0].get("name") or members[0]["test_result_id"])), BRIEF_TEST_NAME_CHARS)
+    return f"{size}, напр. {name}"
+
+
+def _reason(problem: _Problem) -> str:
+    """Обоснование причины: у правки — её «почему» (почему это дефект теста), иначе — из разбора."""
+    proposal = problem.proposal
+    if problem.bucket == AGENT and proposal is not None:
+        return proposal.why
+    return problem.analysis.cause_reason
+
+
+def _opinion(problem: _Problem, reason: str, limit: int | None = None) -> str:
+    """Что агент думает о причине: категория и обоснование (``limit`` режет только обоснование)."""
+    text = _one_line(reason)
+    if limit:
+        text = _truncate(text, limit)
+    return f"{problem.label} — {text}" if text else problem.label
 
 
 def _brief_tags(problem: _Problem) -> list[str]:
@@ -538,7 +560,7 @@ def _item_title(problem: _Problem) -> str:
         proposal = problem.proposal
         location = f"{proposal.file}:{proposal.line}" if proposal.line else str(proposal.file)
         return f"**Проблема {problem.number}** — `{location}` · {size}"
-    return f"**Проблема {problem.number}** — {size} · {problem.label}"
+    return f"**Проблема {problem.number}** — {size}"
 
 
 def _not_fixed_reason(problem: _Problem, not_proposed: dict[str, str]) -> str:
@@ -612,7 +634,7 @@ def _details(
         else:
             lines += [
                 f"- **Что случилось:** {_one_line(analysis.what)}",
-                f"- **Почему:** {_one_line(analysis.cause_reason)}",
+                f"- **Агент считает:** {_opinion(problem, analysis.cause_reason)}",
                 "- **Как исправить:**",
                 *(f"   {line}" for line in analysis.fix.splitlines()),
             ]

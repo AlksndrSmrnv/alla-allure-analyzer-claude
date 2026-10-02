@@ -143,10 +143,12 @@ def test_full_flow_until_done(project: Path, testops: FakeTestOps, capsys) -> No
     brief = out.split("===ОТЧЁТ===\n", 1)[1].split("\n===КОНЕЦ===", 1)[0]
     assert "Разбор прогона #777 — Regression nightly" in brief
     assert "Главная — NPE в OrderService." in brief
-    # В терминале — кратко: по строке на проблему, разделы по тому, кто что делает.
-    assert "- **Проблема 1** · 2 теста · возможная ошибка приложения" in brief
-    assert "· проблема стенда или окружения" in brief
-    assert "· причина не ясна" in brief
+    # В терминале — кратко: у каждой проблемы что случилось, что думает агент и что делать.
+    assert "- **Проблема 1** · 2 теста, напр. " in brief
+    assert "Агент считает: возможная ошибка приложения" in brief
+    assert "Агент считает: проблема стенда или окружения" in brief
+    assert "Агент считает: причина не ясна" in brief
+    assert "  Что делать: Добавить проверку customer в OrderService.create." in brief
     assert "### Требуют вашего внимания (2)" in brief
     assert brief.index("Требуют вашего внимания (2)") < brief.index("Стенд и тестовые данные (1)")
     assert brief.index("возможная ошибка приложения") < brief.index("причина не ясна")
@@ -156,9 +158,10 @@ def test_full_flow_until_done(project: Path, testops: FakeTestOps, capsys) -> No
     link = (run_dir / "report.md").absolute()
     assert f"[report.md]({link.as_uri()})" in brief and brief.rstrip().endswith(f"Файл: {link}")
     report = _full_report(run_dir)
-    # Шапка и «Коротко» в файле те же; ниже файл содержит обзор, тексты целиком и все тесты.
+    # Шапка и «Коротко» в файле те же; ниже файл содержит тексты целиком и все тесты.
     assert report.startswith(brief.split("\n\n### Требуют вашего внимания", 1)[0])
-    assert "### Что делать" in report and "## Подробности по проблемам" in report
+    assert "### Что делать" not in report and "## Подробности по проблемам" in report
+    assert "- Агент считает: возможная ошибка приложения — " in report
     assert "[silent](https://testops.example/launch/777/testresult/108)" in report
     assert "- **Ошибка в TestOps:** expected: <200> but was: <500>" in report
     assert "[createOrder](https://testops.example/launch/777/testresult/101)" in report
@@ -197,7 +200,7 @@ def test_fix_loop_counts_distinct_attempts(project: Path, testops: FakeTestOps, 
     (run_dir / "summary.md").write_text("Итог.", encoding="utf-8")
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: done")
-    assert "причина не ясна — разбор не прошёл проверку формата" in out
+    assert "причина не ясна: разбор не прошёл проверку формата, текст — в report.md" in out
     report = _full_report(run_dir)
     assert "Разбор не прошёл проверку формата, его текст — в подробностях ниже." in report
     assert "ПРИЧИНА: баг\nсовсем без формата" in report
@@ -286,12 +289,13 @@ def test_test_cluster_gets_fix_proposal_and_apply(project: Path, testops: FakeTe
     out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
     assert "### Агент может поправить сам (1)" in out
     assert (
-        "- **Проблема 1** · 2 теста · `src/test/java/ru/company/orders/OrderTest.java:6` — "
-        "API создания заказа по контракту возвращает 201 Created (ждёт вашего «да»)" in out
+        "  Агент считает: ошибка в автотесте — API создания заказа по контракту возвращает "
+        "201 Created\n"
+        "  Правка: `src/test/java/ru/company/orders/OrderTest.java:6` (ждёт вашего «да»)" in out
     )
     assert "apply 01 --run" in out and "--yes" in out
     report = _full_report(run_dir)
-    assert "- Почему это ошибка теста: API создания заказа" in report
+    assert "- Агент считает: ошибка в автотесте — API создания заказа" in report
     assert "- Статус: ждёт вашего «да»" in report
 
     code, diff = _run(["apply", "1", "--run", str(run_dir)], capsys)
