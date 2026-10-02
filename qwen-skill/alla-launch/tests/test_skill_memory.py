@@ -882,6 +882,40 @@ def test_copied_decision_template_is_not_a_decision(tmp_path: Path, decision: st
     assert "«РЕШЕНИЕ:» должно быть «исправить» или «не трогать»" in validate_proposal(proposal, tmp_path)[0]
 
 
+TWO_EDITS = (
+    "РЕШЕНИЕ: исправить\n"
+    "ФАЙЛ: src/OrderTest.java:4\nБЫЛО:\n        page.click(\"#submit-old\");\n"
+    "СТАЛО:\n        page.click(\"#submit\");\n"
+    "ФАЙЛ: src/OrderTest.java:5\nБЫЛО:\n        assertEquals(200, api.create().status());\n"
+    "СТАЛО:\n        assertEquals(201, api.create().status());\n"
+    "ПОЧЕМУ: локатор и код ответа устарели\n"
+)
+
+
+def test_second_edit_in_one_proposal_is_rejected_not_glued_to_the_first(java_project: Path) -> None:
+    """Раньше второй блок молча склеивался с первым: путь файла становился «A:4 B», а БЫЛО — мусором."""
+    proposal = parse_proposal(TWO_EDITS)
+    assert proposal.repeated == ("ФАЙЛ", "БЫЛО", "СТАЛО")
+    errors = validate_proposal(proposal, java_project)
+    assert len(errors) == 1
+    assert "больше одной правки (повторяется: ФАЙЛ, БЫЛО, СТАЛО)" in errors[0]
+    assert "РЕШЕНИЕ: не трогать" in errors[0] and "в «ПОЧЕМУ:»" in errors[0]
+
+    same_file = parse_proposal(TWO_EDITS.replace("ФАЙЛ: src/OrderTest.java:5\n", ""))
+    assert same_file.repeated == ("БЫЛО", "СТАЛО")  # второй ФАЙЛ не обязателен: места в одном файле
+    assert "больше одной правки" in validate_proposal(same_file, java_project)[0]
+
+
+def test_repeated_headers_do_not_matter_when_the_agent_declines_to_edit(java_project: Path) -> None:
+    proposal = parse_proposal(TWO_EDITS.replace("РЕШЕНИЕ: исправить", "РЕШЕНИЕ: не трогать"))
+    assert not proposal.is_fix and validate_proposal(proposal, java_project) == []
+
+
+def test_single_edit_has_no_repeated_headers(java_project: Path) -> None:
+    proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
+    assert proposal.repeated == () and validate_proposal(proposal, java_project) == []
+
+
 def test_applied_place_nearer_to_the_line_wins_over_a_neighbouring_before(tmp_path: Path) -> None:
     """СТАЛО уже стоит у указанной строки, а такое же БЫЛО — в 10 строках дальше: соседний участок не трогать."""
     body = (

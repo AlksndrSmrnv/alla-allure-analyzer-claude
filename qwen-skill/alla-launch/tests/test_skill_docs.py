@@ -144,6 +144,19 @@ def test_proposal_reference_keeps_the_unconditional_ban_on_longer_timeouts() -> 
     assert "увеличивать таймауты" in reference and "запрет безусловный" in reference
 
 
+def test_one_edit_per_proposal_is_stated_everywhere_the_agent_reads_about_proposals() -> None:
+    """Ограничение «одно предложение — одна правка» было нигде не записано — агент пробовал две."""
+    from alla_skill_lib.cli import PROPOSAL_RULES
+
+    assert "Одно предложение — одна правка" in " ".join(PROPOSAL_RULES.split())
+    for document in (
+        REFERENCES / "proposal-format.md",
+        REFERENCES / "protocol.md",
+        SKILL_DIR / "SKILL.md",
+    ):
+        assert "одно предложение — одна правка" in " ".join(_read(document).split()).lower(), document
+
+
 def test_protocol_lists_every_status_the_code_prints() -> None:
     protocol = _read(REFERENCES / "protocol.md")
     for status in STATUSES:

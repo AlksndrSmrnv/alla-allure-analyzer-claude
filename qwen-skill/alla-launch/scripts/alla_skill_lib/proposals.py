@@ -123,6 +123,8 @@ class Proposal:
     before: list[str]
     after: list[str]
     why: str
+    # Заголовки ФАЙЛ/БЫЛО/СТАЛО, встреченные больше одного раза: в файле не одна правка.
+    repeated: tuple[str, ...] = ()
 
     @property
     def is_fix(self) -> bool:
@@ -155,12 +157,14 @@ class ApplyResult:
 
 def parse_proposal(text: str) -> Proposal:
     buckets: dict[str, list[str]] = {"решение": [], "файл": [], "было": [], "стало": [], "почему": []}
+    headers: Counter[str] = Counter()
     current: str | None = None
     for raw in text.lstrip("﻿").splitlines():
         cleaned = _DECOR_RE.sub("", raw.replace("**", "")).strip()
         header = _HEADER_RE.match(cleaned)
         if header:
             current = header.group(1).lower()
+            headers[current] += 1
             if current in ("было", "стало"):
                 # Код со строки заголовка берётся из исходной строки: в очищенной
                 # убраны ``**`` и «`», которые бывают в самом коде.
@@ -191,6 +195,9 @@ def parse_proposal(text: str) -> Proposal:
         before=_trim(buckets["было"]),
         after=_trim(buckets["стало"]),
         why=" ".join(line.strip() for line in buckets["почему"] if line.strip()),
+        repeated=tuple(
+            name.upper() for name in ("файл", "было", "стало") if headers[name] > 1
+        ),
     )
 
 
@@ -241,6 +248,8 @@ def validate_proposal(proposal: Proposal, project_root: Path) -> list[str]:
         return ["нет «ПОЧЕМУ:» — объясни решение фактами из данных и кода"]
     if not proposal.is_fix:
         return []
+    if proposal.repeated:
+        return [_several_edits_error(proposal.repeated)]
 
     errors: list[str] = []
     target = _resolve(proposal, project_root, errors)
@@ -275,6 +284,18 @@ def validate_proposal(proposal: Proposal, project_root: Path) -> list[str]:
         )
     errors.extend(weakening_errors(proposal.before, proposal.after))
     return errors
+
+
+def _several_edits_error(repeated: tuple[str, ...]) -> str:
+    return (
+        f"в предложении больше одной правки (повторяется: {', '.join(repeated)}) — одно "
+        "предложение описывает одно место: один файл и один блок «БЫЛО:»/«СТАЛО:». Места рядом "
+        "в одном файле объедини в один блок, захватив строки между ними. Места в разных файлах "
+        "или далеко друг от друга одним предложением не исправить, а частичную правку не "
+        "предлагай: напиши «РЕШЕНИЕ: не трогать» и перечисли все места в «ПОЧЕМУ:». Если это не "
+        "вторая правка, а строка «ПОЧЕМУ:», которая начинается со слова «Было:» или «Стало:», — "
+        "перефразируй её"
+    )
 
 
 def weakening_errors(before: list[str], after: list[str]) -> list[str]:
