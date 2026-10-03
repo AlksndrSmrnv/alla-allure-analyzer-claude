@@ -297,7 +297,11 @@ def test_prompt_tiny_fallback_drops_footer_before_meaningful_content(budget):
     assert len(result) <= budget
 
 
-@pytest.mark.parametrize("frames", [[], ["src/test/java/ru/company/OrderTest.java:6 — кадр стека"]])
+@pytest.mark.parametrize("frames", [
+    [],
+    ["at ru.company.orders.OrderTest.createOrder(OrderTest.java:6)"],
+    ["Caused by: java.net.ConnectException: Connection refused"],
+])
 def test_task_without_code_hints_says_code_not_found_and_forbids_searching(frames):
     # «Правила» велят начинать с раздела «Где искать код автотеста»; без него субагенты
     # искали код сами через ls/find (стенд Qwen, P04). Кадры стека упоминаются, только если
@@ -312,9 +316,12 @@ def test_task_without_code_hints_says_code_not_found_and_forbids_searching(frame
     assert section.startswith("- не найден:") and "Сам код не ищи" in section
     # подсказок нет и при нераспознанном или неоднозначном имени теста — исходник может быть
     assert "не удалось сопоставить" in section and "файлов с этими тестами" not in section
-    if frames:
-        assert "Кадры стека из кода проекта" in task.split("--- Где искать")[0]
+    head = task.split("--- Где искать")[0]
+    if cluster_task.has_frame_files(frames):
+        assert "Кадры стека из кода проекта" in head
         assert cluster_task.CODE_NOT_FOUND_WITH_FRAMES in section
     else:
-        assert "Кадр" not in task.split("## Задание")[0].split("--- Где искать")[1]
+        assert "Кадры стека из кода проекта" not in head
         assert cluster_task.CODE_NOT_FOUND_NO_FRAMES in section
+        for line in frames:  # «Caused by» остаётся в задании как данные о причине
+            assert line in head

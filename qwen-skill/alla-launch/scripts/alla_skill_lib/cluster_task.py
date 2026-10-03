@@ -159,11 +159,12 @@ def project_frames(trace: str | None, limit: int = MAX_FRAME_LINES) -> list[str]
     for line in result:
         if not deduped or deduped[-1] != line:
             deduped.append(line)
-    # Одни «Caused by» без кадров проекта — не раздел с файлами: задание иначе отправило бы
-    # открывать файлы, которых в нём нет.
-    if not any(_FRAME_RE.match(line) for line in deduped):
-        return []
     return deduped
+
+
+def has_frame_files(frames: list[str]) -> bool:
+    """Есть ли среди кадров строки с файлами проекта (а не одни «Caused by»)."""
+    return any(_FRAME_RE.match(line) for line in frames)
 
 
 def _is_framework_frame(line: str) -> bool:
@@ -254,8 +255,13 @@ def build_cluster_task(
         has_exact = any(match["origin"] == "exact" for match in kb_matches or [])
         sections += [*render_recurrence(recurrence, has_exact_kb=has_exact), ""]
     sections += [_render_members(cluster, tests_by_id)]
-    if frames:
+    with_files = has_frame_files(frames)
+    if with_files:
         sections += ["", "--- Кадры стека из кода проекта ---", *frames]
+    elif frames:
+        # В длинном трейсе фреймворка поздний «Caused by» может быть единственным указанием
+        # на причину (основной трейс в данных обрезан): сохраняем его, но без файлов.
+        sections += ["", "--- Причины из стек-трейса (Caused by) ---", *frames]
     # Раздел есть всегда: «Правила» велят начинать с него, и без него субагенты искали код
     # сами — ls/find/git log (стенд Qwen, P04).
     sections += ["", "--- Где искать код автотеста (пути от корня проекта) ---"]
@@ -263,7 +269,7 @@ def build_cluster_task(
         sections += [f"- {hint.render()}" for hint in hints]
     else:
         sections.append(CODE_NOT_FOUND_NOTE.format(
-            next_step=CODE_NOT_FOUND_WITH_FRAMES if frames else CODE_NOT_FOUND_NO_FRAMES))
+            next_step=CODE_NOT_FOUND_WITH_FRAMES if with_files else CODE_NOT_FOUND_NO_FRAMES))
     sections += ["", "## Задание", task, "", reference_line(ANALYSIS_FORMAT_REF)]
     return "\n".join(sections) + "\n"
 

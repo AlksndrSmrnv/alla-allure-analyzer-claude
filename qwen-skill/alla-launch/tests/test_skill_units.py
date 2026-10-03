@@ -425,16 +425,19 @@ def test_project_frames_skip_frameworks() -> None:
     ]
 
 
-def test_project_frames_without_project_frames_are_empty() -> None:
-    # Одни «Caused by» без кадров проекта не дают раздел «Кадры стека»: иначе задание
-    # отправляло открывать файлы, которых в разделе нет.
+def test_caused_by_without_project_frames_is_kept_but_has_no_files() -> None:
+    # Поздний «Caused by» в трейсе фреймворка может быть единственным указанием на причину:
+    # его сохраняем, но открывать по нему нечего.
+    from alla_skill_lib.cluster_task import has_frame_files
     trace = (
         "java.lang.IllegalStateException: boom\n"
         "\tat org.junit.Assert.fail(Assert.java:89)\n"
-        "Caused by: java.net.SocketTimeoutException: Read timed out\n"
-        "\tat java.base/java.net.Socket.read(Socket.java:1)\n"
+        "Caused by: java.net.ConnectException: Connection refused\n"
+        "\tat java.base/java.net.Socket.connect(Socket.java:1)\n"
     )
-    assert project_frames(trace) == []
+    frames = project_frames(trace)
+    assert frames == ["Caused by: java.net.ConnectException: Connection refused"]
+    assert not has_frame_files(frames)
 
 
 # --- подсказки по коду ----------------------------------------------------
