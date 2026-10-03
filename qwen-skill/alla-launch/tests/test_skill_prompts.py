@@ -141,3 +141,13 @@ def test_ready_no_evidence_analysis_is_valid_and_does_not_claim_logs_were_missin
     assert analysis.category == "неизвестно"
     assert "ни лога" not in text and "не сохранились" not in text
     assert "если они есть" in text
+
+
+
+def test_summary_task_keeps_unknown_causes_unknown() -> None:
+    # На стенде Qwen (E03) сводка при причине «неизвестно» предположила сбой окружения или
+    # сборки, которых в данных нет: шаг «что упало и почему» требовал версию причины.
+    from alla_skill_lib.report import SUMMARY_TASK
+    text = " ".join(SUMMARY_TASK.split())
+    assert "«неизвестно» — так и скажи" in text and "каких данных не хватает" in text
+    assert "своих версий причины" in text
