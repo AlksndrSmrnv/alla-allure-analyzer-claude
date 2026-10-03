@@ -182,3 +182,27 @@ def test_cd_to_project_root_is_noted_but_cd_elsewhere_fails(tmp_path: Path) -> N
     other = context(tmp_path, events(
         ("run_shell_command", {"command": f"cd /tmp && python3 {SKILL} prepare 777"}, "")))
     assert CHECKS["shell_only_skill_commands"](other)["status"] == "fail"
+
+
+def test_run_case_keeps_project_outside_results(tmp_path: Path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    # Агент не должен находить поиском выше проекта trace и журнал TestOps стенда (P04).
+    import qwen_stand
+
+    def fake_turn(project: Path, home: Path, secret_env: dict[str, str], prompt: str, *,
+                  trace: Path, **_: Any) -> int:
+        trace.write_text("\n".join(json.dumps(e, ensure_ascii=False)
+                                   for e in events(final="Allure Report — это…")))
+        return 0
+
+    monkeypatch.setattr(qwen_stand, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(qwen_stand, "model_settings", lambda model: ({}, {}))
+    monkeypatch.setattr(qwen_stand, "ensure_venv", lambda: None)
+    monkeypatch.setattr(qwen_stand, "run_turn", fake_turn)
+    output = tmp_path / "out"
+    case = qwen_stand.run_case("A04", output, model=None, max_wall="1m", sandbox=False,
+                               attempt=1)
+    project = Path(case["project"])
+    assert project.is_dir() and not project.is_relative_to(output)
+    assert (output / "A04" / "trace-1.jsonl").is_file()
+    assert case["status"] == "pass", case["checks"]

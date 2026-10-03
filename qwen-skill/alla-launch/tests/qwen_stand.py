@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -560,8 +561,11 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
              sandbox: bool, attempt: int, api_log: bool = False) -> dict[str, Any]:
     scenario = SCENARIOS[case_id]
     case_dir = output / (case_id if attempt == 1 else f"{case_id}-{attempt}")
-    work = case_dir / "work"
-    work.mkdir(parents=True)
+    case_dir.mkdir(parents=True)
+    # Проект — вне папки результатов: иначе агент поиском выше проекта читал trace и журнал
+    # TestOps самого стенда (P04). Рабочие папки остаются в кэше для разбора полётов.
+    (CACHE_DIR / "work").mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=f"{case_id}-", dir=CACHE_DIR / "work")).resolve()
     settings, secret_env = model_settings(model)
     venv = ensure_venv() if scenario.setup_ready else None
     log = case_dir / "testops-requests.jsonl"
@@ -595,6 +599,7 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
         "duration_s": round(time.monotonic() - started, 1),
         "sandbox": sandbox,
         "dir": str(case_dir),
+        "project": str(project),
     })
 
 
@@ -606,7 +611,8 @@ def evaluate(case: dict[str, Any]) -> dict[str, Any]:
     log = case_dir / "testops-requests.jsonl"
     requests = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] \
         if log.is_file() else []
-    ctx = Context(scenario, trace, case_dir / "work" / "project", requests)
+    project = Path(case.get("project") or case_dir / "work" / "project")
+    ctx = Context(scenario, trace, project, requests)
     checks = {name: CHECKS[name](ctx) for name in scenario.checks}
     failed = [name for name, result in checks.items() if result["status"] == "fail"]
     if failed:

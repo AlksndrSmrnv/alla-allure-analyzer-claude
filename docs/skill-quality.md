@@ -87,7 +87,8 @@ Runner не вызывает Qwen, setup, живой TestOps или API-backed �
 - поднимает `tests/fake_testops_server.py` на 127.0.0.1 — те же `FakeTestOps` и fixtures,
   что в pytest (`default`, `green`, `info_only`, `injection`, `many:N`); каждый запрос
   пишется в `testops-requests.jsonl`;
-- собирает git-проект автотестов с исходниками из `skill_fixtures.py` и копией скилла в
+- собирает git-проект автотестов (в `~/.cache/alla-qwen-stand/work/`, вне папки результатов,
+  чтобы агент не нашёл trace и журнал стенда) с исходниками из `skill_fixtures.py` и копией скилла в
   `.qwen/skills/alla-launch` (с `.env` на фейк). Окружение скилла ставится настоящим
   `setup` один раз в `~/.cache/alla-qwen-stand/` и подключается ссылкой; P02 проверяет
   установку с нуля;
