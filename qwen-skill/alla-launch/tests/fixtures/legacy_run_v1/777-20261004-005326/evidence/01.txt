@@ -1,0 +1,11 @@
+expected: <200> but was: <500>
+java.lang.AssertionError: expected: <200> but was: <500>
+	at org.junit.Assert.fail(Assert.java:89)
+	at org.junit.Assert.assertEquals(Assert.java:120)
+	at ru.company.orders.OrderTest.createOrder(OrderTest.java:6)
+	at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+
+--- [файл: app.log] ---
+2026-09-01 10:00:01 [ERROR] OrderService: failed to create order
+java.lang.NullPointerException: customer is null
+	at ru.company.OrderService.create(OrderService.java:10)

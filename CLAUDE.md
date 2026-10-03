@@ -75,6 +75,10 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
     размер краткого разбора — `tests/test_skill_report.py`; поведение модели оценивается
     отдельно через `.agents/skills/skill-evaluation/`;
   - изменённое поведение → файл правил своей области в `.claude/rules/` (см. ниже).
+  - изменение извлечения логов, данных заданий или кластеризации → базовая линия эталона
+    (`tests/eval/run_eval.py --write-baseline`), изменение цифр — в сообщении коммита;
+    базовая линия holdout — отдельным коммитом. Старые папки разборов должны открываться —
+    `tests/test_legacy_run.py` на фикстуре `tests/fixtures/legacy_run_v1/`.
 - Тесты — только `qwen-skill/alla-launch/tests/` (единственный `testpaths`). Фикстуры — в
   `skill_fixtures.py`, фабрики моделей ядра — в `skill_factories.py`, фейковый TestOps на
   `httpx.MockTransport` — в `skill_fake_testops.py`; `conftest.py` нет, чтобы папка скилла

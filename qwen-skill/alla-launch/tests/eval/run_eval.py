@@ -114,11 +114,16 @@ def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
         if source is not None:
             visible.add(source.test_result_id)
         task = paths.cluster_task(entry["file_id"])
+        text = task.read_text(encoding="utf-8") if task.is_file() else ""
+        # Пути зависят от машины: без них размер задания сравним с базовой линией.
+        for path, mark in ((workspace.ENTRYPOINT, "<alla_skill.py>"), (workdir.resolve(), "<tmp>"),
+                           (workdir, "<tmp>")):
+            text = text.replace(str(path), mark)
         views.append(ClusterView(
             file_id=entry["file_id"],
             members=tuple(cluster.member_test_ids),
             visible=tuple(sorted(visible)),
-            task_text=task.read_text(encoding="utf-8") if task.is_file() else "",
+            task_text=text,
         ))
     return PreparedRun(run_dir, views, seconds)
 
