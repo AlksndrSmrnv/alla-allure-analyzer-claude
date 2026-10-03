@@ -967,3 +967,10 @@ def test_step_path_gate_max_threshold_splits_any_difference() -> None:
     report = service.cluster_failures(launch_id=1, failures=failures)
 
     assert report.cluster_count == 2
+
+
+def test_cluster_without_error_text_is_labelled_by_test_name() -> None:
+    # Метка попадает в сводку и отчёт: «Тест: 301» читателю ничего не говорит (стенд Qwen, E03).
+    report = ClusteringService(ClusteringConfig()).cluster_failures(
+        launch_id=1, failures=[_failure(301)])
+    assert [cluster.label for cluster in report.clusters] == ["Тест: test-301"]

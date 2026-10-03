@@ -725,7 +725,9 @@ class ClusteringService:
         if representative.category:
             return f"Категория: {representative.category}"
 
-        return f"Тест: {representative.test_result_id}"
+        # Имя, а не ID результата: метка попадает в сводку и отчёт, «Тест: 301» читателю
+        # ничего не говорит (стенд Qwen, E03).
+        return f"Тест: {representative.name or representative.test_result_id}"
 
     @staticmethod
     def _generate_cluster_id(
