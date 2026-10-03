@@ -58,7 +58,7 @@ from alla_skill_lib.analysis_format import (
     parse_summary,
     validate_analysis,
 )
-from alla_skill_lib.batch_task import render_batch_task
+from alla_skill_lib.batch_task import BATCH_AGENT, install_batch_agent, render_batch_task
 from alla_skill_lib.cluster_task import (
     build_cluster_task,
     failed_prepare_analysis,
@@ -371,6 +371,9 @@ def cmd_prepare(
     *,
     fresh: bool = False,
 ) -> int:
+    installed = install_batch_agent(project_root)
+    if installed is not None:
+        _progress(f"Установлен субагент пакетов {installed} (Qwen Code увидит его со следующего сеанса).")
     if not fresh:
         unfinished = ws.find_unfinished_run(reports_dir, launch_id)
         if unfinished is not None:
@@ -999,7 +1002,8 @@ def _batch_body(
         f"В этой волне: пакетов — {len(batches)}, кластеров — {taken}"
         + (f"; остальные ({fresh_count - taken}) — в следующей." if taken < fresh_count else "."),
         "1. Запусти субагентов инструментом agent — по одному на пакет, ВСЕ вызовы в одном "
-        "сообщении, без subagent_type, с run_in_background: false. prompt каждого — дословно:",
+        f"сообщении, с subagent_type: {BATCH_AGENT} и run_in_background: false (agent ответил, "
+        "что такого типа нет, — те же вызовы без subagent_type). prompt каждого — дословно:",
     ]
     for number, ids in enumerate(batches, start=1):
         ws.write_text(

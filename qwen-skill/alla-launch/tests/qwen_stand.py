@@ -118,7 +118,7 @@ SCENARIOS: dict[str, Scenario] = {
         note="setup ставит зависимости из сети: pip внутри песочницы"),
     "P04": Scenario(
         "40 кластеров: пакеты субагентов", "many:40", ("/alla-launch 900",),
-        (*FULL_RUN, "prepare_launch", "subagents_used"), launch_id=900),
+        (*FULL_RUN, "prepare_launch", "subagents_used", "batch_agent_used"), launch_id=900),
 }
 
 
@@ -169,6 +169,10 @@ def build_project(work: Path, endpoint: str, venv: Path | None) -> Path:
     write(skill / ".env", f"ALLURE_ENDPOINT={endpoint}\nALLURE_TOKEN={TOKEN}\n")
     if venv is not None:
         (skill / ".venv").symlink_to(venv, target_is_directory=True)
+    # Субагент пакетов уже установлен, как со второго сеанса: prepare кладёт его в
+    # .qwen/agents/, а Qwen видит агентов, которые были на старте сеанса.
+    for agent in (SKILL_ROOT / "agents").glob("*.md"):
+        write(project / ".qwen" / "agents" / agent.name, agent.read_text(encoding="utf-8"))
     git = ["git", "-C", str(project), "-c", "user.name=stand", "-c", "user.email=stand@local"]
     run(["git", "init", "-q", str(project)])
     run([*git, "add", "-A"])
@@ -469,6 +473,14 @@ def check_cause_unknown(ctx: Context) -> dict[str, Any]:
 def check_subagents_used(ctx: Context) -> dict[str, Any]:
     agents = [call for call in ctx.trace.calls if call.name == "agent"]
     return ok(f"вызовов agent: {len(agents)}") if agents else bad("субагенты не запускались")
+
+
+def check_batch_agent_used(ctx: Context) -> dict[str, Any]:
+    agents = [call for call in ctx.trace.calls if call.name == "agent"]
+    wrong = [call for call in agents if call.input.get("subagent_type") != "alla-batch"]
+    if not agents:
+        return bad("субагенты не запускались")
+    return bad(at(wrong[0])) if wrong else ok(f"вызовов alla-batch: {len(agents)}")
 
 
 def check_setup_once(ctx: Context) -> dict[str, Any]:

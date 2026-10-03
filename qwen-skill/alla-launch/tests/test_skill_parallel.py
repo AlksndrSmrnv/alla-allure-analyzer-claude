@@ -108,6 +108,7 @@ def test_many_clusters_are_split_into_batches(
         assert "ПРИЧИНА: <тест|приложение" not in text  # шаблон не дублируем: он в clusters/NN.md
         covered.append(file_id)
     assert covered == manual
+    assert "subagent_type: alla-batch" in out and "без subagent_type" in out
     assert all(f"{file_id}.md" not in "".join(p.read_text(encoding="utf-8") for p in batch_files)
                for file_id in auto)
 
@@ -374,3 +375,39 @@ def test_verify_unknown_cluster_and_run_are_errors(
     assert code == 1 and out.startswith("STATUS: error") and "99" in out
     code, out = _run(["verify", "1", "--run", str(run_dir / "nope")], capsys)
     assert code == 1 and out.startswith("STATUS: error")
+
+
+QWEN_TOOLS = {"read_file", "write_file", "edit", "run_shell_command", "glob", "grep_search"}
+
+
+def test_batch_agent_file_is_valid_for_qwen_and_narrow() -> None:
+    # Невалидный файл агента Qwen Code пропускает молча (подсказка короче 10 символов,
+    # нет name/description) — тогда пакеты снова уходят general-purpose субагенту.
+    from alla_skill_lib import batch_task
+
+    text = batch_task.batch_agent_source().read_text(encoding="utf-8")
+    _, header, prompt = text.split("---\n", 2)
+    fields = dict(line.split(":", 1) for line in header.splitlines() if not line.startswith(" "))
+    assert fields["name"].strip() == batch_task.BATCH_AGENT
+    assert fields["description"].strip()
+    tools = [line.strip()[2:] for line in header.splitlines() if line.startswith("  - ")]
+    assert set(tools) == {"read_file", "write_file", "run_shell_command"} <= QWEN_TOOLS
+    assert len(prompt.strip()) >= 10
+    for phrase in ("Первым действием прочитай", "ls, find, cat, git", "другие пакеты",
+                   "Проблема скилла:"):
+        assert phrase in " ".join(prompt.split()), phrase
+
+
+def test_install_batch_agent_writes_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from alla_skill_lib import batch_task
+    from alla_skill_lib import workspace as ws
+
+    monkeypatch.setattr(ws, "SKILL_DIR", Path(cli.__file__).resolve().parents[2])
+    target = batch_task.install_batch_agent(tmp_path)
+    assert target == tmp_path / ".qwen" / "agents" / "alla-batch.md"
+    assert target.read_text(encoding="utf-8") == batch_task.batch_agent_source().read_text(
+        encoding="utf-8")
+    assert batch_task.install_batch_agent(tmp_path) is None  # уже установлен — не пишет
+    target.write_text("старая версия", encoding="utf-8")
+    assert batch_task.install_batch_agent(tmp_path) == target  # устарел — обновляет
+

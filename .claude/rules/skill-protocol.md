@@ -72,7 +72,14 @@ paths:
 - Если волна не записала ни одного разбора, пакетный режим выключается (`workers=1`,
   пояснение в ответе `next`); включить снова — `next --workers N` (сбрасывает `batched`).
 - Основной агент раздаёт пакеты субагентам Qwen Code (`agent`, все вызовы в одном сообщении,
-  `run_in_background: false`), ждёт всех и зовёт `next`.
+  `subagent_type: alla-batch`, `run_in_background: false`), ждёт всех и зовёт `next`.
+- `alla-batch` — свой субагент (`agents/alla-batch.md`, узкая роль, инструменты read_file,
+  write_file, run_shell_command): встроенный `general-purpose` по своей системной подсказке
+  осматривал проект (ls/find, чужие пакеты), и текстом prompt это не лечилось (стенд Qwen,
+  P04). `prepare` ставит его в `<project>/.qwen/agents/` (`batch_task.install_batch_agent`);
+  Qwen видит агентов со старта сеанса, поэтому инструкция `next` даёт запасной путь — без
+  `subagent_type`. Qwen молча пропускает невалидный файл агента: формат охраняет
+  `test_batch_agent_file_is_valid_for_qwen_and_narrow`.
 - Субагент `next` не вызывает. `verify N [N…] --run DIR` — только читающая проверка (те же
   parse/validate, что в `next`; `state.json`, история и файлы не трогаются, попытки не
   считаются), `STATUS: ok|fix`.

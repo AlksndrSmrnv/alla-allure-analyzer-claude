@@ -23,6 +23,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | Путь (от `qwen-skill/alla-launch/`) | Что там |
 |---|---|
 | `SKILL.md`, `references/` | сценарий и правила для модели, форматы её файлов, протокол, установка |
+| `agents/alla-batch.md` | свой субагент Qwen для пакетов кластеров; `prepare` ставит его в `.qwen/agents/` проекта |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` скилла |
 | `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `batch_task`, `agent_rules`, `cluster_task`, `analysis_format`, `code_hints`, `report`, `kb`, `modules`, `feedback`, `history`, `proposals`, `errors` |
 | `scripts/alla_core/` | ядро: клиент TestOps, триаж, логи, кластеризация, блок «Данные», сигнатура |
