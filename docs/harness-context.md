@@ -93,4 +93,5 @@ runtime-сценария, а не установленный дефект.
 | Скиллы документов, браузеров, `claude-api`, `plugin-authoring`, `init`, `run` | Отключены `skillOverrides`. |
 | Хуки | ruff после правки `.py`; тесты справочников/заданий после правки инструкций; перед коммитом ruff, pytest и mypy против базовой линии. |
 
-Главный незакрытый пробел — нет Qwen Code CLI: сценарии поведения остаются `not_run`.
+Qwen Code 0.24.7 установлен, модель — `qwen/qwen3.8-flash` через OpenRouter. Сценарии
+поведения прогоняет стенд `tests/qwen_stand.py` (см. `skill-quality.md`, «Стенд Qwen»).

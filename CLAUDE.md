@@ -26,7 +26,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` скилла |
 | `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `batch_task`, `agent_rules`, `cluster_task`, `analysis_format`, `code_hints`, `report`, `kb`, `modules`, `feedback`, `history`, `proposals`, `errors` |
 | `scripts/alla_core/` | ядро: клиент TestOps, триаж, логи, кластеризация, блок «Данные», сигнатура |
-| `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро |
+| `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
 
 ## Команды
 
@@ -35,7 +35,11 @@ python3.11 -m venv .venv && .venv/bin/pip install -r qwen-skill/alla-launch/requ
 .venv/bin/python -m pytest                      # из корня, несколько секунд
 .venv/bin/ruff check qwen-skill/alla-launch
 .venv/bin/mypy qwen-skill/alla-launch/scripts   # strict; пока не чистый — новых ошибок не добавлять
+.venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case A01 --output /tmp/alla-stand-001
 ```
+
+Последняя команда — настоящий Qwen Code на синтетическом TestOps (платно, минуты): после
+правки `SKILL.md`, справочников или заданий; сценарии и границы — `docs/skill-quality.md`.
 
 Корневой `pyproject.toml` содержит только конфиг ruff/mypy/pyright/pytest, пакета нет.
 pyright настроен для навигации (`typeCheckingMode = "off"`), типы проверяет mypy.

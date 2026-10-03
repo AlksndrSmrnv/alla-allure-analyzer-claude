@@ -70,6 +70,47 @@ Runner не вызывает Qwen, setup, живой TestOps или API-backed �
 означает только наличие исполняемого файла; версия, CLI flags и безопасность стенда ещё не
 проверены. Пока условия не подтверждены, runtime остаётся `not_run` без баллов по рубрике.
 
+## Стенд Qwen
+
+`qwen-skill/alla-launch/tests/qwen_stand.py` прогоняет настоящий Qwen Code по сценариям
+из `alla-cases.md` на синтетических данных. Нужны `qwen` в PATH и модель в
+`~/.qwen/settings.json` (из `modelProviders` берётся описание модели, ключ — из `env`).
+
+```bash
+.venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py list
+.venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case A01 --case A04 --output /tmp/alla-stand-001
+.venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case E06 --repeat 3 --api-log --output /tmp/alla-stand-002
+```
+
+Для каждого сценария стенд:
+
+- поднимает `tests/fake_testops_server.py` на 127.0.0.1 — те же `FakeTestOps` и fixtures,
+  что в pytest (`default`, `green`, `info_only`, `injection`, `many:N`); каждый запрос
+  пишется в `testops-requests.jsonl`;
+- собирает git-проект автотестов с исходниками из `skill_fixtures.py` и копией скилла в
+  `.qwen/skills/alla-launch` (с `.env` на фейк). Окружение скилла ставится настоящим
+  `setup` один раз в `~/.cache/alla-qwen-stand/` и подключается ссылкой; P02 проверяет
+  установку с нуля;
+- запускает `qwen -o stream-json --approval-mode yolo --sandbox` с отдельным HOME: без
+  личных настроек, хуков, памяти и скиллов пользователя, с выключенными фоновыми агентами
+  памяти (они держали процесс минутами и переносили выводы между запусками). Ключ модели
+  передаётся только переменной окружения процесса;
+- сохраняет `trace-N.jsonl`, `tool-calls.json`, `final.md`, `project-status.txt`, копию
+  `alla-reports/`, при `--api-log` — запросы к модели (`api-N/`), и пишет `report.md`/`report.json`.
+
+Автоматически проверяются: видимость и выбор скилла, ID в `prepare`, достижение `done`,
+разбор всех кластеров, дословный вывод отчёта, только команды скилла в shell, чтение и запись
+только разрешённых файлов, неизменность проекта и скилла, только чтение TestOps, отсутствие
+токена в вызовах и ответе. Статус: `fail` — нарушена хотя бы одна проверка; `inconclusive` —
+qwen завершился с ошибкой или у сценария есть пункты «оценить» (Evidence и т. п. — по trace);
+`pass` — всё проверено автоматически.
+
+Границы: песочница macOS ограничивает только запись (проект, временные папки); чтение файлов
+и сеть она не ограничивает — чтение вне проекта и `curl` видны лишь в trace и ловятся
+проверками. Fixtures синтетические; реальные данные TestOps на стенд не подаются.
+Быстрая модель отвечает нестабильно (на коротких запросах Qwen3.8 Flash иногда не замечает
+просьбу за системными напоминаниями), поэтому вывод о поведении — по нескольким попыткам.
+
 ## Настоящая агентная оценка
 
 Следуй `.agents/skills/skill-evaluation/references/trace-review.md`: проверь установленный

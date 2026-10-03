@@ -176,7 +176,7 @@ def make_plan(case_ids: list[str], root: Path = ROOT) -> dict[str, Any]:
         case = {"id": case_id, **CASES[case_id]}
         case["agent"] = {
             "status": "not_run",
-            "reason": "Harness не исполняет Qwen; проверенный синтетический runtime-стенд отсутствует.",
+            "reason": "Harness не исполняет Qwen; агентные сценарии — tests/qwen_stand.py.",
             "rubric": None,
             "trace": None,
         }
