@@ -74,3 +74,15 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 | `skill-memory.md` | база знаний, сигнатура, модули, обратная связь, история | `kb.py`, `modules.py`, `feedback.py`, `history.py`, `alla_core/knowledge/` |
 | `skill-proposals.md` | предложения правок, `apply`/`revert`, состояние применения | `proposals.py` |
 | `core.md` | ядро: сбор данных, отбор логов, кластеризация, клиент TestOps, настройки `ALLURE_*` | `alla_core/`, `pipeline.py` |
+
+## Инструменты Claude Code
+
+- Навигация по Python — LSP (pyright): определения и ссылки до переименования или смены
+  сигнатуры.
+- Документация httpx, pydantic, pytest, Qwen Code — Context7, затем локальная `--help`.
+- Инструкции скилла (`SKILL.md`, `references/`, тексты заданий): формулировки — скилл
+  `skill-creator`; после существенной правки — агент `qwen-executor-review` (читает скилл
+  с чистым контекстом, без этого файла); поведение модели — скилл `skill-evaluation`.
+- Хуки в `.claude/settings.local.json`: ruff после правки `.py`; тесты справочников и
+  заданий после правки `SKILL.md`, `references/`, `alla_skill_lib/`; перед `git commit` —
+  ruff, pytest и mypy не больше `.claude/hooks/mypy_baseline` ошибок (уменьшать при чистке).

@@ -19,4 +19,6 @@ htmlcov/
 *.log
 .claude/*
 !.claude/rules/
+!.claude/agents/
+!.claude/skills/
 .DS_Store
