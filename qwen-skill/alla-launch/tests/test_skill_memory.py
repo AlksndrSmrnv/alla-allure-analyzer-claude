@@ -435,16 +435,30 @@ def test_apply_syncs_project_file_and_keeps_its_mode(
 ) -> None:
     target = java_project / "src" / "OrderTest.java"
     target.chmod(0o640)
-    synced: list[int] = []
-    real_fsync = os.fsync
-    monkeypatch.setattr(os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd))[1])
+    # События по inode: fsync временного файла должен случиться до его os.replace на исходник.
+    events: list[tuple[str, int, Path | None]] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd: int) -> None:
+        events.append(("fsync", os.fstat(fd).st_ino, None))
+        real_fsync(fd)
+
+    def replace(src, dst) -> None:
+        events.append(("replace", os.stat(src).st_ino, Path(dst).resolve()))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
     proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
 
     _shown, result = _apply(proposal, java_project, _files(tmp_path))
 
     assert result.status == "applied" and result.changed
-    # исходник, NN.orig и NN.applied.json (и NN.patch при показе) — через fsync
-    assert len(synced) >= 3
+    onto_target = [i for i, (kind, _, dst) in enumerate(events) if kind == "replace" and dst == target.resolve()]
+    assert len(onto_target) == 1
+    index = onto_target[0]
+    inode = events[index][1]
+    assert ("fsync", inode, None) in events[:index]  # исходник синхронизирован до замены
     assert stat.S_IMODE(target.stat().st_mode) == 0o640
     assert not list(target.parent.glob("*.tmp"))
 
