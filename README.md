@@ -65,6 +65,12 @@ python3.11 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
+Для разработки инструкций и сравнения версий скилла есть
+[harness качества](docs/skill-quality.md): синтетические проверки Python-протокола,
+отпечатки версии и отдельный учёт сценариев Qwen Code.
+Настройка контекста и выбор скиллов/плагинов описаны в
+[harness-context.md](docs/harness-context.md).
+
 ## История
 
 Раньше в репозитории был ещё серверный инструмент `alla` (CLI, FastAPI, MCP,

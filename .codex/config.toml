@@ -1,0 +1,10 @@
+# Project defaults for developing alla-launch. Model selection is inherited.
+model_reasoning_effort = "ultra"
+
+[agents]
+enabled = true
+default_subagent_reasoning_effort = "ultra"
+max_concurrent_threads_per_session = 3
+
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"
