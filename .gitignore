@@ -17,5 +17,6 @@ env/
 htmlcov/
 .coverage
 *.log
-.claude/
+.claude/*
+!.claude/rules/
 .DS_Store

@@ -1,0 +1,108 @@
+---
+paths:
+  - "qwen-skill/alla-launch/scripts/alla_core/**"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/pipeline.py"
+  - "qwen-skill/alla-launch/tests/test_core_*.py"
+  - "qwen-skill/alla-launch/tests/test_clustering_optimizations.py"
+  - "qwen-skill/alla-launch/tests/test_log_selection.py"
+---
+
+# Ядро `alla_core`
+
+`scripts/alla_core/` — доступ к TestOps и анализ падений, на нём стоит `alla_skill_lib`.
+
+- Состав: клиент TestOps, триаж, логи, кластеризация, сборка блока «Данные» для заданий
+  (`services/prompt_builder_service.py`), стабильная сигнатура
+  (`knowledge/feedback_signature.py`). Правил и «Задания» для модели в ядре нет — они в
+  `alla_skill_lib` (см. `skill-analysis.md`).
+- Происхождение: вендорено из серверного `src/alla` (коммит `e100909`), теперь обычный
+  рукописный код: генератора, пометок GENERATED и drift-теста нет, правится напрямую, с
+  тестами.
+- Унаследованное от сервера, что скиллу может быть не нужно (поля под PostgreSQL, модели
+  LLM), удалять осознанно: сверяться с импортами `alla_skill_lib` и тестами.
+
+## Сбор данных
+
+`TriageService` → `LogExtractionService` → `ClusteringService`, склеены в
+`alla_skill_lib/pipeline.py`.
+
+- `hidden` results исключаются из статистики и анализа как retry/non-final.
+- muted failed/broken считаются отдельно и в активные кластеры не попадают.
+- Ошибка берётся из execution tree, затем из `statusDetails`, затем fallback
+  `GET /api/testresult/{id}`.
+- Логи — из processable attachments: text, JSON, XML, NDJSON и unknown text-like. Binary
+  пропускаются.
+- `utils/log_focus.py` отбирает блоки лога по связи с ошибкой — и при выгрузке, и под лимит
+  задания (общий для ядра и скилла).
+
+### Отбор логов (`LogExtractionService`)
+
+- До первого переполнения сохраняются буквальные секции; затем `StreamingLogSelector`
+  переоценивает сохранённые и текущую и оставляет ограниченный набор фрагментов. Все
+  следующие вложения обрабатываются; память `O(лимит + текущее вложение)`, исходники больших
+  кандидатов не удерживаются.
+- Header каждого фрагмента точный, включая HTTP: headerless fragment ядро не выдаёт. Итоговый
+  лимит включает headers, пропуски и единственный footer.
+- Отбор на лету детерминирован, но не обязан совпадать с offline greedy или заполнять весь
+  бюджет. При нормальном лимите (от 1000) контекст значимых строк сохраняется; короткая
+  склейка побайтово прежняя.
+- `log_selection_error` замораживает сообщение, первые 20 строк трейса и известную до обхода
+  вложений корреляцию; задание использует контекст фактического источника лога.
+- `log_selection_truncated` разрешает очистку служебных строк для сигнатуры и кластеризации.
+  Задание закрепляет только последний footer и только при этом флаге; отдельные пропуски
+  объединяет с новыми. Marker-like строки приложения при `false` — обычные данные.
+- Tiny fallback задания сохраняет полезный текст, а не одни пометки (headerless допустим
+  только здесь, вне расчёта сигнатуры).
+- Связь с сигнатурой и `run.json` — в `skill-memory.md`.
+
+## Кластеризация (design notes)
+
+1. Message-first: низкая message similarity обычно блокирует merge, но log override может
+   объединить падения с одинаковой явной ошибкой в логе.
+2. **Step path — hard gate**: если у обоих падений есть `failed_step_path` и step similarity
+   ниже `clustering_step_strict_threshold`, пара не сливается. Gate применяется до
+   message/log, log override его не обходит.
+3. При `logs_clustering_weight=0` log matrix не создаётся и лог не уменьшает мягкий штраф за
+   разные шаги; остальные формулы и перераспределение весов сохраняются.
+4. Итоговые distances пишутся сразу в condensed float64 — без `final_sim`, `dist_matrix` и
+   второго цикла; канальные dense-матрицы остаются. Полностью непустые документы возвращают
+   cosine subset без копии; диагональ принудительно единичная даже у строки без токенов.
+   Статистика — только DEBUG.
+
+## Клиент TestOps
+
+- API-модели принимают неизвестные поля (`extra="allow"`) и оба стиля имён
+  (`populate_by_name=True`): payloads TestOps плавают.
+- `_request()` должен корректно обрабатывать пустые тела PATCH/DELETE; `_request_raw()` — для
+  бинарных attachments.
+
+## Настройки (`config.py`)
+
+`Settings` читает `<skill>/.env` и переменные окружения `ALLURE_*` (окружение важнее файла),
+чужие ключи игнорирует. Границы значений — `BOUNDS` (ge/le).
+
+| Переменная | Обязательная | По умолчанию | Описание |
+|---|:---:|---|---|
+| `ALLURE_ENDPOINT` | да | — | URL Allure TestOps без `/api` |
+| `ALLURE_TOKEN` | да | `""` | API token |
+| `ALLURE_REQUEST_TIMEOUT` | нет | `30` | HTTP timeout к TestOps |
+| `ALLURE_PAGE_SIZE` | нет | `100` | Размер страницы TestOps API |
+| `ALLURE_MAX_PAGES` | нет | `50` | Защита пагинации |
+| `ALLURE_DETAIL_CONCURRENCY` | нет | `10` | Параллелизм details/comments |
+| `ALLURE_SSL_VERIFY` | нет | `true` | Проверка TLS |
+| `ALLURE_LOGS_CONCURRENCY` | нет | `5` | Параллелизм скачивания attachments |
+| `ALLURE_LOGS_MAX_ATTACHMENT_BYTES` | нет | `10485760` | Максимум байт из одного вложения (stream-чтение с обрезкой) |
+| `ALLURE_LOGS_MAX_SNIPPET_CHARS` | нет | `65536` | Максимум символов финального `log_snippet` одного теста |
+| `ALLURE_CLUSTERING_THRESHOLD` | нет | `0.60` | Порог similarity; ниже — агрессивнее объединение |
+| `ALLURE_CLUSTERING_STEP_STRICT_THRESHOLD` | нет | `0.95` | Hard gate по step path (см. выше); `0.0` отключает, `1.0` режет при любом отличии |
+| `ALLURE_LOGS_CLUSTERING_WEIGHT` | нет | `0.15` | Вес log channel в кластеризации |
+| `ALLURE_LLM_PROMPT_MESSAGE_MAX_CHARS` | нет | `2000` | Лимит message в задании |
+| `ALLURE_LLM_PROMPT_TRACE_MAX_CHARS` | нет | `400` | Лимит trace в задании |
+| `ALLURE_LLM_PROMPT_LOG_MAX_CHARS` | нет | `8000` | Лимит log в задании |
+
+## Тесты ядра
+
+`test_core_*.py` (кластеризация и step-path gate, извлечение логов и вложений,
+декодирование, триаж, клиент TestOps, auth, `log_utils`) перенесены из серверных тестов
+`e100909` с импортами `alla_core`. libmagic в окружении нет: ветку с `magic` проверяют через
+фейковый модуль (`_fake_magic`).

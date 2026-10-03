@@ -1,0 +1,83 @@
+---
+paths:
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/kb.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/modules.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/feedback.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/history.py"
+  - "qwen-skill/alla-launch/scripts/alla_core/knowledge/**"
+  - "qwen-skill/alla-launch/references/feedback.md"
+  - "qwen-skill/alla-launch/tests/test_skill_memory.py"
+  - "qwen-skill/alla-launch/tests/test_skill_modules.py"
+  - "qwen-skill/alla-launch/tests/test_history_versions.py"
+  - "qwen-skill/alla-launch/tests/test_log_signature_persistence.py"
+---
+
+# Память скилла: база знаний, модули, обратная связь, история
+
+База знаний проектная: `alla-kb/` в репозитории автотестов, наполняется обратной связью
+пользователя.
+
+## База знаний (`kb`)
+
+- Где лежит: `alla-kb/<id>.json` в корне git; в многомодульном Java/Kotlin-проекте
+  (Gradle/Maven) — `<модуль>/alla-kb/` (`kb_dir_for`, см. «Модули»).
+- Узнавание: точно по сигнатуре `v<версия>:<hash>` (`confirmed_signatures` /
+  `rejected_signatures`) или по короткому признаку `error_example` — все его строки есть в
+  данных кластера, без учёта чисел/ID/времени/e-mail; хранится нормализованным.
+- Свои поля записи (`jira`, `owner`…) сохраняются при перезаписи. Запись атомарная, LF.
+- Сканер секретов отклоняет пароли, токены, ключи AWS/GitHub, пароль в URL, PEM.
+
+### Сигнатура
+
+- `alla_core/knowledge/feedback_signature.py`, версия `v5`. Golden-тест фиксирует хэш: смена
+  версии должна быть осознанной. Версия не повышается без причины, миграции всей базы нет.
+- Считается в `prepare` на enriched моделях и сохраняется в `entry.signature`;
+  `remember`/`reject` используют её.
+- Реальный `run.json` исключает `log_snippet`, `status_trace`, `execution_steps` и transient
+  `log_selection_*`. `load_models` восстанавливает сокращённые данные отчёта; пересчёт
+  сигнатуры из них не является контрактом. Полный model roundtrip с логом сохраняет
+  сигнатуру необрезанного лога.
+- Новый отбор ранее обрезавшихся логов может изменить точные `confirmed_signatures`/повторы;
+  узнавание по `error_example` остаётся.
+
+## Модули (`modules`)
+
+Задача: базы разных модулей не должны пересекаться.
+
+- Модуль теста — ближайшая папка выше его исходника с `build.gradle` / `build.gradle.kts` /
+  `pom.xml`. Исходник ищется по `full_name` через `ProjectIndex`, не по кадрам стека: стек
+  ведёт в общие модули. Корень проекта и не-JVM файлы — модуль `""` (общая база в корне git,
+  как в одномодульном проекте).
+- Разделение включается, только если JVM-исходники (не `.kts`, не `buildSrc`/`build-logic`)
+  лежат минимум в двух модулях (`ModuleResolver.is_multimodule`). Один проект во вложенной
+  папке (`autotests/pom.xml`) остаётся одномодульным — иначе его прежняя база в корне и
+  история повторов потерялись бы.
+- Совпадение `full_name` с исходником должно быть однозначным (`ProjectIndex.best_matches`):
+  одинаковый класс в двух модулях модуль не определяет, а выбор «первого найденного»
+  отправил бы `remember` в чужую базу.
+- Модуль кластера — самый частый среди тестов с однозначным исходником (до 50; ничья — у
+  представителя). Кластер без такого берёт модуль прогона (`resolve_run_modules`: все
+  определившиеся кластеры из одного модуля; для неоднозначного — только если он среди
+  кандидатов), иначе `""`.
+- `cli._write_run` пишет в запись кластера `module` и `kb_dir`. Подбор записей,
+  `remember`/`reject` (`feedback.project_kb(run, entry)`) и повторы работают только с базой
+  своего модуля. Разбор без `kb_dir` в записи (старая версия) использует `run["kb_dir"]`.
+
+## Обратная связь (`feedback`)
+
+`remember`/`reject` берут данные из `feedback/NN.md` (или подтверждённого разбора, см.
+`--from-analysis` в `skill-protocol.md`); признак проверяется по `evidence/NN.txt`, секреты не
+пишутся.
+
+## История (`history`)
+
+- `alla-reports/history.jsonl` (локально). Повторы — по точной сигнатуре или записи базы
+  знаний из другого `launch_id` **того же модуля** (`module` в записи истории; нет поля —
+  корень).
+- В задание идёт только число повторов и дата; прошлые выводы модели не подаются — они
+  анкерят её на непроверенной догадке.
+- История только дописывается: каждый `done` сравнивает полные записи и пишет лишь
+  изменённые/отсутствующие. `load_history` оставляет последнюю физическую строку
+  `(run, file_id)` до фильтрации повторов. Это обновляет `kb_entry` независимо от хэша
+  сводки; `history_written` старых разборов больше не используется.
+- Даты исходные; число повторов считается по разным `launch_id`.
