@@ -257,7 +257,7 @@ launch ID или ссылке на запуск он получает резул
     предлагается только для `not_applied`, включая обычные исходники; файл не в
     UTF-8 скилл не трогает.
 - Тесты скилла — `qwen-skill/alla-launch/tests/` (единственный каталог в `testpaths`
-  корневого `pyproject.toml`, который содержит только конфиг ruff/mypy/pytest):
+  корневого `pyproject.toml`, который содержит только конфиг ruff/mypy/pyright/pytest):
   `test_skill_*.py` — логика скилла на фейковом TestOps, `test_core_*.py` — ядро
   `alla_core` (кластеризация и step-path gate, извлечение логов и вложений,
   декодирование, триаж, клиент TestOps, auth, `log_utils`; перенесены из серверных

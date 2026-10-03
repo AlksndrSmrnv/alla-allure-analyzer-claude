@@ -9,5 +9,17 @@ line-length = 100
 python_version = "3.11"
 strict = true
 
+# scripts/ попадает в sys.path только во время работы (alla_skill.py, skill_fixtures),
+# поэтому pyright указываются пути к пакетам скилла и к фикстурам тестов. Pyright нужен
+# для навигации по коду; типы проверяет mypy, а режим basic даёт ложные ошибки на
+# алиасах pydantic (contentType) и argparse.
+[tool.pyright]
+include = ["qwen-skill/alla-launch"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.11"
+typeCheckingMode = "off"
+extraPaths = ["qwen-skill/alla-launch/scripts", "qwen-skill/alla-launch/tests"]
+
 [tool.pytest.ini_options]
 testpaths = ["qwen-skill/alla-launch/tests"]
