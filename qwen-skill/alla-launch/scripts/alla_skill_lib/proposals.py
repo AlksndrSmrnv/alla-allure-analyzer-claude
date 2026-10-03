@@ -25,15 +25,23 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from alla_skill_lib import workspace as ws
-from alla_skill_lib.code_hints import SOURCE_EXTENSIONS
+from alla_skill_lib.code_hints import SKIP_DIRS, SOURCE_EXTENSIONS
 
 LINE_WINDOW = 20
 CONTEXT_LINES = 5
-# Не код автотестов: служебные папки скилла, зависимости и результаты сборки
-# отчётов. Всё с точки в имени (.git, .github, .env) закрыто отдельно.
-DENIED_DIRS = frozenset({
-    "alla-reports", "alla-kb", "node_modules", "__pycache__", "allure-results", "allure-report",
+# Индекс исходников и правки пропускают одни и те же артефакты. Дополнительные
+# запреты относятся только к записи: база знаний и исходники логики сборки.
+DENIED_DIRS = SKIP_DIRS | frozenset({"alla-kb", "buildSrc", "build-logic"})
+_DENIED_DIR_NAMES = frozenset(name.casefold() for name in DENIED_DIRS)
+_DENIED_FILE_NAMES = frozenset({
+    "setup.py", "noxfile.py", "conanfile.py", "jenkinsfile.groovy",
+    "gulpfile.js", "gulpfile.mjs", "gulpfile.ts", "gruntfile.js",
 })
+_CONFIG_FILE_RE = re.compile(
+    r"(?:(?:playwright|cypress|jest|vitest|vite|webpack|rollup|babel|eslint|postcss|"
+    r"tailwind|next|nuxt|svelte)\.config|(?:wdio|karma)\.conf)"
+    r"(?:\.[\w-]+)*\.(?:js|mjs|ts|jsx|tsx)$"
+)
 
 # Оформление между названием и «:» (``**БЫЛО**:``, «`БЫЛО`:») заголовок не ломает.
 _HEADER_RE = re.compile(r"^(решение|файл|было|стало|почему)[*_`]*\s*:\s*(.*)$", re.IGNORECASE)
@@ -258,6 +266,9 @@ def validate_proposal(proposal: Proposal, project_root: Path) -> list[str]:
     errors: list[str] = []
     target = _resolve(proposal, project_root, errors)
     if target is None:
+        return errors
+    errors.extend(_eligibility_errors(target, project_root.resolve(), proposal.file))
+    if errors:
         return errors
     if not proposal.before:
         errors.append("нет «БЫЛО:» — скопируй строки из файла дословно")
@@ -491,26 +502,55 @@ def _resolve(proposal: Proposal, project_root: Path, errors: list[str]) -> Path 
 
 
 def _resolve_file(file: str | None, project_root: Path, errors: list[str]) -> Path | None:
+    """Существующий файл внутри проекта, без политики допустимости новых правок.
+
+    Старые записи применения могут указывать на теперь запрещённые файлы:
+    их состояние и защищённый откат остаются доступны.
+    """
     if not file:
         errors.append("нет «ФАЙЛ:» — укажи путь от корня проекта и строку: path/Test.java:42")
         return None
     root = project_root.resolve()
-    candidate = Path(file)
-    target = (candidate if candidate.is_absolute() else root / candidate).resolve()
-    if root not in target.parents or not target.is_file():
+    try:
+        candidate = Path(file)
+        target = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        exists_inside = root in target.parents and target.is_file()
+    except (OSError, ValueError):
+        exists_inside = False
+    if not exists_inside:
         errors.append(f"файл «{file}» не найден в проекте {root}")
         return None
+    return target
+
+
+def _eligibility_errors(target: Path, root: Path, file: str | None) -> list[str]:
     parts = target.relative_to(root).parts
+    name = target.name.casefold()
     if (
         target.suffix.lower() not in SOURCE_EXTENSIONS
-        or any(part.startswith(".") or part in DENIED_DIRS for part in parts)
+        or any(part.startswith(".") or part.casefold() in _DENIED_DIR_NAMES for part in parts)
+        or name.endswith(".gradle.kts")
+        or name in _DENIED_FILE_NAMES
+        or _CONFIG_FILE_RE.fullmatch(name)
     ):
-        errors.append(
+        return [
             f"файл «{file}» не относится к коду автотестов (правятся только исходники "
-            "тестов, не настройки, сборку и CI)"
-        )
-        return None
-    return target
+            "тестов, не настройки, сборку и CI). Запиши «РЕШЕНИЕ: не трогать», "
+            "а необходимые изменения и места перечисли в «ПОЧЕМУ:»"
+        ]
+    return []
+
+
+def proposal_eligibility_errors(proposal: Proposal, project_root: Path) -> list[str]:
+    """Только ошибки политики записи; ошибки границ проверяет validate_proposal.
+
+    При разборе старого отчёта эти ошибки можно обойти исключительно для
+    совпадающей записи уже применённой правки, а не по наличию СТАЛО в файле.
+    """
+    if not proposal.is_fix:
+        return []
+    target = _resolve(proposal, project_root, [])
+    return _eligibility_errors(target, project_root.resolve(), proposal.file) if target else []
 
 
 # ---------------------------------------------------------------------------
@@ -659,6 +699,18 @@ def revert_proposal(project_root: Path, files: ProposalFiles) -> ApplyResult:
     ws.write_atomic_bytes(target, original, mode_from=target)
     files.record.unlink(missing_ok=True)
     return ApplyResult("reverted", f"Файл {data['file']} возвращён к версии до правки.")
+
+
+def recorded_applied_state(
+    proposal: Proposal,
+    project_root: Path,
+    files: ProposalFiles,
+) -> str | None:
+    """Состояние только по совпадающей записи apply; без поиска СТАЛО в файле."""
+    target = _resolve(proposal, project_root, [])
+    if target is None:
+        return None
+    return _record_state(proposal, target, files)
 
 
 def applied_state(

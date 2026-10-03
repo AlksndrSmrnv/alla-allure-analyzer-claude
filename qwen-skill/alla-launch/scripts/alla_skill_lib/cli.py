@@ -92,6 +92,8 @@ from alla_skill_lib.proposals import (
     apply_proposal,
     applied_state,
     parse_proposal,
+    proposal_eligibility_errors,
+    recorded_applied_state,
     revert_proposal,
     validate_proposal,
 )
@@ -764,8 +766,8 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
         run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed
     )
     ws.write_text(paths.report, full)
-    # Правку с неизвестным состоянием apply не применит — модели её показывать не нужно.
-    offered = {file_id: p for file_id, p in fixes.items() if states[file_id] != "unknown"}
+    # Уже применённую или неоднозначную правку повторно не предлагаем.
+    offered = {file_id: p for file_id, p in fixes.items() if states[file_id] == "not_applied"}
     return "done", _done_body(console, paths, offered, feedback=True)
 
 
@@ -860,9 +862,17 @@ def _proposal_step(
     errors = validate_proposal(proposal, project_root)
     # Применённая (или применённая и потом изменённая) правка перепроверки БЫЛО не проходит:
     # файл уже другой, и модель не должна переписывать из-за этого предложение.
-    if not errors or applied_state(
-        proposal, project_root, _proposal_files(paths, file_id)
-    ) in ("applied", "unknown"):
+    if not errors:
+        return proposal
+    files = _proposal_files(paths, file_id)
+    # Новые ограничения не мешают старой записи apply, но найденное СТАЛО
+    # без совпадающей записи не разрешает правку сборки или конфигурации.
+    previous_state = (
+        recorded_applied_state(proposal, project_root, files)
+        if proposal_eligibility_errors(proposal, project_root)
+        else applied_state(proposal, project_root, files)
+    )
+    if previous_state in ("applied", "unknown"):
         return proposal
     attempt, unchanged = _register_invalid(state, f"proposal-{file_id}", text, paths)
     if attempt < MAX_FIX_ATTEMPTS:
