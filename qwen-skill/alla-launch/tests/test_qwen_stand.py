@@ -358,3 +358,16 @@ def test_userprofile_is_checked_literally_too(tmp_path: Path) -> None:
     (root / "p").symlink_to(ctx.home, target_is_directory=True)  # p/p → HOME
     result = CHECKS["allowed_reads"](ctx)
     assert result["status"] == "fail" and "вне проекта" in result["evidence"]
+
+
+
+def test_cd_is_logical_like_bash(tmp_path: Path) -> None:
+    # bash: cd link/../.. сокращает «..» по тексту — уходит в родителя проекта, хотя
+    # физически link/.. — это project/src (ревью).
+    root = tmp_path / "p"
+    (root / "src/deep").mkdir(parents=True)
+    (root / "link").symlink_to(root / "src/deep", target_is_directory=True)
+    ctx = context(tmp_path, events((
+        "run_shell_command",
+        {"command": f"cd link/../.. && python3 {SKILL} next"}, "")))
+    assert CHECKS["shell_only_skill_commands"](ctx)["status"] == "fail"

@@ -357,6 +357,9 @@ class Context:
     def shell_target(self, base: Path, raw: str) -> Path:
         return shell_target(base, raw, self.qwen_home)
 
+    def cd_target(self, base: Path, raw: str) -> Path:
+        return cd_target(base, raw, self.qwen_home)
+
     def run_dirs(self) -> list[Path]:
         reports = self.project / "alla-reports"
         return sorted(p for p in reports.glob("*") if (p / "run.json").is_file())
@@ -459,6 +462,15 @@ def tool_targets(base: Path, raw: str, home: Path) -> list[Path]:
         lexical = value if value.startswith("/") else node_join(str(base), value)
         targets.append(canonical(Path(os.path.realpath(lexical))))
     return targets
+
+
+def cd_target(base: Path, raw: str, home: Path) -> Path:
+    """Каталог после ``cd raw`` в bash: cd логический (-L) — «..» сокращается по тексту пути
+    до перехода по симлинкам, и ``cd link/../..`` уходит от родителя ``link``, а не цели."""
+    if raw == "~" or raw.startswith("~/"):
+        raw = str(home) + raw[1:]
+    logical = raw if raw.startswith("/") else f"{base}/{raw}"
+    return canonical(Path(os.path.realpath(posixpath.normpath(logical))))
 
 
 def shell_target(base: Path, raw: str, home: Path) -> Path:
@@ -637,7 +649,7 @@ def skill_command_problem(call: ToolCall, ctx: Context) -> str | None:
         return "команду не разобрать"
     base = ctx.shell_target(project, str(call.input.get("directory") or project))
     if tokens[:1] == ["cd"] and tokens[2:3] == ["&&"] and len(tokens) > 3:
-        if ctx.shell_target(base, tokens[1]) != project:
+        if ctx.cd_target(base, tokens[1]) != project:
             return "cd не в корень проекта"
         base, tokens = project, tokens[3:]
     if any(set(token) <= SHELL_OPERATORS for token in tokens):
