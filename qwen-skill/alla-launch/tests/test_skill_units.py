@@ -17,7 +17,7 @@ from alla_core.exceptions import ConfigurationError
 from alla_skill_lib.analysis_format import parse_analysis, parse_summary, validate_analysis
 from alla_skill_lib.cluster_task import project_frames
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
-from alla_skill_lib.log_focus import FOCUS_NOTE, focus_log
+from alla_core.utils.log_focus import FOCUS_NOTE, focus_log
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 

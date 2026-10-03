@@ -137,6 +137,11 @@ class FailedTestSummary(BaseModel):
     duration_ms: int | None = None
     test_start_ms: int | None = None
     log_snippet: str | None = None
+    # Enriched models используются в prepare до сериализации; feedback берёт
+    # сохранённую entry.signature, а run.json не хранит контекст отбора лога.
+    # Full model roundtrip сохраняет сигнатуру только для необрезанного лога.
+    log_selection_error: str | None = Field(default=None, exclude=True)
+    log_selection_truncated: bool = Field(default=False, exclude=True)
     correlation_hint: str | None = None
     failed_step_path: str | None = None
 

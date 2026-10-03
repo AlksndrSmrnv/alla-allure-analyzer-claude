@@ -691,14 +691,13 @@ class TestLogExtractionServiceIntegration:
             await service.enrich_with_logs([summary])
 
         assert summary.log_snippet is not None
-        # Полная склейка ушла бы в десятки тысяч символов; обрезка должна
-        # удержать тело в пределах max_chars + длина маркера.
+        # Общий бюджет включает точный заголовок, фрагмент и служебные пометки.
         assert "обрезано" in summary.log_snippet
-        # Сам маркер фиксированной длины; основное тело должно начинаться с
-        # 500 символов оригинального текста.
-        assert summary.log_snippet.startswith("--- [")
-        body, _, marker = summary.log_snippet.partition("\n\n[... обрезано")
-        assert len(body) == 500
+        assert summary.log_snippet.startswith("--- [файл: big.log] ---\n")
+        assert "BoomException" in summary.log_snippet
+        assert len(summary.log_snippet) <= 500
+        assert summary.log_selection_truncated is True
+        _, _, marker = summary.log_snippet.partition("\n\n[... обрезано")
         assert marker.endswith("...]")
 
 

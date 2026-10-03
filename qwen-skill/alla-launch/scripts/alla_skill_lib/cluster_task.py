@@ -18,11 +18,11 @@ from alla_core.config import Settings
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_core.services.prompt_builder_service import build_cluster_analysis_prompt
+from alla_core.utils.log_focus import focus_log, selection_error_text
 
 from alla_skill_lib.agent_rules import ANALYSIS_FORMAT_REF, EXECUTOR_RULES, reference_line
 from alla_skill_lib.code_hints import CodeHint
 from alla_skill_lib.history import render_recurrence
-from alla_skill_lib.log_focus import focus_log
 
 MAX_LISTED_TESTS = 20
 MAX_FRAME_LINES = 40
@@ -73,7 +73,6 @@ _LOW_EVIDENCE_NOTE = (
     "данных."
 )
 LOW_EVIDENCE_CHARS = 500
-MAX_ERROR_TRACE_LINES = 20
 _FRAME_RE = re.compile(r"^\s*(at\s|File\s\")")
 _CAUSED_BY_RE = re.compile(r"^\s*Caused by:")
 _JAVA_FRAMEWORK_PREFIXES = (
@@ -99,20 +98,26 @@ def select_log_and_trace(
     tests_by_id: dict[int, FailedTestSummary],
 ) -> tuple[str | None, str | None]:
     """Лог и полный трейс для промпта: данные кластера, дополненные из TestOps."""
-    log_snippet: str | None = None
-    full_trace: str | None = None
+    source = select_log_source(cluster, tests_by_id)
+    representative = tests_by_id.get(cluster.representative_test_id or -1)
+    return (source.log_snippet if source else None,
+            representative.status_trace if representative else None)
+
+
+def select_log_source(
+    cluster: FailureCluster,
+    tests_by_id: dict[int, FailedTestSummary],
+) -> FailedTestSummary | None:
+    """Фактический источник лога, включая его transient контекст отбора."""
     representative = tests_by_id.get(cluster.representative_test_id or -1)
     if representative is not None:
         if representative.log_snippet and representative.log_snippet.strip():
-            log_snippet = representative.log_snippet
-        full_trace = representative.status_trace
-    if not log_snippet:
-        for test_id in cluster.member_test_ids:
-            member = tests_by_id.get(test_id)
-            if member and member.log_snippet and member.log_snippet.strip():
-                log_snippet = member.log_snippet
-                break
-    return log_snippet, full_trace
+            return representative
+    for test_id in cluster.member_test_ids:
+        member = tests_by_id.get(test_id)
+        if member and member.log_snippet and member.log_snippet.strip():
+            return member
+    return None
 
 
 def has_evidence(cluster: FailureCluster, log_snippet: str | None) -> bool:
@@ -180,10 +185,14 @@ def build_cluster_task(
     по началу.
     """
     if log_snippet:
+        source = select_log_source(cluster, tests_by_id)
+        source_matches = source is not None and source.log_snippet == log_snippet
         log_snippet = focus_log(
             log_snippet,
-            error_text_for(cluster, full_trace),
+            (source.log_selection_error if source_matches and source.log_selection_error is not None
+             else error_text_for(cluster, full_trace)),
             settings.llm_prompt_log_max_chars,
+            log_selection_truncated=bool(source_matches and source.log_selection_truncated),
         )
     prompt = build_cluster_analysis_prompt(
         cluster,
@@ -324,12 +333,7 @@ def render_kb_section(matches: list[dict[str, Any]]) -> list[str]:
 def error_text_for(cluster: FailureCluster, full_trace: str | None) -> str:
     """Текст ошибки, с которым сопоставляются блоки лога при отборе."""
     trace = full_trace or cluster.example_trace_snippet or ""
-    parts = [
-        cluster.example_message or "",
-        "\n".join(trace.splitlines()[:MAX_ERROR_TRACE_LINES]),
-        cluster.example_correlation or "",
-    ]
-    return "\n".join(part for part in parts if part)
+    return selection_error_text(cluster.example_message, trace, cluster.example_correlation)
 
 
 def _render_members(cluster: FailureCluster, tests_by_id: dict[int, FailedTestSummary]) -> str:

@@ -10,6 +10,7 @@ from alla_core.knowledge.feedback_models import (
 )
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
+from alla_core.utils.log_focus import strip_log_selection_metadata
 from alla_core.utils.log_utils import parse_log_sections
 from alla_core.utils.step_paths import normalize_step_path
 from alla_core.utils.text_normalization import normalize_text, normalize_text_for_llm
@@ -175,6 +176,13 @@ class _AnchorLine:
     include_numeric_fingerprint: bool = False
 
 
+def _log_evidence(summary: FailedTestSummary) -> str:
+    snippet = summary.log_snippet or ""
+    if summary.log_selection_truncated:
+        snippet = strip_log_selection_metadata(snippet)
+    return snippet.strip()
+
+
 def get_cluster_feedback_sources(
     cluster: FailureCluster,
     test_by_id: dict[int, FailedTestSummary],
@@ -199,12 +207,14 @@ def get_cluster_feedback_sources(
 
     log_snippet = ""
     if representative and representative.log_snippet:
-        log_snippet = representative.log_snippet.strip()
+        log_snippet = _log_evidence(representative)
     if not log_snippet:
         for tid in cluster.member_test_ids:
             member = test_by_id.get(tid)
             if member and member.log_snippet and member.log_snippet.strip():
-                log_snippet = member.log_snippet.strip()
+                log_snippet = _log_evidence(member)
+                if not log_snippet:
+                    continue
                 break
 
     return message, trace, log_snippet
@@ -229,7 +239,9 @@ def _collect_cluster_log_snippets(
         member = test_by_id.get(test_id)
         if not member or not member.log_snippet or not member.log_snippet.strip():
             continue
-        result.append(member.log_snippet.strip())
+        snippet = _log_evidence(member)
+        if snippet:
+            result.append(snippet)
     return result
 
 
@@ -244,7 +256,7 @@ def _get_representative_log_snippet(
     )
     if not representative or not representative.log_snippet:
         return ""
-    return representative.log_snippet.strip()
+    return _log_evidence(representative)
 
 
 def _anchor_line_sort_key(line: _AnchorLine) -> tuple[str, int, int]:
