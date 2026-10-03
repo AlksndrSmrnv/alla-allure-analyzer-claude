@@ -1,8 +1,8 @@
-"""Сервис извлечения ERROR-блоков из текстовых аттачментов.
+"""Сервис извлечения ошибок из вложений упавших тестов.
 
-Скачивает text/plain аттачменты для каждого упавшего теста, извлекает строки
-с уровнем [ERROR] и их stack trace, помечает каждый блок именем файла-источника
-и сохраняет результат в ``FailedTestSummary.log_snippet``.
+Скачивает текстовые вложения каждого упавшего теста, извлекает события-ошибки
+(:mod:`alla_core.utils.log_events`) со стеком, помечает секцию именем вложения и
+сохраняет результат в ``FailedTestSummary.log_snippet``.
 """
 
 import asyncio
@@ -24,6 +24,7 @@ from alla_core.services.attachment_handlers import (
     AttachmentHandler,
     default_handlers,
 )
+from alla_core.utils.log_events import error_events
 from alla_core.utils.log_focus import StreamingLogSelector, selection_error_text
 from alla_core.utils.log_utils import (
     extract_correlation_pairs_from_json,
@@ -47,6 +48,20 @@ _MAGIC_JSON_MIMES = frozenset({"application/json", "text/json", "application/x-n
 _MAGIC_XML_MIMES = frozenset({"application/xml", "text/xml"})
 
 
+# «[» открывает JSON-массив, только если за ней JSON-значение; «[2026-10-04 …]» и
+# «[main] …» — начало строки текстового лога.
+_JSON_ARRAY_START_RE = re.compile(
+    rb'\[\s*(?:[{\["\]]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\s*[,\]]|true\b|false\b|null\b)'
+)
+
+
+def _looks_like_json(content: bytes) -> bool:
+    stripped = content[:200].lstrip()
+    if stripped.startswith(b"{"):
+        return True
+    return bool(_JSON_ARRAY_START_RE.match(stripped))
+
+
 def _detect_content_type(content: bytes, *, fallback_mime: str = "") -> str:
     """Определить тип содержимого по байтам.
 
@@ -64,14 +79,11 @@ def _detect_content_type(content: bytes, *, fallback_mime: str = "") -> str:
         return "xml"
     if mime.startswith("text/"):
         # Дополнительная эвристика: text/plain может быть JSON-дампом
-        stripped = content[:200].lstrip()
-        if stripped.startswith(b"{") or stripped.startswith(b"["):
-            return "json"
-        return "text"
+        return "json" if _looks_like_json(content) else "text"
     if not mime:
         # Неизвестный MIME — эвристика по первым байтам
         stripped = content[:200].lstrip()
-        if stripped.startswith(b"{") or stripped.startswith(b"["):
+        if _looks_like_json(content):
             return "json"
         if stripped.startswith(b"<"):
             return "xml"
@@ -445,58 +457,14 @@ def _augment_status_message_with_details(
 # Извлечение ERROR-блоков
 # ---------------------------------------------------------------------------
 
-# Паттерн для определения начала новой лог-записи (строка с датой/временем).
-# Матчит форматы: 2026-02-09T10:23:45, 2026-02-09 10:23:45
-_LOG_LINE_START_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"
-)
-
-# Паттерн для обнаружения [ERROR] (case-insensitive) в квадратных скобках.
-_ERROR_LEVEL_RE = re.compile(r"\[error\]", re.IGNORECASE)
-
-
 def _extract_error_blocks(log_text: str) -> str:
-    """Извлечь блоки ERROR из текста лога.
+    """Тексты событий-ошибок лога через пустую строку, без пометок и свёртки.
 
-    Логика:
-    1. Найти строку, содержащую ``[ERROR]`` (case-insensitive).
-    2. Захватить эту строку и все последующие строки, которые являются
-       «продолжением» (stack trace) — т.е. **не** начинаются с timestamp
-       нового лог-сообщения.
-    3. Если следующая строка начинается с timestamp, но тоже содержит
-       ``[ERROR]``, она становится началом нового ERROR-блока.
+    Границы и уровни задаёт :mod:`alla_core.utils.log_events`. Для лога вида
+    ``<ISO-время> [ERROR] …`` результат побайтово прежний: строка ``[ERROR]`` и
+    её продолжение до следующей записи со временем.
     """
-    lines = log_text.splitlines()
-    blocks: list[str] = []
-    current_block: list[str] = []
-    in_error_block = False
-
-    for line in lines:
-        is_new_log_entry = bool(_LOG_LINE_START_RE.match(line))
-        is_error = bool(_ERROR_LEVEL_RE.search(line))
-
-        if is_error and is_new_log_entry:
-            # Новая строка [ERROR] — начало нового блока.
-            # Сохраняем предыдущий блок, если был.
-            if current_block:
-                blocks.append("\n".join(current_block))
-            current_block = [line]
-            in_error_block = True
-        elif in_error_block:
-            if is_new_log_entry and not is_error:
-                # Новая лог-запись без [ERROR] — конец текущего блока.
-                blocks.append("\n".join(current_block))
-                current_block = []
-                in_error_block = False
-            else:
-                # Продолжение (stack trace) или ещё один [ERROR] без timestamp.
-                current_block.append(line)
-
-    # Финальный блок
-    if current_block:
-        blocks.append("\n".join(current_block))
-
-    return "\n\n".join(blocks)
+    return "\n\n".join(event.text for event in error_events(log_text))
 
 
 # ---------------------------------------------------------------------------

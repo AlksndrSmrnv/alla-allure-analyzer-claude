@@ -5,7 +5,7 @@
 Регистрация — через ``DEFAULT_ATTACHMENT_HANDLERS`` или кастомный список,
 переданный в ``LogExtractionService``.
 
-Базовое поведение (text → ERROR-блоки, JSON/XML/text → HTTP-сигналы)
+Базовое поведение (text → события-ошибки, JSON/XML/text → HTTP-сигналы)
 реализовано как два встроенных handler-а, чтобы расширение новыми
 типами логов не трогало core-сервис.
 """
@@ -22,6 +22,7 @@ from typing import Any, Protocol, runtime_checkable
 import ijson
 
 from alla_core.models.testops import AttachmentMeta
+from alla_core.utils.log_events import error_events
 from alla_core.utils.log_utils import (
     extract_correlation_pairs_from_json,
     format_correlation_pairs,
@@ -216,7 +217,7 @@ class StructuredErrorLogHandler:
 
 @dataclass
 class ErrorBlocksHandler:
-    """Извлекает [ERROR] блоки из текстовых аттачментов."""
+    """Извлекает события-ошибки (:mod:`alla_core.utils.log_events`) из текстовых вложений."""
 
     name: str = "error-blocks"
     priority: int = 50
@@ -227,11 +228,7 @@ class ErrorBlocksHandler:
             return None
         if ctx.decoded_text is None:
             return None
-        # Импорт внутри метода чтобы избежать циклической зависимости
-        # (log_extraction_service импортирует attachment_handlers).
-        from alla_core.services.log_extraction_service import _extract_error_blocks
-
-        blocks = _extract_error_blocks(ctx.decoded_text)
+        blocks = "\n\n".join(event.text for event in error_events(ctx.decoded_text))
         if not blocks.strip():
             return None
         return HandlerResult(
