@@ -226,8 +226,11 @@ def run_turn(project: Path, home: Path, secret_env: dict[str, str], prompt: str,
         cmd.append("--sandbox")
     if resume:
         cmd += ["--resume", resume]
-    if api_log is not None:  # запросы к модели целиком: что модель на самом деле увидела
-        cmd += ["--openai-logging", "--openai-logging-dir", str(api_log)]
+    # Запросы к модели целиком — что модель на самом деле увидела. Пишутся в HOME/.qwen:
+    # песочница пускает запись только туда и в проект, вне их лог молча не появляется.
+    sandbox_log = home / ".qwen" / "api-log"
+    if api_log is not None:
+        cmd += ["--openai-logging", "--openai-logging-dir", str(sandbox_log)]
     env = {
         "HOME": str(home),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -243,6 +246,8 @@ def run_turn(project: Path, home: Path, secret_env: dict[str, str], prompt: str,
     with trace.open("w", encoding="utf-8") as out, stderr.open("w", encoding="utf-8") as err:
         process = subprocess.run(cmd, cwd=project, env=env, stdout=out, stderr=err,
                                  check=False, timeout=wall_seconds(max_wall) + 120)
+    if api_log is not None and sandbox_log.is_dir():
+        shutil.move(str(sandbox_log), str(api_log))
     return process.returncode
 
 
