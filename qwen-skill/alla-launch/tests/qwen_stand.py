@@ -165,7 +165,8 @@ def build_project(work: Path, endpoint: str, venv: Path | None) -> Path:
     write(java / "payments" / "PaymentTest.java", PAYMENT_TEST_JAVA)
     # .qwen/tmp пишет сам Qwen Code (аргументы slash-вызова скилла) — это не правка агента.
     write(project / ".gitignore",
-          ".qwen/skills/alla-launch/.env\n.qwen/skills/alla-launch/.venv\n.qwen/tmp/\n")
+          ".qwen/skills/alla-launch/.env\n.qwen/skills/alla-launch/.venv\n.qwen/tmp/\n"
+          f".qwen/sandbox-macos-{STAND_PROFILE}.sb\n")
     skill = project / SKILL_IN_PROJECT
     shutil.copytree(SKILL_ROOT, skill, ignore=COPY_IGNORE)
     write(skill / ".env", f"ALLURE_ENDPOINT={endpoint}\nALLURE_TOKEN={TOKEN}\n")
@@ -224,6 +225,130 @@ def build_home(work: Path, settings: dict[str, Any]) -> Path:
 
 # --- запуск -------------------------------------------------------------------------------
 
+# --- песочница чтения ----------------------------------------------------------------------
+#
+# Штатные профили Qwen ограничивают только запись: читать агент мог любой файл машины, и
+# проверки trace догоняли обходы путей по одному. Свой профиль запрещает чтение на уровне ОС;
+# проверки trace остаются вторым рубежом и нужны для служебных файлов внутри проекта.
+
+STAND_PROFILE = "alla-stand"
+QWEN_BASE_PROFILE = "sandbox-macos-restrictive-open.sb"
+SYSTEM_READ_DIRS = ("/usr", "/bin", "/sbin", "/System", "/Library", "/private/etc",
+                    "/private/var/db", "/dev")
+PYTHON_CANDIDATES = ("python3.13", "python3.12", "python3.11")
+
+
+class StandError(RuntimeError):
+    """Стенд не может гарантировать условия прогона — прогон не считается."""
+
+
+def qwen_package_dir() -> Path:
+    qwen = shutil.which("qwen")
+    if qwen is None:
+        raise StandError("qwen не найден в PATH")
+    return Path(os.path.realpath(qwen)).parent
+
+
+def runtime_reads() -> tuple[list[Path], list[Path]]:
+    """Каталоги и файлы вне проекта, без которых не запустятся node, qwen и Python скилла."""
+    dirs: set[Path] = {Path(d) for d in SYSTEM_READ_DIRS}
+    files: set[Path] = set()
+    node = shutil.which("node")
+    if node is None:
+        raise StandError("node не найден в PATH")
+    dirs.add(Path(os.path.realpath(node)).parent.parent)
+    dirs.add(qwen_package_dir())
+    files.update(Path(p) for p in (node, shutil.which("qwen")) if p)
+    for name in PYTHON_CANDIDATES:
+        found = shutil.which(name)
+        if found:
+            files.add(Path(found))
+            dirs.add(Path(os.path.realpath(found)).parent.parent)
+    dirs.update(Path(os.path.realpath(venv)) for venv in CACHE_DIR.glob("venv-*"))
+    return sorted(dirs), sorted(files)
+
+
+def write_stand_profile(project: Path) -> Path:
+    """Профиль = штатный restrictive-open установленного Qwen, где «читать всё» заменено
+    списком: системные каталоги, установка node/qwen/Python, окружение скилла и параметры
+    Qwen (проект, HOME стенда, tmp, cache). Пишется заново перед каждым ходом: агент может
+    писать в проект и испортил бы профиль к следующему ходу."""
+    base = (qwen_package_dir() / QWEN_BASE_PROFILE).read_text(encoding="utf-8")
+    if base.count("(allow file-read*)") != 1:
+        raise StandError(f"в {QWEN_BASE_PROFILE} нет одной строки (allow file-read*)")
+    dirs, files = runtime_reads()
+    rules = [f'    (subpath "{d}")' for d in dirs] + [f'    (literal "{f}")' for f in files]
+    rules += [f'    (subpath (param "{name}"))' for name in
+              ("TARGET_DIR", "TMP_DIR", "CACHE_DIR", "HOME_DIR", "QWEN_DIR", "RUNTIME_DIR")]
+    block = ("; стенд alla: stat — везде, содержимое — только из списка\n"
+             "(allow file-read-metadata)\n(allow file-read*\n    (literal \"/\")\n"
+             + "\n".join(rules) + "\n)\n"
+             "; семафоры multiprocessing: без них joblib (кластеризация) пишет предупреждение\n"
+             "; в вывод prepare и уходит в последовательный режим\n(allow ipc-posix-sem)")
+    path = project / ".qwen" / f"sandbox-macos-{STAND_PROFILE}.sb"
+    write(path, base.replace("(allow file-read*)", block))
+    return path
+
+
+def sandbox_params(project: Path, home: Path) -> list[str]:
+    """Параметры, которые Qwen передаёт sandbox-exec (start_sandbox, Qwen Code 0.24)."""
+    cache = subprocess.run(["getconf", "DARWIN_USER_CACHE_DIR"], capture_output=True,
+                           text=True, check=True).stdout.strip()
+    values = {
+        "TARGET_DIR": project, "TMP_DIR": home / "tmp", "HOME_DIR": home,
+        "CACHE_DIR": Path(cache), "QWEN_DIR": home / ".qwen", "RUNTIME_DIR": home / ".qwen",
+        **{f"INCLUDE_DIR_{i}": Path("/dev/null") for i in range(5)},
+    }
+    params = []
+    for name, value in values.items():
+        params += ["-D", f"{name}={os.path.realpath(value)}"]
+    return params
+
+
+def check_sandbox(profile: Path, project: Path, home: Path, venv: Path | None) -> None:
+    """Проверить профиль до прогона теми же параметрами, что передаст Qwen.
+
+    Внутри должны работать node, Python скилла и чтение проекта; не должны читаться файл
+    вне проекта, он же через симлинк из разрешённой папки и настоящий ~/.qwen/settings.json.
+    """
+    canary = project.parent / "canary-outside.txt"
+    canary.write_text("canary", encoding="utf-8")
+    link = home / "tmp" / "canary-link"
+    link.unlink(missing_ok=True)
+    link.symlink_to(canary)
+    real_settings = Path.home() / ".qwen" / "settings.json"
+    node = shutil.which("node") or "node"
+    base = ["sandbox-exec", *sandbox_params(project, home), "-f", str(profile)]
+    expectations: list[tuple[str, list[str], bool]] = [
+        ("node запускается", [node, "-e", "1"], True),
+        ("проект читается", ["/bin/cat", str(project / ".gitignore")], True),
+        ("файл вне проекта", ["/bin/cat", str(canary)], False),
+        ("симлинк наружу", ["/bin/cat", str(link)], False),
+        ("node читает вне проекта", [node, "-e",
+                                     "require('fs').readFileSync(process.argv[1])", str(canary)],
+         False),
+    ]
+    if real_settings.is_file():
+        expectations.append(("~/.qwen/settings.json", ["/bin/cat", str(real_settings)], False))
+    if venv is not None:
+        expectations.append(("Python скилла", [str(venv / "bin" / "python"), "-c",
+                                              "import httpx, pydantic"], True))
+        expectations.append(("семафоры для joblib", [str(venv / "bin" / "python"), "-c",
+                                                    "import multiprocessing; multiprocessing.Lock()"],
+                             True))
+    try:
+        for name, command, allowed in expectations:
+            done = subprocess.run([*base, *command], cwd=project, capture_output=True,
+                                  text=True, check=False, timeout=60)
+            if (done.returncode == 0) != allowed:
+                verdict = "запрещено" if allowed else "разрешено"
+                raise StandError(f"песочница: «{name}» {verdict} вопреки профилю "
+                                 f"({done.stderr.strip()[:200]})")
+    finally:
+        link.unlink(missing_ok=True)
+        canary.unlink(missing_ok=True)
+
+
 def run_turn(project: Path, home: Path, secret_env: dict[str, str], prompt: str, *,
              trace: Path, stderr: Path, resume: str | None, max_wall: str,
              sandbox: bool, api_log: Path | None = None) -> int:
@@ -246,15 +371,21 @@ def run_turn(project: Path, home: Path, secret_env: dict[str, str], prompt: str,
         "TERM": "dumb",
         "PYTHONDONTWRITEBYTECODE": "1",
         "QWEN_CODE_SUPPRESS_YOLO_WARNING": "1",
-        "SEATBELT_PROFILE": "restrictive-open",
+        "SEATBELT_PROFILE": STAND_PROFILE,
         **secret_env,
     }
     (home / "tmp").mkdir(exist_ok=True)
+    if sandbox:
+        profile = write_stand_profile(project)
+        venv = project / SKILL_IN_PROJECT / ".venv"
+        check_sandbox(profile, project, home, venv if venv.exists() else None)
     with trace.open("w", encoding="utf-8") as out, stderr.open("w", encoding="utf-8") as err:
         process = subprocess.run(cmd, cwd=project, env=env, stdout=out, stderr=err,
                                  check=False, timeout=wall_seconds(max_wall) + 120)
     if api_log is not None and sandbox_log.is_dir():
         shutil.move(str(sandbox_log), str(api_log))
+    if sandbox and f"profile: {STAND_PROFILE})" not in stderr.read_text(encoding="utf-8"):
+        raise StandError(f"Qwen не применил профиль {STAND_PROFILE}: см. {stderr}")
     return process.returncode
 
 

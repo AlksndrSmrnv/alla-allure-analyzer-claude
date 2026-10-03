@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -371,3 +372,33 @@ def test_cd_is_logical_like_bash(tmp_path: Path) -> None:
         "run_shell_command",
         {"command": f"cd link/../.. && python3 {SKILL} next"}, "")))
     assert CHECKS["shell_only_skill_commands"](ctx)["status"] == "fail"
+
+
+needs_seatbelt = pytest.mark.skipif(
+    shutil.which("sandbox-exec") is None or shutil.which("qwen") is None,
+    reason="нужны macOS sandbox-exec и установленный Qwen Code")
+
+
+@needs_seatbelt
+def test_stand_profile_replaces_only_the_read_everything_rule(tmp_path: Path) -> None:
+    import qwen_stand
+
+    profile = qwen_stand.write_stand_profile(tmp_path).read_text(encoding="utf-8")
+    assert "(allow file-read*)" not in profile  # «читать всё» убрано
+    assert '(subpath (param "TARGET_DIR"))' in profile and "(allow file-read-metadata)" in profile
+    assert "(allow network-outbound)" in profile  # остальное — из штатного профиля Qwen
+
+
+@needs_seatbelt
+def test_sandbox_check_stops_the_stand_when_reads_leak(tmp_path: Path) -> None:
+    import qwen_stand
+
+    project, home = tmp_path / "project", tmp_path / "home"
+    (home / "tmp").mkdir(parents=True)
+    (project / ".gitignore").parent.mkdir(parents=True)
+    (project / ".gitignore").write_text("x")
+    leaky = qwen_stand.write_stand_profile(project)
+    text = (qwen_stand.qwen_package_dir() / qwen_stand.QWEN_BASE_PROFILE).read_text()
+    leaky.write_text(text, encoding="utf-8")  # штатный профиль: читать можно всё
+    with pytest.raises(qwen_stand.StandError, match="вне проекта"):
+        qwen_stand.check_sandbox(leaky, project, home, venv=None)
