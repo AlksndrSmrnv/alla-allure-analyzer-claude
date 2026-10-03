@@ -310,6 +310,8 @@ def test_task_without_code_hints_says_code_not_found_and_forbids_searching(frame
         full_trace=None, frames=frames, hints=[], settings=Settings())
     section = task.split("--- Где искать код автотеста (пути от корня проекта) ---\n")[1]
     assert section.startswith("- не найден:") and "Сам код не ищи" in section
+    # подсказок нет и при нераспознанном или неоднозначном имени теста — исходник может быть
+    assert "не удалось сопоставить" in section and "файлов с этими тестами" not in section
     if frames:
         assert "Кадры стека из кода проекта" in task.split("--- Где искать")[0]
         assert cluster_task.CODE_NOT_FOUND_WITH_FRAMES in section

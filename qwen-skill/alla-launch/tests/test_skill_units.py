@@ -425,6 +425,18 @@ def test_project_frames_skip_frameworks() -> None:
     ]
 
 
+def test_project_frames_without_project_frames_are_empty() -> None:
+    # Одни «Caused by» без кадров проекта не дают раздел «Кадры стека»: иначе задание
+    # отправляло открывать файлы, которых в разделе нет.
+    trace = (
+        "java.lang.IllegalStateException: boom\n"
+        "\tat org.junit.Assert.fail(Assert.java:89)\n"
+        "Caused by: java.net.SocketTimeoutException: Read timed out\n"
+        "\tat java.base/java.net.Socket.read(Socket.java:1)\n"
+    )
+    assert project_frames(trace) == []
+
+
 # --- подсказки по коду ----------------------------------------------------
 
 
