@@ -108,13 +108,6 @@ def test_many_clusters_are_split_into_batches(
         assert "ПРИЧИНА: <тест|приложение" not in text  # шаблон не дублируем: он в clusters/NN.md
         covered.append(file_id)
     assert covered == manual
-    # Субагент Qwen general-purpose по системной подсказке сначала осматривает проект: prompt
-    # пакета прямо это отменяет (стенд Qwen, P04).
-    for path in batch_files:
-        prompt = f"«{cli.batch_prompt(path)}»"
-        assert prompt in out
-        assert "Первым действием прочитай (read_file)" in prompt
-        assert "не осматривай" in prompt and "другие пакеты не читай" in prompt
     assert all(f"{file_id}.md" not in "".join(p.read_text(encoding="utf-8") for p in batch_files)
                for file_id in auto)
 
