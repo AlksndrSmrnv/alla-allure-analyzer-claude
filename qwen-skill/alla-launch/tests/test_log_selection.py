@@ -297,15 +297,22 @@ def test_prompt_tiny_fallback_drops_footer_before_meaningful_content(budget):
     assert len(result) <= budget
 
 
-def test_task_without_code_hints_says_code_not_found_and_forbids_searching():
+@pytest.mark.parametrize("frames", [[], ["src/test/java/ru/company/OrderTest.java:6 — кадр стека"]])
+def test_task_without_code_hints_says_code_not_found_and_forbids_searching(frames):
     # «Правила» велят начинать с раздела «Где искать код автотеста»; без него субагенты
-    # искали код сами через ls/find (стенд Qwen, P04).
+    # искали код сами через ls/find (стенд Qwen, P04). Кадры стека упоминаются, только если
+    # раздел есть, — иначе модель сообщала о противоречии.
     from alla_core.config import Settings
     from alla_skill_lib import cluster_task
     task = cluster_task.build_cluster_task(
         cluster=_cluster(), position=1, total=1, launch_id=1, answer_path="/tmp/answer.md",
         next_command="next", tests_by_id={1: _summary()}, log_snippet=None,
-        full_trace=None, frames=[], hints=[], settings=Settings())
+        full_trace=None, frames=frames, hints=[], settings=Settings())
     section = task.split("--- Где искать код автотеста (пути от корня проекта) ---\n")[1]
-    assert section.startswith(cluster_task.CODE_NOT_FOUND_NOTE)
-    assert "Сам код не ищи" in section and "без строки «КОД:»" in section
+    assert section.startswith("- не найден:") and "Сам код не ищи" in section
+    if frames:
+        assert "Кадры стека из кода проекта" in task.split("--- Где искать")[0]
+        assert cluster_task.CODE_NOT_FOUND_WITH_FRAMES in section
+    else:
+        assert "Кадр" not in task.split("## Задание")[0].split("--- Где искать")[1]
+        assert cluster_task.CODE_NOT_FOUND_NO_FRAMES in section

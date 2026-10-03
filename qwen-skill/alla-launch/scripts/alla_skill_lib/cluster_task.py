@@ -50,9 +50,12 @@ RULES = """\
 
 CODE_NOT_FOUND_NOTE = (
     "- не найден: файлов с этими тестами в проекте нет. Сам код не ищи — ни командами "
-    "shell, ни поиском по файлам. Есть выше «Кадры стека из кода проекта» — открой их, "
-    "иначе разбирай по данным выше без строки «КОД:»."
+    "shell, ни поиском по файлам. {next_step}"
 )
+# Отсылку к кадрам стека даём, только когда раздел есть: иначе модель ищет его в задании
+# и сообщает о противоречии (стенд Qwen, P04).
+CODE_NOT_FOUND_WITH_FRAMES = "Открой файлы из «Кадров стека из кода проекта» выше."
+CODE_NOT_FOUND_NO_FRAMES = "Разбирай по данным выше, без строки «КОД:»."
 
 KB_LINE_NOTE = (
     "БАЗА ЗНАНИЙ: <id записи> | нет   (id записи из раздела «База знаний проекта», "
@@ -251,7 +254,11 @@ def build_cluster_task(
     # Раздел есть всегда: «Правила» велят начинать с него, и без него субагенты искали код
     # сами — ls/find/git log (стенд Qwen, P04).
     sections += ["", "--- Где искать код автотеста (пути от корня проекта) ---"]
-    sections += [f"- {hint.render()}" for hint in hints] if hints else [CODE_NOT_FOUND_NOTE]
+    if hints:
+        sections += [f"- {hint.render()}" for hint in hints]
+    else:
+        sections.append(CODE_NOT_FOUND_NOTE.format(
+            next_step=CODE_NOT_FOUND_WITH_FRAMES if frames else CODE_NOT_FOUND_NO_FRAMES))
     sections += ["", "## Задание", task, "", reference_line(ANALYSIS_FORMAT_REF)]
     return "\n".join(sections) + "\n"
 
