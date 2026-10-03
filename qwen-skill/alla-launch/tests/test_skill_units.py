@@ -667,3 +667,18 @@ def test_bare_js_frame_reaches_the_task_and_jdk_modules_do_not() -> None:
     frames = project_frames(trace)
     assert frames == ["at /ci/build/tests/orders.spec.ts:12:3"]
     assert has_frame_files(frames)
+
+
+
+@pytest.mark.parametrize(("frame", "kept"), [
+    ("at java.base/java.lang.Thread.run(Thread.java:833)", False),
+    ("at javafx.graphics@21.0.1/com.sun.javafx.application.LauncherImpl"
+     ".launchApplication1(LauncherImpl.java:651)", False),  # модуль с версией (ревью)
+    ("at com.foo.loader/foo@9.2/com.foo.Main.run(Main.java:101)", True),
+    ("at app//ru.company.orders.OrderTest.createOrder(OrderTest.java:6)", True),
+    ("at ru.company.orders.OrderTest.createOrder(OrderTest.java:6)", True),
+    ("at /ci/build/tests/orders.spec.ts:12:3", True),
+])
+def test_java_frames_are_judged_by_declaring_class(frame: str, kept: bool) -> None:
+    # Формат StackTraceElement.toString(): загрузчик и модуль@версия перед классом.
+    assert (project_frames(f"Error\n    {frame}\n") == [frame.strip()]) is kept

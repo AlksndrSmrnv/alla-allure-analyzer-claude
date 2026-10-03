@@ -97,11 +97,13 @@ _JAVA_FRAMEWORK_PREFIXES = (
     "com.fasterxml.", "io.netty.", "reactor.", "okhttp3.", "retrofit2.", "feign.",
     "org.gradle.", "worker.org.gradle.", "com.intellij.", "org.slf4j.", "ch.qos.",
     "org.awaitility.", "io.cucumber.", "cucumber.", "com.google.", "org.jboss.",
-    "jakarta.", "io.micrometer.", "org.jetbrains.",
+    "jakarta.", "io.micrometer.", "org.jetbrains.", "javafx.",
 )
-# «java.base/java.lang.Thread.run» — кадр модуля JDK. Путь JS без имени функции
-# («/ci/tests/orders.spec.ts:12:3») тоже содержит «/», но это файл проекта.
-_JDK_MODULE_FRAME_RE = re.compile(r"[A-Za-z_][\w.]*/[\w.$<>]+")
+# Java StackTraceElement.toString(): «[загрузчик/][модуль[@версия]/]класс.метод(файл:строка)»,
+# например «java.base/java.lang.Thread.run», «javafx.graphics@21.0.1/com.sun.javafx…»,
+# «app//ru.company.Test.run». Чей кадр — решает имя класса после последнего «/». Путь JS
+# без имени функции («/ci/tests/orders.spec.ts:12:3») — не Java-кадр: в нём есть «:строка».
+_JAVA_QUALIFIED_RE = re.compile(r"(?:[\w.$-]*(?:@[\w.+-]+)?/)*[\w.$<>]+")
 _PATH_FRAMEWORK_MARKERS = (
     "site-packages", "dist-packages", "/lib/python", "\\lib\\python", "<frozen",
     "_pytest", "pluggy", "node_modules", "node:internal", "internal/",
@@ -191,8 +193,8 @@ def _is_framework_frame(line: str) -> bool:
     stripped = line.strip()
     if stripped.startswith("at "):
         qualified = stripped[3:].split("(", 1)[0].strip()
-        if _JDK_MODULE_FRAME_RE.fullmatch(qualified):  # модуль JDK: java.base/java.lang...
-            return True
+        if _JAVA_QUALIFIED_RE.fullmatch(qualified):
+            return qualified.rsplit("/", 1)[-1].startswith(_JAVA_FRAMEWORK_PREFIXES)
         return qualified.startswith(_JAVA_FRAMEWORK_PREFIXES)
     return False
 
