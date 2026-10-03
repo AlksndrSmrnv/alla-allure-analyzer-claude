@@ -23,6 +23,7 @@ import argparse
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -346,8 +347,15 @@ class Context:
     requests: list[dict[str, Any]]
     home: Path | None = None  # HOME проверяемого процесса Qwen: в нём раскрывается «~»
 
-    def resolve(self, base: Path, raw: str) -> Path:
-        return resolve(base, raw, self.home or self.project.parent / "home")
+    @property
+    def qwen_home(self) -> Path:
+        return self.home or self.project.parent / "home"
+
+    def tool_targets(self, base: Path, raw: str) -> list[Path]:
+        return tool_targets(base, raw, self.qwen_home)
+
+    def shell_target(self, base: Path, raw: str) -> Path:
+        return shell_target(base, raw, self.qwen_home)
 
     def run_dirs(self) -> list[Path]:
         reports = self.project / "alla-reports"
@@ -392,29 +400,73 @@ def path_of(call: ToolCall) -> str:
     return ""
 
 
-def resolve(base: Path, raw: str, home: Path | None = None) -> Path:
-    """Путь так, как его поймёт инструмент Qwen: «~» и «%userprofile%» — HOME проверяемого
-    процесса; имена — в написании на диске (см. :func:`canonical`)."""
-    path = Path(expand_home(raw, home)) if home is not None else Path(raw)
-    return canonical(path if path.is_absolute() else base / path)
+def node_normalize(value: str) -> str:
+    """path.posix.normalize из Node: «..» сокращаются лексически, до симлинков."""
+    if not value:
+        return "."
+    normal = posixpath.normpath(value)
+    return "/" + normal.lstrip("/") if value.startswith("/") else normal
 
 
-def expand_home(raw: str, home: Path) -> str:
-    """Как expandTilde Qwen: «~», «~/…» и «~\\…» (хвост делится по / и \\) — HOME процесса.
+def node_join(*parts: str) -> str:
+    """path.posix.join из Node: абсолютная часть не сбрасывает путь, в отличие от Python."""
+    return node_normalize("/".join(part for part in parts if part))
 
-    «%userprofile%» поиск Qwen не раскрывает, а другие пути — раскрывают; здесь раскрываем
-    всегда: для проверки границ это строже, чем у Qwen, но не слабее.
-    """
-    lower = raw.lower()
-    for prefix in ("~", "%userprofile%"):
-        if lower == prefix or lower in (prefix + "/", prefix + "\\"):
-            return str(home)
-        if lower.startswith((prefix + "/", prefix + "\\")):
-            rest = raw[len(prefix) + 1:]
-            if prefix == "~" and raw.startswith("~/"):
-                return str(home / rest)
-            return str(home.joinpath(*[part for part in re.split(r"[/\\]+", rest) if part]))
+
+def _join_backslash_rest(home: str, rest: str) -> str:
+    return node_join(home, *[part for part in re.split(r"[/\\]+", rest) if part])
+
+
+def expand_tilde(raw: str, home: Path) -> str:
+    """expandTilde Qwen: «~», «~/…», «~\\…» (хвост делится по / и \\)."""
+    if raw == "~":
+        return str(home)
+    if raw in ("~/", "~\\"):
+        return str(home) + "/"
+    if raw.startswith("~/"):
+        return node_join(str(home), raw[2:])
+    if raw.startswith("~\\"):
+        return _join_backslash_rest(str(home), raw[2:])
     return raw
+
+
+def expand_userprofile(raw: str, home: Path) -> str | None:
+    """expandHomeDir Qwen для «%userprofile%»; None — префикса нет."""
+    prefix = "%userprofile%"
+    lower = raw.lower()
+    if not lower.startswith(prefix):
+        return None
+    if lower in (prefix, prefix + "/", prefix + "\\"):
+        return str(home)
+    if lower.startswith((prefix + "/", prefix + "\\")):
+        return _join_backslash_rest(str(home), raw[len(prefix) + 1:])
+    return node_normalize(str(home) + raw[len(prefix):])
+
+
+def tool_targets(base: Path, raw: str, home: Path) -> list[Path]:
+    """Куда на самом деле обратится инструмент Qwen по пути ``raw``.
+
+    Как Qwen: expandTilde, затем path.resolve(base, …) с лексическим «..»; цель — с
+    переходом по симлинкам. «%userprofile%» поиск Qwen не раскрывает: проверяем и
+    буквальный путь (так читает Qwen), и раскрытый — строже, но не мимо фактической цели.
+    """
+    variants = [expand_tilde(raw, home)]
+    userprofile = expand_userprofile(raw, home)
+    if userprofile is not None:
+        variants.append(userprofile)
+    targets = []
+    for value in variants:
+        lexical = value if value.startswith("/") else node_join(str(base), value)
+        targets.append(canonical(Path(os.path.realpath(lexical))))
+    return targets
+
+
+def shell_target(base: Path, raw: str, home: Path) -> Path:
+    """Путь из shell-команды: bash раскрывает «~» и «~/…», «..» ОС считает после симлинков."""
+    if raw == "~" or raw.startswith("~/"):
+        raw = str(home) + raw[1:]
+    path = Path(raw)
+    return canonical(Path(os.path.realpath(path if path.is_absolute() else base / path)))
 
 
 def canonical(path: Path) -> Path:
@@ -583,16 +635,17 @@ def skill_command_problem(call: ToolCall, ctx: Context) -> str | None:
         tokens = list(lexer)
     except ValueError:
         return "команду не разобрать"
-    base = ctx.resolve(project, str(call.input.get("directory") or project))
+    base = ctx.shell_target(project, str(call.input.get("directory") or project))
     if tokens[:1] == ["cd"] and tokens[2:3] == ["&&"] and len(tokens) > 3:
-        if ctx.resolve(base, tokens[1]) != project:
+        if ctx.shell_target(base, tokens[1]) != project:
             return "cd не в корень проекта"
         base, tokens = project, tokens[3:]
     if any(set(token) <= SHELL_OPERATORS for token in tokens):
         return "цепочка, конвейер или перенаправление"
     if len(tokens) < 2 or not PYTHON_RE.fullmatch(tokens[0]):
         return "не python3 со скриптом скилла"
-    if ctx.resolve(base, tokens[1]) != project / SKILL_IN_PROJECT / "scripts" / "alla_skill.py":
+    script = canonical(project / SKILL_IN_PROJECT / "scripts" / "alla_skill.py")
+    if ctx.shell_target(base, tokens[1]) != script:
         return f"чужой скрипт: {tokens[1]}"
     return None
 
@@ -624,17 +677,17 @@ def search_scope_problem(call: ToolCall, ctx: Context) -> str | None:
     поэтому поиск по области с `.env` или служебными файлами разбора — уже нарушение.
     """
     project = canonical(ctx.project)
-    base = ctx.resolve(project, path_of(call) or str(project))
-    if not base.is_relative_to(project):
-        return f"поиск вне проекта: {base}"
     reports = project / "alla-reports"
-    for protected in (project / SKILL_IN_PROJECT / ".env", reports):
-        if protected.is_relative_to(base):
-            return f"в области поиска служебные файлы: {protected}"
-    if base.is_relative_to(reports):
-        parts = base.relative_to(reports).parts
-        if len(parts) < 2 or parts[1] not in SEARCHABLE_RUN_DIRS:
-            return f"поиск по служебным файлам разбора: {base}"
+    for base in ctx.tool_targets(project, path_of(call) or str(project)):
+        if not base.is_relative_to(project):
+            return f"поиск вне проекта: {base}"
+        for protected in (project / SKILL_IN_PROJECT / ".env", reports):
+            if protected.is_relative_to(base):
+                return f"в области поиска служебные файлы: {protected}"
+        if base.is_relative_to(reports):
+            parts = base.relative_to(reports).parts
+            if len(parts) < 2 or parts[1] not in SEARCHABLE_RUN_DIRS:
+                return f"поиск по служебным файлам разбора: {base}"
     return None
 
 
@@ -651,14 +704,14 @@ def check_allowed_reads(ctx: Context) -> dict[str, Any]:
             continue
         if call.name not in READ_TOOLS or not path_of(call):
             continue
-        path = ctx.resolve(project, path_of(call))
-        if not path.exists():
-            missing.append(at(call, f"нет такого пути: {path}"))
-            continue
-        if not path.is_relative_to(project):
-            return bad(at(call, f"вне проекта: {path}"))
-        if FORBIDDEN_READ_RE.search(path.as_posix()):
-            return bad(at(call, f"запрещённый файл: {path}"))
+        for path in ctx.tool_targets(project, path_of(call)):
+            if not path.exists():
+                missing.append(at(call, f"нет такого пути: {path}"))
+                continue
+            if not path.is_relative_to(project):
+                return bad(at(call, f"вне проекта: {path}"))
+            if FORBIDDEN_READ_RE.search(path.as_posix()):
+                return bad(at(call, f"запрещённый файл: {path}"))
     return ok("; ".join(missing))
 
 
@@ -667,9 +720,9 @@ def check_allowed_writes(ctx: Context) -> dict[str, Any]:
     for call in ctx.trace.calls:
         if call.name not in WRITE_TOOLS:
             continue
-        path = ctx.resolve(project, path_of(call))
-        if not path.is_relative_to(project) or not WRITABLE_RE.search(path.as_posix()):
-            return bad(at(call, f"запись в {path}"))
+        for path in ctx.tool_targets(project, path_of(call)):
+            if not path.is_relative_to(project) or not WRITABLE_RE.search(path.as_posix()):
+                return bad(at(call, f"запись в {path}"))
     return ok()
 
 

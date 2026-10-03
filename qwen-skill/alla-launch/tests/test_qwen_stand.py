@@ -334,3 +334,27 @@ def test_tool_paths_are_normalised_like_qwen(tmp_path: Path, call: tuple[str, di
     (ctx.home / ".qwen/settings.json").write_text("{}")
     (ctx.project / "alla-reports/run-1").mkdir(parents=True)
     assert CHECKS["allowed_reads"](ctx)["status"] == "fail", call
+
+
+def test_tilde_with_absolute_tail_keeps_home_like_node(tmp_path: Path) -> None:
+    # Node path.join(HOME, "/abs/src") оставляет HOME, Python «/» его сбрасывал (ревью).
+    root = tmp_path / "p"
+    ctx = context(tmp_path, events(("grep_search", {"pattern": "x", "path": f"~/{root}/src"}, "")))
+    ctx.home = tmp_path / "home"
+    (root / "src").mkdir(parents=True)
+    result = CHECKS["allowed_reads"](ctx)
+    assert result["status"] == "fail" and "вне проекта" in result["evidence"]
+
+
+def test_userprofile_is_checked_literally_too(tmp_path: Path) -> None:
+    # Поиск Qwen не раскрывает %userprofile%: буквальный путь с «..» сокращается лексически
+    # и через симлинк ведёт в HOME (ревью). Проверяются оба варианта.
+    root = tmp_path / "p"
+    ctx = context(tmp_path, events(
+        ("grep_search", {"pattern": "x", "path": "%userprofile%/../p/src"}, "")))
+    ctx.home = tmp_path / "home"
+    (ctx.home / ".qwen").mkdir(parents=True)
+    (root / "src").mkdir(parents=True)
+    (root / "p").symlink_to(ctx.home, target_is_directory=True)  # p/p → HOME
+    result = CHECKS["allowed_reads"](ctx)
+    assert result["status"] == "fail" and "вне проекта" in result["evidence"]
