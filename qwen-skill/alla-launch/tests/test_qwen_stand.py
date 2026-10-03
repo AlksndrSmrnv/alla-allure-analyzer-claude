@@ -297,3 +297,38 @@ def test_skill_version_covers_subagent_instructions() -> None:
     names = {path.relative_to(SKILL_ROOT).as_posix() for path in skill_files(SKILL_ROOT)}
     assert {"SKILL.md", "agents/alla-batch.md", "references/analysis-format.md",
             "scripts/alla_skill.py"} <= names
+
+
+def _case_insensitive(directory: Path) -> bool:
+    probe = directory / "case-probe"
+    probe.mkdir()
+    return (directory / "CASE-PROBE").exists()
+
+
+@pytest.mark.parametrize("tool_input", [
+    {"pattern": "x", "path": "ALLA-REPORTS/run-1"},
+    {"pattern": "x", "path": ".QWEN/skills/alla-launch"},
+])
+def test_grep_scope_ignores_path_case_on_case_insensitive_fs(
+        tmp_path: Path, tool_input: dict[str, Any]) -> None:
+    # На macOS ALLA-REPORTS и alla-reports — одна папка (ревью).
+    if not _case_insensitive(tmp_path):
+        pytest.skip("ФС различает регистр: это разные папки")
+    ctx = context(tmp_path, events(("grep_search", tool_input, "")))
+    (ctx.project / "alla-reports/run-1").mkdir(parents=True)
+    (ctx.project / ".qwen/skills/alla-launch").mkdir(parents=True)
+    assert CHECKS["allowed_reads"](ctx)["status"] == "fail"
+
+
+@pytest.mark.parametrize("call", [
+    ("grep_search", {"pattern": "x", "path": " alla-reports/run-1 "}),  # trim, как Qwen (ревью)
+    ("grep_search", {"pattern": "x", "path": "%USERPROFILE%/.qwen"}),
+    ("read_file", {"file_path": "\\~/.qwen/settings.json"}),  # unescapePath, затем «~»
+])
+def test_tool_paths_are_normalised_like_qwen(tmp_path: Path, call: tuple[str, dict[str, Any]]) -> None:
+    ctx = context(tmp_path, events((call[0], call[1], "")))
+    ctx.home = tmp_path / "home"
+    (ctx.home / ".qwen").mkdir(parents=True)
+    (ctx.home / ".qwen/settings.json").write_text("{}")
+    (ctx.project / "alla-reports/run-1").mkdir(parents=True)
+    assert CHECKS["allowed_reads"](ctx)["status"] == "fail", call
