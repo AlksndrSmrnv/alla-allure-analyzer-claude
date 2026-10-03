@@ -41,14 +41,17 @@ def test_every_variant_keeps_the_answer_format_and_step_rules(variant: str, has_
         assert "знаний" not in task
 
 
-def test_symptom_and_log_task_asks_for_a_quote_and_prefers_the_log() -> None:
+def test_symptom_and_log_task_requires_log_evidence_before_a_quote() -> None:
     task = _task("symptom+log")
     assert "2 предложения" in task and "дословной цитатой" in task
-    assert "по первопричине из лога приложения, а не по тексту assertion" in task
+    assert "Если в логе есть явная ошибка" in task
+    assert "явной ошибки в логе нет" in task
+    assert "по ошибке, трейсу и коду" in task
     # Все четыре примера выбора категории.
     for example in ("→ приложение", "→ тест", "→ окружение", "→ данные"):
         assert example in task, example
     assert "первый шаг — с конкретикой из лога" in task
+    assert "только если лог подтверждает причину" in task
 
 
 def test_log_only_task_says_there_is_no_symptom_and_does_not_invent_one() -> None:
@@ -56,6 +59,15 @@ def test_log_only_task_says_there_is_no_symptom_and_does_not_invent_one() -> Non
     assert "стек-трейса нет, анализ построен по логу" in task
     assert "дословная цитата" in task and "Симптом со стороны теста не выдумывай" in task
     assert "первый шаг — с конкретикой из лога" in task
+    assert "явной ошибки в логе нет" in task
+    assert "категория «неизвестно»" in task and "чего не хватает" in task
+    assert "только если лог подтверждает причину" in task
+
+
+def test_log_only_task_does_not_discard_a_confirmed_exact_kb_cause() -> None:
+    task = _task("log only", has_kb=True)
+    assert "точная запись базы знаний не подтверждает причину" in task
+    assert "по подтверждённой ошибке в логе или точной записи базы знаний" in task
 
 
 def test_symptom_only_task_says_the_log_is_empty_and_does_not_invent_it() -> None:
