@@ -100,7 +100,10 @@ def test_skill_md_states_the_executor_rules() -> None:
     ):
         assert phrase in rules, f"в «Правилах исполнителя» нет: {phrase}"
     # Слова, на которых держится запрет, есть и в тексте заданий, и в SKILL.md.
-    for keyword in ("write_file", "heredoc", "python -c", ".env", "run.json", "evidence/", PROBLEM_PREFIX):
+    # «Папки не просматривай»: без явного запрета субагенты на быстрой модели начинали с
+    # ls/find по папке разбора и скилла (стенд Qwen, P04).
+    for keyword in ("write_file", "heredoc", "python -c", ".env", "run.json", "evidence/",
+                    "Папки не просматривай (ls, find, cat", PROBLEM_PREFIX):
         assert keyword in EXECUTOR_RULES
         assert keyword in text
 
