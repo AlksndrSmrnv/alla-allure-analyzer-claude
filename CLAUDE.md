@@ -48,7 +48,9 @@ launch ID или ссылке на запуск он получает резул
   `prepare <id> --fresh`; пустой `state.json` не роняет `next` (счётчики
   начинаются заново); `write_atomic` делает `fsync` перед `os.replace`; стадии выгрузки идут в
   stderr; пустой прогон — `error`; ошибка одного кластера деградирует его до
-  «неизвестно» с предупреждением, а не роняет prepare.
+  «неизвестно» с предупреждением, а не роняет prepare. `pipeline` (numpy/scipy/sklearn,
+  ~0,5 с) импортируется только внутри `cmd_prepare` — остальные команды вызываются
+  десятки раз за разбор; охраняет `test_cli_does_not_load_clustering_libraries`.
 - Параллельный разбор больших прогонов (`cli.next_step`, `batch_task`): когда
   кластеров без разбора ≥ `PARALLEL_MIN_PENDING` (10) и рабочих > 1, `next`
   отвечает `STATUS: analyze_batch` вместо `analyze`: неразобранные кластеры

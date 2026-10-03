@@ -32,7 +32,7 @@ from collections.abc import Iterator
 from datetime import date, datetime
 from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -85,7 +85,6 @@ from alla_skill_lib.kb import (
     match_cluster,
 )
 from alla_skill_lib.modules import ModuleResolver, resolve_run_modules
-from alla_skill_lib.pipeline import LaunchData, collect_launch
 from alla_skill_lib.proposals import (
     ApplyResult,
     Proposal,
@@ -97,6 +96,9 @@ from alla_skill_lib.proposals import (
     validate_proposal,
 )
 from alla_skill_lib.report import build_summary_task, render_green_report, render_report
+
+if TYPE_CHECKING:
+    from alla_skill_lib.pipeline import LaunchData
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +380,9 @@ def cmd_prepare(
             "переменные окружения ALLURE_ENDPOINT и ALLURE_TOKEN. " + USER_ACTION_NOTE
         )
         return 2
+
+    # Кластеризация тянет numpy/scipy/sklearn (~0,5 с) — грузим только здесь, а не в каждом next.
+    from alla_skill_lib.pipeline import collect_launch
 
     try:
         data = asyncio.run(collect_launch(launch_id, settings, progress=_progress))

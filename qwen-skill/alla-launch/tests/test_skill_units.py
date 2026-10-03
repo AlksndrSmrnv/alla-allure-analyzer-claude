@@ -603,3 +603,20 @@ def test_entrypoint_runs_cli_after_complete_setup(tmp_path: Path) -> None:
     assert result.returncode == 1, result.stderr
     assert result.stdout.startswith("STATUS: error")  # CLI отработал: разборов ещё нет
     assert "prepare" in result.stdout
+
+
+def test_cli_does_not_load_clustering_libraries() -> None:
+    """next/verify/apply не платят за numpy/scipy/sklearn: их грузит только prepare."""
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    code = (
+        "import sys; import alla_skill_lib.cli; "
+        "print(sorted(m for m in ('numpy', 'scipy', 'sklearn') if m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(scripts)},
+        check=True,
+    )
+    assert result.stdout.strip() == "[]"
