@@ -7,10 +7,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from alla_skill_lib.agent_rules import EXECUTOR_RULES
-from alla_skill_lib.cluster_task import RULES, build_task_text
+from alla_skill_lib.analysis_format import parse_analysis, validate_analysis
+from alla_skill_lib.cluster_task import RULES, build_task_text, no_evidence_analysis
 
 VARIANTS = {
     "symptom+log": {"has_symptom": True, "has_log": True},
@@ -125,3 +128,16 @@ def test_executor_rules_name_every_prohibition() -> None:
         "Проблема скилла:",
     ):
         assert phrase in text, phrase
+
+
+def test_ready_no_evidence_analysis_is_valid_and_does_not_claim_logs_were_missing(
+    tmp_path: Path,
+) -> None:
+    # Без фрагмента лога неизвестно, были ли логи: на стенде Qwen (E03) разбор утверждал
+    # «нет … ни лога» у теста с INFO-логом и предлагал искать пропавшие вложения.
+    text = no_evidence_analysis()
+    analysis = parse_analysis(text)
+    assert validate_analysis(analysis, tmp_path) == []
+    assert analysis.category == "неизвестно"
+    assert "ни лога" not in text and "не сохранились" not in text
+    assert "если они есть" in text
