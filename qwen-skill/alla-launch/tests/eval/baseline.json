@@ -148,24 +148,24 @@
   "holdout": {
     "mixed_formats": {
       "clusters": 3,
-      "evidence_loss": 1.0,
-      "evidence_lost": 3,
+      "evidence_loss": 0.0,
+      "evidence_lost": 0,
       "evidence_total": 3,
       "groups": 3,
       "hidden_groups": 0,
-      "max_task_chars": 4863,
+      "max_task_chars": 5528,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 6
     },
     "same_conflict_two_causes": {
       "clusters": 1,
-      "evidence_loss": 1.0,
-      "evidence_lost": 2,
+      "evidence_loss": 0.5,
+      "evidence_lost": 1,
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 1,
-      "max_task_chars": 5017,
+      "max_task_chars": 5808,
       "precision": 0.52,
       "recall": 1.0,
       "tests": 5
