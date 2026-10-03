@@ -120,6 +120,18 @@ def fingerprint(root: Path, paths: list[Path]) -> dict[str, Any]:
     return {"sha256": combined.hexdigest(), "files": files}
 
 
+def skill_files(root: Path) -> list[Path]:
+    """Файлы, которые определяют поведение скилла: инструкции, субагенты, код, зависимости.
+
+    Один список для harness и стенда Qwen, чтобы версия считалась одинаково.
+    """
+    files = [root / "SKILL.md"]
+    for directory, pattern in (("references", "*.md"), ("agents", "*.md"), ("scripts", "*.py")):
+        files.extend((root / directory).rglob(pattern))
+    files.extend(root.glob("requirements*.txt"))
+    return files
+
+
 def package_version(name: str) -> str | None:
     try:
         return importlib.metadata.version(name)
@@ -161,15 +173,11 @@ def make_plan(case_ids: list[str], root: Path = ROOT) -> dict[str, Any]:
     unknown = set(selected) - CASES.keys()
     if unknown:
         raise ValueError(f"Неизвестные сценарии: {', '.join(sorted(unknown))}")
-    skill_files = [root / "SKILL.md"]
-    for directory, pattern in (("references", "*.md"), ("scripts", "*.py")):
-        skill_files.extend((root / directory).rglob(pattern))
-    skill_files.extend(root.glob("requirements*.txt"))
     fixture_files = sorted((root / TESTS).glob("*.py"))
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=False
     )
-    skill = fingerprint(root, skill_files)
+    skill = fingerprint(root, skill_files(root))
     skill["git_revision"] = revision.stdout.strip() if revision.returncode == 0 else None
     cases = []
     for case_id in selected:

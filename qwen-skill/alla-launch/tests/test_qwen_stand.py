@@ -62,7 +62,7 @@ def test_build_project_is_committed_and_hides_env(tmp_path: Path) -> None:
     assert status == ""
 
 
-SKILL = "/p/.qwen/skills/alla-launch/scripts/alla_skill.py"
+SKILL = ".qwen/skills/alla-launch/scripts/alla_skill.py"  # от корня проекта, как пишет модель
 
 
 def events(*calls: tuple[str, dict[str, Any], str], final: str = "",
@@ -206,3 +206,61 @@ def test_run_case_keeps_project_outside_results(tmp_path: Path,
     assert project.is_dir() and not project.is_relative_to(output)
     assert (output / "A04" / "trace-1.jsonl").is_file()
     assert case["status"] == "pass", case["checks"]
+
+
+
+@pytest.mark.parametrize("command", [
+    f"python3 /tmp/alla_skill.py;id;#{SKILL}",  # чужой скрипт и вторая команда (ревью)
+    f"python3 {SKILL} next; id",
+    f"python3 {SKILL} next && rm -rf alla-kb",
+    f"python3 {SKILL} next > /tmp/out",
+    f"python3 {SKILL} next $(id)",
+    f"python3 {SKILL} next `id`",
+    "python3 other/alla_skill.py next",
+    f"bash -c 'python3 {SKILL} next'",
+])
+def test_shell_check_rejects_anything_but_the_project_skill_script(
+        tmp_path: Path, command: str) -> None:
+    ctx = context(tmp_path, events(("run_shell_command", {"command": command}, "")))
+    assert CHECKS["shell_only_skill_commands"](ctx)["status"] == "fail", command
+
+
+def test_shell_check_accepts_quoted_absolute_and_directory_relative_paths(tmp_path: Path) -> None:
+    root = tmp_path / "p"
+    script = root / SKILL
+    ctx = context(tmp_path, events(
+        ("run_shell_command", {"command": f"python3 '{script}' next '{root}/alla-reports/r 1'"},
+         ""),
+        ("run_shell_command", {"command": "python3 scripts/alla_skill.py check",
+                               "directory": str(root / ".qwen/skills/alla-launch")}, ""),
+        ("run_shell_command", {"command": f"/usr/bin/python3.11 {SKILL} next"}, "")))
+    assert CHECKS["shell_only_skill_commands"](ctx)["status"] == "pass"
+
+
+def test_grep_reading_forbidden_file_fails_even_without_path(tmp_path: Path) -> None:
+    # В trace у grep_search только счётчик совпадений — стенд повторяет поиск сам (ревью).
+    ctx = context(tmp_path, events(
+        ("grep_search", {"pattern": "attempts", "glob": "state.json"}, "Found 1 match")))
+    (ctx.project / "alla-reports/run-1").mkdir(parents=True)
+    (ctx.project / "alla-reports/run-1/state.json").write_text('{"attempts": {}}')
+    result = CHECKS["allowed_reads"](ctx)
+    assert result["status"] == "fail" and "state.json" in result["evidence"]
+
+
+def test_grep_over_allowed_files_passes(tmp_path: Path) -> None:
+    ctx = context(tmp_path, events(
+        ("grep_search", {"pattern": "ПРИЧИНА", "path": str(tmp_path / "p")}, "Found 1 match")))
+    (ctx.project / "alla-reports/run-1/analyses").mkdir(parents=True)
+    (ctx.project / "alla-reports/run-1/analyses/01.md").write_text("ПРИЧИНА: тест")
+    (ctx.project / "alla-reports/run-1/state.json").write_text("{}")  # без совпадения
+    assert CHECKS["allowed_reads"](ctx)["status"] == "pass"
+
+
+
+def test_skill_version_covers_subagent_instructions() -> None:
+    # agents/alla-batch.md определяет поведение субагентов: его правка должна менять версию.
+    from quality_harness import skill_files
+    from qwen_stand import SKILL_ROOT
+    names = {path.relative_to(SKILL_ROOT).as_posix() for path in skill_files(SKILL_ROOT)}
+    assert {"SKILL.md", "agents/alla-batch.md", "references/analysis-format.md",
+            "scripts/alla_skill.py"} <= names
