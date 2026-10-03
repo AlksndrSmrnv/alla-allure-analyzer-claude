@@ -80,6 +80,11 @@ _ID_TOKEN_RE = re.compile(r"^[a-z0-9_]{1,100}$")
 _NO_KB = {"нет", "-", "—", "none", "no"}
 _BOLD_RE = re.compile(r"\*\*")
 _PATH_RE = re.compile(r"(?P<path>[\w.\-/\\]+\.[A-Za-z0-9]{1,8})(?::(?P<line>\d+))?")
+_QUOTED_LOCATION_RE = re.compile(
+    r"(?P<quote>[`\"'])(?P<content>.+?)(?P=quote)(?::(?P<line>\d+))?"
+)
+_LOCATION_RE = re.compile(r"(?P<path>.+?\.[A-Za-z0-9]{1,8})(?::(?P<line>\d+))?")
+_LOCATION_END_RE = re.compile(r"\.[A-Za-z0-9]{1,8}(?::\d+)?(?=$|\s)")
 _CONFIG_EXTENSIONS = frozenset({
     ".yaml", ".yml", ".json", ".xml", ".properties", ".conf", ".cfg", ".ini",
     ".toml", ".gradle", ".sql", ".md", ".txt", ".env", ".csv",
@@ -291,24 +296,66 @@ def validate_analysis(
     return errors
 
 
+def _looks_like_file_ref(raw: str) -> bool:
+    normalized = raw.replace("\\", "/")
+    return "/" in normalized or PurePath(normalized).suffix.lower() in (
+        SOURCE_EXTENSIONS | _CONFIG_EXTENSIONS
+    )
+
+
+def _code_location(text: str, root: Path) -> tuple[str, str | None] | None:
+    """Новые формы пути с пробелами, затем прежний поиск ссылки среди текста."""
+    for quoted in _QUOTED_LOCATION_RE.finditer(text):
+        location = _LOCATION_RE.fullmatch(quoted.group("content"))
+        if location is None or not _looks_like_file_ref(location.group("path")):
+            continue
+        # Сохраняем первый legacy match, включая вызов метода с именем фикстуры.
+        if _PATH_RE.search(text[:quoted.start()]):
+            break
+        return location.group("path"), location.group("line") or quoted.group("line")
+
+    # Выбираем самый длинный существующий начальный путь. Описание, начинающееся
+    # после имени файла, не должно стать частью пути, а несколько точек — обрезать его.
+    for ending in reversed(list(_LOCATION_END_RE.finditer(text))):
+        location = _LOCATION_RE.fullmatch(text[:ending.end()].strip())
+        if location is None or not _looks_like_file_ref(location.group("path")):
+            continue
+        raw = location.group("path").replace("\\", "/")
+        if not any(char.isspace() for char in raw):
+            continue  # для обычного пути сохраняем прежний поиск без лишнего stat
+        candidate = Path(raw)
+        try:
+            path = candidate if candidate.is_absolute() else root / candidate
+            if path.resolve().is_file():
+                # Принадлежность проекту проверяется позже: внешний существующий
+                # путь нельзя заменить внутренним basename через запасной поиск.
+                return raw, location.group("line")
+        except (OSError, ValueError):
+            continue
+
+    legacy = _PATH_RE.search(text)
+    return (legacy.group("path"), legacy.group("line")) if legacy else None
+
+
 def code_ref_errors(analysis: ClusterAnalysis, project_root: Path) -> list[str]:
     """Проблемы ссылок из раздела КОД: нет файла в проекте или строка вне файла."""
     errors: list[str] = []
     root = project_root.resolve()
     for line in analysis.code:
-        match = _PATH_RE.search(line)
-        if not match:
+        location = _code_location(line, root)
+        if location is None:
             continue
-        raw = match.group("path").replace("\\", "/")
+        raw, number = location
+        raw = raw.replace("\\", "/")
         suffix = PurePath(raw).suffix.lower()
-        if "/" not in raw and suffix not in SOURCE_EXTENSIONS | _CONFIG_EXTENSIONS:
+        if not _looks_like_file_ref(raw):
             continue  # похоже на вызов метода (orderApi.create), а не на файл
         candidate = Path(raw)
         path = candidate if candidate.is_absolute() else root / candidate
         try:
             resolved = path.resolve()
             inside = resolved == root or root in resolved.parents
-        except OSError:
+        except (OSError, ValueError):
             inside = False
         if inside and not resolved.is_file() and "/" not in raw and suffix in SOURCE_EXTENSIONS:
             # «OrderTest.java:6» из кадра стека: без пути принимаем однозначное имя файла.
@@ -321,14 +368,17 @@ def code_ref_errors(analysis: ClusterAnalysis, project_root: Path) -> list[str]:
                 )
                 continue
             if found:
-                resolved = (root / found[0]).resolve()
+                try:
+                    resolved = (root / found[0]).resolve()
+                    inside = resolved == root or root in resolved.parents
+                except (OSError, ValueError):
+                    inside = False
         if not inside or not resolved.is_file():
             errors.append(
                 f"в «КОД:» файл «{raw}» не найден в проекте {root} — "
                 "укажи путь относительно корня проекта или удали строку КОД"
             )
             continue
-        number = match.group("line")
         total = _line_count(resolved) if number else None
         if number and total is not None and not 1 <= int(number) <= total:
             errors.append(
