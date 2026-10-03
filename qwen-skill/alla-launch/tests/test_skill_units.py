@@ -641,6 +641,8 @@ def test_cli_does_not_load_clustering_libraries() -> None:
 @pytest.mark.parametrize(("frame", "openable"), [
     ("at ru.company.orders.OrderTest.createOrder(OrderTest.java:6)", True),
     ("at createOrder (/ci/build/tests/orders.spec.ts:12:3)", True),
+    ("at run (/ci/build/tests/My Orders.spec.ts:12:3)", True),  # пробел в имени (ревью)
+    ("at /ci/build/tests/orders.spec.ts:12:3", True),
     ('File "/ci/build/tests/api/test_orders.py", line 12, in test_create', True),
     ("at ru.company.Job.run(Unknown Source)", False),
     ("at ru.company.Job.run(Native Method)", False),

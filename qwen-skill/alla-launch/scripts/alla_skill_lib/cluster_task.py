@@ -164,7 +164,13 @@ def project_frames(trace: str | None, limit: int = MAX_FRAME_LINES) -> list[str]
 
 # Файловая позиция кадра: «(OrderTest.java:6)», «(/app/orders.ts:12:3)» или
 # «File "x.py", line 12». «(Unknown Source)» и «(Native Method)» — без файла.
-_FRAME_FILE_RE = re.compile(r"\([^()\s]+\.\w+:\d+(?::\d+)?\)|File \"[^\"]+\", line \d+")
+# В пути могут быть пробелы: «(/ci/tests/My Orders.spec.ts:12:3)»; кадр JS без имени
+# функции — «at /ci/tests/orders.spec.ts:12:3».
+_FRAME_FILE_RE = re.compile(
+    r"\([^()]*\.\w+:\d+(?::\d+)?\)"
+    r"|^\s*at\s+[^()]*\.\w+:\d+(?::\d+)?\s*$"
+    r"|File \"[^\"]+\", line \d+"
+)
 
 
 def has_frame_files(frames: list[str]) -> bool:
