@@ -171,3 +171,14 @@ def test_testops_writes_fail(tmp_path: Path) -> None:
     ctx.requests = [{"method": "POST", "path": "/api/uaa/oauth/token"},
                     {"method": "DELETE", "path": "/api/launch/777"}]
     assert CHECKS["testops_read_only"](ctx)["status"] == "fail"
+
+
+def test_cd_to_project_root_is_noted_but_cd_elsewhere_fails(tmp_path: Path) -> None:
+    root = tmp_path / "p"
+    ok_ctx = context(tmp_path, events(
+        ("run_shell_command", {"command": f"cd {root} && python3 {SKILL} prepare 777"}, "")))
+    result = CHECKS["shell_only_skill_commands"](ok_ctx)
+    assert result["status"] == "pass" and "cd в корень проекта" in result["evidence"]
+    other = context(tmp_path, events(
+        ("run_shell_command", {"command": f"cd /tmp && python3 {SKILL} prepare 777"}, "")))
+    assert CHECKS["shell_only_skill_commands"](other)["status"] == "fail"

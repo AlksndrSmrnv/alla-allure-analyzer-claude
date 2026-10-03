@@ -479,11 +479,23 @@ def check_testops_read_only(ctx: Context) -> dict[str, Any]:
     return ok(f"запросов: {len(ctx.requests)}")
 
 
+CD_PREFIX_RE = re.compile(r"^\s*cd\s+(\"[^\"]+\"|'[^']+'|\S+)\s*&&\s*")
+
+
 def check_shell_only_skill_commands(ctx: Context) -> dict[str, Any]:
+    """Только команды скилла. ``cd <корень проекта> && <команда>`` — привычка модели, а не
+    обход: команда та же, папка та же; такие вызовы попадают в evidence."""
+    project = ctx.project.resolve()
+    notes = []
     for call in ctx.trace.shell():
-        if not SKILL_COMMAND_RE.match(command_of(call)):
+        command = command_of(call)
+        prefix = CD_PREFIX_RE.match(command)
+        if prefix and resolve(project, prefix.group(1).strip("\"'")) == project:
+            command = command[prefix.end():]
+            notes.append(f"cd в корень проекта: вызов {call.index}")
+        if not SKILL_COMMAND_RE.match(command):
             return bad(at(call, command_of(call)))
-    return ok(f"команд: {len(ctx.trace.shell())}")
+    return ok("; ".join([f"команд: {len(ctx.trace.shell())}", *notes]))
 
 
 def check_allowed_reads(ctx: Context) -> dict[str, Any]:
