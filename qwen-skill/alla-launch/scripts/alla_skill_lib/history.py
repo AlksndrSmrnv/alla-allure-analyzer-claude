@@ -1,6 +1,7 @@
 """Локальная история разборов: ``alla-reports/history.jsonl``.
 
-После каждого завершённого разбора сюда дописывается по строке на кластер.
+После завершения разбора сюда дописываются новые или изменённые строки кластеров;
+при чтении берётся последняя версия каждой пары (разбор, кластер).
 Следующий ``prepare`` находит прошлые разборы той же ошибки (по точной
 сигнатуре или подтверждённой записи базы знаний) и показывает число
 повторов в задании и отчёте. Прошлые выводы модели в задание не подаются:
@@ -22,7 +23,7 @@ HISTORY_FILE = "history.jsonl"
 MAX_CAUSE_CHARS = 200
 
 def load_history(reports_dir: Path) -> list[dict[str, Any]]:
-    """Записи истории; битые строки пропускаются."""
+    """Последняя версия каждого кластера; битые строки пропускаются, legacy остаётся."""
     path = reports_dir / HISTORY_FILE
     if not path.is_file():
         return []
@@ -34,7 +35,23 @@ def load_history(reports_dir: Path) -> list[dict[str, Any]]:
             continue
         if isinstance(record, dict) and "launch_id" in record:
             records.append(record)
-    return records
+    latest: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for record in reversed(records):
+        key = _record_key(record)
+        if key is not None:
+            if key in seen:
+                continue
+            seen.add(key)
+        latest.append(record)
+    return latest[::-1]
+
+
+def _record_key(record: dict[str, Any]) -> tuple[str, str] | None:
+    run, file_id = record.get("run"), record.get("file_id")
+    if isinstance(run, str) and run and isinstance(file_id, str) and file_id:
+        return run, file_id
+    return None
 
 
 def recurrence(
@@ -98,6 +115,22 @@ def run_records(
             "kb_entry": analysis.kb_ref if trusted and analysis else None,
         })
     return records
+
+
+def append_changed_run(reports_dir: Path, records: list[dict[str, Any]]) -> None:
+    """Дописать только отсутствующие или изменённые строки завершённого разбора."""
+    latest = {
+        key: record for record in load_history(reports_dir)
+        if (key := _record_key(record)) is not None
+    }
+    changed: list[dict[str, Any]] = []
+    for record in records:
+        key = _record_key(record)
+        if key is None or latest.get(key) != record:
+            changed.append(record)
+            if key is not None:
+                latest[key] = record
+    append_run(reports_dir, changed)
 
 
 def append_run(reports_dir: Path, records: list[dict[str, Any]]) -> None:

@@ -71,7 +71,7 @@ from alla_skill_lib.cluster_task import (
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
 from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
 from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, reject
-from alla_skill_lib.history import append_run, load_history, recurrence, run_records
+from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
 from alla_skill_lib.kb import (
     KBRecord,
     ProjectKB,
@@ -97,7 +97,12 @@ from alla_skill_lib.proposals import (
     revert_proposal,
     validate_proposal,
 )
-from alla_skill_lib.report import build_summary_task, render_green_report, render_report
+from alla_skill_lib.report import (
+    build_summary_data,
+    build_summary_task,
+    render_green_report,
+    render_report,
+)
 
 if TYPE_CHECKING:
     from alla_skill_lib.pipeline import LaunchData
@@ -747,15 +752,26 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
             + "."
         )
 
+    summary_data = build_summary_data(run, analyses, flagged)
+    summary_hash = hashlib.sha256(summary_data.encode("utf-8")).hexdigest()
+    previous_hash = state.get("summary_data_hash")
     summary = ws.read_text(paths.summary) if paths.summary.is_file() else ""
+    if previous_hash is not None and previous_hash != summary_hash:
+        paths.summary.unlink(missing_ok=True)
+        summary = ""
     if not summary.strip():
-        ws.write_text(paths.summary_task, build_summary_task(run, analyses, flagged, paths))
+        ws.write_text(
+            paths.summary_task,
+            build_summary_task(run, analyses, flagged, paths, data=summary_data),
+        )
+        state["summary_data_hash"] = summary_hash
+        ws.write_json(paths.state_json, state)
         return "summary", _summary_body(paths, total)
 
-    if not state.get("history_written"):
-        append_run(paths.reports_dir, run_records(run, analyses, flagged, paths.root.name))
-        state["history_written"] = True
+    if previous_hash is None:  # сводка старой версии принимается без повторного написания
+        state["summary_data_hash"] = summary_hash
         ws.write_json(paths.state_json, state)
+    append_changed_run(paths.reports_dir, run_records(run, analyses, flagged, paths.root.name))
 
     fixes = {file_id: p for file_id, p in proposals.items() if p.is_fix}
     states = {
@@ -1238,6 +1254,7 @@ def _skip(paths: ws.RunPaths, entry: dict[str, Any], reason: str) -> tuple[str, 
     if entry.get("auto"):
         return "error", f"Проблема №{int(file_id)} без данных об ошибке уже разобрана автоматически."
     ws.write_text(paths.analysis(file_id), skipped_analysis(reason))
+    paths.summary.unlink(missing_ok=True)
     state = _read_state(paths)
     state["skipped"] = sorted({*state.get("skipped", []), file_id})
     ws.write_json(paths.state_json, state)

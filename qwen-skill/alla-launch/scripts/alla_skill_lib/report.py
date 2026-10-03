@@ -178,13 +178,12 @@ def load_models(run: dict[str, Any]) -> tuple[TriageReport, ClusteringReport | N
 # ---------------------------------------------------------------------------
 
 
-def build_summary_task(
+def build_summary_data(
     run: dict[str, Any],
     analyses: dict[str, ClusterAnalysis],
     flagged: set[str],
-    paths: RunPaths,
 ) -> str:
-    """Задание на общий анализ: данные промпта ядра + сжатые разборы.
+    """Общий блок данных для задания сводки и проверки её актуальности.
 
     Полные разборы занимали почти всё задание, а сводке нужны только причина,
     суть и первый шаг исправления. Подробно (``compact``) идут самые большие
@@ -228,6 +227,23 @@ def build_summary_task(
     prompt = build_launch_summary_prompt(clustering, triage, llm_result, numbers)
     rest = largest[MAX_SUMMARY_LISTED:]
     return "\n".join([
+        prompt.user_prompt,
+        *(["", _summary_rest(rest, analyses, flagged)] if rest else []),
+    ])
+
+
+def build_summary_task(
+    run: dict[str, Any],
+    analyses: dict[str, ClusterAnalysis],
+    flagged: set[str],
+    paths: RunPaths,
+    *,
+    data: str | None = None,
+) -> str:
+    """Данные сводки с правилами, путями и заданием для агента."""
+    if data is None:
+        data = build_summary_data(run, analyses, flagged)
+    return "\n".join([
         f"# Общий анализ прогона #{run['launch_id']}",
         "",
         "Запиши итоговый отчёт в файл (абсолютный путь, инструментом записи файлов):",
@@ -242,8 +258,7 @@ def build_summary_task(
         SUMMARY_RULES,
         EXECUTOR_RULES,
         "",
-        prompt.user_prompt,
-        *(["", _summary_rest(rest, analyses, flagged)] if rest else []),
+        data,
         "",
         "## Задание",
         SUMMARY_TASK,
