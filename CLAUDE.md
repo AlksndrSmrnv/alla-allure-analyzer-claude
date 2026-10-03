@@ -28,6 +28,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `batch_task`, `agent_rules`, `cluster_task`, `analysis_format`, `code_hints`, `report`, `kb`, `modules`, `feedback`, `history`, `proposals`, `errors` |
 | `scripts/alla_core/` | ядро: клиент TestOps, триаж, логи, кластеризация, блок «Данные», сигнатура |
 | `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
+| `tests/eval/` | эталон точности: кассеты прогонов (`record.py` пишет у команды), размеченный корпус dev/holdout, метрики склеек, дробления, скрытых групп и потери доказательств (`run_eval.py`), см. `README.md` там же |
 
 ## Команды
 
@@ -37,6 +38,7 @@ python3.11 -m venv .venv && .venv/bin/pip install -r qwen-skill/alla-launch/requ
 .venv/bin/ruff check qwen-skill/alla-launch
 .venv/bin/mypy qwen-skill/alla-launch/scripts   # strict; пока не чистый — новых ошибок не добавлять
 .venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case A01 --output /tmp/alla-stand-001
+.venv/bin/python qwen-skill/alla-launch/tests/eval/run_eval.py --details   # эталон, офлайн, ~2 с
 ```
 
 ## Проверка на настоящем Qwen Code
