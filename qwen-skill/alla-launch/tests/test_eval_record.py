@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 
 import httpx
+import pytest
 from skill_fixtures import without_libmagic  # noqa: F401
 from skill_fake_testops import TOKEN, FakeTestOps, LaunchFixture, default_launch
 
@@ -65,3 +66,37 @@ def test_attachment_is_recorded_up_to_the_client_limit(tmp_path: Path) -> None:
     _record(fixture, tmp_path / "cassette", ALLURE_LOGS_MAX_ATTACHMENT_BYTES="1024")
 
     assert len(load_cassette(tmp_path / "cassette").contents[9001]) == 1025
+
+
+def test_record_under_an_endpoint_prefix(tmp_path: Path) -> None:
+    fixture = default_launch()
+    fixture.contents[9001] = b"x" * 5000
+    fake = FakeTestOps(fixture)
+
+    def behind_proxy(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.startswith("/testops/api/")
+        path = request.url.path.removeprefix("/testops")
+        return fake.handle(httpx.Request(request.method, request.url.copy_with(path=path),
+                                         headers=request.headers, content=request.content))
+
+    settings = Settings.load(environ={**ENVIRON, "ALLURE_ENDPOINT": "https://testops.example/testops",
+                                      "ALLURE_LOGS_MAX_ATTACHMENT_BYTES": "1024"})
+    record(777, tmp_path / "cassette", settings,
+           inner=lambda verify: httpx.MockTransport(behind_proxy))
+    cassette = load_cassette(tmp_path / "cassette")
+
+    assert cassette.launch == fixture.launch
+    assert cassette.results == fixture.results
+    assert {key: steps for key, steps in cassette.executions.items() if steps} == fixture.executions
+    assert len(cassette.contents[9001]) == 1025
+
+
+def test_record_refuses_a_non_empty_directory(tmp_path: Path) -> None:
+    (tmp_path / "cassette").mkdir()
+    (tmp_path / "cassette" / "launch.json").write_text("{}", encoding="utf-8")
+    fake = FakeTestOps(default_launch())
+
+    with pytest.raises(FileExistsError):
+        record(777, tmp_path / "cassette", Settings.load(environ=ENVIRON),
+               inner=lambda verify: httpx.MockTransport(fake.handle))
+    assert fake.requests == []  # отказ до обращения к TestOps

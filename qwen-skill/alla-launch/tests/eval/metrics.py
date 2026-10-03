@@ -44,8 +44,17 @@ def evaluate(labels: dict[str, Any], clusters: Iterable[ClusterView]) -> dict[st
       заданиях кластеров, где группа видима; у скрытой группы потеряны все строки.
     """
     clusters = list(clusters)
-    groups = {group["id"]: group for group in labels["groups"]}
-    group_of = {test: group_id for group_id, group in groups.items() for test in group["tests"]}
+    groups: dict[str, dict[str, Any]] = {}
+    group_of: dict[int, str] = {}
+    for group in labels["groups"]:
+        # Повтор id или теста молча выбросил бы часть разметки из всех метрик.
+        if group["id"] in groups:
+            raise ValueError(f"повторяется id группы {group['id']}")
+        groups[group["id"]] = group
+        for test in group["tests"]:
+            if test in group_of:
+                raise ValueError(f"тест {test} в группах {group_of[test]} и {group['id']}")
+            group_of[test] = group["id"]
     cluster_of: dict[int, ClusterView] = {}
     for cluster in clusters:
         for test in cluster.members:
@@ -127,6 +136,11 @@ SUMMARY_KEYS = (
 def summary(result: dict[str, Any]) -> dict[str, Any]:
     """Только числа — то, что можно показать за пределами команды."""
     return {key: result[key] for key in SUMMARY_KEYS}
+
+
+def coverage(result: dict[str, Any]) -> dict[str, int]:
+    """Расхождение разметки и прогона числами: тесты вне кластеров и без разметки."""
+    return {"unclustered": len(result["unclustered"]), "unlabeled": len(result["unlabeled"])}
 
 
 def combine(results: Iterable[dict[str, Any]]) -> dict[str, Any]:

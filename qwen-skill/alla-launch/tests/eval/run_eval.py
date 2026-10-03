@@ -38,7 +38,7 @@ from skill_fake_testops import TOKEN, LaunchFixture  # noqa: E402
 from eval import corpus_dev, corpus_holdout  # noqa: E402
 from eval.cassette import load_cassette, replay  # noqa: E402
 from eval.corpus import Case, validate_labels  # noqa: E402
-from eval.metrics import ClusterView, combine, evaluate, summary  # noqa: E402
+from eval.metrics import ClusterView, combine, coverage, evaluate, summary  # noqa: E402
 
 BASELINE = Path(__file__).resolve().parent / "baseline.json"
 SETS: dict[str, dict[str, Callable[[], Case]]] = {
@@ -272,9 +272,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.cassette:
         if labels is None:
             parser.error("--cassette требует --labels")
-        result = evaluate_fixture(load_cassette(args.cassette), labels)
-        print(json.dumps({**summary(result), "max_task_chars": result["max_task_chars"],
+        try:
+            result = evaluate_fixture(load_cassette(args.cassette), labels)
+        except ValueError as exc:
+            print(f"Разметка не подходит к кассете: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps({**summary(result), **coverage(result),
+                          "max_task_chars": result["max_task_chars"],
                           "seconds": result["seconds"]}, ensure_ascii=False, indent=2))
+        if result["unclustered"] or result["unlabeled"]:
+            print("Внимание: разметка не совпадает с активными падениями прогона — "
+                  "цифры выше неполные.", file=sys.stderr)
+            return 1
         return 0
 
     sets = ("dev", "holdout") if args.set == "all" else (args.set,)

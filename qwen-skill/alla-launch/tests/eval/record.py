@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 if __package__ in (None, ""):  # запуск файлом: tests/ и scripts/ в sys.path
     _TESTS = Path(__file__).resolve().parents[1]
@@ -46,15 +47,27 @@ class Recording:
     details: dict[int, Any] = field(default_factory=dict)
     attachments: dict[int, Any] = field(default_factory=dict)
     contents: dict[int, bytes] = field(default_factory=dict)
+    # Путь TestOps за прокси: ALLURE_ENDPOINT=https://host/testops → «/testops».
+    prefix: str = ""
+
+    def api_path(self, request: httpx.Request) -> str:
+        """Путь запроса от корня TestOps (``/api/...``), без префикса из ALLURE_ENDPOINT."""
+        path = request.url.path
+        if self.prefix and path.startswith(self.prefix + "/"):
+            return path[len(self.prefix):]
+        return path
 
     def store(self, request: httpx.Request, body: bytes, response: httpx.Response) -> None:
-        path = request.url.path
+        path = self.api_path(request)
         if path == TOKEN_PATH or response.status_code >= 400:
             return
         if match := _CONTENT_RE.match(path):
             self.contents[int(match[1])] = body
             return
-        data = httpx.Response(200, content=body).json() if body else None
+        try:
+            data = httpx.Response(200, content=body).json() if body else None
+        except ValueError:
+            return  # не JSON — не из тех ответов, что нужны кассете
         if match := _LAUNCH_RE.match(path):
             self.launch = data
         elif path == "/api/testresult" and isinstance(data, dict):
@@ -94,7 +107,7 @@ class RecordingTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         response = await self._inner.handle_async_request(request)
-        if _CONTENT_RE.match(request.url.path):
+        if _CONTENT_RE.match(self._recording.api_path(request)):
             # Больше лимита клиент всё равно не читает: +1 байт, чтобы он увидел обрезку.
             buffer = bytearray()
             async for chunk in response.aiter_bytes():
@@ -156,7 +169,9 @@ def record(
 
     from eval.cassette import save_cassette
 
-    recording = Recording()
+    if out_dir.exists() and any(out_dir.iterdir()):
+        raise FileExistsError(f"Каталог кассеты {out_dir} не пуст: укажите новый каталог.")
+    recording = Recording(prefix=urlsplit(settings.endpoint).path.rstrip("/"))
     with recording_clients(recording, settings.logs_max_attachment_bytes, inner):
         data = asyncio.run(collect_launch(launch_id, settings))
     save_cassette(recording.fixture(), out_dir)
@@ -174,7 +189,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("out_dir", type=Path)
     args = parser.parse_args(argv)
     settings = Settings.load(env_file=workspace.SKILL_DIR / ".env")
-    data = record(args.launch_id, args.out_dir, settings)
+    try:
+        data = record(args.launch_id, args.out_dir, settings)
+    except FileExistsError as exc:
+        print(exc, file=sys.stderr)
+        return 2
     print(
         f"Кассета записана: {args.out_dir} — результатов {data.triage.total_results}, "
         f"активных падений {len(data.triage.failed_tests)}."

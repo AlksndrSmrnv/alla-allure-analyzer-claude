@@ -151,9 +151,13 @@ def active_failure_ids(fixture: LaunchFixture) -> list[int]:
 def validate_labels(fixture: LaunchFixture, labels: dict[str, Any]) -> None:
     """Каждое активное падение — ровно в одной группе, лишних тестов в разметке нет."""
     seen: dict[int, str] = {}
+    group_ids: set[str] = set()
     for group in labels["groups"]:
         if not group.get("id"):
             raise ValueError("группа без id")
+        if group["id"] in group_ids:
+            raise ValueError(f"повторяется id группы {group['id']}")
+        group_ids.add(group["id"])
         for test_id in group["tests"]:
             if test_id in seen:
                 raise ValueError(f"тест {test_id} в группах {seen[test_id]} и {group['id']}")

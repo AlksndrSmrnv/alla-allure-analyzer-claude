@@ -49,3 +49,12 @@ def test_replayed_cassette_prepares_like_the_fixture(
         "total": 7, "passed": 1, "failed": 4, "broken": 1, "skipped": 1,
         "unknown": 0, "muted_failures": 1, "active_failures": 4,
     }
+
+
+def test_cassette_is_never_written_over_an_old_one(tmp_path: Path) -> None:
+    save_cassette(default_launch(), tmp_path / "cassette")
+
+    with pytest.raises(FileExistsError, match="не пуст"):
+        save_cassette(default_launch(), tmp_path / "cassette")
+    (tmp_path / "empty").mkdir()
+    save_cassette(default_launch(), tmp_path / "empty")  # пустой каталог — можно

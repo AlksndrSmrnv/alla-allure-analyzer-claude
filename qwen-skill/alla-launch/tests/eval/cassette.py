@@ -37,7 +37,16 @@ def _load(path: Path) -> Any:
 
 
 def save_cassette(fixture: LaunchFixture, directory: Path) -> None:
-    """Записать прогон в каталог кассеты (каталог создаётся, лишние файлы не удаляются)."""
+    """Записать прогон в новый или пустой каталог.
+
+    Непустой каталог не перезаписывается: ответы прошлой записи, которых нет в новой
+    (execution, вложение), смешались бы с ней и подменили бы актуальные данные.
+    """
+    if directory.exists() and any(directory.iterdir()):
+        raise FileExistsError(
+            f"Каталог кассеты {directory} не пуст: укажите новый каталог или удалите старую "
+            "запись целиком."
+        )
     directory.mkdir(parents=True, exist_ok=True)
     _dump(directory / "launch.json", fixture.launch)
     _dump(directory / "results.json", fixture.results)

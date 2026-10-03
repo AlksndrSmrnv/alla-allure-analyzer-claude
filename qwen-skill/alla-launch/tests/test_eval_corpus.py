@@ -69,3 +69,13 @@ def test_validate_labels_rejects_gaps_and_duplicates() -> None:
                                              {"id": "b", "tests": [first]}]})
     with pytest.raises(ValueError, match="другая причина"):
         builder.add_failure("a", cause="known", name="c")
+
+
+def test_validate_labels_rejects_duplicate_group_ids() -> None:
+    builder = LaunchBuilder(1, "x")
+    first = builder.add_failure("a", cause=None, name="a")
+    second = builder.add_failure("b", cause=None, name="b")
+
+    with pytest.raises(ValueError, match="повторяется id группы a"):
+        validate_labels(builder.build("x").fixture, {"groups": [
+            {"id": "a", "tests": [first]}, {"id": "a", "tests": [second]}]})

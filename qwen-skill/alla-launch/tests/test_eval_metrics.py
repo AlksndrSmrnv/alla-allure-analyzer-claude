@@ -146,3 +146,20 @@ def test_analyses_checklist_pairs_labels_with_model_answers(tmp_path: Path) -> N
     assert "- разбор: приложение — пул соединений исчерпан." in text
     assert "- эталон: silent-1 × 1 — причина неизвестна" in text
     assert "- разбор: нет" in text
+
+
+def test_duplicate_group_ids_are_rejected(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    labels = {"groups": [
+        {"id": "orders", "cause": "npe", "tests": [101, 102]},
+        {"id": "orders", "cause": "auth-down", "tests": [103, 108]},
+    ]}
+    with pytest.raises(ValueError, match="повторяется id группы orders"):
+        evaluate(labels, [_view("01", (101, 102, 103, 108))])
+
+    save_cassette(default_launch(), tmp_path / "cassette")
+    (tmp_path / "labels.json").write_text(json.dumps(labels), encoding="utf-8")
+    code = run_eval.main(["--cassette", str(tmp_path / "cassette"),
+                          "--labels", str(tmp_path / "labels.json")])
+
+    assert code == 2
+    assert "повторяется id группы orders" in capsys.readouterr().err
