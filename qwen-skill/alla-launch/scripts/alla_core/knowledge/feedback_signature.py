@@ -14,7 +14,12 @@ from alla_core.utils.log_events import strip_source_marks
 from alla_core.utils.log_focus import strip_log_selection_metadata
 from alla_core.utils.log_utils import parse_log_sections
 from alla_core.utils.step_paths import normalize_step_path
-from alla_core.utils.text_normalization import normalize_text, normalize_text_for_llm
+from alla_core.utils.text_normalization import (
+    NON_CODE_PREFIXES,
+    normalize_text,
+    normalize_text_for_llm,
+    numeric_codes,
+)
 
 _SHORT_MESSAGE_WORDS = 10
 _SHORT_MESSAGE_CHARS = 120
@@ -38,51 +43,8 @@ _CAUSAL_HINT_RE = re.compile(
 _STACK_FRAME_RE = re.compile(
     r"^\s*(?:at\s+\S+\(|\.\.\.\s+\d+\s+more\b|File \".+\", line \d+)",
 )
-_NUMERIC_CONTEXT_RE = re.compile(
-    r"\b(?P<label>"
-    r"code|status|status_code|error_code|response_code|http_status|errno|exit_code|rc"
-    r")\b"
-    r"(?:\s*(?:=|:|is|was|got|returned|returning|return|with))?\s*"
-    r"(?P<number>\d{4,})\b",
-    re.IGNORECASE,
-)
-_EMBEDDED_NUMERIC_CODE_RE = re.compile(
-    r"\b(?P<prefix>[a-z][a-z0-9_]{1,15})-(?P<number>\d{4,}[a-z0-9-]*)\b",
-    re.IGNORECASE,
-)
-_GENERIC_LOG_WORDS = frozenset(
-    {
-        "error",
-        "fatal",
-        "severe",
-        "critical",
-        "traceback",
-        "failed",
-        "failure",
-        "caused",
-        "by",
-        "requestid",
-        "correlationid",
-        "traceid",
-        "spanid",
-        "sessionid",
-        "build",
-        "job",
-        "task",
-        "thread",
-        "worker",
-        "process",
-        "pid",
-        "tid",
-        "from",
-        "for",
-        "the",
-        "and",
-        "with",
-        "while",
-        "during",
-    }
-)
+# Слова без информации о проблеме; они же — префиксы, не образующие код (thread-1234).
+_GENERIC_LOG_WORDS = NON_CODE_PREFIXES
 
 
 def _collapse_whitespace(text: str) -> str:
@@ -94,19 +56,7 @@ def _normalize_signature_soft_base_fragment(text: str) -> str:
 
 
 def _build_numeric_fingerprint(text: str) -> str:
-    normalized = _collapse_whitespace(normalize_text_for_llm(text)).casefold()
-    contextual_values = [
-        f"{match.group('label').casefold()}={match.group('number')}"
-        for match in _NUMERIC_CONTEXT_RE.finditer(normalized)
-    ]
-    embedded_values: list[str] = []
-    for match in _EMBEDDED_NUMERIC_CODE_RE.finditer(normalized):
-        prefix = match.group("prefix").casefold()
-        if prefix in _GENERIC_LOG_WORDS:
-            continue
-        embedded_values.append(f"{prefix}-{match.group('number')}")
-
-    values = _dedupe(contextual_values + embedded_values)
+    values = numeric_codes(text)
     if not values:
         return ""
     return "|".join(sorted(values[:_MAX_NUMERIC_FINGERPRINT_VALUES]))
@@ -269,20 +219,27 @@ def _anchor_line_sort_key(line: _AnchorLine) -> tuple[str, int, int]:
     )
 
 
-def _unique_anchor_lines(lines: list[_AnchorLine]) -> list[_AnchorLine]:
-    """Строки-кандидаты по порядку сортировки, без повторов после нормализации.
+def _signature_fragment(line: _AnchorLine) -> str:
+    """Вид строки в материале сигнатуры (как в :func:`_build_anchor`)."""
+    if line.strict_signature:
+        return _normalize_signature_strict_fragment(line.raw_text)
+    return _normalize_signature_soft_fragment(
+        line.raw_text, include_numeric_fingerprint=line.include_numeric_fingerprint)
 
-    Повторы не занимают места других строк якоря: сигнатура не зависит от того,
-    сколько раз ошибка повторилась в логе (v6).
+
+def _unique_anchor_lines(lines: list[_AnchorLine]) -> list[_AnchorLine]:
+    """Строки-кандидаты без повторов в том виде, в каком они войдут в сигнатуру.
+
+    Порядок и уникальность — по нормализованной строке сигнатуры: строки, которые
+    различаются только ID или временем, занимают одно место якоря и не вытесняют
+    другие строки. Поэтому сигнатура не зависит от того, сколько раз ошибка
+    повторилась в логе (v6).
     """
-    seen: set[str] = set()
-    result: list[_AnchorLine] = []
-    for line in sorted(lines, key=_anchor_line_sort_key):
-        key = _anchor_line_sort_key(line)[0]
-        if key not in seen:
-            seen.add(key)
-            result.append(line)
-    return result
+    unique: dict[str, _AnchorLine] = {}
+    for line in sorted(lines, key=lambda item: (_signature_fragment(item),
+                                                 _anchor_line_sort_key(item))):
+        unique.setdefault(_signature_fragment(line), line)
+    return list(unique.values())
 
 
 def _build_anchor(lines: list[_AnchorLine]) -> _Anchor:

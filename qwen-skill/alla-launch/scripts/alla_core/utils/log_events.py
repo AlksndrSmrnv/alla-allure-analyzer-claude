@@ -30,7 +30,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from alla_core.utils.text_normalization import normalize_text
+from alla_core.utils.text_normalization import normalize_text, numeric_codes
 
 ERROR_LEVELS = frozenset({
     "ERROR", "ERR", "FATAL", "SEVERE", "CRITICAL", "CRIT", "ALERT", "EMERG", "EMERGENCY",
@@ -52,7 +52,10 @@ _TIMESTAMP_RE = re.compile(
     r")"
 )
 _LOGFMT_START_RE = re.compile(r"^(?:time|ts|timestamp|t)=\S")
-_LOGFMT_LEVEL_RE = re.compile(r"(?:^|\s)(?:level|lvl|severity)=\"?(?P<level>[A-Za-z]+)")
+# Пара logfmt: значение в кавычках (с экранированием) читается целиком, поэтому
+# «level=…» внутри msg="…" за поле уровня не принимается.
+_LOGFMT_PAIR_RE = re.compile(r'(?:^|\s)(?P<key>[\w.-]+)=(?P<value>"(?:[^"\\]|\\.)*"|[^\s"]*)')
+_LOGFMT_LEVEL_KEYS = frozenset({"level", "lvl", "severity"})
 _PYTHON_LEVEL_RE = re.compile(r"^(?P<level>[A-Z]+):(?=\S)")
 _JUL_LEVEL_RE = re.compile(r"^(?P<level>[A-Z]+): ")
 _TRACEBACK_RE = re.compile(r"^Traceback \(most recent call last\):")
@@ -96,14 +99,21 @@ def _level_after_timestamp(rest: str) -> str | None:
     return None
 
 
+def _logfmt_level(line: str) -> str | None:
+    """Значение первого самостоятельного поля ``level``/``lvl``/``severity``."""
+    for pair in _LOGFMT_PAIR_RE.finditer(line):
+        if pair.group("key").lower() in _LOGFMT_LEVEL_KEYS:
+            return pair.group("value").strip('"').upper() or None
+    return None
+
+
 def _start(line: str) -> tuple[bool, str | None]:
     """Начинает ли строка запись (время, logfmt, ``ERROR:root:``) и с каким уровнем."""
     match = _TIMESTAMP_RE.match(line)
     if match:
         return True, _level_after_timestamp(line[match.end():])
     if _LOGFMT_START_RE.match(line):
-        level = _LOGFMT_LEVEL_RE.search(line)
-        return True, level.group("level").upper() if level else None
+        return True, _logfmt_level(line)
     python = _PYTHON_LEVEL_RE.match(line)
     if python and python.group("level") in _LEVELS:
         return True, python.group("level")
@@ -180,14 +190,14 @@ def _times(count: int) -> str:
     return "раза" if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14) else "раз"
 
 
-def source_mark(places: list[tuple[int, int]]) -> str:
-    """Пометка источника: строки первого вхождения и места повторов."""
-    first, last = places[0]
+def source_mark(lines: tuple[int, int], repeats: list[tuple[int, int]] | None = None) -> str:
+    """Пометка источника: строки фрагмента и, если событие повторялось, места повторов."""
+    first, last = lines
     mark = f"[{'строка' if first == last else 'строки'} {_span(first, last)}"
-    if len(places) > 1:
-        listed = ", ".join(_span(a, b) for a, b in places[:MAX_LISTED_PLACES])
-        rest = len(places) - MAX_LISTED_PLACES
-        mark += (f" · повторялось {len(places)} {_times(len(places))}: {listed}"
+    if repeats and len(repeats) > 1:
+        listed = ", ".join(_span(a, b) for a, b in repeats[:MAX_LISTED_PLACES])
+        rest = len(repeats) - MAX_LISTED_PLACES
+        mark += (f" · повторялось {len(repeats)} {_times(len(repeats))}: {listed}"
                  + (f" и ещё {rest}" if rest > 0 else ""))
     return mark + "]"
 
@@ -199,18 +209,62 @@ def strip_source_marks(text: str) -> str:
     return SOURCE_MARK_RE.sub("\x00", text).replace("\x00\n", "").replace("\x00", "")
 
 
-def render_error_blocks(text: str) -> str:
-    """Ошибки лога блоками через пустую строку, каждый — с пометкой строк.
+def _is_blank(line: str) -> bool:
+    # Как разделитель блоков в log_focus: пустая строка или только пробелы и табы.
+    return not line.strip(" \t")
 
-    Точные повторы (одинаковые после замены чисел, времени, UUID) сворачиваются в
-    первое вхождение с перечнем мест.
+
+def _paragraphs(lines: list[str]) -> list[tuple[int, int]]:
+    """Смещения непустых участков события: отбор лога делит блоки по пустым строкам."""
+    result: list[tuple[int, int]] = []
+    start: int | None = None
+    for offset, line in enumerate(lines):
+        if _is_blank(line):
+            if start is not None:
+                result.append((start, offset - 1))
+                start = None
+        elif start is None:
+            start = offset
+    if start is not None:
+        result.append((start, len(lines) - 1))
+    return result
+
+
+def _event_span(event: LogEvent) -> tuple[int, int]:
+    paragraphs = _paragraphs(event.lines)
+    end = paragraphs[-1][1] if paragraphs else 0
+    return event.first_line, event.first_line + end
+
+
+def _marked_event(event: LogEvent, repeats: list[tuple[int, int]]) -> str:
+    """Текст события; каждый его абзац начинается своей пометкой строк.
+
+    У первого абзаца — ещё и места повторов. Блок, отобранный без соседних абзацев,
+    так всё равно знает свои строки.
+    """
+    starts = {start: (index, end) for index, (start, end) in enumerate(_paragraphs(event.lines))}
+    out: list[str] = []
+    for offset, line in enumerate(event.lines):
+        if offset in starts:
+            index, end = starts[offset]
+            span = (event.first_line + offset, event.first_line + end)
+            out.append(source_mark(span, repeats if index == 0 else None))
+        out.append(line)
+    return "\n".join(out)
+
+
+def render_error_blocks(text: str) -> str:
+    """Ошибки лога блоками через пустую строку; каждый абзац — с пометкой строк.
+
+    Точные повторы (одинаковые после замены чисел, времени, UUID, но с теми же
+    кодами ошибок — :func:`numeric_codes`) сворачиваются в первое вхождение с
+    перечнем мест.
     """
     first_events: dict[str, LogEvent] = {}
     places: dict[str, list[tuple[int, int]]] = {}
     for event in error_events(text):
-        key = normalize_text(event.text)
+        # Коды ошибок различают события, хотя normalize_text сводит числа к <NUM>.
+        key = normalize_text(event.text) + "\0" + "|".join(numeric_codes(event.text))
         first_events.setdefault(key, event)
-        places.setdefault(key, []).append((event.first_line, event.last_line))
-    return "\n\n".join(
-        f"{source_mark(places[key])}\n{event.text}" for key, event in first_events.items()
-    )
+        places.setdefault(key, []).append(_event_span(event))
+    return "\n\n".join(_marked_event(event, places[key]) for key, event in first_events.items())

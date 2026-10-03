@@ -65,6 +65,7 @@ def test_neighbouring_info_is_not_swallowed_by_the_stack() -> None:
     "2026-10-03 10:00:00,123 WARN [main] c.e.Svc: fallback ERROR budget is 3",
     "10:00:00.123 [main] some error happened in worker",
     'time=2026-10-03T10:00:00Z level=warn msg="error budget low"',
+    'time=2026-10-03T10:00:00Z msg="got level=error in payload" level=info',
 ])
 def test_error_words_outside_the_level_position_are_not_errors(line: str) -> None:
     assert not list(error_events(line + "\n"))
@@ -79,6 +80,8 @@ def test_error_words_outside_the_level_position_are_not_errors(line: str) -> Non
     "2026/10/03 10:00:00 [crit] 1#0: disk failure",
     'ts=2026-10-03T10:00:00Z level=fatal msg="down"',
     "CRITICAL:payments:gateway down",
+    'time=2026-10-03T10:00:00Z msg="expected level=info in payload" level=error',
+    'time=2026-10-03T10:00:00Z level="ERROR" msg="quoted level"',
 ])
 def test_error_levels_in_the_level_position(line: str) -> None:
     assert len(list(error_events(line + "\n"))) == 1

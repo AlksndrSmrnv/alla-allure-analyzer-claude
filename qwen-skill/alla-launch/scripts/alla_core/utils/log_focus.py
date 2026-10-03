@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import heapq
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+
+from alla_core.utils.log_events import SOURCE_MARK_RE
 
 FOCUS_NOTE = "[лог сокращён: отобраны блоки по связи с ошибкой, пропуски помечены]"
 CONTEXT_LINES = 2
@@ -159,17 +162,17 @@ def focus_log(
         # Лимит меньше заголовков и маркеров: лучше фрагмент самого важного
         # блока (из исходного текста), чем одни пометки о пропусках. Если
         # пояснение съест почти весь лимит — без него: обрезку и так видно по «…».
-        best = originals[priority[0].position]
+        best = originals[priority[0].position].strip("\n")
         # Footer не должен вытеснить весь полезный текст. Tiny-budget fallback
         # может опустить заголовки промпта, но всегда выбирает настоящий блок.
         footer_suffix = f"\n\n{footer}" if footer else ""
         room = budget - len(FOCUS_NOTE) - 2 - len(footer_suffix)
         if room >= MIN_FRAGMENT_CHARS:
-            return f"{FOCUS_NOTE}\n\n{_fragment(best, tokens, room)}{footer_suffix}"
+            return f"{FOCUS_NOTE}\n\n{_marked_fragment(best, tokens, room)}{footer_suffix}"
         room = budget - len(footer_suffix)
         if footer and room >= MIN_FRAGMENT_CHARS:
-            return _fragment(best, tokens, room) + footer_suffix
-        return _fragment(best, tokens, budget)
+            return _marked_fragment(best, tokens, room) + footer_suffix
+        return _marked_fragment(best, tokens, budget)
     return result if len(result) <= budget else result[: budget - 1] + "…"
 
 
@@ -208,7 +211,39 @@ def _block_score(text: str, tokens: dict[str, float]) -> float:
     return _score(text, tokens) + bonus
 
 
+def _split_source_mark(text: str) -> tuple[str | None, str]:
+    """Пометка строк источника в начале блока и остальной текст."""
+    first, newline, rest = text.partition("\n")
+    if newline and SOURCE_MARK_RE.fullmatch(first):
+        return first, rest
+    return None, text
+
+
+def _with_mark(text: str, limit: int, shrink: Callable[[str, int], str]) -> str:
+    """Сократить блок, сохранив пометку источника целиком или не оставив от неё ничего.
+
+    Обрезанная пометка перестаёт распознаваться и попала бы в материал сигнатуры и
+    признак базы знаний как строка лога.
+    """
+    mark, body = _split_source_mark(text)
+    if mark is None:
+        return shrink(text, limit)
+    room = limit - len(mark) - 1
+    if room < MIN_FRAGMENT_CHARS:
+        return shrink(body, limit)
+    return f"{mark}\n{shrink(body, room)}"
+
+
 def _shrink_block(text: str, tokens: dict[str, float], limit: int) -> str:
+    """Сократить огромный блок; пометка источника сохраняется целиком (или убирается)."""
+    return _with_mark(text, limit, lambda body, room: _shrink_lines(body, tokens, room))
+
+
+def _marked_fragment(text: str, tokens: dict[str, float], room: int) -> str:
+    return _with_mark(text, room, lambda body, size: _fragment(body, tokens, size))
+
+
+def _shrink_lines(text: str, tokens: dict[str, float], limit: int) -> str:
     """Сократить огромный блок до значимых строк и их контекста.
 
     Значимые строки — совпадающие с текстом ошибки; если таких нет (assertion

@@ -102,7 +102,7 @@ def test_exact_repeats_fold_into_the_first_occurrence() -> None:
 @pytest.mark.parametrize(("count", "word"), [(2, "раза"), (4, "раза"), (5, "раз"), (11, "раз"),
                                              (12, "раз"), (21, "раз"), (22, "раза")])
 def test_repeat_count_is_spelled_in_russian(count: int, word: str) -> None:
-    assert f"повторялось {count} {word}:" in source_mark([(i, i) for i in range(count)])
+    assert f"повторялось {count} {word}:" in source_mark((0, 0), [(i, i) for i in range(count)])
 
 
 def test_distinct_errors_are_not_folded() -> None:
@@ -197,3 +197,75 @@ def test_new_formats_sign_by_the_found_error(log: str, line: str) -> None:
     assert context is not None
     assert context.base_issue_signature.basis == "message_log_anchor"
     assert line in context.audit_text.split("[log]", 1)[1]
+
+
+# ---------------------------------------------------------------------------
+# Регрессии ревью шага 2
+# ---------------------------------------------------------------------------
+
+
+def test_folding_keeps_events_with_different_error_codes() -> None:
+    log = ("2026-10-03 10:00:00 [ERROR] gateway failed error_code=10001 request 77777\n"
+           "2026-10-03 10:00:01 [ERROR] gateway failed error_code=10002 request 77778\n"
+           "2026-10-03 10:00:02 [ERROR] gateway failed error_code=10001 request 77779\n"
+           "2026-10-03 10:00:03 [ERROR] ORA-01017: invalid username\n"
+           "2026-10-03 10:00:04 [ERROR] ORA-12541: invalid username\n"
+           "2026-10-03 10:00:05 [ERROR] job on thread-1234 failed\n"
+           "2026-10-03 10:00:06 [ERROR] job on thread-5678 failed\n")
+    blocks = render_error_blocks(log)
+
+    assert "error_code=10002" in blocks and "ORA-12541" in blocks
+    assert "[строка 1 · повторялось 2 раза: 1, 3]" in blocks
+    assert "[строка 6 · повторялось 2 раза: 6, 7]" in blocks  # thread-N — не код
+
+
+def test_repeats_with_different_ids_do_not_crowd_out_other_anchor_lines() -> None:
+    def log(repeats: int) -> str:
+        return "".join(
+            f"2026-10-03 10:00:0{i} [ERROR] PaymentService timeout request id {10001 + i}\n"
+            f"\tat ru.company.Pay.call(Pay.java:{10 + i})\n" for i in range(repeats)
+        ) + "2026-10-03 10:00:09 [ERROR] ZooService connection refused\n"
+
+    once = _enrich({"app.log": log(1)}, status_message="request failed")
+    eight = _enrich({"app.log": log(8)}, status_message="request failed")
+
+    assert _signature(once)[0] == _signature(eight)[0]
+    assert "ZooService connection refused" in _signature(eight)[1]
+
+
+def test_long_source_mark_survives_block_shrinking() -> None:
+    preamble = "".join(f"2026-10-03 09:00:00 [INFO] tick {i}\n" for i in range(100_000))
+    frames = "".join(f"\tat ru.company.deep.Layer{i}.call(Layer{i}.java:{i + 1})\n"
+                     for i in range(60))
+
+    def log(repeats: int) -> str:
+        event = "2026-10-03 10:00:00 [ERROR] OrderService: payment gateway unavailable\n" + frames
+        return preamble + "2026-10-03 10:00:00 [INFO] between\n".join([event] * repeats)
+
+    six = _enrich({"app.log": log(6)}, budget=2000, status_message="gateway unavailable")
+    eight = _enrich({"app.log": log(8)}, budget=2000, status_message="gateway unavailable")
+
+    for summary in (six, eight):
+        mark = summary.log_snippet.split("\n")[1]
+        assert len(mark) > 120 and SOURCE_MARK_RE.fullmatch(mark), mark
+        assert "[строк" not in strip_source_marks(summary.log_snippet)
+    assert _signature(six) == _signature(eight)
+
+
+def test_every_paragraph_of_an_event_carries_its_lines() -> None:
+    log = ("2026-02-09 10:23:45,123 [ERROR] Exception occurred\n"
+           "    at com.example.Main.run(Main.java:10)\n"
+           "\n\n"
+           "Caused by: java.io.IOException: disk\n"
+           "   \n"
+           "more context\n"
+           "2026-02-09 10:23:46,200 [WARN] Recovery\n")
+    blocks = render_error_blocks(log)
+
+    assert blocks.splitlines()[0] == "[строки 1–2]"
+    assert "\n[строка 5]\nCaused by: java.io.IOException: disk" in blocks
+    assert "\n[строка 7]\nmore context" in blocks
+    assert strip_source_marks(blocks) == _extract_error_blocks(log)
+    focused = focus_log("--- [файл: app.log] ---\n" + blocks + "\n" + "x" * 50,
+                        "IOException disk", 220)
+    assert "[… пропущено блоков: 1, строк: 3 …]\n\n[строка 5]\nCaused by: java.io.IOException: disk" in focused

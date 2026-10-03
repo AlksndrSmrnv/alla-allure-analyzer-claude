@@ -127,3 +127,75 @@ def canonicalize_kb_error_example(text: str) -> str:
     if not cleaned:
         return ""
     return normalize_text(cleaned)
+
+
+# ---------------------------------------------------------------------------
+# Значимые числовые коды
+# ---------------------------------------------------------------------------
+
+# Коды ошибок — не волатильные данные: «error_code=10001» и «error_code=10002» —
+# разные ошибки, хотя normalize_text сводит оба числа к <NUM>. Используются в
+# сигнатуре (numeric fingerprint) и в свёртке повторов лога.
+_NUMERIC_CONTEXT_RE = re.compile(
+    r"\b(?P<label>"
+    r"code|status|status_code|error_code|response_code|http_status|errno|exit_code|rc"
+    r")\b"
+    r"(?:\s*(?:=|:|is|was|got|returned|returning|return|with))?\s*"
+    r"(?P<number>\d{4,})\b",
+    re.IGNORECASE,
+)
+_EMBEDDED_NUMERIC_CODE_RE = re.compile(
+    r"\b(?P<prefix>[a-z][a-z0-9_]{1,15})-(?P<number>\d{4,}[a-z0-9-]*)\b",
+    re.IGNORECASE,
+)
+NON_CODE_PREFIXES = frozenset(
+    {
+        "error",
+        "fatal",
+        "severe",
+        "critical",
+        "traceback",
+        "failed",
+        "failure",
+        "caused",
+        "by",
+        "requestid",
+        "correlationid",
+        "traceid",
+        "spanid",
+        "sessionid",
+        "build",
+        "job",
+        "task",
+        "thread",
+        "worker",
+        "process",
+        "pid",
+        "tid",
+        "from",
+        "for",
+        "the",
+        "and",
+        "with",
+        "while",
+        "during",
+    }
+)
+
+
+def numeric_codes(text: str) -> list[str]:
+    """Коды из текста по порядку, без повторов: ``code=10001``, ``ora-01017``…
+
+    Контекстные (``code``/``status``/``errno`` … и 4+ цифры) и встроенные
+    (``ORA-01017``, но не ``thread-1234``: префиксы из :data:`NON_CODE_PREFIXES`).
+    """
+    normalized = " ".join(normalize_text_for_llm(text).split()).casefold()
+    values = [
+        f"{match.group('label').casefold()}={match.group('number')}"
+        for match in _NUMERIC_CONTEXT_RE.finditer(normalized)
+    ]
+    for match in _EMBEDDED_NUMERIC_CODE_RE.finditer(normalized):
+        prefix = match.group("prefix").casefold()
+        if prefix not in NON_CODE_PREFIXES:
+            values.append(f"{prefix}-{match.group('number')}")
+    return list(dict.fromkeys(values))
