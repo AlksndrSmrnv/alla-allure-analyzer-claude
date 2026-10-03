@@ -337,6 +337,9 @@ launch ID или ссылке на запуск он получает резул
    `failed_step_path` и step similarity ниже `clustering_step_strict_threshold`,
    пара принудительно не сливается (gate применяется до message/log, log
    override его не обходит).
+3. При `logs_clustering_weight=0` log matrix не создаётся и лог не уменьшает
+   мягкий штраф за разные шаги. Остальные формулы и перераспределение весов
+   сохраняются.
 
 ### Gotchas
 

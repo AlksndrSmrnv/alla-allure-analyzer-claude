@@ -356,7 +356,7 @@ class ClusteringService:
             step_docs = [step_documents[i] for i in has_text_indices]
             actuals = [assertion_actuals[i] for i in has_text_indices]
             labels = self._cluster_texts(
-                message_docs, trace_docs, log_docs, step_docs,
+                message_docs, trace_docs, log_docs if log_weight_positive else None, step_docs,
                 assertion_actuals=actuals,
             )
 
@@ -415,7 +415,7 @@ class ClusteringService:
         trace_sim = self._pairwise_similarity(trace_documents)
 
         log_sim: np.ndarray | None = None
-        if log_documents:
+        if log_documents and self._config.log_similarity_weight > 0:
             log_sim = self._pairwise_similarity(log_documents)
         step_sim: np.ndarray | None = None
         if step_documents:
@@ -441,7 +441,7 @@ class ClusteringService:
         has_trace = [bool(doc.strip()) for doc in trace_documents]
         has_log = (
             [bool(doc.strip()) for doc in log_documents]
-            if log_documents
+            if log_documents and log_weight > 0
             else [False] * n
         )
         has_step = (
@@ -542,7 +542,7 @@ class ClusteringService:
 
                 if step_sim is not None and has_step[i] and has_step[j]:
                     step_penalty = self._config.step_path_mismatch_penalty
-                    if has_log[i] and has_log[j]:
+                    if log_weight > 0 and has_log[i] and has_log[j]:
                         step_penalty *= self._config.step_path_log_reduction
                     pair_sim = max(
                         0.0,
