@@ -38,8 +38,23 @@ python3.11 -m venv .venv && .venv/bin/pip install -r qwen-skill/alla-launch/requ
 .venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case A01 --output /tmp/alla-stand-001
 ```
 
-Последняя команда — настоящий Qwen Code на синтетическом TestOps (платно, минуты): после
-правки `SKILL.md`, справочников или заданий; сценарии и границы — `docs/skill-quality.md`.
+## Проверка на настоящем Qwen Code
+
+Скилл можно и нужно проверять в целевом runtime: Qwen Code CLI установлен (`qwen`, модель
+`qwen/qwen3.8-flash` через OpenRouter, настройки в `~/.qwen/settings.json`), а стенд
+`tests/qwen_stand.py` гоняет его на синтетическом TestOps (последняя команда выше). Pytest
+проверяет протокол; выполняет ли модель инструкции — видно только на стенде. Запускай его
+после правки `SKILL.md`, справочников, текстов заданий и правил исполнителя.
+
+- Сценарии — `qwen_stand.py list`; короткие (A03, A04, P01, E03) — до минуты, A01/E06 — 2–3
+  минуты, P04 (40 кластеров, субагенты) — 8–10 минут и 3–4 млн токенов: только когда
+  меняются пакеты или правила субагентов.
+- Диагностика — один запуск с `--api-log` (что модель на самом деле получила), а не серия
+  повторов на догадках. Повторы (`--repeat`) — чтобы оценить разброс уже исправленного.
+- `inconclusive` с пунктами «оценить» — автоматические проверки прошли, оси вроде Evidence
+  оцени сам по `alla-reports/` и trace. Проверки стенда без модели — `recheck`.
+- Подробности, границы песочницы и найденные особенности Qwen — `docs/skill-quality.md`
+  («Стенд Qwen») и `docs/harness-context.md`.
 
 Корневой `pyproject.toml` содержит только конфиг ruff/mypy/pyright/pytest, пакета нет.
 pyright настроен для навигации (`typeCheckingMode = "off"`), типы проверяет mypy.
