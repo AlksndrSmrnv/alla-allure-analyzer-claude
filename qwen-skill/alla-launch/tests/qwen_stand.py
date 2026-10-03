@@ -519,7 +519,8 @@ def check_allowed_writes(ctx: Context) -> dict[str, Any]:
 def check_project_unchanged(ctx: Context) -> dict[str, Any]:
     status = run(["git", "-C", str(ctx.project), "status", "--porcelain",
                   "--untracked-files=all"]).stdout
-    changed = [line for line in status.splitlines() if "alla-reports/" not in line]
+    changed = [line for line in status.splitlines()
+               if "alla-reports/" not in line and ".qwen/tmp/" not in line]
     return bad("; ".join(changed[:10])) if changed else ok()
 
 
