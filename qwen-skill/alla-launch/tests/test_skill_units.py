@@ -635,3 +635,17 @@ def test_cli_does_not_load_clustering_libraries() -> None:
         check=True,
     )
     assert result.stdout.strip() == "[]"
+
+
+
+@pytest.mark.parametrize(("frame", "openable"), [
+    ("at ru.company.orders.OrderTest.createOrder(OrderTest.java:6)", True),
+    ("at createOrder (/ci/build/tests/orders.spec.ts:12:3)", True),
+    ('File "/ci/build/tests/api/test_orders.py", line 12, in test_create', True),
+    ("at ru.company.Job.run(Unknown Source)", False),
+    ("at ru.company.Job.run(Native Method)", False),
+    ("Caused by: java.net.ConnectException: Connection refused", False),
+])
+def test_has_frame_files_needs_a_file_position(frame: str, openable: bool) -> None:
+    from alla_skill_lib.cluster_task import has_frame_files
+    assert has_frame_files([frame]) is openable

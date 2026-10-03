@@ -162,9 +162,18 @@ def project_frames(trace: str | None, limit: int = MAX_FRAME_LINES) -> list[str]
     return deduped
 
 
+# Файловая позиция кадра: «(OrderTest.java:6)», «(/app/orders.ts:12:3)» или
+# «File "x.py", line 12». «(Unknown Source)» и «(Native Method)» — без файла.
+_FRAME_FILE_RE = re.compile(r"\([^()\s]+\.\w+:\d+(?::\d+)?\)|File \"[^\"]+\", line \d+")
+
+
 def has_frame_files(frames: list[str]) -> bool:
-    """Есть ли среди кадров строки с файлами проекта (а не одни «Caused by»)."""
-    return any(_FRAME_RE.match(line) for line in frames)
+    """Есть ли среди кадров позиции в файлах — то, что можно открыть.
+
+    Кадры без файла («Caused by», «Unknown Source», «Native Method») остаются в задании как
+    данные о причине, но отсылки «открой файлы из кадров» по ним нет.
+    """
+    return any(_FRAME_RE.match(line) and _FRAME_FILE_RE.search(line) for line in frames)
 
 
 def _is_framework_frame(line: str) -> bool:
@@ -261,7 +270,7 @@ def build_cluster_task(
     elif frames:
         # В длинном трейсе фреймворка поздний «Caused by» может быть единственным указанием
         # на причину (основной трейс в данных обрезан): сохраняем его, но без файлов.
-        sections += ["", "--- Причины из стек-трейса (Caused by) ---", *frames]
+        sections += ["", "--- Строки стек-трейса без файлов (данные о причине) ---", *frames]
     # Раздел есть всегда: «Правила» велят начинать с него, и без него субагенты искали код
     # сами — ls/find/git log (стенд Qwen, P04).
     sections += ["", "--- Где искать код автотеста (пути от корня проекта) ---"]

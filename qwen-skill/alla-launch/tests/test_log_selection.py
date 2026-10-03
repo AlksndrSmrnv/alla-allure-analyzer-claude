@@ -301,6 +301,7 @@ def test_prompt_tiny_fallback_drops_footer_before_meaningful_content(budget):
     [],
     ["at ru.company.orders.OrderTest.createOrder(OrderTest.java:6)"],
     ["Caused by: java.net.ConnectException: Connection refused"],
+    ["at ru.company.Job.run(Unknown Source)"],
 ])
 def test_task_without_code_hints_says_code_not_found_and_forbids_searching(frames):
     # «Правила» велят начинать с раздела «Где искать код автотеста»; без него субагенты
