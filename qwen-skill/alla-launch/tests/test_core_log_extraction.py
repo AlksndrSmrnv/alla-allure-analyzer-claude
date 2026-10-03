@@ -1,7 +1,27 @@
 """Тесты для LogExtractionService — извлечение ERROR-блоков из логов."""
 
+import logging
+from contextlib import contextmanager
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
 from skill_fixtures import without_libmagic  # noqa: F401
-from alla_core.services.log_extraction_service import _extract_error_blocks
+from alla_core.models.common import TestStatus as Status
+from alla_core.models.testops import AttachmentMeta, FailedTestSummary
+from alla_core.services import log_extraction_service
+from alla_core.services.log_extraction_service import (
+    LogExtractionConfig,
+    LogExtractionService,
+    _decode_text,
+    _detect_and_extract_http,
+    _detect_content_type,
+    _extract_error_blocks,
+    _extract_text_http_info,
+    _scan_json_for_http_info,
+)
+from skill_factories import make_failed_test_summary
 
 
 class TestExtractErrorBlocks:
@@ -124,14 +144,6 @@ class TestExtractErrorBlocks:
         assert "[INFO]" not in result
 
 
-from contextlib import contextmanager
-from types import SimpleNamespace
-from unittest.mock import patch
-
-from alla_core.services import log_extraction_service
-from alla_core.services.log_extraction_service import _decode_text, _detect_content_type
-
-
 @contextmanager
 def _fake_magic(*mimes: str):
     """libmagic в окружении скилла нет: подставляем фейковый модуль ``magic``.
@@ -206,9 +218,6 @@ class TestDecodeText:
         assert result is None
 
 
-from alla_core.services.log_extraction_service import _extract_text_http_info
-
-
 class TestExtractTextHttpInfo:
     def test_extracts_rquid_from_json_text(self):
         text = '{"RqUID": "abc-123", "statusCode": 500, "error": "Service unavailable"}'
@@ -260,9 +269,6 @@ class TestExtractTextHttpInfo:
         text = '{"faultCode": "SVC0001", "faultString": "Internal error"}'
         result = _extract_text_http_info(text)
         assert "SVC0001" in result
-
-
-from alla_core.services.log_extraction_service import _detect_and_extract_http, _scan_json_for_http_info
 
 
 class TestDetectAndExtractHttp:
@@ -387,17 +393,6 @@ class TestScanJsonForHttpInfo:
         ]
         result = _scan_json_for_http_info(obj)
         assert "id-1" in result or "id-2" in result
-
-
-import logging
-
-import pytest
-from unittest.mock import patch
-
-from alla_core.models.testops import AttachmentMeta, FailedTestSummary
-from alla_core.models.common import TestStatus as Status
-from alla_core.services.log_extraction_service import LogExtractionConfig, LogExtractionService
-from skill_factories import make_failed_test_summary
 
 
 class FakeAttachmentProvider:
