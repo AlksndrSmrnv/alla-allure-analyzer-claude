@@ -237,24 +237,57 @@ def test_shell_check_accepts_quoted_absolute_and_directory_relative_paths(tmp_pa
     assert CHECKS["shell_only_skill_commands"](ctx)["status"] == "pass"
 
 
-def test_grep_reading_forbidden_file_fails_even_without_path(tmp_path: Path) -> None:
-    # В trace у grep_search только счётчик совпадений — стенд повторяет поиск сам (ревью).
-    ctx = context(tmp_path, events(
-        ("grep_search", {"pattern": "attempts", "glob": "state.json"}, "Found 1 match")))
-    (ctx.project / "alla-reports/run-1").mkdir(parents=True)
-    (ctx.project / "alla-reports/run-1/state.json").write_text('{"attempts": {}}')
-    result = CHECKS["allowed_reads"](ctx)
-    assert result["status"] == "fail" and "state.json" in result["evidence"]
+@pytest.mark.parametrize("tool_input", [
+    {"pattern": "attempts", "glob": "state.json"},  # без path — весь проект (ревью)
+    {"pattern": "ATTEMPTS", "glob": "*.{json,txt}"},  # регистр и glob Qwen не повторяем
+    {"pattern": "x", "path": "alla-reports"},
+    {"pattern": "x", "path": "alla-reports/run-1"},
+    {"pattern": "x", "path": "alla-reports/run-1/evidence"},
+    {"pattern": "x", "path": "alla-reports/run-1/state.json"},
+    {"pattern": "x", "path": ".qwen/skills/alla-launch"},
+    {"pattern": "x", "path": "~/.cache"},
+])
+def test_grep_scope_with_service_files_fails_whatever_the_contents(
+        tmp_path: Path, tool_input: dict[str, Any]) -> None:
+    # Судим по области поиска: результат не зависит от содержимого файлов после прогона.
+    ctx = context(tmp_path, events(("grep_search", tool_input, "Found 1 match")))
+    assert CHECKS["allowed_reads"](ctx)["status"] == "fail", tool_input
 
 
-def test_grep_over_allowed_files_passes(tmp_path: Path) -> None:
-    ctx = context(tmp_path, events(
-        ("grep_search", {"pattern": "ПРИЧИНА", "path": str(tmp_path / "p")}, "Found 1 match")))
-    (ctx.project / "alla-reports/run-1/analyses").mkdir(parents=True)
-    (ctx.project / "alla-reports/run-1/analyses/01.md").write_text("ПРИЧИНА: тест")
-    (ctx.project / "alla-reports/run-1/state.json").write_text("{}")  # без совпадения
+@pytest.mark.parametrize("path", ["src", "alla-reports/run-1/analyses",
+                                  ".qwen/skills/alla-launch/references"])
+def test_grep_in_allowed_folders_passes(tmp_path: Path, path: str) -> None:
+    ctx = context(tmp_path, events(("grep_search", {"pattern": "ПРИЧИНА", "path": path}, "")))
     assert CHECKS["allowed_reads"](ctx)["status"] == "pass"
 
+
+def test_tilde_path_is_read_in_the_stand_home(tmp_path: Path) -> None:
+    # Qwen раскрывает «~» в HOME своего процесса: это чтение вне проекта (ревью).
+    ctx = context(tmp_path, events(("read_file", {"file_path": "~/.qwen/settings.json"}, "")))
+    ctx.home = tmp_path / "home"
+    (ctx.home / ".qwen").mkdir(parents=True)
+    (ctx.home / ".qwen/settings.json").write_text("{}")
+    result = CHECKS["allowed_reads"](ctx)
+    assert result["status"] == "fail" and "вне проекта" in result["evidence"]
+
+
+@pytest.mark.parametrize("command", [
+    f"python3 {SKILL} next#;id",  # «#» внутри слова — не комментарий для shell (ревью)
+    f"python3 {SKILL} next #; id",
+])
+def test_shell_check_does_not_hide_commands_behind_hash(tmp_path: Path, command: str) -> None:
+    ctx = context(tmp_path, events(("run_shell_command", {"command": command}, "")))
+    assert CHECKS["shell_only_skill_commands"](ctx)["status"] == "fail"
+
+
+def test_cd_resets_the_directory_for_the_script_path(tmp_path: Path) -> None:
+    # После cd в корень скрипт ищется от корня, а не от directory вызова (ревью).
+    root = tmp_path / "p"
+    ctx = context(tmp_path, events((
+        "run_shell_command",
+        {"command": f"cd {root} && python3 scripts/alla_skill.py next",
+         "directory": str(root / ".qwen/skills/alla-launch")}, "")))
+    assert CHECKS["shell_only_skill_commands"](ctx)["status"] == "fail"
 
 
 def test_skill_version_covers_subagent_instructions() -> None:
