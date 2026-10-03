@@ -82,7 +82,7 @@ def test_signature_is_stable_across_runs_and_pinned() -> None:
     assert first != different
     # Если хэш изменился после синхронизации ядра — старые записи alla-kb перестанут
     # узнаваться точно: это нужно осознанно учесть, а не пропустить.
-    assert first == "v5:f6a84ac7ede67c5fb4228e1dc50d566ce1090a99a1fce340426a75a36643fdbb"
+    assert first == "v6:dbf5a25c700231380c17fea97646090cc549789943670626ec1ff6c87c7e3f45"
 
 
 def test_fingerprint_matching_is_number_and_id_agnostic() -> None:
@@ -170,7 +170,7 @@ def _record(entry_id: str = "npe_order_12345678", **overrides: object) -> KBReco
 
 def test_kb_save_is_stable_and_server_compatible(tmp_path: Path) -> None:
     kb = ProjectKB(tmp_path / "alla-kb")
-    record = _record(confirmed_signatures=["v5:b", "v5:a"])
+    record = _record(confirmed_signatures=["v6:b", "v6:a"])
     path = kb.save(record)
     first = path.read_bytes()
     kb.save(kb.get(record.id))  # type: ignore[arg-type]
@@ -178,7 +178,7 @@ def test_kb_save_is_stable_and_server_compatible(tmp_path: Path) -> None:
     assert path.read_bytes() == first
     assert first.endswith(b"\n")
     data = json.loads(first)
-    assert data["confirmed_signatures"] == ["v5:a", "v5:b"]
+    assert data["confirmed_signatures"] == ["v6:a", "v6:b"]
     KBEntry.model_validate(data)
     assert (tmp_path / "alla-kb" / "README.md").is_file()
 
@@ -193,12 +193,12 @@ def test_kb_keeps_hand_added_fields_and_writes_atomically(tmp_path: Path) -> Non
 
     loaded = kb.get(record.id)
     assert loaded is not None
-    loaded.confirm("v5:new")  # remember/reject перезаписывают файл целиком
+    loaded.confirm("v6:new")  # remember/reject перезаписывают файл целиком
     kb.save(loaded)
 
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert (saved["jira"], saved["owner"], saved["tags"]) == ("QA-123", "team-orders", ["api", "orders"])
-    assert saved["confirmed_signatures"] == ["v5:new"]
+    assert saved["confirmed_signatures"] == ["v6:new"]
     assert "step_path" not in saved
     assert not list((tmp_path / "alla-kb").glob("*.tmp"))
     assert b"\r\n" not in path.read_bytes()
@@ -259,22 +259,22 @@ def test_kb_ids_and_signature_invariants(tmp_path: Path) -> None:
     assert make_entry_id("NPE в OrderService", "customer is null").startswith("npe_v_orderservice_")
 
     record = _record()
-    record.confirm("v5:x")
-    record.reject("v5:x")
-    assert record.rejected_signatures == ["v5:x"] and record.confirmed_signatures == []
-    record.confirm("v5:x")
-    assert record.confirmed_signatures == ["v5:x"] and record.rejected_signatures == []
+    record.confirm("v6:x")
+    record.reject("v6:x")
+    assert record.rejected_signatures == ["v6:x"] and record.confirmed_signatures == []
+    record.confirm("v6:x")
+    assert record.confirmed_signatures == ["v6:x"] and record.rejected_signatures == []
 
 
 def test_match_cluster_orders_exact_first_and_drops_rejected() -> None:
     evidence = "java.lang.NullPointerException: customer is null"
-    exact = _record("exact_1", confirmed_signatures=["v5:sig"], error_example="customer is null")
+    exact = _record("exact_1", confirmed_signatures=["v6:sig"], error_example="customer is null")
     by_fp = _record("by_fp_1", error_example="NullPointerException")
-    rejected = _record("rejected_1", rejected_signatures=["v5:sig"], error_example="customer is null")
+    rejected = _record("rejected_1", rejected_signatures=["v6:sig"], error_example="customer is null")
     unrelated = _record("unrelated_1", error_example="Payment declined")
     extra = [_record(f"extra_{i}", error_example="customer") for i in range(3)]
 
-    matches = match_cluster([by_fp, rejected, unrelated, exact, *extra], "v5:sig", evidence)
+    matches = match_cluster([by_fp, rejected, unrelated, exact, *extra], "v6:sig", evidence)
 
     assert [m["id"] for m in matches] == ["exact_1", "by_fp_1", "extra_0"]
     assert [m["origin"] for m in matches] == ["exact", "fingerprint", "fingerprint"]
@@ -286,32 +286,32 @@ def test_match_cluster_orders_exact_first_and_drops_rejected() -> None:
 
 def test_history_recurrence(tmp_path: Path) -> None:
     append_run(tmp_path, [
-        {"date": "2026-09-20", "launch_id": 1, "signature": "v5:a",
+        {"date": "2026-09-20", "launch_id": 1, "signature": "v6:a",
          "category": "приложение", "cause": "старая причина", "kb_entry": None},
-        {"date": "2026-09-25", "launch_id": 2, "signature": "v5:other",
+        {"date": "2026-09-25", "launch_id": 2, "signature": "v6:other",
          "category": "окружение", "cause": "другая ошибка", "kb_entry": None},
-        {"date": "2026-09-26", "launch_id": 2, "signature": "v5:a",
+        {"date": "2026-09-26", "launch_id": 2, "signature": "v6:a",
          "category": "окружение", "cause": "дубль прогона 2", "kb_entry": None},
-        {"date": "2026-09-27", "launch_id": 9, "signature": "v5:a",
+        {"date": "2026-09-27", "launch_id": 9, "signature": "v6:a",
          "category": "тест", "cause": "тот же прогон", "kb_entry": None},
-        {"date": "2026-09-28", "launch_id": 3, "signature": "v5:z",
+        {"date": "2026-09-28", "launch_id": 3, "signature": "v6:z",
          "category": "данные", "cause": "по записи", "kb_entry": "kb_1"},
     ])
     with (tmp_path / "history.jsonl").open("a", encoding="utf-8") as stream:
         stream.write("{broken")  # оборванная строка без перевода строки
 
     append_run(tmp_path, [
-        {"date": "2026-09-29", "launch_id": 4, "signature": "v5:tail", "kb_entry": None},
+        {"date": "2026-09-29", "launch_id": 4, "signature": "v6:tail", "kb_entry": None},
     ])  # не должна склеиться с оборванной строкой
     history = load_history(tmp_path)
     assert len(history) == 6 and history[-1]["launch_id"] == 4
 
-    info = recurrence(history, launch_id=9, signature="v5:a", kb_ids=set())
+    info = recurrence(history, launch_id=9, signature="v6:a", kb_ids=set())
     assert info == {"launches": 2, "first_date": "2026-09-20", "last_date": "2026-09-26"}
-    assert recurrence(history, launch_id=9, signature="v5:q", kb_ids={"kb_1"})["launches"] == 1
-    assert recurrence(history, launch_id=9, signature="v5:q", kb_ids=set()) is None
+    assert recurrence(history, launch_id=9, signature="v6:q", kb_ids={"kb_1"})["launches"] == 1
+    assert recurrence(history, launch_id=9, signature="v6:q", kb_ids=set()) is None
     # Похожая по первой строке, но другая ошибка (другая сигнатура) повтором не считается.
-    assert recurrence(history, launch_id=9, signature="v5:similar", kb_ids=set()) is None
+    assert recurrence(history, launch_id=9, signature="v6:similar", kb_ids=set()) is None
 
     text = "\n".join(render_recurrence(info, has_exact_kb=False))
     assert "20.09.2026" in text and "2 других прогонах" in text

@@ -18,7 +18,7 @@ class FeedbackVote(str, Enum):
 class FeedbackIssueSignature(BaseModel):
     """Стабильная сигнатура ошибки для exact feedback memory."""
 
-    DEFAULT_VERSION: ClassVar[int] = 5
+    DEFAULT_VERSION: ClassVar[int] = 6
 
     signature_hash: str = Field(
         min_length=64,

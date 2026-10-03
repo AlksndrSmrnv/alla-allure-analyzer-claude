@@ -45,8 +45,9 @@ from alla_core.models.clustering import (
     FailureCluster,
 )
 from alla_core.models.testops import FailedTestSummary
-from alla_core.utils.log_utils import extract_correlation_from_log
+from alla_core.utils.log_events import strip_source_marks
 from alla_core.utils.log_focus import strip_log_selection_metadata
+from alla_core.utils.log_utils import extract_correlation_from_log
 from alla_core.utils.step_paths import normalize_step_path
 from alla_core.utils.text_normalization import normalize_text
 
@@ -228,7 +229,8 @@ def _build_log_document(
     """
     if not failure.log_snippet:
         return ""
-    snippet = failure.log_snippet
+    # Строки источника — метаданные: в лог-канал кластеризации не входят.
+    snippet = strip_source_marks(failure.log_snippet)
     if failure.log_selection_truncated:
         snippet = strip_log_selection_metadata(snippet)
     filtered = _strip_correlation_only_http_sections(snippet)

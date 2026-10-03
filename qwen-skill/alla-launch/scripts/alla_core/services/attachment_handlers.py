@@ -22,7 +22,7 @@ from typing import Any, Protocol, runtime_checkable
 import ijson
 
 from alla_core.models.testops import AttachmentMeta
-from alla_core.utils.log_events import error_events
+from alla_core.utils.log_events import render_error_blocks
 from alla_core.utils.log_utils import (
     extract_correlation_pairs_from_json,
     format_correlation_pairs,
@@ -217,7 +217,11 @@ class StructuredErrorLogHandler:
 
 @dataclass
 class ErrorBlocksHandler:
-    """Извлекает события-ошибки (:mod:`alla_core.utils.log_events`) из текстовых вложений."""
+    """Извлекает события-ошибки из текстовых вложений.
+
+    Каждый блок начинается пометкой строк источника (``[строки 120–134]``),
+    точные повторы свёрнуты в первое вхождение (:func:`render_error_blocks`).
+    """
 
     name: str = "error-blocks"
     priority: int = 50
@@ -228,7 +232,7 @@ class ErrorBlocksHandler:
             return None
         if ctx.decoded_text is None:
             return None
-        blocks = "\n\n".join(event.text for event in error_events(ctx.decoded_text))
+        blocks = render_error_blocks(ctx.decoded_text)
         if not blocks.strip():
             return None
         return HandlerResult(

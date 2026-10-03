@@ -30,6 +30,8 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+from alla_core.utils.text_normalization import normalize_text
+
 ERROR_LEVELS = frozenset({
     "ERROR", "ERR", "FATAL", "SEVERE", "CRITICAL", "CRIT", "ALERT", "EMERG", "EMERGENCY",
 })
@@ -157,3 +159,58 @@ def error_events(text: str) -> Iterator[LogEvent]:
     """События-ошибки: уровень ошибки, Traceback или исключение со стеком."""
     return (event for event in iter_events(text) if event.is_error)
 
+
+# ---------------------------------------------------------------------------
+# Происхождение фрагментов: пометка строк первой строкой блока
+# ---------------------------------------------------------------------------
+
+MAX_LISTED_PLACES = 5
+# «[строки 120–134]», «[строка 7]», с повторами — «[строки 3–5 · повторялось 7 раз: …]».
+# Метаданные, а не лог: из материала сигнатуры, признака базы знаний и лог-канала
+# кластеризации пометки вырезаются (strip_source_marks).
+SOURCE_MARK_RE = re.compile(r"^\[строк[аи] \d+(?:–\d+)?(?: · повторял[а-я]* [^\]\n]*)?\]$",
+                            re.MULTILINE)
+
+
+def _span(first: int, last: int) -> str:
+    return str(first) if first == last else f"{first}–{last}"
+
+
+def _times(count: int) -> str:
+    return "раза" if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14) else "раз"
+
+
+def source_mark(places: list[tuple[int, int]]) -> str:
+    """Пометка источника: строки первого вхождения и места повторов."""
+    first, last = places[0]
+    mark = f"[{'строка' if first == last else 'строки'} {_span(first, last)}"
+    if len(places) > 1:
+        listed = ", ".join(_span(a, b) for a, b in places[:MAX_LISTED_PLACES])
+        rest = len(places) - MAX_LISTED_PLACES
+        mark += (f" · повторялось {len(places)} {_times(len(places))}: {listed}"
+                 + (f" и ещё {rest}" if rest > 0 else ""))
+    return mark + "]"
+
+
+def strip_source_marks(text: str) -> str:
+    """Убрать пометки строк вместе с их переводом строки."""
+    if "[строк" not in text:
+        return text
+    return SOURCE_MARK_RE.sub("\x00", text).replace("\x00\n", "").replace("\x00", "")
+
+
+def render_error_blocks(text: str) -> str:
+    """Ошибки лога блоками через пустую строку, каждый — с пометкой строк.
+
+    Точные повторы (одинаковые после замены чисел, времени, UUID) сворачиваются в
+    первое вхождение с перечнем мест.
+    """
+    first_events: dict[str, LogEvent] = {}
+    places: dict[str, list[tuple[int, int]]] = {}
+    for event in error_events(text):
+        key = normalize_text(event.text)
+        first_events.setdefault(key, event)
+        places.setdefault(key, []).append((event.first_line, event.last_line))
+    return "\n\n".join(
+        f"{source_mark(places[key])}\n{event.text}" for key, event in first_events.items()
+    )

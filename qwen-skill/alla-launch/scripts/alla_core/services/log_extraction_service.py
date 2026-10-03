@@ -1,8 +1,8 @@
 """Сервис извлечения ошибок из вложений упавших тестов.
 
 Скачивает текстовые вложения каждого упавшего теста, извлекает события-ошибки
-(:mod:`alla_core.utils.log_events`) со стеком, помечает секцию именем вложения и
-сохраняет результат в ``FailedTestSummary.log_snippet``.
+(:mod:`alla_core.utils.log_events`) со стеком, помечает секцию именем вложения, а
+блок — строками источника, и сохраняет результат в ``FailedTestSummary.log_snippet``.
 """
 
 import asyncio
@@ -18,7 +18,7 @@ import ijson
 from charset_normalizer import from_bytes as _cn_from_bytes
 
 from alla_core.clients.base import AttachmentProvider
-from alla_core.models.testops import AttachmentMeta, FailedTestSummary
+from alla_core.models.testops import AttachmentMeta, FailedTestSummary, LogAttachmentRef
 from alla_core.services.attachment_handlers import (
     AttachmentContext,
     AttachmentHandler,
@@ -689,6 +689,9 @@ class LogExtractionService:
                                 f"--- [{result.label}: {att_name}] ---", result.section,
                             )
                             section_count += 1
+                            if not any(ref.id == att.id for ref in summary.log_attachments):
+                                summary.log_attachments.append(
+                                    LogAttachmentRef(id=att.id, name=att_name))
                         if result.consumed:
                             break
                 finally:

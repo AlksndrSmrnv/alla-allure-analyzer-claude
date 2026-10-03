@@ -19,7 +19,7 @@
       "evidence_total": 3,
       "groups": 3,
       "hidden_groups": 0,
-      "max_task_chars": 5409,
+      "max_task_chars": 5420,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 6
@@ -31,7 +31,7 @@
       "evidence_total": 40,
       "groups": 40,
       "hidden_groups": 0,
-      "max_task_chars": 5832,
+      "max_task_chars": 5849,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 320
@@ -67,7 +67,7 @@
       "evidence_total": 11,
       "groups": 11,
       "hidden_groups": 0,
-      "max_task_chars": 5875,
+      "max_task_chars": 5888,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 22
@@ -79,7 +79,7 @@
       "evidence_total": 3,
       "groups": 3,
       "hidden_groups": 0,
-      "max_task_chars": 5448,
+      "max_task_chars": 5461,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 6
@@ -115,7 +115,7 @@
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 1,
-      "max_task_chars": 5872,
+      "max_task_chars": 5885,
       "precision": 0.5,
       "recall": 1.0,
       "tests": 6
@@ -139,7 +139,7 @@
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 1,
-      "max_task_chars": 5502,
+      "max_task_chars": 5513,
       "precision": 0.5,
       "recall": 1.0,
       "tests": 4

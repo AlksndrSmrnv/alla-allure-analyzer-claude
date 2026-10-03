@@ -115,6 +115,13 @@ class ExecutionStep(BaseModel):
     attachments: list[AttachmentMeta] | None = None
 
 
+class LogAttachmentRef(BaseModel):
+    """Вложение, из которого в ``log_snippet`` попала секция (имя — как в её заголовке)."""
+
+    id: int
+    name: str
+
+
 class FailedTestSummary(BaseModel):
     """Доменная модель: краткое описание упавшего теста для вывода триажа.
 
@@ -142,6 +149,9 @@ class FailedTestSummary(BaseModel):
     # Full model roundtrip сохраняет сигнатуру только для необрезанного лога.
     log_selection_error: str | None = Field(default=None, exclude=True)
     log_selection_truncated: bool = Field(default=False, exclude=True)
+    # Происхождение секций лога: id вложения по имени из заголовка. Строки источника —
+    # пометки «[строки a–b]» в начале блоков. В run.json не хранится (решение — шаг 3).
+    log_attachments: list[LogAttachmentRef] = Field(default_factory=list, exclude=True)
     correlation_hint: str | None = None
     failed_step_path: str | None = None
 

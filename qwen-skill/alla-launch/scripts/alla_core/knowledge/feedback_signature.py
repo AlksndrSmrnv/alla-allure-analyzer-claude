@@ -10,6 +10,7 @@ from alla_core.knowledge.feedback_models import (
 )
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
+from alla_core.utils.log_events import strip_source_marks
 from alla_core.utils.log_focus import strip_log_selection_metadata
 from alla_core.utils.log_utils import parse_log_sections
 from alla_core.utils.step_paths import normalize_step_path
@@ -177,7 +178,8 @@ class _AnchorLine:
 
 
 def _log_evidence(summary: FailedTestSummary) -> str:
-    snippet = summary.log_snippet or ""
+    """Лог как материал признаков: без пометок отбора и строк источника."""
+    snippet = strip_source_marks(summary.log_snippet or "")
     if summary.log_selection_truncated:
         snippet = strip_log_selection_metadata(snippet)
     return snippet.strip()
@@ -267,6 +269,22 @@ def _anchor_line_sort_key(line: _AnchorLine) -> tuple[str, int, int]:
     )
 
 
+def _unique_anchor_lines(lines: list[_AnchorLine]) -> list[_AnchorLine]:
+    """Строки-кандидаты по порядку сортировки, без повторов после нормализации.
+
+    Повторы не занимают места других строк якоря: сигнатура не зависит от того,
+    сколько раз ошибка повторилась в логе (v6).
+    """
+    seen: set[str] = set()
+    result: list[_AnchorLine] = []
+    for line in sorted(lines, key=_anchor_line_sort_key):
+        key = _anchor_line_sort_key(line)[0]
+        if key not in seen:
+            seen.add(key)
+            result.append(line)
+    return result
+
+
 def _build_anchor(lines: list[_AnchorLine]) -> _Anchor:
     if not lines:
         return _Anchor(signature_text="", audit_text="")
@@ -340,8 +358,8 @@ def _extract_log_anchor(log_snippet: str) -> _AnchorCandidate:
 
     if cause_lines or matched_lines:
         selected: list[_AnchorLine] = []
-        ordered_cause = sorted(cause_lines, key=_anchor_line_sort_key)
-        ordered_matched = sorted(matched_lines, key=_anchor_line_sort_key)
+        ordered_cause = _unique_anchor_lines(cause_lines)
+        ordered_matched = _unique_anchor_lines(matched_lines)
         if ordered_cause:
             selected.append(ordered_cause[0])
         if ordered_matched:
@@ -362,7 +380,7 @@ def _extract_log_anchor(log_snippet: str) -> _AnchorCandidate:
             selected_line_count=len(selected),
         )
 
-    selected_fallback = sorted(fallback_lines, key=_anchor_line_sort_key)[:3]
+    selected_fallback = _unique_anchor_lines(fallback_lines)[:3]
     return _AnchorCandidate(
         anchor=_build_anchor(selected_fallback),
         primary_signature_text=_build_anchor(selected_fallback[:1]).signature_text,
