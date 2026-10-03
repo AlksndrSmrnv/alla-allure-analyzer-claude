@@ -18,6 +18,7 @@ from alla_skill_lib.report import (
     BRIEF_TEXT_CHARS,
     MAX_BRIEF_ITEMS,
     MAX_SUMMARY_DETAILED,
+    MAX_SUMMARY_LISTED,
     build_summary_task,
     render_green_report,
     render_report,
@@ -556,9 +557,39 @@ def test_summary_task_stays_small_with_many_problems(tmp_path: Path) -> None:
     task = build_summary_task(run, analyses, set(), RunPaths(tmp_path))
 
     assert task.count("ПЕРВЫЙ ШАГ ИСПРАВЛЕНИЯ:") == MAX_SUMMARY_DETAILED
-    assert task.count("--- Проблема ") == count
+    assert task.count("--- Проблема ") == MAX_SUMMARY_LISTED
     assert "сырое сообщение" not in task  # у каждой проблемы есть краткий разбор
-    assert len(task) < 60_000
+    assert f"Уникальных проблем (кластеров): {count}" in task  # счётчик — по всем проблемам
+    rest = count - MAX_SUMMARY_LISTED
+    assert f"--- Ещё {rest} проблем поменьше ({rest} тестов), по причинам: приложение — {rest}" in task
+    assert len(task) < 25_000
+
+
+def test_summary_task_size_does_not_grow_with_problems(tmp_path: Path) -> None:
+    def task_size(count: int) -> int:
+        run = _run([1] * count)
+        analyses = {entry["file_id"]: parse_analysis(APP) for entry in run["clusters"]}
+        return len(build_summary_task(run, analyses, set(), RunPaths(tmp_path)))
+
+    assert task_size(500) - task_size(MAX_SUMMARY_LISTED + 1) < 200
+
+
+def test_summary_task_keeps_report_numbers_and_groups_the_tail(tmp_path: Path) -> None:
+    # Большие проблемы в конце: в задание по одной попадают они, со своими номерами из отчёта.
+    sizes = [1] * MAX_SUMMARY_LISTED + [5, 7]
+    run = _run(sizes)
+    analyses = {entry["file_id"]: parse_analysis(ENV) for entry in run["clusters"]}
+    analyses["01"] = parse_analysis(APP)
+    task = build_summary_task(run, analyses, {"40"}, RunPaths(tmp_path))
+    last = len(sizes)
+    assert f"--- Проблема {last}: error {last} (7 тестов) ---" in task
+    assert f"--- Проблема {last - 1}: error {last - 1} (5 тестов) ---" in task
+    # Хвост — две самые маленькие по порядку номеров среди равных: 39 и 40.
+    assert "--- Проблема 39:" not in task and "--- Проблема 40:" not in task
+    assert (
+        "--- Ещё 2 проблемы поменьше (2 теста), по причинам: "
+        "не ясна — 1 проблема (1 тест); окружение — 1 проблема (1 тест) ---"
+    ) in task
 
 
 def test_compact_truncates_long_fields() -> None:

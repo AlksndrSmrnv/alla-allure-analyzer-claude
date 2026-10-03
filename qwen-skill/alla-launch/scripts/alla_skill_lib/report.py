@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,8 +50,10 @@ BRIEF_NOTE_CHARS = 300
 MAX_REPORT_TESTS = 5
 # Подробности в report.md: список тестов проблемы целиком, но не бесконечный.
 MAX_DETAIL_TESTS = 200
-# Общий анализ: подробный разбор — у самых больших проблем, у остальных — одна строка.
+# Общий анализ: подробный разбор — у самых больших проблем, у следующих — одна строка,
+# остальные — одной сводной строкой по причинам, чтобы задание не росло с числом проблем.
 MAX_SUMMARY_DETAILED = 10
+MAX_SUMMARY_LISTED = 40
 SUMMARY_SHORT_CAUSE_CHARS = 160
 SUMMARY_LABEL_CHARS = 120
 
@@ -185,14 +188,18 @@ def build_summary_task(
 
     Полные разборы занимали почти всё задание, а сводке нужны только причина,
     суть и первый шаг исправления. Подробно (``compact``) идут самые большие
-    проблемы, остальным — одна строка причины, чтобы задание не росло вместе с
-    числом проблем. «ЗАДАНИЕ» ядра (перечислять все проблемы) заменено
-    своим: список проблем в отчёте строит код.
+    проблемы, следующие — одной строкой причины, остальные — одной сводной
+    строкой по причинам: размер задания ограничен при любом числе проблем.
+    «ЗАДАНИЕ» ядра (перечислять все проблемы) заменено своим: список проблем в
+    отчёте строит код.
     """
     triage, clustering = load_models(run)
     assert clustering is not None
     largest = sorted(run["clusters"], key=lambda entry: -entry["member_count"])
     detailed = {entry["file_id"] for entry in largest[:MAX_SUMMARY_DETAILED]}
+    top = {entry["file_id"] for entry in largest[:MAX_SUMMARY_LISTED]}
+    listed = [entry for entry in run["clusters"] if entry["file_id"] in top]  # порядок номеров
+    listed_ids = {entry["cluster_id"] for entry in listed}
     cluster_analyses = {
         entry["cluster_id"]: LLMClusterAnalysis(
             cluster_id=entry["cluster_id"],
@@ -202,7 +209,7 @@ def build_summary_task(
                 entry["file_id"] in detailed,
             ),
         )
-        for entry in run["clusters"]
+        for entry in listed
     }
     llm_result = LLMAnalysisResult(
         total_clusters=len(cluster_analyses),
@@ -211,11 +218,15 @@ def build_summary_task(
         skipped_count=0,
         cluster_analyses=cluster_analyses,
     )
+    # cluster_count остаётся полным: в шапке данных — число всех проблем прогона.
     clustering = clustering.model_copy(update={"clusters": [
         cluster.model_copy(update={"label": _truncate(_one_line(cluster.label), SUMMARY_LABEL_CHARS)})
         for cluster in clustering.clusters
+        if cluster.cluster_id in listed_ids
     ]})
-    prompt = build_launch_summary_prompt(clustering, triage, llm_result)
+    numbers = {entry["cluster_id"]: int(entry["file_id"]) for entry in listed}
+    prompt = build_launch_summary_prompt(clustering, triage, llm_result, numbers)
+    rest = largest[MAX_SUMMARY_LISTED:]
     return "\n".join([
         f"# Общий анализ прогона #{run['launch_id']}",
         "",
@@ -232,12 +243,39 @@ def build_summary_task(
         EXECUTOR_RULES,
         "",
         prompt.user_prompt,
+        *(["", _summary_rest(rest, analyses, flagged)] if rest else []),
         "",
         "## Задание",
         SUMMARY_TASK,
         "",
         reference_line(SUMMARY_FORMAT_REF, "Формат итога с примером"),
     ]) + "\n"
+
+
+def _summary_rest(
+    rest: list[dict[str, Any]],
+    analyses: dict[str, ClusterAnalysis],
+    flagged: set[str],
+) -> str:
+    """Проблемы, не вошедшие в задание по одной, — одной строкой: сколько их и по каким причинам."""
+    problems: Counter[str] = Counter()
+    tests: Counter[str] = Counter()
+    for entry in rest:
+        category = analyses[entry["file_id"]].category
+        key = "не ясна" if entry["file_id"] in flagged or category is None else category
+        problems[key] += 1
+        tests[key] += int(entry["member_count"])
+    total = sum(tests.values())
+    parts = [
+        f"{key} — {count} {_plural(count, 'проблема', 'проблемы', 'проблем')} "
+        f"({tests[key]} {_plural(tests[key], 'тест', 'теста', 'тестов')})"
+        for key, count in sorted(problems.items(), key=lambda item: (-tests[item[0]], item[0]))
+    ]
+    return (
+        f"--- Ещё {len(rest)} {_plural(len(rest), 'проблема', 'проблемы', 'проблем')} поменьше "
+        f"({total} {_plural(total, 'тест', 'теста', 'тестов')}), по причинам: "
+        + "; ".join(parts) + " ---"
+    )
 
 
 def _summary_text(analysis: ClusterAnalysis, flagged: bool, detailed: bool) -> str:

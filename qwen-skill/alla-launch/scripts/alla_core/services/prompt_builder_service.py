@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from alla_core.models.clustering import ClusteringReport, FailureCluster
@@ -142,11 +143,15 @@ def build_launch_summary_prompt(
     clustering_report: ClusteringReport,
     triage_report: TriageReport,
     llm_result: LLMAnalysisResult | None = None,
+    problem_numbers: Mapping[str, int] | None = None,
 ) -> LaunchSummaryPrompt:
     """Собрать данные для итогового отчёта по прогону.
 
     ``llm_result`` — источник разборов проблем (в скилле это сжатые разборы
     агента); у проблемы без разбора идут шаг, сообщение и трейс кластера.
+    ``problem_numbers`` — номера проблем по ``cluster_id``, когда в
+    ``clustering_report`` передана только часть кластеров (номер из отчёта
+    должен совпадать с номером в задании); без него — порядковый номер.
     """
     parts: list[str] = [DATA_HEADING, ""]
 
@@ -164,9 +169,10 @@ def build_launch_summary_prompt(
 
     analyses_used = 0
     for index, cluster in enumerate(clustering_report.clusters, 1):
+        number = (problem_numbers or {}).get(cluster.cluster_id, index)
         parts.append("")
         parts.append(
-            f"--- Проблема {index}: {cluster.label} "
+            f"--- Проблема {number}: {cluster.label} "
             f"({cluster.member_count} тестов) ---"
         )
         if llm_result is not None:
