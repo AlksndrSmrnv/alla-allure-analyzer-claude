@@ -70,10 +70,14 @@ def test_log_only_task_does_not_discard_a_confirmed_exact_kb_cause() -> None:
     assert "по подтверждённой ошибке в логе или точной записи базы знаний" in task
 
 
-def test_symptom_only_task_says_the_log_is_empty_and_does_not_invent_it() -> None:
+def test_symptom_only_task_says_no_log_in_data_and_does_not_invent_it() -> None:
+    # Без фрагмента лога неизвестно, был ли лог: «лог пуст» модель писала и тогда, когда
+    # вложений не было вовсе (стенд Qwen, сценарий A01, кластер login).
     task = _task("symptom only")
-    assert "лог приложения пуст / без явных ошибок" in task
-    assert "Содержимое лога не выдумывай" in task
+    assert "лога приложения в данных нет" in task
+    assert "не пиши, что лог пуст или без ошибок" in task
+    assert "лог приложения пуст" not in task
+    assert "содержимое лога не выдумывай" in task
     assert "с учётом «Шага теста»" in task
     assert "первый шаг" not in task  # про лог в шагах говорить нечего
 
