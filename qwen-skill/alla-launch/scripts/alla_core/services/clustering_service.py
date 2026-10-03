@@ -436,7 +436,9 @@ class ClusteringService:
             trace_weight = 0.0
             log_weight = 0.0
 
-        final_sim = np.eye(n, dtype=np.float64)
+        condensed = np.ones(n * (n - 1) // 2, dtype=np.float64)
+        collect_stats = logger.isEnabledFor(logging.DEBUG)
+        final_min, final_max, final_sum = 1.0, 0.0, 0.0
         has_message = [bool(doc.strip()) for doc in message_documents]
         has_trace = [bool(doc.strip()) for doc in trace_documents]
         has_log = (
@@ -450,8 +452,11 @@ class ClusteringService:
             else [False] * n
         )
 
+        idx = -1
         for i in range(n):
             for j in range(i + 1, n):
+                # scipy's condensed order: (0,1), (0,2), ..., (1,2), ...
+                idx += 1
                 # Gate по actual-значению assertion: разные actual → разные корневые причины.
                 if (
                     assertion_actuals is not None
@@ -459,8 +464,8 @@ class ClusteringService:
                     and assertion_actuals[j] is not None
                     and assertion_actuals[i] != assertion_actuals[j]
                 ):
-                    final_sim[i, j] = 0.0
-                    final_sim[j, i] = 0.0
+                    if collect_stats:
+                        final_min = 0.0
                     continue
 
                 # Hard gate по step path: если у обоих failures есть непустой
@@ -478,8 +483,8 @@ class ClusteringService:
                     and has_step[j]
                     and float(step_sim[i, j]) < self._config.step_path_strict_threshold
                 ):
-                    final_sim[i, j] = 0.0
-                    final_sim[j, i] = 0.0
+                    if collect_stats:
+                        final_min = 0.0
                     continue
 
                 if has_message[i] and has_message[j]:
@@ -549,21 +554,16 @@ class ClusteringService:
                         pair_sim - step_penalty * (1.0 - float(step_sim[i, j])),
                     )
 
-                final_sim[i, j] = pair_sim
-                final_sim[j, i] = pair_sim
+                condensed[idx] = 1.0 - pair_sim
+                if collect_stats:
+                    final_min = min(final_min, float(pair_sim))
+                    final_max = max(final_max, float(pair_sim))
+                    final_sum += float(pair_sim)
 
-        self._log_similarity_stats(message_sim, trace_sim, final_sim)
-
-        np.clip(final_sim, 0.0, 1.0, out=final_sim)
-        dist_matrix = 1.0 - final_sim
-
-        # Сжатая форма для scipy
-        condensed = np.zeros(n * (n - 1) // 2, dtype=np.float64)
-        idx = 0
-        for i in range(n):
-            for j in range(i + 1, n):
-                condensed[idx] = dist_matrix[i, j]
-                idx += 1
+        if collect_stats:
+            final_stats = (final_min, final_sum / len(condensed), final_max)
+            self._log_similarity_stats(message_sim, trace_sim, final_stats)
+        np.clip(condensed, 0.0, 1.0, out=condensed)
 
         # Агломеративная кластеризация (complete linkage)
         linkage_matrix = linkage(condensed, method="complete")
@@ -582,11 +582,10 @@ class ClusteringService:
         с любыми другими документами (кроме диагонали=1).
         """
         n = len(documents)
-        sim_matrix = np.eye(n, dtype=np.float64)
         non_empty_indices = [i for i, doc in enumerate(documents) if doc.strip()]
 
         if len(non_empty_indices) <= 1:
-            return sim_matrix
+            return np.eye(n, dtype=np.float64)
 
         vectorizer = TfidfVectorizer(
             max_features=self._config.tfidf_max_features,
@@ -598,10 +597,14 @@ class ClusteringService:
         try:
             tfidf_matrix = vectorizer.fit_transform(subset_docs)
         except ValueError:
-            return sim_matrix
+            return np.eye(n, dtype=np.float64)
 
         subset_sim = cosine_similarity(tfidf_matrix)
         np.clip(subset_sim, 0.0, 1.0, out=subset_sim)
+        np.fill_diagonal(subset_sim, 1.0)
+        if len(non_empty_indices) == n:
+            return subset_sim
+        sim_matrix = np.eye(n, dtype=np.float64)
         sim_matrix[np.ix_(non_empty_indices, non_empty_indices)] = subset_sim
         return sim_matrix
 
@@ -621,7 +624,7 @@ class ClusteringService:
         self,
         message_sim: np.ndarray,
         trace_sim: np.ndarray,
-        final_sim: np.ndarray,
+        final_stats: tuple[float, float, float],
     ) -> None:
         """DEBUG-лог статистики similarity матриц для диагностики кластеризации."""
         if not logger.isEnabledFor(logging.DEBUG):
@@ -629,7 +632,7 @@ class ClusteringService:
 
         msg_min, msg_avg, msg_max = self._similarity_stats(message_sim)
         trace_min, trace_avg, trace_max = self._similarity_stats(trace_sim)
-        final_min, final_avg, final_max = self._similarity_stats(final_sim)
+        final_min, final_avg, final_max = final_stats
         logger.debug(
             "Similarity stats: "
             "message(min=%.4f avg=%.4f max=%.4f), "
