@@ -324,6 +324,8 @@ def test_grep_scope_ignores_path_case_on_case_insensitive_fs(
     ("grep_search", {"pattern": "x", "path": " alla-reports/run-1 "}),  # trim, как Qwen (ревью)
     ("grep_search", {"pattern": "x", "path": "%USERPROFILE%/.qwen"}),
     ("read_file", {"file_path": "\\~/.qwen/settings.json"}),  # unescapePath, затем «~»
+    ("grep_search", {"pattern": "x", "path": "~\\.qwen"}),  # «~\\» Qwen раскрывает и на macOS
+    ("grep_search", {"pattern": "x", "path": "\ufeffalla-reports/run-1\ufeff"}),  # trim() JS
 ])
 def test_tool_paths_are_normalised_like_qwen(tmp_path: Path, call: tuple[str, dict[str, Any]]) -> None:
     ctx = context(tmp_path, events((call[0], call[1], "")))

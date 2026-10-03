@@ -374,25 +374,47 @@ QWEN_PATH_SPECIALS = " \t()[]{};|*?$`'\"#&<>!~,"
 _QWEN_UNESCAPE_RE = re.compile(r"\\([" + re.escape(QWEN_PATH_SPECIALS) + r"])")
 
 
+# String.prototype.trim(): WhiteSpace и LineTerminator ECMAScript. Python strip() другой:
+# не трогает U+FEFF и срезает \x1c–\x1f и \x85, которых trim() не трогает.
+JS_TRIM_CHARS = ("\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005"
+                 "\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff")
+
+
+def js_trim(value: str) -> str:
+    return value.strip(JS_TRIM_CHARS)
+
+
 def path_of(call: ToolCall) -> str:
     """Путь из аргументов инструмента так, как его нормализует Qwen."""
     for key in ("file_path", "absolute_path", "path", "dir_path", "notebook_path"):
         if call.input.get(key):
-            return _QWEN_UNESCAPE_RE.sub(r"\1", str(call.input[key]).strip())
+            return _QWEN_UNESCAPE_RE.sub(r"\1", js_trim(str(call.input[key])))
     return ""
 
 
 def resolve(base: Path, raw: str, home: Path | None = None) -> Path:
     """Путь так, как его поймёт инструмент Qwen: «~» и «%userprofile%» — HOME проверяемого
     процесса; имена — в написании на диске (см. :func:`canonical`)."""
-    if home is not None:
-        if raw == "~" or raw.startswith("~/"):
-            raw = str(home) + raw[1:]
-        elif raw.lower() == "%userprofile%" or raw.lower().startswith(("%userprofile%/",
-                                                                         "%userprofile%\\")):
-            raw = str(home) + "/" + raw[len("%userprofile%") + 1:]
-    path = Path(raw)
+    path = Path(expand_home(raw, home)) if home is not None else Path(raw)
     return canonical(path if path.is_absolute() else base / path)
+
+
+def expand_home(raw: str, home: Path) -> str:
+    """Как expandTilde Qwen: «~», «~/…» и «~\\…» (хвост делится по / и \\) — HOME процесса.
+
+    «%userprofile%» поиск Qwen не раскрывает, а другие пути — раскрывают; здесь раскрываем
+    всегда: для проверки границ это строже, чем у Qwen, но не слабее.
+    """
+    lower = raw.lower()
+    for prefix in ("~", "%userprofile%"):
+        if lower == prefix or lower in (prefix + "/", prefix + "\\"):
+            return str(home)
+        if lower.startswith((prefix + "/", prefix + "\\")):
+            rest = raw[len(prefix) + 1:]
+            if prefix == "~" and raw.startswith("~/"):
+                return str(home / rest)
+            return str(home.joinpath(*[part for part in re.split(r"[/\\]+", rest) if part]))
+    return raw
 
 
 def canonical(path: Path) -> Path:
