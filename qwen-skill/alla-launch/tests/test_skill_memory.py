@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -425,6 +427,26 @@ def test_apply_shows_diff_then_applies_once(java_project: Path, tmp_path: Path) 
 
     again = apply_proposal(proposal, java_project, confirm=True, diff_hash=shown.diff_hash, files=files)
     assert again.status == "applied" and not again.changed and "уже применена" in again.text
+
+
+@pytest.mark.skipif(os.name == "nt", reason="права доступа POSIX")
+def test_apply_syncs_project_file_and_keeps_its_mode(
+    java_project: Path, tmp_path: Path, monkeypatch
+) -> None:
+    target = java_project / "src" / "OrderTest.java"
+    target.chmod(0o640)
+    synced: list[int] = []
+    real_fsync = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd))[1])
+    proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
+
+    _shown, result = _apply(proposal, java_project, _files(tmp_path))
+
+    assert result.status == "applied" and result.changed
+    # исходник, NN.orig и NN.applied.json (и NN.patch при показе) — через fsync
+    assert len(synced) >= 3
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert not list(target.parent.glob("*.tmp"))
 
 
 def test_yes_without_matching_diff_hash_shows_diff_again(java_project: Path) -> None:

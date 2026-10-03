@@ -20,12 +20,11 @@ import hashlib
 import json
 import os
 import re
-import shutil
-import uuid
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from alla_skill_lib import workspace as ws
 from alla_skill_lib.code_hints import SOURCE_EXTENSIONS
 
 LINE_WINDOW = 20
@@ -574,7 +573,7 @@ def apply_proposal(
 
     if not (confirm and diff_hash == digest):
         if files is not None:
-            _write_bytes(files.patch, diff.encode("utf-8"))
+            ws.write_atomic_bytes(files.patch, diff.encode("utf-8"))
         prefix = ""
         if confirm:
             prefix = (
@@ -594,11 +593,11 @@ def apply_proposal(
     encoding = "utf-8-sig" if original.startswith(b"\xef\xbb\xbf") else "utf-8"
     if files is not None:
         _archive_backup(files.backup)  # версия до прошлого apply не теряется
-        _write_bytes(files.backup, original)
+        ws.write_atomic_bytes(files.backup, original)
     updated = updated_text.encode(encoding)
-    _write_bytes(target, updated, mode_from=target)
+    ws.write_atomic_bytes(target, updated, mode_from=target)
     if files is not None:
-        _write_bytes(files.record, (json.dumps({
+        ws.write_atomic_bytes(files.record, (json.dumps({
             "proposal": _proposal_hash(proposal),
             "file": proposal.file,
             "line": start + 1,
@@ -652,7 +651,7 @@ def revert_proposal(project_root: Path, files: ProposalFiles) -> ApplyResult:
             f"или заменена) — откат не выполнен. Файл {data['file']} не тронут; верни его "
             "вручную (git). Отметка применения сохранена."
         ))
-    _write_bytes(target, original, mode_from=target)
+    ws.write_atomic_bytes(target, original, mode_from=target)
     files.record.unlink(missing_ok=True)
     return ApplyResult("reverted", f"Файл {data['file']} возвращён к версии до правки.")
 
@@ -852,19 +851,6 @@ def _archive_backup(backup: Path) -> None:
     while backup.with_name(f"{backup.name}.{number}").exists():
         number += 1
     os.replace(backup, backup.with_name(f"{backup.name}.{number}"))
-
-
-def _write_bytes(path: Path, data: bytes, *, mode_from: Path | None = None) -> None:
-    """Записать файл целиком через временный файл рядом (без обрыва посередине)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
-    try:
-        tmp.write_bytes(data)
-        if mode_from is not None:
-            shutil.copymode(mode_from, tmp)
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
 
 
 def _excerpt(lines: list[str], line: int | None) -> str:

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shlex
+import shutil
 import sys
 import time
 import uuid
@@ -239,13 +240,24 @@ def _is_empty(path: Path) -> bool:
 
 
 def write_atomic(path: Path, text: str) -> None:
-    """Записать файл целиком через временный файл рядом (без обрыва посередине)."""
+    """Записать текст (UTF-8, переводы строк как есть) атомарно — см. :func:`write_atomic_bytes`."""
+    write_atomic_bytes(path, text.encode("utf-8"))
+
+
+def write_atomic_bytes(path: Path, data: bytes, *, mode_from: Path | None = None) -> None:
+    """Записать файл целиком через временный файл рядом (без обрыва посередине).
+
+    ``mode_from`` — чьи права доступа перенести (исходник проекта при ``apply``).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
     try:
-        with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
+        with open(tmp, "wb") as handle:
+            handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())  # иначе после сбоя ОС rename может пережить данные: файл на 0 байт
+        if mode_from is not None:
+            shutil.copymode(mode_from, tmp)
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
