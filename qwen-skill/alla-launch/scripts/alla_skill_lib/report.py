@@ -535,9 +535,8 @@ def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) 
     lines.append(f"  Агент считает: {_opinion(problem, _reason(problem), BRIEF_CAUSE_CHARS)}")
     proposal = problem.proposal
     if problem.bucket == AGENT and proposal is not None:
-        location = f"{proposal.file}:{proposal.line}" if proposal.line else str(proposal.file)
         status = "уже применено" if problem.applied else "ждёт вашего «да»"
-        lines.append(f"  Правка: `{location}` ({status})")
+        lines.append(f"  Правка: `{proposal.location}` ({status})")
         lines += [
             f"  Проверьте: {_truncate(warning, BRIEF_WARNING_CHARS)}"
             for warning in weakening_warnings(proposal.before, proposal.after)[:1]
@@ -596,8 +595,7 @@ def _item_title(problem: _Problem) -> str:
     size = f"{problem.size} {_plural(problem.size, 'тест', 'теста', 'тестов')}"
     if problem.bucket == AGENT and problem.proposal is not None:
         proposal = problem.proposal
-        location = f"{proposal.file}:{proposal.line}" if proposal.line else str(proposal.file)
-        return f"**Проблема {problem.number}** — `{location}` · {size}"
+        return f"**Проблема {problem.number}** — `{proposal.location}` · {size}"
     return f"**Проблема {problem.number}** — {size}"
 
 
@@ -605,9 +603,8 @@ def _not_fixed_reason(problem: _Problem, not_proposed: dict[str, str]) -> str:
     """Почему агент не правил тест сам."""
     proposal = problem.proposal
     if proposal is not None and proposal.is_fix and problem.state == "unknown":
-        location = f"{proposal.file}:{proposal.line}" if proposal.line else str(proposal.file)
         return (
-            f"правка в `{location}` применялась командой apply, но файл потом менялся и "
+            f"правка в `{proposal.location}` применялась командой apply, но файл потом менялся и "
             "участок правки изменён — стоит ли она, неизвестно. Проверьте файл (git diff); "
             "apply повторно её не применит"
         )
@@ -706,10 +703,9 @@ def _proposal_details(problems: list[_Problem], proposals: dict[str, Proposal]) 
             "applied": " — уже применено",
             "unknown": " — состояние правки неизвестно (файл менялся после применения)",
         }.get(problem.state, "")
-        location = f"{proposal.file}:{proposal.line}" if proposal.line else str(proposal.file)
         lines += [
             "",
-            f"### Проблема {problem.number}: {location}{state}",
+            f"### Проблема {problem.number}: {proposal.location}{state}",
             f"**Почему:** {proposal.why}",
             "",
             "**Было:**",

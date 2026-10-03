@@ -4,14 +4,6 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-# Паттерны явных ошибок в логах приложения
-_LOG_ERROR_RE = re.compile(
-    r"\b(?:ERROR|FATAL|SEVERE|CRITICAL)\b"
-    r"|(?:Exception|Error|Traceback|Caused by)\b"
-    r"|(?:FAILED|Failed to)\b",
-    re.IGNORECASE,
-)
-
 # Заголовок секции, создаваемый LogExtractionService:
 # --- [файл: name] ---
 # --- [HTTP: name] ---
@@ -110,13 +102,6 @@ _CORR_ID_XML_RE = re.compile(
 
 def _is_placeholder_value(value: str) -> bool:
     return value.strip().lower() in _PLACEHOLDER_VALUES
-
-
-def has_explicit_errors(log_snippet: str | None) -> bool:
-    """Проверить наличие явных маркеров ошибок в лог-фрагменте."""
-    if not log_snippet:
-        return False
-    return bool(_LOG_ERROR_RE.search(log_snippet))
 
 
 def parse_correlation_line(line: str) -> dict[str, str]:

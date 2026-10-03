@@ -129,6 +129,11 @@ class Proposal:
     def is_fix(self) -> bool:
         return self.decision == "fix"
 
+    @property
+    def location(self) -> str:
+        """``файл:строка`` (или только файл) — как правку показывают человеку."""
+        return f"{self.file}:{self.line}" if self.line else str(self.file)
+
 
 @dataclass(frozen=True)
 class ProposalFiles:

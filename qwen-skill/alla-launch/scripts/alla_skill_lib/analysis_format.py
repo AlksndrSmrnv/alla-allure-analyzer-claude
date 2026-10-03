@@ -20,7 +20,6 @@
 from __future__ import annotations
 
 import re
-import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 
@@ -339,18 +338,14 @@ def code_ref_errors(analysis: ClusterAnalysis, project_root: Path) -> list[str]:
     return errors
 
 
-_INDEX_TTL_SECONDS = 30.0
-_index_cache: dict[Path, tuple[float, ProjectIndex]] = {}
+_index_cache: dict[Path, ProjectIndex] = {}
 
 
 def _index(root: Path) -> ProjectIndex:
-    """Индекс исходников проекта; `next` проверяет все разборы подряд, обход диска один."""
-    now = time.monotonic()
-    cached = _index_cache.get(root)
-    if cached is None or now - cached[0] > _INDEX_TTL_SECONDS:
-        cached = (now, ProjectIndex(root))
-        _index_cache[root] = cached
-    return cached[1]
+    """Индекс исходников проекта; `next` проверяет все разборы подряд, обход диска один на процесс."""
+    if root not in _index_cache:
+        _index_cache[root] = ProjectIndex(root)
+    return _index_cache[root]
 
 
 def _line_count(path: Path) -> int | None:

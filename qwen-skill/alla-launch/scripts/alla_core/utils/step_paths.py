@@ -28,29 +28,3 @@ def split_normalized_step_path(step_path: str | None) -> list[str]:
 def normalize_step_path(step_path: str | None) -> str:
     """Нормализовать breadcrumb шага в стабильный канонический вид."""
     return " → ".join(split_normalized_step_path(step_path))
-
-
-def are_step_paths_compatible(
-    entry_step_path: str | None,
-    query_step_path: str | None,
-) -> bool:
-    """Проверить совместимость двух step_path.
-
-    Совместимыми считаются:
-    - полностью одинаковые пути;
-    - пути, где один является suffix другого.
-    """
-    entry_parts = split_normalized_step_path(entry_step_path)
-    query_parts = split_normalized_step_path(query_step_path)
-    if not entry_parts or not query_parts:
-        return False
-
-    if entry_parts == query_parts:
-        return True
-
-    shorter, longer = (
-        (entry_parts, query_parts)
-        if len(entry_parts) <= len(query_parts)
-        else (query_parts, entry_parts)
-    )
-    return shorter == longer[-len(shorter):]
