@@ -651,3 +651,19 @@ def test_cli_does_not_load_clustering_libraries() -> None:
 def test_has_frame_files_needs_a_file_position(frame: str, openable: bool) -> None:
     from alla_skill_lib.cluster_task import has_frame_files
     assert has_frame_files([frame]) is openable
+
+
+
+def test_bare_js_frame_reaches_the_task_and_jdk_modules_do_not() -> None:
+    # Кадр JS без имени функции отбрасывался как «модуль JDK» из-за «/», и поздний кадр за
+    # пределами обрезанного трейса пропадал из задания (ревью).
+    from alla_skill_lib.cluster_task import has_frame_files
+    trace = (
+        "Error: expected 200 but got 500\n"
+        + "".join(f"    at node:internal/process/task_queues:{i}:5\n" for i in range(30))
+        + "    at java.base/java.lang.Thread.run(Thread.java:833)\n"
+        + "    at /ci/build/tests/orders.spec.ts:12:3\n"
+    )
+    frames = project_frames(trace)
+    assert frames == ["at /ci/build/tests/orders.spec.ts:12:3"]
+    assert has_frame_files(frames)

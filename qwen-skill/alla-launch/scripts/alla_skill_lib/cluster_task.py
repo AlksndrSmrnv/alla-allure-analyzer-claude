@@ -99,6 +99,9 @@ _JAVA_FRAMEWORK_PREFIXES = (
     "org.awaitility.", "io.cucumber.", "cucumber.", "com.google.", "org.jboss.",
     "jakarta.", "io.micrometer.", "org.jetbrains.",
 )
+# «java.base/java.lang.Thread.run» — кадр модуля JDK. Путь JS без имени функции
+# («/ci/tests/orders.spec.ts:12:3») тоже содержит «/», но это файл проекта.
+_JDK_MODULE_FRAME_RE = re.compile(r"[A-Za-z_][\w.]*/[\w.$<>]+")
 _PATH_FRAMEWORK_MARKERS = (
     "site-packages", "dist-packages", "/lib/python", "\\lib\\python", "<frozen",
     "_pytest", "pluggy", "node_modules", "node:internal", "internal/",
@@ -188,7 +191,7 @@ def _is_framework_frame(line: str) -> bool:
     stripped = line.strip()
     if stripped.startswith("at "):
         qualified = stripped[3:].split("(", 1)[0].strip()
-        if "/" in qualified:  # модуль JDK: java.base/java.lang...
+        if _JDK_MODULE_FRAME_RE.fullmatch(qualified):  # модуль JDK: java.base/java.lang...
             return True
         return qualified.startswith(_JAVA_FRAMEWORK_PREFIXES)
     return False
