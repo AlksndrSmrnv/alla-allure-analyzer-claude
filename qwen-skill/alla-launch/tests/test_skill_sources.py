@@ -81,12 +81,12 @@ def test_without_source_ids_the_data_block_is_unchanged() -> None:
 def test_registry_names_test_attachment_and_lines() -> None:
     prompt = build_cluster_analysis_prompt(
         _cluster(), SNIPPET, "trace", normalize_evidence=False, source_ids=True,
-        message_test="createOrder", log_test="member")
+        message_test="createOrder", log_test="member", message_test_id=1, log_test_id=2)
     representative = FailedTestSummary(test_result_id=1, name="createOrder", status="failed")
     member = FailedTestSummary(test_result_id=2, name="member", status="failed",
                                log_attachments=[LogAttachmentRef(id=9001, name="app.log")])
 
-    records = registry(prompt.sources, representative, member)
+    records = registry(prompt.sources, {1: representative, 2: member})
 
     assert records["S1"]["test_result_id"] == 1 and records["S1"]["text"].startswith("expected")
     assert records["S3"] == {
@@ -144,8 +144,9 @@ def test_same_named_attachments_keep_their_own_ids() -> None:
     assert len(set(headers)) == len(headers)
 
     prompt = build_cluster_analysis_prompt(_cluster(None), member.log_snippet, source_ids=True,
-                                           normalize_evidence=False, log_test="member")
-    records = registry(prompt.sources, None, member)
+                                           normalize_evidence=False, log_test="member",
+                                           log_test_id=2)
+    records = registry(prompt.sources, {2: member})
     by_text = {record["text"].split("] ", 1)[1]: record["attachment_id"]
                for record in records.values()}
     assert by_text == {"first service failed": 100, "second service failed": 101,

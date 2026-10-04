@@ -18,7 +18,14 @@ from typing import Any
 from alla_core.config import Settings
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
-from alla_core.services.prompt_builder_service import PromptSource, build_cluster_analysis_prompt
+from alla_core.services.prompt_builder_service import (
+    ClusterAnalysisPrompt,
+    PromptExample,
+    PromptSource,
+    build_cluster_analysis_prompt,
+    build_cluster_examples_prompt,
+    example_shares,
+)
 from alla_core.utils.log_focus import focus_log, selection_error_text
 
 from alla_skill_lib.agent_rules import ANALYSIS_FORMAT_REF, EXECUTOR_RULES, reference_line
@@ -92,6 +99,18 @@ _MISSING_NOTE = (
     "НЕ ХВАТАЕТ — каких данных нет, чтобы подтвердить причину, и какая проверка различит "
     "версии; если всего хватает — «нет». При категории «неизвестно» — обязательно по "
     "существу."
+)
+CONSISTENCY_LINE = (
+    "СОГЛАСОВАННОСТЬ: одна причина | разные проблемы — <чем отличаются примеры> | "
+    "недостаточно данных"
+)
+_CONSISTENCY_NOTE = (
+    "СОГЛАСОВАННОСТЬ — в данных несколько примеров из этой группы тестов: сравни их. "
+    "«одна причина» — ошибки в сообщениях и логах всех примеров сводятся к одной; "
+    "«разные проблемы — …» — у примеров разные ошибки (например, в логах разные "
+    "исключения): после «—» назови, чем они отличаются, а ПРИЧИНУ пиши по первому "
+    "(типичному) примеру; «недостаточно данных» — сравнить нечем. Наблюдения — из любого "
+    "примера, с id его куска."
 )
 _LOG_DETAIL = (
     " (первый шаг — с конкретикой из лога: класс, метод, сервис, запрос, "
@@ -224,12 +243,36 @@ def _is_framework_frame(line: str) -> bool:
 
 @dataclass(frozen=True)
 class ClusterTask:
-    """Текст задания и куски его данных под id (``S1``…) для реестра источников."""
+    """Текст задания, куски его данных под id (``S1``…) и примеры, показанные модели."""
 
     text: str
     sources: tuple[PromptSource, ...]
-    message_test: FailedTestSummary | None
-    log_test: FailedTestSummary | None
+    examples: list[dict[str, Any]]  # чьи данные видела модель: роль и тест
+    blocks: int = 1  # сколько примеров в задании отдельными блоками
+
+
+EXAMPLE_ROLES = {
+    "typical": "типичный",
+    "different": "наиболее отличающийся",
+    "informative": "больше всего ошибок в логе",
+    "log": "с логом приложения",
+}
+
+
+def example_tests(
+    cluster: FailureCluster,
+    tests_by_id: dict[int, FailedTestSummary],
+) -> list[tuple[str, FailedTestSummary]]:
+    """Примеры кластера с тестами. Ни у одного нет лога, а у участника есть — он добавляется
+    примером «с логом приложения», как раньше лог брался у другого участника."""
+    found = [(example.role, tests_by_id[example.test_result_id]) for example in cluster.examples
+             if example.test_result_id in tests_by_id]
+    if len(found) > 1 and not any(test.log_snippet and test.log_snippet.strip()
+                                  for _role, test in found):
+        source = select_log_source(cluster, tests_by_id)
+        if source is not None:
+            found.append(("log", source))
+    return found
 
 
 def build_cluster_task(**kwargs: Any) -> str:
@@ -261,6 +304,12 @@ def build_cluster_task_with_sources(
     по началу. Каждый кусок данных — под своим id (``S1``…), см. ``sources.py``.
     """
     representative = tests_by_id.get(cluster.representative_test_id or -1)
+    examples = example_tests(cluster, tests_by_id)
+    if len(examples) > 1:
+        return _examples_task(cluster, examples, settings, kb_matches=kb_matches,
+                              recurrence=recurrence, frames=frames, hints=hints,
+                              head=(position, total, launch_id, answer_path, next_command),
+                              tests_by_id=tests_by_id)
     log_test: FailedTestSummary | None = None
     if log_snippet:
         source = select_log_source(cluster, tests_by_id)
@@ -285,6 +334,8 @@ def build_cluster_task_with_sources(
         source_ids=True,
         message_test=representative.name if representative else None,
         log_test=log_test.name if log_test else None,
+        message_test_id=representative.test_result_id if representative else None,
+        log_test_id=log_test.test_result_id if log_test else None,
     )
     evidence_chars = prompt.message_chars + prompt.trace_chars + prompt.log_chars
     task = build_task_text(
@@ -293,7 +344,77 @@ def build_cluster_task_with_sources(
         low_evidence=bool(cluster.example_step_path) and evidence_chars < LOW_EVIDENCE_CHARS,
         has_kb=bool(kb_matches),
     )
+    shown = []
+    if representative is not None:
+        shown.append({"role": "typical", "test_result_id": representative.test_result_id})
+    if log_test is not None and log_test is not representative:
+        shown.append({"role": "log", "test_result_id": log_test.test_result_id})
+    return _assemble(cluster, prompt, task, tests_by_id, frames, hints, kb_matches, recurrence,
+                     (position, total, launch_id, answer_path, next_command), shown, blocks=1)
 
+
+def _examples_task(
+    cluster: FailureCluster,
+    examples: list[tuple[str, FailedTestSummary]],
+    settings: Settings,
+    *,
+    kb_matches: list[dict[str, Any]] | None,
+    recurrence: dict[str, Any] | None,
+    frames: list[str],
+    hints: list[CodeHint],
+    head: tuple[int, int, int, str, str],
+    tests_by_id: dict[int, FailedTestSummary],
+) -> ClusterTask:
+    """Задание по нескольким примерам: у каждого свой блок данных и своя доля лимитов."""
+    prompt_examples: list[PromptExample] = []
+    for number, (role, test) in enumerate(examples, start=1):
+        log = test.log_snippet if test.log_snippet and test.log_snippet.strip() else None
+        if log:
+            budget = int(settings.llm_prompt_log_max_chars * example_shares(len(examples), number))
+            error = (test.log_selection_error if test.log_selection_error is not None
+                     else selection_error_text(test.status_message, test.status_trace,
+                                               test.correlation_hint))
+            log = focus_log(log, error, budget,
+                            log_selection_truncated=test.log_selection_truncated)
+        prompt_examples.append(PromptExample(
+            role=EXAMPLE_ROLES.get(role, role), test_result_id=test.test_result_id,
+            test_name=test.name, step=test.failed_step_path, message=test.status_message,
+            trace=test.status_trace, log=log,
+        ))
+    prompt = build_cluster_examples_prompt(
+        cluster, prompt_examples,
+        message_max_chars=settings.llm_prompt_message_max_chars,
+        trace_max_chars=settings.llm_prompt_trace_max_chars,
+        log_max_chars=settings.llm_prompt_log_max_chars,
+    )
+    evidence_chars = prompt.message_chars + prompt.trace_chars + prompt.log_chars
+    task = build_task_text(
+        has_symptom=prompt.has_symptom,
+        has_log=prompt.has_log,
+        low_evidence=bool(cluster.example_step_path) and evidence_chars < LOW_EVIDENCE_CHARS,
+        has_kb=bool(kb_matches),
+        examples=len(examples),
+    )
+    shown = [{"role": role, "test_result_id": test.test_result_id} for role, test in examples]
+    return _assemble(cluster, prompt, task, tests_by_id, frames, hints, kb_matches, recurrence,
+                     head, shown, blocks=len(examples))
+
+
+def _assemble(
+    cluster: FailureCluster,
+    prompt: ClusterAnalysisPrompt,
+    task: str,
+    tests_by_id: dict[int, FailedTestSummary],
+    frames: list[str],
+    hints: list[CodeHint],
+    kb_matches: list[dict[str, Any]] | None,
+    recurrence: dict[str, Any] | None,
+    head: tuple[int, int, int, str, str],
+    shown: list[dict[str, Any]],
+    *,
+    blocks: int,
+) -> ClusterTask:
+    position, total, launch_id, answer_path, next_command = head
     sections = [
         f"# Кластер {position} из {total} · прогон #{launch_id}",
         "",
@@ -336,10 +457,12 @@ def build_cluster_task_with_sources(
         sections.append(CODE_NOT_FOUND_NOTE.format(
             next_step=CODE_NOT_FOUND_WITH_FRAMES if with_files else CODE_NOT_FOUND_NO_FRAMES))
     sections += ["", "## Задание", task, "", reference_line(ANALYSIS_FORMAT_REF)]
-    return ClusterTask("\n".join(sections) + "\n", prompt.sources, representative, log_test)
+    return ClusterTask("\n".join(sections) + "\n", prompt.sources, shown, blocks)
 
 
-def build_task_text(*, has_symptom: bool, has_log: bool, low_evidence: bool, has_kb: bool) -> str:
+def build_task_text(
+    *, has_symptom: bool, has_log: bool, low_evidence: bool, has_kb: bool, examples: int = 1,
+) -> str:
     """Блок «Задание»: формат ответа и подсказки под то, что есть в данных.
 
     Варианты: симптом + лог, только лог, только симптом (лога нет или он пуст).
@@ -398,6 +521,7 @@ def build_task_text(*, has_symptom: bool, has_log: bool, low_evidence: bool, has
         "НАБЛЮДЕНИЯ:",
         "- [S<номер>] «<дословная цитата из этого куска данных>»",
         "НЕ ХВАТАЕТ: <каких данных нет и какая проверка различит версии причины> | нет",
+        *([CONSISTENCY_LINE] if examples > 1 else []),
         "КАК ИСПРАВИТЬ:",
         "1. <шаг>",
         "КОД: <путь от корня проекта>:<строка> — <что там происходит>   (последней "
@@ -414,6 +538,7 @@ def build_task_text(*, has_symptom: bool, has_log: bool, low_evidence: bool, has
         "",
         _MISSING_NOTE,
         "",
+        *([_CONSISTENCY_NOTE, ""] if examples > 1 else []),
         _STEPS_NOTE.format(log_detail=_LOG_DETAIL if has_log else ""),
     ]
     if low_evidence:

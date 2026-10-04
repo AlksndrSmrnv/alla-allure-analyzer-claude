@@ -104,6 +104,7 @@ from alla_skill_lib.report import (
 )
 from alla_skill_lib.sources import (
     check_entry_analysis,
+    example_blocks,
     expected_format,
     registry,
     task_format,
@@ -575,8 +576,10 @@ def _write_run(
                 recurrence=entry["history"],
             )
             ws.write_text(paths.cluster_task(file_id), task.text)
-            write_registry(paths.sources(file_id), registry(
-                task.sources, task.message_test, task.log_test))
+            write_registry(paths.sources(file_id), registry(task.sources, tests_by_id))
+            # Чьи данные видела модель; при нескольких блоках нужна «СОГЛАСОВАННОСТЬ».
+            entry["examples"] = task.examples
+            entry["example_blocks"] = task.blocks
         except Exception as exc:  # один битый кластер не должен ронять весь prepare
             logger.exception("Не удалось подготовить кластер %s", file_id)
             local_warnings.append(
@@ -1052,7 +1055,7 @@ def _fix_body(
         f"{_cluster_caption(entry, position, total)} — разбор не прошёл проверку "
         f"(попытка {attempt} из {MAX_FIX_ATTEMPTS}):",
         *(f"- {error}" for error in errors),
-        parse_summary(analysis, task_format(entry)),
+        parse_summary(analysis, task_format(entry), example_blocks(entry)),
         *([UNCHANGED_NOTE] if unchanged >= 2 else []),
         *([LAST_ATTEMPT_ANALYSIS] if attempt == MAX_FIX_ATTEMPTS - 1 else []),
         f"Исправь файл: {paths.analysis(entry['file_id'])}",
@@ -1177,7 +1180,7 @@ def cmd_verify(run_dir: str | None, clusters: list[str], reports_dir: Path) -> i
             lines += [
                 f"Кластер {file_id}: разбор не прошёл проверку:",
                 *(f"- {error}" for error in errors),
-                parse_summary(analysis, task_format(entry)),
+                parse_summary(analysis, task_format(entry), example_blocks(entry)),
                 f"Исправь файл: {path}",
                 f"Задание кластера (данные и куски S…): {paths.cluster_task(file_id)}",
             ]

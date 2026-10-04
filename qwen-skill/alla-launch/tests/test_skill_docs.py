@@ -184,16 +184,31 @@ def _example_sources(name: str | None = None) -> dict[str, dict[str, str]]:
     assert match, f"в analysis-format.md нет образца данных {marker}"
     body = match.group("body")
     headers = list(_DATA_HEADER_RE.finditer(body))
-    return {
-        header.group("id"): {"text": body[header.end() + 1:(
-            headers[index + 1].start() if index + 1 < len(headers) else len(body))].strip("\n")}
-        for index, header in enumerate(headers)
-    }
+    sources = {}
+    for index, header in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(body)
+        # Строки блока примера («### Пример 2 …», «Шаг теста», «… такое же, как в примере 1»)
+        # — не текст куска.
+        lines = [line for line in body[header.end() + 1:end].split("\n")
+                 if not _EXAMPLE_LINE_RE.match(line)]
+        sources[header.group("id")] = {"text": "\n".join(lines).strip("\n")}
+    return sources
+
+
+_EXAMPLE_LINE_RE = re.compile(
+    r"^(?:### Пример \d+ — |Шаг теста: |Примеров в данных: |"
+    r"(?:Сообщение об ошибке|Стек-трейс) — так(?:ое|ой) же, как в примере 1\.)")
+
+
+def _example_blocks(name: str | None) -> int:
+    marker = f"<!-- example-data: {name} -->" if name else "<!-- example-data -->"
+    body = _read(REFERENCES / "analysis-format.md").split(marker, 1)[1].split("\n```\n", 1)[0]
+    return max(1, len(re.findall(r"^### Пример \d+ — ", body, re.MULTILINE)))
 
 
 def _validate_example(text: str, project: Path, data: str | None = None) -> list[str]:
     return validate_analysis(parse_analysis(text), project, frozenset(), task_format=2,
-                             sources=_example_sources(data))
+                             sources=_example_sources(data), examples=_example_blocks(data))
 
 
 def test_example_data_matches_the_task_header_format() -> None:
@@ -202,6 +217,10 @@ def test_example_data_matches_the_task_header_format() -> None:
     assert "customer is null" in sources["S3"]["text"]
     assert list(_example_sources("timeout")) == ["S1", "S2"]
     assert "201 Created" in _example_sources("test")["S3"]["text"]
+    two = _example_sources("two")
+    assert list(two) == ["S1", "S2", "S3"] and _example_blocks("two") == 2
+    assert two["S1"]["text"] == "expected: <200> but was: <500>"
+    assert "Шаг теста" not in two["S2"]["text"] and "Discount.percent()" in two["S3"]["text"]
 
 
 def test_analysis_examples_that_are_ok_pass_validation(project) -> None:
@@ -218,8 +237,9 @@ def test_analysis_examples_that_are_ok_pass_validation(project) -> None:
 def test_analysis_examples_that_are_wrong_give_the_documented_error(project) -> None:
     examples = _examples("analysis-format.md", "analysis-error")
     assert len(examples) >= 9
-    for expected, text in examples:
-        errors = _validate_example(text, project)
+    for arg, text in examples:
+        data, expected = arg.split(" | ", 1) if " | " in arg else (None, arg)
+        errors = _validate_example(text, project, data)
         assert any(expected in error for error in errors), (expected, errors)
 
 

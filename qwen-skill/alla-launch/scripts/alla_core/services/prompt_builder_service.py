@@ -24,7 +24,9 @@ from alla_core.utils.text_normalization import normalize_text_for_llm
 
 __all__ = [
     "ClusterAnalysisPrompt",
+    "PromptExample",
     "PromptSource",
+    "build_cluster_examples_prompt",
     "LaunchSummaryPrompt",
     "build_cluster_analysis_prompt",
     "build_launch_summary_prompt",
@@ -61,6 +63,7 @@ class PromptSource:
     section: str | None = None
     attachment: str | None = None
     lines: str | None = None
+    test_result_id: int | None = None
 
     def header(self) -> str:
         what = {"message": "сообщение об ошибке", "trace": "стек-трейс"}.get(self.kind)
@@ -124,6 +127,8 @@ def build_cluster_analysis_prompt(
     source_ids: bool = False,
     message_test: str | None = None,
     log_test: str | None = None,
+    message_test_id: int | None = None,
+    log_test_id: int | None = None,
 ) -> ClusterAnalysisPrompt:
     """Собрать данные одного кластера.
 
@@ -147,7 +152,9 @@ def build_cluster_analysis_prompt(
     sources: list[PromptSource] = []
 
     def add_source(kind: str, text: str, test: str | None, **where: str | None) -> None:
-        source = PromptSource(f"S{len(sources) + 1}", kind, text, test, **where)
+        test_id = log_test_id if kind == "log" else message_test_id
+        source = PromptSource(f"S{len(sources) + 1}", kind, text, test,
+                              test_result_id=test_id, **where)
         sources.append(source)
         parts.append(f"\n{source.header()}\n{text}")
 
@@ -201,6 +208,114 @@ def build_cluster_analysis_prompt(
         log_chars=log_chars,
         sources=tuple(sources),
     )
+
+
+@dataclass(frozen=True)
+class PromptExample:
+    """Пример кластера для задания: тест и его данные (лог уже отобран под свой лимит)."""
+
+    role: str  # подпись для модели: «типичный», «наиболее отличающийся»…
+    test_result_id: int
+    test_name: str
+    step: str | None
+    message: str | None
+    trace: str | None
+    log: str | None
+
+
+def build_cluster_examples_prompt(
+    cluster: FailureCluster,
+    examples: list[PromptExample],
+    *,
+    message_max_chars: int = DEFAULT_MESSAGE_MAX_CHARS,
+    trace_max_chars: int = DEFAULT_TRACE_MAX_CHARS,
+    log_max_chars: int = DEFAULT_LOG_MAX_CHARS,
+) -> ClusterAnalysisPrompt:
+    """Данные кластера по примерам: у каждого свой блок, id кусков общие (S1, S2…).
+
+    Один пример — тот же вид, что у :func:`build_cluster_analysis_prompt`. Несколько —
+    лимиты сообщения, трейса и лога делятся: первому (типичному) половина, остальным
+    поровну из остатка (:func:`example_shares`). Сообщение и трейс, совпадающие с
+    первым примером, не повторяются. Лог примера ожидается уже отобранным под его долю.
+    """
+    parts: list[str] = [
+        DATA_HEADING,
+        "",
+        f"Кластер: {cluster.label}",
+        f"Затронуто тестов: {cluster.member_count}",
+    ]
+    multi = len(examples) > 1
+    if not multi and examples and examples[0].step:
+        parts.append(f"Шаг теста: {examples[0].step}")
+    if multi:
+        roles = ", ".join(example.role for example in examples)
+        parts.append(f"Примеров в данных: {len(examples)} ({roles}) — тесты группы отличаются, "
+                     "сравни их")
+    sources: list[PromptSource] = []
+    chars = {"message": 0, "trace": 0, "log": 0}
+
+    def add_source(kind: str, text: str, example: PromptExample, **where: str | None) -> None:
+        source = PromptSource(f"S{len(sources) + 1}", kind, text, example.test_name,
+                              test_result_id=example.test_result_id, **where)
+        sources.append(source)
+        parts.append(f"\n{source.header()}\n{text}")
+        chars[kind] += len(text)
+
+    first = examples[0] if examples else None
+    for number, example in enumerate(examples, start=1):
+        share = example_shares(len(examples), number)
+        if multi:
+            parts.append(f"\n### Пример {number} — {example.role} · тест {example.test_name}")
+            if example.step:
+                parts.append(f"Шаг теста: {example.step}")
+        same_message = (number > 1 and first is not None and bool(example.message)
+                        and example.message == first.message)
+        if same_message:
+            parts.append("Сообщение об ошибке — такое же, как в примере 1.")
+        elif example.message:
+            add_source("message", _truncate_prompt_text(
+                example.message, max(1, int(message_max_chars * share))), example)
+        same_trace = (number > 1 and first is not None and bool(example.trace)
+                      and _trace_key(example.trace) == _trace_key(first.trace))
+        if same_trace:
+            parts.append("Стек-трейс — такой же, как в примере 1.")
+        elif example.trace:
+            add_source("trace", _truncate_prompt_text(
+                example.trace, max(1, int(trace_max_chars * share))), example)
+        if example.log:
+            log_text = _truncate_prompt_text(example.log, max(1, int(log_max_chars * share)))
+            for piece in log_pieces(log_text):
+                if piece.meta:
+                    parts.append(f"\n{piece.text}")
+                    continue
+                mark, body = split_source_mark(piece.text)
+                header = _SECTION_HEADER_RE.match(piece.header or "")
+                kind = header.group("kind") if header else "файл"
+                add_source(
+                    "log", body, example,
+                    section=_LOG_KIND_LABELS.get(kind, kind),
+                    attachment=header.group("name") if header else None,
+                    lines=mark[1:-1] if mark else None,
+                )
+    return ClusterAnalysisPrompt(
+        user_prompt="\n".join(parts),
+        message_chars=chars["message"],
+        trace_chars=chars["trace"],
+        log_chars=chars["log"],
+        sources=tuple(sources),
+    )
+
+
+def example_shares(count: int, number: int) -> float:
+    """Доля лимитов примера ``number`` из ``count``: первому половина, остальным поровну."""
+    if count <= 1:
+        return 1.0
+    return 0.5 if number == 1 else 0.5 / (count - 1)
+
+
+def _trace_key(trace: str | None) -> str:
+    """Трейс без времени и ID: тот же — только при полном совпадении кадров."""
+    return normalize_text_for_llm(trace or "").strip()
 
 
 # ---------------------------------------------------------------------------

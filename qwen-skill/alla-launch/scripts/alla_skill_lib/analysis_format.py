@@ -42,6 +42,7 @@ EXPECTED_FORMAT = """\
 НАБЛЮДЕНИЯ:
 - [S<номер>] «<дословная цитата из этого куска данных>»
 НЕ ХВАТАЕТ: <каких данных нет и какая проверка различит версии> | нет
+СОГЛАСОВАННОСТЬ: одна причина | разные проблемы — <чем отличаются примеры> | недостаточно данных   (только если в данных несколько примеров)
 КАК ИСПРАВИТЬ:
 1. <шаг>
 КОД: <путь от корня проекта>:<строка> — <что там>   (необязательно)
@@ -76,6 +77,7 @@ _SECTIONS = {
     "причина": "cause",
     "наблюдения": "observations",
     "не хватает": "missing",
+    "согласованность": "consistency",
     "как исправить": "fix",
     "код": "code",
     "база знаний": "kb",
@@ -97,6 +99,11 @@ _AFTER_QUOTE_RE = re.compile(r"\s*$|\s+[—–(-]")
 # одинаковые с двух сторон (" ' `) внутри цитаты встречаются чётное число раз.
 _QUOTE_PAIRS = {"«": "»", "“": "”", "„": "“", "‘": "’", '"': '"', "'": "'", "`": "`"}
 _OPEN_QUOTES = "".join(_QUOTE_PAIRS)
+_CONSISTENCY_KINDS = (
+    ("одна причина", "same"),
+    ("разные проблемы", "different"),
+    ("недостаточно данных", "insufficient"),
+)
 _NOTHING_MISSING = {"нет", "-", "—", "ничего", "всего хватает"}
 _HEADER_NAMES = "|".join(sorted(_SECTIONS, key=len, reverse=True))
 # Оформление и нумерация перед именем раздела («### », «- **», «1. **»), затем
@@ -158,6 +165,7 @@ class ClusterAnalysis:
     # Строки раздела НАБЛЮДЕНИЯ не в формате «- [S3] «цитата»».
     bad_observations: list[str] = field(default_factory=list)
     missing: str = ""
+    consistency: str = ""
     # Строки вида «ЧТО ПОШЛО НЕ ТАК:», похожие на заголовок, но не из формата.
     unrecognized: list[str] = field(default_factory=list)
     # Реестр источников кластера (id → откуда кусок данных); заполняет проверка
@@ -175,6 +183,23 @@ class ClusterAnalysis:
             return False
         kinds = {str(self.sources.get(item.source_id, {}).get("kind")) for item in self.observations}
         return bool(kinds) and kinds <= {"message", "trace"}
+
+    @property
+    def consistency_kind(self) -> str | None:
+        """``same`` | ``different`` | ``insufficient`` из «СОГЛАСОВАННОСТЬ»; иначе ``None``."""
+        head = _one_line(self.consistency).lower().lstrip("«\"'*_ ")
+        for prefix, kind in _CONSISTENCY_KINDS:
+            if head.startswith(prefix):
+                return kind
+        return None
+
+    @property
+    def consistency_detail(self) -> str:
+        """Чем отличаются примеры: текст после «разные проблемы —»."""
+        if self.consistency_kind != "different":
+            return ""
+        text = _one_line(self.consistency)
+        return text[len("разные проблемы"):].lstrip(" —–-:,.").strip()
 
     @property
     def missing_text(self) -> str:
@@ -258,6 +283,7 @@ def parse_analysis(text: str) -> ClusterAnalysis:
     analysis.title = _one_line(_join(buckets["title"]))
     analysis.fingerprint = _join(buckets["fingerprint"])
     analysis.missing = _join(buckets["missing"])
+    analysis.consistency = _join(buckets["consistency"])
     for line in buckets["observations"]:
         if line.strip(" -*•—–.").lower() in ("", "нет", "нету", "отсутствуют"):
             continue  # «НАБЛЮДЕНИЯ: нет» при категории «неизвестно» — значит, наблюдений нет
@@ -356,7 +382,7 @@ def _is_plain_list_item(raw_line: str, match: re.Match[str]) -> bool:
     return not (written.isupper() or emphasised)
 
 
-def parse_summary(analysis: ClusterAnalysis, task_format: int = 1) -> str:
+def parse_summary(analysis: ClusterAnalysis, task_format: int = 1, examples: int = 1) -> str:
     """Что парсер понял в разборе: подсказка модели, когда формат не принят."""
     parts = []
     for key, title in SECTION_TITLES.items():
@@ -369,6 +395,8 @@ def parse_summary(analysis: ClusterAnalysis, task_format: int = 1) -> str:
             parts.append(f"НАБЛЮДЕНИЯ: {len(analysis.observations)}")
             if analysis.category == "неизвестно":  # обязателен только при «неизвестно»
                 parts.append(f"НЕ ХВАТАЕТ {'✓' if analysis.missing_text else '✗'}")
+            if examples > 1:
+                parts.append(f"СОГЛАСОВАННОСТЬ {'✓' if analysis.consistency_kind else '✗'}")
     line = "Разобрано: " + ", ".join(parts)
     if analysis.unrecognized:
         line += (
@@ -416,6 +444,7 @@ def validate_analysis(
     *,
     task_format: int = 1,
     sources: dict[str, dict[str, Any]] | None = None,
+    examples: int = 1,
 ) -> list[str]:
     """Список проблем формата (пусто — анализ принят).
 
@@ -440,6 +469,8 @@ def validate_analysis(
         errors.append("нет раздела «КАК ИСПРАВИТЬ:» с шагами исправления")
     if task_format >= 2:
         errors.extend(observation_errors(analysis, sources))
+        if examples > 1:
+            errors.extend(consistency_errors(analysis))
     errors.extend(code_ref_errors(analysis, project_root))
     if analysis.kb_ref and analysis.kb_ref not in offered_kb:
         offered = ", ".join(sorted(offered_kb)) or "в задании записей не было"
@@ -482,6 +513,18 @@ def quote_parts(quote: str) -> list[str]:
     """Части цитаты между «…» без пробелов и знаков препинания по краям."""
     parts = (normalize_quote_text(part).strip(" .,;:") for part in _ELLIPSIS_RE.split(quote))
     return [part for part in parts if part]
+
+
+def consistency_errors(analysis: ClusterAnalysis) -> list[str]:
+    """«СОГЛАСОВАННОСТЬ» обязательна, когда в задании несколько примеров."""
+    options = "«одна причина», «разные проблемы — <чем отличаются примеры>» или «недостаточно данных»"
+    if not analysis.consistency:
+        return [f"в данных несколько примеров — добавь «СОГЛАСОВАННОСТЬ:» {options}"]
+    if analysis.consistency_kind is None:
+        return [f"в «СОГЛАСОВАННОСТЬ:» напиши одно из: {options}"]
+    if analysis.consistency_kind == "different" and len(analysis.consistency_detail) < 10:
+        return ["в «СОГЛАСОВАННОСТЬ: разные проблемы — …» после «—» назови, чем отличаются примеры"]
+    return []
 
 
 def observation_errors(

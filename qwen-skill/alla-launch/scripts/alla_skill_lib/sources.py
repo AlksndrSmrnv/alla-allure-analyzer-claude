@@ -30,13 +30,12 @@ Registry = dict[str, dict[str, Any]]
 
 def registry(
     sources: tuple[PromptSource, ...],
-    message_test: FailedTestSummary | None,
-    log_test: FailedTestSummary | None,
+    tests_by_id: dict[int, FailedTestSummary],
 ) -> Registry:
     """id → вид, тест, вложение (имя и id), строки и текст куска данных."""
     result: Registry = {}
     for source in sources:
-        test = log_test if source.kind == "log" else message_test
+        test = tests_by_id.get(source.test_result_id) if source.test_result_id else None
         attachment_id = None
         if source.attachment and test is not None:
             attachment_id = next(
@@ -95,6 +94,11 @@ def task_format(entry: dict[str, Any]) -> int:
     return int(entry.get("task_format") or 1)
 
 
+def example_blocks(entry: dict[str, Any]) -> int:
+    """Сколько примеров было в задании отдельными блоками (старые записи — один)."""
+    return int(entry.get("example_blocks") or 1)
+
+
 def expected_format(entry: dict[str, Any]) -> str:
     """Шаблон разбора, по которому проверяется этот кластер."""
     return EXPECTED_FORMAT if task_format(entry) >= TASK_FORMAT else LEGACY_EXPECTED_FORMAT
@@ -118,5 +122,5 @@ def check_entry_analysis(
     sources = load_registry(paths.sources(entry["file_id"])) if version >= TASK_FORMAT else None
     analysis.sources = sources
     errors = validate_analysis(analysis, project_root, offered, task_format=version,
-                               sources=sources)
+                               sources=sources, examples=example_blocks(entry))
     return analysis, errors

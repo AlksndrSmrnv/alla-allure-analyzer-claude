@@ -807,7 +807,7 @@ def select_examples(
 
     * ``typical`` — медоид: минимальная сумма расстояний до остальных участников;
     * ``different`` — самый далёкий от типичного, если его сообщение, шаг или лог
-      отличаются после нормализации;
+      отличаются после нормализации (логи — когда есть у обоих: нет лога — не отличие);
     * ``informative`` — больше всего событий-ошибок в логе среди остальных, если его
       лог отличается от логов уже выбранных.
 
@@ -822,7 +822,11 @@ def select_examples(
     examples = [ClusterExample(role="typical", test_result_id=test_id(typical))]
 
     def differs(a: int, b: int) -> bool:
-        return (messages[a], steps[a], logs[a]) != (messages[b], steps[b], logs[b])
+        # Нет лога у одного из тестов — это не другая проблема: логи сравниваются, только
+        # когда есть у обоих.
+        both_logs = bool(logs[a].strip()) and bool(logs[b].strip())
+        return (messages[a] != messages[b] or steps[a] != steps[b]
+                or (both_logs and logs[a] != logs[b]))
 
     rest = [i for i in indices if i != typical]
     if rest:

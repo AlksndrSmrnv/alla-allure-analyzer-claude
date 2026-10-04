@@ -109,10 +109,13 @@ def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
     views: list[ClusterView] = []
     for entry in run["clusters"]:
         cluster = by_id[entry["cluster_id"]]
-        visible = {cluster.representative_test_id} if cluster.representative_test_id else set()
-        source = select_log_source(cluster, tests_by_id)
-        if source is not None:
-            visible.add(source.test_result_id)
+        if entry.get("examples"):  # чьи данные видела модель (шаг 4: примеры кластера)
+            visible = {example["test_result_id"] for example in entry["examples"]}
+        else:
+            visible = {cluster.representative_test_id} if cluster.representative_test_id else set()
+            source = select_log_source(cluster, tests_by_id)
+            if source is not None:
+                visible.add(source.test_result_id)
         task = paths.cluster_task(entry["file_id"])
         text = task.read_text(encoding="utf-8") if task.is_file() else ""
         # Пути зависят от машины: без них размер задания сравним с базовой линией.
