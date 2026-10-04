@@ -31,7 +31,7 @@
       "evidence_total": 40,
       "groups": 40,
       "hidden_groups": 0,
-      "max_task_chars": 8850,
+      "max_task_chars": 7130,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 320

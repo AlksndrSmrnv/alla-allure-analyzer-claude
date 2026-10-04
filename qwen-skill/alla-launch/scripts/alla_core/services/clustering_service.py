@@ -792,6 +792,9 @@ class _Distances:
         return float(self._condensed[self._n * i - i * (i + 1) // 2 + (j - i - 1)])
 
 
+_DIGITS_RE = re.compile(r"\d+")
+
+
 def _error_events(failure: FailedTestSummary) -> int:
     """Сколько событий-ошибок в логе теста: по пометкам строк источника (шаг 2)."""
     return len(SOURCE_MARK_RE.findall(failure.log_snippet or ""))
@@ -816,7 +819,10 @@ def select_examples(
     def test_id(index: int) -> int:
         return failures[index].test_result_id
 
-    messages, steps, logs = documents
+    messages, steps, raw_logs = documents
+    # Номера строк, потоков, коротких id в логе (exec-1 / exec-7, Worker.java:40 / :41) — не
+    # другая проблема: для решения «отличается» логи сравниваются без цифр.
+    logs = [_DIGITS_RE.sub("#", log) for log in raw_logs]
     typical = min(indices, key=lambda i: (sum(distance(i, j) for j in indices), test_id(i)))
     chosen = [typical]
     examples = [ClusterExample(role="typical", test_result_id=test_id(typical))]

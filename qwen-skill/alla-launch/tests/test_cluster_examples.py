@@ -102,3 +102,15 @@ def test_old_run_json_without_examples_still_loads() -> None:
     triage = {"launch_id": 1, "total_results": 1, "failed_tests": []}
     _triage, clustering = load_models({"triage": triage, "clustering": report.model_dump()})
     assert clustering is not None and clustering.clusters[0].examples == []
+
+
+def test_logs_differing_only_in_numbers_are_not_different_problems() -> None:
+    def distance(a: int, b: int) -> float:
+        return 0.0 if a == b else 0.3
+
+    failures = [_failure(30 + i) for i in range(2)]
+    logs = ["ERROR [nio-8080-exec-1] Worker.run(Worker.java:40) state stuck",
+            "ERROR [nio-8080-exec-7] Worker.run(Worker.java:41) state stuck"]
+    assert len(select_examples([0, 1], failures, distance, ([ASSERT] * 2, ["s"] * 2, logs))) == 1
+    other = [logs[0], "ERROR [nio-8080-exec-7] Pool.get(Pool.java:12) pool exhausted"]
+    assert len(select_examples([0, 1], failures, distance, ([ASSERT] * 2, ["s"] * 2, other))) == 2
