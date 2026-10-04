@@ -255,7 +255,7 @@ class ClusterAnalysis:
 
     def what_first_sentence(self) -> str:
         """Первое предложение «ЧТО СЛОМАЛОСЬ» в одну строку."""
-        return _SENTENCE_END_RE.split(_one_line(self.what), maxsplit=1)[0]
+        return first_sentence(self.what)
 
     def first_fix_step(self) -> str:
         for line in self.fix.splitlines():
@@ -263,6 +263,11 @@ class ClusterAnalysis:
             if step:
                 return step
         return ""
+
+
+def first_sentence(text: str) -> str:
+    """Первое предложение текста в одну строку."""
+    return _SENTENCE_END_RE.split(_one_line(text), maxsplit=1)[0]
 
 
 def parse_analysis(text: str) -> ClusterAnalysis:

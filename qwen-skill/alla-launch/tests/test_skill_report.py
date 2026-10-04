@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from skill_fixtures import without_libmagic  # noqa: F401
 
 from alla_core.models.clustering import ClusterSignature, ClusteringReport, FailureCluster
@@ -353,6 +355,48 @@ def test_long_first_sentence_is_clipped_in_terminal_but_full_in_file(tmp_path: P
     line = lines[lines.index("**Проблема 1** · 1 тест") + 1]  # «что случилось» — под заголовком
     assert len(line) <= BRIEF_TEXT_CHARS and line.endswith("…") and line.startswith('{"error":')
     assert blob in full  # полный текст остаётся в report.md
+
+
+# Как Qwen Code узнаёт блочную разметку в начале строки (его рендерер построчный): строка-
+# ограда открывает блок кода до конца ответа, остальные меняют вид строки.
+_QWEN_BLOCK_STARTS = (
+    r"^ *(`{3,}|~{3,}) *([^`]*)$",  # ограда кода
+    r"^ *#{1,4} +",  # заголовок
+    r"^ *> ?",  # цитата
+    r"^\s*\|(.+)\|\s*$",  # строка таблицы
+    r"^ *([-*_] *){3,} *$",  # горизонтальная линия
+    r"^ *\$\$ *$",  # формула
+)
+
+
+@pytest.mark.parametrize("what, shown", [
+    ("\n```\nNPE в OrderService. Подробности ниже.\n```", "NPE в OrderService."),
+    ("\n~~~\nNPE в OrderService.\n~~~", "NPE в OrderService."),
+    (" # Заказ не создаётся.", "Заказ не создаётся."),
+    (" > Сервер ответил 500.", "Сервер ответил 500."),
+    (" | 500 | Internal Server Error |", "500 | Internal Server Error |"),
+    (" - Заказ не создаётся.", "Заказ не создаётся."),
+    (" 1. Заказ не создаётся.", "Заказ не создаётся."),
+    (" ---", None),
+])
+def test_symptom_markdown_does_not_break_the_rest_of_the_brief(
+    tmp_path: Path, what: str, shown: str | None
+) -> None:
+    """Симптом идёт строкой без подписи: блочная разметка модели в его начале (ограда кода,
+    заголовок, цитата…) убирается, иначе Qwen показал бы остаток отчёта как код."""
+    text = f"ЧТО СЛОМАЛОСЬ:{what}\nПРИЧИНА: приложение — NPE.\nКАК ИСПРАВИТЬ:\n1. Починить.\n"
+    console, _ = _render(tmp_path, _run([2]), [text])
+    lines = console.splitlines()
+    head = lines.index("**Проблема 1** · 2 теста")
+    if shown is None:  # от симптома ничего не осталось — строки нет
+        assert lines[head + 1].startswith("   Агент считает: ")
+    else:
+        assert lines[head + 1] == shown
+    for line in lines:
+        if line.startswith(("### ", "## ")) or line == "---":
+            continue  # заголовки и линии брифа — свои
+        assert not any(re.match(pattern, line) for pattern in _QWEN_BLOCK_STARTS), line
+    assert "Полный разбор: [report.md](" in console
 
 
 def test_terminal_tags_show_repeats_and_known_problems(tmp_path: Path) -> None:

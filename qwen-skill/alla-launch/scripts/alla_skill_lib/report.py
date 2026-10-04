@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
@@ -26,7 +27,7 @@ from alla_core.models.testops import TriageReport
 from alla_core.services.prompt_builder_service import build_launch_summary_prompt
 
 from alla_skill_lib.agent_rules import EXECUTOR_RULES, SUMMARY_FORMAT_REF, reference_line
-from alla_skill_lib.analysis_format import UNCONFIRMED_NOTE, ClusterAnalysis
+from alla_skill_lib.analysis_format import UNCONFIRMED_NOTE, ClusterAnalysis, first_sentence
 from alla_skill_lib.cluster_task import UNTRUSTED_NOTE
 from alla_skill_lib.history import format_date
 from alla_skill_lib.proposals import Proposal, weakening_warnings
@@ -130,6 +131,12 @@ CATEGORY_TAGS = {
     "неизвестно": "НЕ ЯСНО",
 }
 FLAGGED_TAG = "ФОРМАТ НАРУШЕН"
+# Блочная разметка в начале строки: Qwen Code рисует Markdown построчно, и строка, которая
+# начинается с ``` или ~~~, открывает блок кода до конца ответа — с отчётом и ссылкой.
+# Заголовки, цитаты, таблицы, списки, линии и формулы меняют вид строки.
+_BLOCK_MARKUP_RE = re.compile(
+    r"^(?:\s*(?:`{3,}|~{3,}|\${2}|#{1,6}(?=\s|$)|>|\||[-*_]{3,}(?=\s|$)|[-*+](?=\s|$)|\d+[.)](?=\s|$)))+\s*"
+)
 CATEGORY_LABELS = {
     "тест": "ошибка в автотесте",
     "приложение": "возможная ошибка приложения",
@@ -646,7 +653,9 @@ def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) 
         text = f"[{problem.tag}] разбор не прошёл проверку формата, текст — в report.md"
         lines.append(_brief_field("Агент считает:", text))
         return lines + _brief_example(problem, tests)
-    what = analysis.what_first_sentence()
+    # Строка без подписи: разметку модели в начале убираем до выбора первого предложения,
+    # иначе «1. Заказ…» дало бы предложение «1.».
+    what = first_sentence(_plain_line(_one_line(analysis.what)))
     if what:
         lines.append(_truncate(what, BRIEF_TEXT_CHARS))
     reason = _truncate(_one_line(_reason(problem)), BRIEF_CAUSE_CHARS) or problem.label
@@ -667,6 +676,11 @@ def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) 
         reason = _truncate(_one_line(_not_fixed_reason(problem, not_proposed)), BRIEF_REASON_CHARS)
         lines.append(_brief_field("Почему не сам:", reason))
     return lines + _brief_example(problem, tests)
+
+
+def _plain_line(text: str) -> str:
+    """Текст модели для строки без подписи: без блочной разметки в начале."""
+    return _BLOCK_MARKUP_RE.sub("", text)
 
 
 def _brief_field(label: str, text: str) -> str:
