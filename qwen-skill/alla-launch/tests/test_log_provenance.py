@@ -279,6 +279,9 @@ def test_every_paragraph_of_an_event_carries_its_lines() -> None:
     ("error_code=-10001", ["error_code=-10001"]),
     ("error_code=10001 then ORA-01017", ["error_code=10001", "ora-01017"]),
     ("worker thread-1234 failed", []),
+    ("[http-nio-8080-exec-7] ERROR pool exhausted", []),
+    ("https-jsse-nio-8443-exec-1 ajp-nio-8009-exec-3 catalina-exec-1000", []),
+    ("sqlstate-42601 at [http-nio-8080-exec-1]", ["sqlstate-42601"]),
     ("status 2026-10-03 failed", []),
 ])
 def test_numeric_codes_read_quoted_and_signed_values(text: str, codes: list[str]) -> None:

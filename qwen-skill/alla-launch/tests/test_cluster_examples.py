@@ -211,3 +211,22 @@ def test_durations_are_not_http_statuses() -> None:
     examples = select_examples([0, 1, 2, 3], failures, distance, ([ASSERT] * 4, ["s"] * 4, docs))
     assert [(e.role, e.test_result_id) for e in examples] == [
         ("typical", 70), ("different", 71), ("informative", 73)]
+
+
+def test_tomcat_thread_names_are_not_error_codes() -> None:
+    far = {frozenset({0, 1}): 0.3, frozenset({0, 2}): 0.2, frozenset({0, 3}): 0.2}
+
+    def distance(a: int, b: int) -> float:
+        return 0.0 if a == b else far.get(frozenset({a, b}), 0.5)
+
+    # Повтор ошибки пула отличается только потоком Tomcat — это та же ошибка.
+    texts = ["[http-nio-8080-exec-1] HikariPool-1 - Connection is not available",
+             "[http-nio-8080-exec-2] discount is null",
+             "[http-nio-8080-exec-7] HikariPool-1 - Connection is not available",
+             "[http-nio-8080-exec-3] relation orders_v2 does not exist"]
+    logs = [_log(texts[0]), _log(texts[1]), _log(texts[2], texts[2], texts[2]), _log(texts[3])]
+    failures = [_failure(80 + i, log) for i, log in enumerate(logs)]
+    docs = [re.sub(r"\d+", "#", text) for text in texts]
+    examples = select_examples([0, 1, 2, 3], failures, distance, ([ASSERT] * 4, ["s"] * 4, docs))
+    assert [(e.role, e.test_result_id) for e in examples] == [
+        ("typical", 80), ("different", 81), ("informative", 83)]

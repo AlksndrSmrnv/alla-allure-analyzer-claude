@@ -185,11 +185,20 @@ NON_CODE_PREFIXES = frozenset(
 )
 
 
+# Имена потоков: «http-nio-8080-exec-7», «https-jsse-nio-8443-exec-1», «catalina-exec-1000».
+# Порт и номер потока в них — не код ошибки: разные номера одной ошибки не делают её другой.
+_THREAD_PREFIXES = frozenset({"nio", "jsse", "http", "https", "ajp", "exec", "catalina",
+                              "tomcat", "undertow", "jetty"})
+_THREAD_TAIL_RE = re.compile(r"-(?:exec|thread|worker|pool|nio|acceptor|poller)\b",
+                             re.IGNORECASE)
+
+
 def numeric_codes(text: str) -> list[str]:
     """Коды из текста по порядку, без повторов: ``code=10001``, ``ora-01017``…
 
     Контекстные (``code``/``status``/``errno`` … и 4+ цифры) и встроенные
-    (``ORA-01017``, но не ``thread-1234``: префиксы из :data:`NON_CODE_PREFIXES`).
+    (``ORA-01017``, но не ``thread-1234`` — префиксы из :data:`NON_CODE_PREFIXES` — и не имена
+    потоков вроде ``http-nio-8080-exec-7``).
     """
     normalized = " ".join(normalize_text_for_llm(text).split()).casefold()
     values = [
@@ -198,6 +207,9 @@ def numeric_codes(text: str) -> list[str]:
     ]
     for match in _EMBEDDED_NUMERIC_CODE_RE.finditer(normalized):
         prefix = match.group("prefix").casefold()
-        if prefix not in NON_CODE_PREFIXES:
-            values.append(f"{prefix}-{match.group('number')}")
+        if prefix in NON_CODE_PREFIXES or prefix in _THREAD_PREFIXES:
+            continue
+        if _THREAD_TAIL_RE.search(match.group("number")):
+            continue  # «…-8080-exec-1»: имя потока с портом, а не код ошибки
+        values.append(f"{prefix}-{match.group('number')}")
     return list(dict.fromkeys(values))
