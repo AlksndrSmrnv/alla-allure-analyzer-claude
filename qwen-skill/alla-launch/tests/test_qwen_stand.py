@@ -37,7 +37,8 @@ def test_server_serves_fixture_and_logs_requests(tmp_path: Path) -> None:
     assert methods == ["POST", "GET", "GET"]
 
 
-@pytest.mark.parametrize("spec", ["default", "green", "info_only", "injection", "scant", "many:12"])
+@pytest.mark.parametrize("spec", ["default", "green", "info_only", "injection", "scant", "mixed",
+                                  "many:12"])
 def test_build_fixture_known_specs(spec: str) -> None:
     assert build_fixture(spec).results
 
@@ -459,3 +460,19 @@ def test_scant_fixture_gives_the_model_a_task_without_a_cause(tmp_path: Path) ->
     failed, = [r for r in fixture.results if r["status"] == "failed"]
     assert failed["statusDetails"]["message"] == "java.lang.AssertionError"
     assert b"[ERROR]" not in fixture.contents[9401]
+
+
+@pytest.mark.parametrize(("consistency", "status"), [
+    ("СОГЛАСОВАННОСТЬ: разные проблемы — у одного пул БД, у другого NPE\n", "pass"),
+    ("СОГЛАСОВАННОСТЬ: одна причина\n", "fail"),
+    ("", "fail"),
+])
+def test_mixed_group_found_check(tmp_path: Path, consistency: str, status: str) -> None:
+    run_dir = tmp_path / "p" / "alla-reports" / "5103-20261004-100000"
+    (run_dir / "analyses").mkdir(parents=True)
+    (run_dir / "run.json").write_text(json.dumps({"clusters": [
+        {"file_id": "01", "auto": False, "task_format": 2, "example_blocks": 2}]}),
+        encoding="utf-8")
+    (run_dir / "analyses" / "01.md").write_text(
+        "ЧТО СЛОМАЛОСЬ: 500.\nПРИЧИНА: приложение — сбой.\n" + consistency, encoding="utf-8")
+    assert CHECKS["mixed_group_found"](context(tmp_path, [], "E08"))["status"] == status

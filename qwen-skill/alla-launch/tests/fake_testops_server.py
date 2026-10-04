@@ -40,11 +40,20 @@ FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
     "info_only": info_only_launch,
     "injection": injection_launch,
     "scant": scant_launch,
+    "mixed": lambda: _mixed_launch(),
 }
 
 
+def _mixed_launch() -> LaunchFixture:
+    """Склеенная группа: одинаковый assertion, в логах пул БД и NPE (корпус эталона, E08)."""
+    from eval.corpus_dev import same_assertion_db_vs_npe
+
+    return same_assertion_db_vs_npe().fixture
+
+
 def build_fixture(spec: str) -> LaunchFixture:
-    """``default`` | ``green`` | ``info_only`` | ``injection`` | ``scant`` | ``many:<число>``."""
+    """``default`` | ``green`` | ``info_only`` | ``injection`` | ``scant`` | ``mixed`` |
+    ``many:<число>``."""
     name, _, arg = spec.partition(":")
     if name == "many":
         return many_launch(int(arg or 40))
