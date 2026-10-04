@@ -303,3 +303,24 @@ def test_quoted_and_negative_codes_are_not_folded(pair: tuple[str, str]) -> None
     one = _enrich({"app.log": log.splitlines(keepends=True)[0]}, status_message="request failed")
     both = _enrich({"app.log": log}, status_message="request failed")
     assert _signature(one)[0] != _signature(both)[0]
+
+
+@pytest.mark.parametrize(("first", "second"), [
+    ("http-nio-8080-exec-1", "http-nio-8080-exec-7"),
+    ("pool-1-thread-3", "pool-4-thread-12"),
+    ("ForkJoinPool.commonPool-worker-1", "ForkJoinPool.commonPool-worker-9"),
+    ("catalina-exec-12", "catalina-exec-305"),
+])
+def test_thread_names_do_not_change_the_signature(first: str, second: str) -> None:
+    def log(thread: str, error: str = "HikariPool-1 - Connection is not available") -> str:
+        return (f"2026-10-03 10:00:01 [ERROR] [{thread}] OrderRepository: could not save order\n"
+                f"java.sql.SQLTransientConnectionException: {error}\n")
+
+    one = _enrich({"app.log": log(first)}, status_message="request failed")
+    other = _enrich({"app.log": log(second)}, status_message="request failed")
+    different = _enrich({"app.log": log(second, "relation orders_v2 does not exist")},
+                        status_message="request failed")
+
+    assert _signature(one)[0] == _signature(other)[0]
+    assert _signature(one)[0] != _signature(different)[0]
+    assert "<THREAD>" in _signature(one)[1]

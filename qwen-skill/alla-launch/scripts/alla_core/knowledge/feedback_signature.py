@@ -19,6 +19,7 @@ from alla_core.utils.text_normalization import (
     normalize_text,
     normalize_text_for_llm,
     numeric_codes,
+    replace_thread_names,
 )
 
 _SHORT_MESSAGE_WORDS = 10
@@ -52,7 +53,7 @@ def _collapse_whitespace(text: str) -> str:
 
 
 def _normalize_signature_soft_base_fragment(text: str) -> str:
-    return _collapse_whitespace(normalize_text(text)).casefold()
+    return _collapse_whitespace(normalize_text(replace_thread_names(text))).casefold()
 
 
 def _build_numeric_fingerprint(text: str) -> str:
@@ -78,11 +79,11 @@ def _normalize_signature_soft_fragment(
 
 
 def _normalize_signature_strict_fragment(text: str) -> str:
-    return _collapse_whitespace(normalize_text_for_llm(text)).casefold()
+    return _collapse_whitespace(normalize_text_for_llm(replace_thread_names(text))).casefold()
 
 
 def _normalize_audit_fragment(text: str) -> str:
-    return _collapse_whitespace(normalize_text_for_llm(text))
+    return _collapse_whitespace(normalize_text_for_llm(replace_thread_names(text)))
 
 
 def _dedupe(items: list[str]) -> list[str]:

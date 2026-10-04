@@ -213,3 +213,20 @@ def numeric_codes(text: str) -> list[str]:
             continue  # «…-8080-exec-1»: имя потока с портом, а не код ошибки
         values.append(f"{prefix}-{match.group('number')}")
     return list(dict.fromkeys(values))
+
+
+# Имена потоков: «http-nio-8080-exec-7», «https-jsse-nio-8443-exec-1», «catalina-exec-12»,
+# «pool-3-thread-1», «ForkJoinPool.commonPool-worker-5», «Thread-42». Номер потока — свойство
+# запуска, а не ошибки: для сигнатуры одна ошибка на разных потоках — одна.
+_THREAD_NAME_RE = re.compile(
+    r"\b(?:(?:https?|ajp)(?:-jsse)?-nio2?-\d+-exec-\d+"
+    r"|[A-Za-z][\w.]*-exec-\d+"
+    r"|pool-\d+-thread-\d+"
+    r"|ForkJoinPool(?:\.commonPool)?-worker-\d+"
+    r"|Thread-\d+)\b"
+)
+
+
+def replace_thread_names(text: str) -> str:
+    """Заменить имена потоков меткой ``<THREAD>``."""
+    return _THREAD_NAME_RE.sub("<THREAD>", text)
