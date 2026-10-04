@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -124,11 +125,13 @@ def test_same_named_attachments_keep_their_own_ids() -> None:
     from alla_core.services.log_extraction_service import LogExtractionConfig, LogExtractionService
 
     logs = {100: "2026-09-01 10:00:01 [ERROR] first service failed\n",
-            101: "2026-09-01 10:00:02 [ERROR] second service failed\n"}
+            101: "2026-09-01 10:00:02 [ERROR] second service failed\n",
+            102: "2026-09-01 10:00:03 [ERROR] third service failed\n"}
+    names = {100: "app.log", 101: "app.log", 102: "app.log #100"}  # третье — как подпись первого
 
     class Provider:
         async def get_attachments_for_test_result(self, _test_id: int) -> list[AttachmentMeta]:
-            return [AttachmentMeta(id=key, name="app.log", type="text/plain") for key in logs]
+            return [AttachmentMeta(id=key, name=names[key], type="text/plain") for key in logs]
 
         async def get_attachment_content(self, attachment_id: int) -> bytes:
             return logs[attachment_id].encode()
@@ -136,12 +139,14 @@ def test_same_named_attachments_keep_their_own_ids() -> None:
     member = FailedTestSummary(test_result_id=2, name="member", status="failed")
     asyncio.run(LogExtractionService(Provider(), LogExtractionConfig()).enrich_with_logs([member]))
     assert member.log_snippet is not None
-    assert "--- [файл: app.log #100] ---" in member.log_snippet
-    assert "--- [файл: app.log #101] ---" in member.log_snippet
+    headers = re.findall(r"^--- \[файл: (.+)\] ---$", member.log_snippet, re.MULTILINE)
+    assert headers == ["app.log #100-2", "app.log #101", "app.log #100"]
+    assert len(set(headers)) == len(headers)
 
     prompt = build_cluster_analysis_prompt(_cluster(None), member.log_snippet, source_ids=True,
                                            normalize_evidence=False, log_test="member")
     records = registry(prompt.sources, None, member)
     by_text = {record["text"].split("] ", 1)[1]: record["attachment_id"]
                for record in records.values()}
-    assert by_text == {"first service failed": 100, "second service failed": 101}
+    assert by_text == {"first service failed": 100, "second service failed": 101,
+                       "third service failed": 102}

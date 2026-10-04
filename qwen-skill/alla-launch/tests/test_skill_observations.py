@@ -238,6 +238,9 @@ def test_legacy_run_report_has_no_observations(
     ('- [S3] "key "id" — missing" — note "x"', 'key "id" — missing'),
     ("- [S2] `at a.B.c` — проверка в `createOrder`", "at a.B.c"),
     ("- [S1] 'can't connect' - see log", "can't connect"),
+    ("- [S1] 'can't connect' — ошибка в 'login'", "can't connect"),
+    ("- [S1] 'it's the user's fault' — x", "it's the user's fault"),
+    ('- [S3] "value \\"id\\" missing" — note', 'value \\"id\\" missing'),
 ])
 def test_comment_after_the_quote_is_not_part_of_it(line: str, quote: str) -> None:
     observation, = parse_analysis(HEAD + "НАБЛЮДЕНИЯ:\n" + line + "\n" + TAIL).observations

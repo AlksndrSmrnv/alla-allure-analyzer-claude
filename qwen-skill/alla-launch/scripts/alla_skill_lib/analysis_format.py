@@ -284,6 +284,13 @@ def parse_observation(line: str) -> Observation | None:
     return Observation(match.group("id").upper(), quote) if quote else None
 
 
+def _not_a_quote_mark(text: str, index: int) -> bool:
+    """Символ кавычки, который не открывает и не закрывает: ``can't``, ``\\"``."""
+    before = text[index - 1] if index else ""
+    after = text[index + 1] if index + 1 < len(text) else ""
+    return before == "\\" or (before.isalnum() and after.isalnum())
+
+
 def _closing_quote(text: str) -> int | None:
     """Позиция кавычки, закрывающей цитату, которая открыта первым символом ``text``.
 
@@ -292,20 +299,24 @@ def _closing_quote(text: str) -> int | None:
     закрывающая — парная открывающей и стоит перед концом строки или пояснением.
     """
     opening, closing = text[0], _QUOTE_PAIRS[text[0]]
+    symmetric = opening == closing
     candidates: list[int] = []
     depth = 0
+    inner = 0  # одинаковых кавычек внутри цитаты (у " ' `)
     for index in range(1, len(text)):
         char = text[index]
-        if opening != closing and char == opening:
+        if not symmetric and char == opening:
             depth += 1
         elif char == closing:
-            if opening != closing and depth:
+            if not symmetric and depth:
                 depth -= 1
                 continue
-            inner = text[1:index].count(closing) if opening == closing else 0
+            if symmetric and _not_a_quote_mark(text, index):
+                continue  # апостроф в слове (can't) или экранированная кавычка
             if inner % 2 == 0 and _AFTER_QUOTE_RE.match(text, index + 1):
                 return index
             candidates.append(index)
+            inner += 1
     # Пары не сошлись (кавычки разного вида, обрыв) — последняя подходящая кавычка.
     return candidates[-1] if candidates else None
 

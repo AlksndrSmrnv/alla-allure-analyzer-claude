@@ -398,6 +398,32 @@ def _attachment_label(att: AttachmentMeta) -> str:
     return (att.name or f"attachment-{att.id}").replace("\n", " ").replace("\r", " ").strip()
 
 
+def _unique_labels(attachments: list[AttachmentMeta]) -> dict[int, str]:
+    """Подписи вложений теста для заголовков секций — все разные.
+
+    Одинаковые имена (два ``app.log``) получают id: ``app.log #100``. Такая подпись
+    может совпасть с настоящим именем другого вложения (``app.log #100``) — тогда
+    добавляется номер, пока подпись не станет свободной. По подписи из заголовка
+    реестр источников находит id вложения.
+    """
+    names = {att.id: _attachment_label(att) for att in attachments if att.id is not None}
+    counts = Counter(names.values())
+    used = {name for name in names.values() if counts[name] == 1}
+    labels: dict[int, str] = {}
+    for att_id, name in names.items():
+        if counts[name] == 1:
+            labels[att_id] = name
+            continue
+        label = f"{name} #{att_id}"
+        extra = 1
+        while label in used:
+            extra += 1
+            label = f"{name} #{att_id}-{extra}"
+        used.add(label)
+        labels[att_id] = label
+    return labels
+
+
 class LogExtractionConfig:
     """Параметры извлечения логов из аттачментов."""
 
@@ -622,7 +648,7 @@ class LogExtractionService:
                 att for att in all_attachments
                 if att not in details_atts and self._is_processable_attachment(att)
             ]
-            name_counts = Counter(_attachment_label(att) for att in processable)
+            labels = _unique_labels(processable)
             if not processable:
                 summary.correlation_hint = _apply_status_details_correlation_fallback(
                     summary,
@@ -654,11 +680,7 @@ class LogExtractionService:
                         )
                         continue
 
-                att_name = _attachment_label(att)
-                if name_counts[att_name] > 1:
-                    # Одинаковые имена (два app.log): заголовок секции и происхождение
-                    # фрагмента должны указывать на своё вложение.
-                    att_name = f"{att_name} #{att.id}"
+                att_name = labels[att.id] if att.id in labels else _attachment_label(att)
                 fallback_mime = (att.type or att.content_type or "").lower()
                 detected_type = _detect_content_type(content_bytes, fallback_mime=fallback_mime)
 
