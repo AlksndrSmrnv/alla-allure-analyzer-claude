@@ -15,7 +15,7 @@ from typing import Any
 
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.agent_rules import FEEDBACK_FORMAT_REF, reference_line
-from alla_skill_lib.analysis_format import parse_analysis, validate_analysis
+from alla_skill_lib.analysis_format import parse_analysis
 from alla_skill_lib.kb import (
     CATEGORY_TO_KB,
     MAX_FINGERPRINT_LINES,
@@ -29,6 +29,7 @@ from alla_skill_lib.kb import (
     secret_lines,
     store_fingerprint,
 )
+from alla_skill_lib.sources import check_entry_analysis
 
 MAX_TITLE_CHARS = 120
 FEEDBACK_FORMAT = """\
@@ -88,11 +89,14 @@ def remember(
     from_feedback = has_feedback and not from_analysis
     ignored_feedback = has_feedback and from_analysis
     source = feedback_path if from_feedback else paths.analysis(file_id)
-    parsed = parse_analysis(source.read_text(encoding="utf-8"))
     project_root = Path(run["project_root"])
-    if not from_feedback:
-        offered = frozenset(match["id"] for match in entry.get("kb", []))
-        if validate_analysis(parsed, project_root, offered):
+    if from_feedback:
+        # Обратная связь — слова пользователя: наблюдения и «НЕ ХВАТАЕТ» в ней необязательны.
+        parsed = parse_analysis(source.read_text(encoding="utf-8"))
+    else:
+        parsed, analysis_errors = check_entry_analysis(
+            source.read_text(encoding="utf-8"), entry, project_root, paths)
+        if analysis_errors:
             return "fix", _fix_body(paths, file_id, [
                 "разбор кластера не прошёл проверку формата — запиши причину и рецепт "
                 "в файл обратной связи"

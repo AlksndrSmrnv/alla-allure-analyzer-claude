@@ -16,6 +16,9 @@ VALID = (
     "\n"
     "ПРИЧИНА: окружение — стенд отдаёт другие данные.\n"
     "\n"
+    "НАБЛЮДЕНИЯ:\n"
+    "- [S1] «{quote}»\n"
+    "\n"
     "КАК ИСПРАВИТЬ:\n"
     "1. Проверить данные на стенде.\n"
 )
@@ -49,8 +52,12 @@ def _manual_ids(run: dict) -> list[str]:
 
 
 def _answer(run_dir: Path, file_ids: list[str], text: str = VALID) -> None:
+    """Записать разборы; в ``{quote}`` — начало сообщения об ошибке (S1) этого кластера."""
     for file_id in file_ids:
-        (run_dir / "analyses" / f"{file_id}.md").write_text(text, encoding="utf-8")
+        sources = json.loads((run_dir / "evidence" / f"{file_id}.sources.json").read_text("utf-8"))
+        quote = sources["S1"]["text"].splitlines()[0][:60]
+        (run_dir / "analyses" / f"{file_id}.md").write_text(text.replace("{quote}", quote),
+                                                           encoding="utf-8")
 
 
 @pytest.fixture(name="small_batches")

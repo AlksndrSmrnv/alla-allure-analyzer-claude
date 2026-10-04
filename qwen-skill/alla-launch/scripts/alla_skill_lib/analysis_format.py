@@ -1,13 +1,20 @@
-"""Разбор и лёгкая проверка анализа кластера, который написал агент.
+"""Разбор и проверка анализа кластера, который написал агент.
 
-Формат тот же, что промпт ядра (``build_cluster_analysis_prompt``) требует от модели::
+Формат задания версии 2 (``task_format: 2`` в записи кластера ``run.json``)::
 
     ЧТО СЛОМАЛОСЬ: ...
     ПРИЧИНА: <тест|приложение|окружение|данные|неизвестно> — ...
+    НАБЛЮДЕНИЯ:
+    - [S3] «дословная цитата из этого источника»
+    НЕ ХВАТАЕТ: ... | нет
     КАК ИСПРАВИТЬ:
     1. ...
     КОД: path/to/Test.java:42 — ...   (необязательно)
     БАЗА ЗНАНИЙ: <id записи> | нет     (если задание предлагало записи)
+
+Цитаты наблюдений проверяются по реестру источников (``sources.py``). Разборы
+старых папок (записи без ``task_format``) проверяются по прежним правилам:
+без наблюдений и «НЕ ХВАТАЕТ».
 
 Тот же парсер читает обратную связь пользователя (``feedback/NN.md``),
 где ещё бывают ``НАЗВАНИЕ:`` и ``ПРИЗНАК:``.
@@ -22,12 +29,25 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
+from typing import Any
 
 from alla_skill_lib.code_hints import SOURCE_EXTENSIONS, ProjectIndex
 
 CATEGORIES = ("тест", "приложение", "окружение", "данные", "неизвестно")
 # Формат, который агент видит в ответах ``fix`` и в заданиях субагентов пакетного разбора.
+TASK_FORMAT = 2  # формат задания и разбора новых папок (записи кластера в run.json)
 EXPECTED_FORMAT = """\
+ЧТО СЛОМАЛОСЬ: <что увидел тест, 1–2 предложения>
+ПРИЧИНА: <тест|приложение|окружение|данные|неизвестно> — <предполагаемая причина>
+НАБЛЮДЕНИЯ:
+- [S<номер>] «<дословная цитата из этого куска данных>»
+НЕ ХВАТАЕТ: <каких данных нет и какая проверка различит версии> | нет
+КАК ИСПРАВИТЬ:
+1. <шаг>
+КОД: <путь от корня проекта>:<строка> — <что там>   (необязательно)
+БАЗА ЗНАНИЙ: <id записи> | нет   (только если задание предлагало записи)"""
+# Разборы папок, созданных до наблюдений (запись кластера без ``task_format``).
+LEGACY_EXPECTED_FORMAT = """\
 ЧТО СЛОМАЛОСЬ: <1–2 предложения>
 ПРИЧИНА: <тест|приложение|окружение|данные|неизвестно> — <обоснование>
 КАК ИСПРАВИТЬ:
@@ -54,6 +74,8 @@ _AMBIGUOUS_AFTER_CATEGORY_RE = re.compile(r"^\s*(?:[/\\|]|или\b)")
 _SECTIONS = {
     "что сломалось": "what",
     "причина": "cause",
+    "наблюдения": "observations",
+    "не хватает": "missing",
     "как исправить": "fix",
     "код": "code",
     "база знаний": "kb",
@@ -65,6 +87,13 @@ SECTION_TITLES = {
     "cause": "ПРИЧИНА",
     "fix": "КАК ИСПРАВИТЬ",
 }
+_OBSERVATION_RE = re.compile(
+    r"^\s*(?:[-*•]|\d+[.)])?\s*\[?\s*(?P<id>S\d+)\s*\]?\s*[:—–-]?\s*(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_OPEN_QUOTES = "«\"“„'`‘"
+_CLOSE_QUOTES = "»\"”'`’“"
+_NOTHING_MISSING = {"нет", "-", "—", "ничего", "всего хватает"}
 _HEADER_NAMES = "|".join(sorted(_SECTIONS, key=len, reverse=True))
 # Оформление и нумерация перед именем раздела («### », «- **», «1. **»), затем
 # «:» или тире с пробелами. «Код-ревью» и «Код ответа: 504» заголовком не являются.
@@ -98,6 +127,14 @@ COMPACT_WHAT_CHARS = 160
 COMPACT_STEP_CHARS = 160
 
 
+@dataclass(frozen=True)
+class Observation:
+    """Наблюдение разбора: id куска данных и дословная цитата из него."""
+
+    source_id: str
+    quote: str
+
+
 @dataclass
 class ClusterAnalysis:
     """Разобранный анализ кластера."""
@@ -111,8 +148,21 @@ class ClusterAnalysis:
     kb_ref: str | None = None
     title: str = ""
     fingerprint: str = ""
+    observations: list[Observation] = field(default_factory=list)
+    # Строки раздела НАБЛЮДЕНИЯ не в формате «- [S3] «цитата»».
+    bad_observations: list[str] = field(default_factory=list)
+    missing: str = ""
     # Строки вида «ЧТО ПОШЛО НЕ ТАК:», похожие на заголовок, но не из формата.
     unrecognized: list[str] = field(default_factory=list)
+    # Реестр источников кластера (id → откуда кусок данных); заполняет проверка
+    # разбора нового формата, нужен отчёту для подписи цитат.
+    sources: dict[str, dict[str, Any]] | None = None
+
+    @property
+    def missing_text(self) -> str:
+        """«НЕ ХВАТАЕТ» по существу; «нет» и пусто — пустая строка."""
+        text = _one_line(self.missing)
+        return "" if text.lower().strip(" .") in _NOTHING_MISSING else text
 
     @property
     def cause_reason(self) -> str:
@@ -185,7 +235,31 @@ def parse_analysis(text: str) -> ClusterAnalysis:
     analysis.kb_ref = _kb_ref(_join(buckets["kb"]))
     analysis.title = _one_line(_join(buckets["title"]))
     analysis.fingerprint = _join(buckets["fingerprint"])
+    analysis.missing = _join(buckets["missing"])
+    for line in buckets["observations"]:
+        if not line.strip():
+            continue
+        observation = parse_observation(line)
+        if observation is None:
+            analysis.bad_observations.append(line.strip()[:120])
+        else:
+            analysis.observations.append(observation)
     return analysis
+
+
+def parse_observation(line: str) -> Observation | None:
+    """«- [S3] «цитата»» (после цитаты можно пояснение); ``None`` — не в этом формате."""
+    match = _OBSERVATION_RE.match(line)
+    if match is None:
+        return None
+    rest = match.group("rest").strip()
+    if not rest or rest[0] not in _OPEN_QUOTES:
+        return None
+    end = max(rest.rfind(char) for char in _CLOSE_QUOTES)
+    if end <= 0:
+        return None
+    quote = rest[1:end].strip()
+    return Observation(match.group("id").upper(), quote) if quote else None
 
 
 def _match_header(
@@ -218,7 +292,7 @@ def _is_plain_list_item(raw_line: str, match: re.Match[str]) -> bool:
     return not (written.isupper() or emphasised)
 
 
-def parse_summary(analysis: ClusterAnalysis) -> str:
+def parse_summary(analysis: ClusterAnalysis, task_format: int = 1) -> str:
     """Что парсер понял в разборе: подсказка модели, когда формат не принят."""
     parts = []
     for key, title in SECTION_TITLES.items():
@@ -227,6 +301,9 @@ def parse_summary(analysis: ClusterAnalysis) -> str:
         if key == "cause" and value:
             part += f" (категория: {analysis.category or 'не распознана'})"
         parts.append(part)
+        if key == "cause" and task_format >= 2:
+            parts.append(f"НАБЛЮДЕНИЯ: {len(analysis.observations)}")
+            parts.append(f"НЕ ХВАТАЕТ {'✓' if analysis.missing else '✗'}")
     line = "Разобрано: " + ", ".join(parts)
     if analysis.unrecognized:
         line += (
@@ -271,8 +348,17 @@ def validate_analysis(
     analysis: ClusterAnalysis,
     project_root: Path,
     offered_kb: frozenset[str] = frozenset(),
+    *,
+    task_format: int = 1,
+    sources: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
-    """Список проблем формата (пусто — анализ принят)."""
+    """Список проблем формата (пусто — анализ принят).
+
+    ``task_format`` — формат задания кластера (1 — папки до наблюдений). С 2
+    нужны наблюдения с цитатами, найденными в своём источнике из ``sources``
+    (реестр кластера; ``None`` — реестра нет, цитаты не сверяются), а при
+    категории «неизвестно» — содержательный «НЕ ХВАТАЕТ».
+    """
     errors: list[str] = []
     if not analysis.what:
         errors.append("нет раздела «ЧТО СЛОМАЛОСЬ:»")
@@ -286,6 +372,8 @@ def validate_analysis(
         )
     if not analysis.fix:
         errors.append("нет раздела «КАК ИСПРАВИТЬ:» с шагами исправления")
+    if task_format >= 2:
+        errors.extend(observation_errors(analysis, sources))
     errors.extend(code_ref_errors(analysis, project_root))
     if analysis.kb_ref and analysis.kb_ref not in offered_kb:
         offered = ", ".join(sorted(offered_kb)) or "в задании записей не было"
@@ -293,6 +381,99 @@ def validate_analysis(
             f"в «БАЗА ЗНАНИЙ:» запись «{analysis.kb_ref}» не предлагалась для этого "
             f"кластера ({offered}) — укажи id из задания или «нет»"
         )
+    return errors
+
+
+MIN_QUOTE_CHARS = 8  # значимых символов (буквы и цифры) в цитате наблюдения
+_ELLIPSIS_RE = re.compile(r"…|\.{3,}")
+_QUOTE_NORMALIZE = str.maketrans({char: '"' for char in "«»“”„‘’`'"})
+OBSERVATION_LINE = "«- [S3] «дословная цитата»»"
+
+
+def normalize_quote_text(text: str) -> str:
+    """Для сверки цитаты: регистр, пробелы и вид кавычек не важны."""
+    return " ".join(text.translate(_QUOTE_NORMALIZE).casefold().split())
+
+
+def quote_found(quote: str, text: str) -> bool:
+    """Цитата есть в тексте: части между «…» идут в нём по порядку."""
+    haystack = normalize_quote_text(text)
+    position = 0
+    for part in quote_parts(quote):
+        found = haystack.find(part, position)
+        if found < 0:
+            return False
+        position = found + len(part)
+    return True
+
+
+def quote_parts(quote: str) -> list[str]:
+    """Части цитаты между «…» без пробелов и знаков препинания по краям."""
+    parts = (normalize_quote_text(part).strip(" .,;:") for part in _ELLIPSIS_RE.split(quote))
+    return [part for part in parts if part]
+
+
+def observation_errors(
+    analysis: ClusterAnalysis,
+    sources: dict[str, dict[str, Any]] | None,
+) -> list[str]:
+    """Проблемы «НАБЛЮДЕНИЯ» и «НЕ ХВАТАЕТ» разбора нового формата.
+
+    Совпадение цитаты подтверждает наблюдение, а не причинную связь: проверяется
+    только, что строка действительно есть в названном куске данных.
+    """
+    errors: list[str] = []
+    unknown = analysis.category == "неизвестно"
+    for line in analysis.bad_observations:
+        errors.append(
+            f"в «НАБЛЮДЕНИЯ:» строка «{line[:80]}» не в формате {OBSERVATION_LINE}: id куска "
+            "данных из задания в скобках и цитата в кавычках"
+        )
+    if not analysis.observations and not unknown:
+        errors.append(
+            "нет раздела «НАБЛЮДЕНИЯ:» с цитатами — добавь 1–3 строки "
+            f"{OBSERVATION_LINE} из «Данных» задания (без наблюдений можно только с "
+            "категорией «неизвестно» и «НЕ ХВАТАЕТ:»)"
+        )
+    if unknown and not analysis.missing_text:
+        errors.append(
+            "при категории «неизвестно» в «НЕ ХВАТАЕТ:» напиши, каких данных нет и какая "
+            "проверка различит версии причины"
+        )
+    if sources is None:
+        return errors
+    known = ", ".join(sorted(sources, key=lambda key: int(key[1:]) if key[1:].isdigit() else 0))
+    for observation in analysis.observations:
+        source_id, quote = observation.source_id, observation.quote
+        short = quote if len(quote) <= 80 else quote[:79] + "…"
+        record = sources.get(source_id)
+        if record is None:
+            errors.append(
+                f"в «НАБЛЮДЕНИЯ:» источника {source_id} нет в задании "
+                f"({'есть ' + known if known else 'кусков данных в задании нет'})"
+            )
+            continue
+        significant = sum(char.isalnum() for part in quote_parts(quote) for char in part)
+        if significant < MIN_QUOTE_CHARS:
+            errors.append(
+                f"в «НАБЛЮДЕНИЯ:» цитата «{short}» слишком короткая — возьми из {source_id} "
+                f"строку не короче {MIN_QUOTE_CHARS} букв и цифр"
+            )
+            continue
+        if quote_found(quote, str(record.get("text") or "")):
+            continue
+        elsewhere = [key for key, other in sources.items()
+                     if key != source_id and quote_found(quote, str(other.get("text") or ""))]
+        if elsewhere:
+            errors.append(
+                f"в «НАБЛЮДЕНИЯ:» цитата «{short}» есть в {elsewhere[0]}, а не в {source_id} — "
+                f"укажи [{elsewhere[0]}]"
+            )
+        else:
+            errors.append(
+                f"в «НАБЛЮДЕНИЯ:» цитаты «{short}» нет в {source_id} — скопируй строку из этого "
+                "куска «Данных» задания дословно (пропуск внутри цитаты — «…»)"
+            )
     return errors
 
 

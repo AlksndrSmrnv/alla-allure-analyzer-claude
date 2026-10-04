@@ -53,10 +53,9 @@ from alla_skill_lib.agent_rules import (
 )
 from alla_skill_lib.analysis_format import (
     EXPECTED_FORMAT,
+    TASK_FORMAT,
     ClusterAnalysis,
-    parse_analysis,
     parse_summary,
-    validate_analysis,
 )
 from alla_skill_lib.batch_task import BATCH_AGENT, install_batch_agent, render_batch_task
 from alla_skill_lib.cluster_task import (
@@ -103,7 +102,13 @@ from alla_skill_lib.report import (
     render_green_report,
     render_report,
 )
-from alla_skill_lib.sources import registry, write_registry
+from alla_skill_lib.sources import (
+    check_entry_analysis,
+    expected_format,
+    registry,
+    task_format,
+    write_registry,
+)
 
 if TYPE_CHECKING:
     from alla_skill_lib.pipeline import LaunchData
@@ -525,6 +530,8 @@ def _write_run(
             "kb": [],
             "history": None,
         }
+        if not auto:
+            entry["task_format"] = TASK_FORMAT  # наблюдения с цитатами из реестра источников
         entries.append(entry)
         if auto:
             ws.write_text(paths.analysis(file_id), no_evidence_analysis())
@@ -579,6 +586,7 @@ def _write_run(
             entry.update(
                 auto=True, signature=None, fingerprint="", kb=[], history=None
             )
+            entry.pop("task_format", None)
             paths.evidence(file_id).unlink(missing_ok=True)
             paths.sources(file_id).unlink(missing_ok=True)
             paths.cluster_task(file_id).unlink(missing_ok=True)
@@ -718,7 +726,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
             )
             return "analyze", _analyze_body(paths, entry, position, total, done, manual_total)
 
-        analysis, errors = _check_analysis(text, entry, project_root)
+        analysis, errors = _check_analysis(text, entry, project_root, paths)
         if errors:
             attempt, unchanged = _register_invalid(state, file_id, text, paths)
             if attempt < MAX_FIX_ATTEMPTS:
@@ -813,11 +821,10 @@ def _check_analysis(
     text: str,
     entry: dict[str, Any],
     project_root: Path,
+    paths: ws.RunPaths,
 ) -> tuple[ClusterAnalysis, list[str]]:
     """Разобрать текст разбора кластера и проверить его; пустой список ошибок — принят."""
-    analysis = parse_analysis(text)
-    offered = frozenset(match["id"] for match in entry.get("kb", []))
-    return analysis, validate_analysis(analysis, project_root, offered)
+    return check_entry_analysis(text, entry, project_root, paths)
 
 
 def _settle_last_wave(
@@ -1045,13 +1052,13 @@ def _fix_body(
         f"{_cluster_caption(entry, position, total)} — разбор не прошёл проверку "
         f"(попытка {attempt} из {MAX_FIX_ATTEMPTS}):",
         *(f"- {error}" for error in errors),
-        parse_summary(analysis),
+        parse_summary(analysis, task_format(entry)),
         *([UNCHANGED_NOTE] if unchanged >= 2 else []),
         *([LAST_ATTEMPT_ANALYSIS] if attempt == MAX_FIX_ATTEMPTS - 1 else []),
         f"Исправь файл: {paths.analysis(entry['file_id'])}",
         f"Задание кластера: {paths.cluster_task(entry['file_id'])}",
         "Ожидаемый формат:",
-        EXPECTED_FORMAT,
+        expected_format(entry),
         reference_line(ANALYSIS_FORMAT_REF),
         FORMAT_MISMATCH_NOTE,
         f"Затем выполни: {paths.next_command()}",
@@ -1153,6 +1160,7 @@ def cmd_verify(run_dir: str | None, clusters: list[str], reports_dir: Path) -> i
         return 1
     project_root = Path(run["project_root"])
     lines: list[str] = []
+    formats: set[str] = set()
     failed = 0
     for entry in entries:
         assert entry is not None
@@ -1163,22 +1171,23 @@ def cmd_verify(run_dir: str | None, clusters: list[str], reports_dir: Path) -> i
             failed += 1
             lines.append(f"Кластер {file_id}: файл разбора пуст или не создан — запиши {path}")
             continue
-        analysis, errors = _check_analysis(text, entry, project_root)
+        analysis, errors = _check_analysis(text, entry, project_root, paths)
         if errors:
             failed += 1
             lines += [
                 f"Кластер {file_id}: разбор не прошёл проверку:",
                 *(f"- {error}" for error in errors),
-                parse_summary(analysis),
+                parse_summary(analysis, task_format(entry)),
                 f"Исправь файл: {path}",
             ]
+            formats.add(expected_format(entry))
         else:
             lines.append(f"Кластер {file_id}: принят.")
     print("STATUS: fix" if failed else "STATUS: ok")
     print("\n".join(lines))
     if failed:
         print("Ожидаемый формат:")
-        print(EXPECTED_FORMAT)
+        print("\n\n".join(sorted(formats, key=len, reverse=True)) or EXPECTED_FORMAT)
         print("После исправления повтори ту же команду проверки.")
     return 0
 

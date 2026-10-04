@@ -151,3 +151,22 @@ def test_summary_task_keeps_unknown_causes_unknown() -> None:
     text = " ".join(SUMMARY_TASK.split())
     assert "«неизвестно» — так и скажи" in text and "каких данных не хватает" in text
     assert "своих версий причины" in text
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_every_variant_asks_for_quoted_observations_and_what_is_missing(variant: str) -> None:
+    task = _task(variant)
+    lines = task.splitlines()
+    assert lines.index("НАБЛЮДЕНИЯ:") < lines.index("КАК ИСПРАВИТЬ:")
+    assert "- [S<номер>] «<дословная цитата из этого куска данных>»" in lines
+    assert any(line.startswith("НЕ ХВАТАЕТ:") and line.endswith("| нет") for line in lines)
+    text = " ".join(task.split())
+    for phrase in (
+        "дословная цитата именно из этого куска", "не короче 8 букв и цифр", "«…» внутри цитаты",
+        "Скрипт сверяет цитаты с данными", "причину, которой в данных нет, она не подтвердит",
+        "Без наблюдений — только при категории «неизвестно»",
+        "При категории «неизвестно» — обязательно по существу",
+    ):
+        assert phrase in text, phrase
+    # Строка, на которой держится причина, — первой; при логе — из лога.
+    assert ("строка из лога" in text) is VARIANTS[variant]["has_log"]

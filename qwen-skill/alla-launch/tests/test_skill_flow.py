@@ -23,6 +23,11 @@ VALID_ANALYSIS = (
     "\n"
     "ПРИЧИНА: приложение — OrderService.create падает на пустом customer.\n"
     "\n"
+    "НАБЛЮДЕНИЯ:\n"
+    "- [S3] «java.lang.NullPointerException: customer is null»\n"
+    "- [S1] «expected: <200> but was: <500>»\n"
+    "НЕ ХВАТАЕТ: нет\n"
+    "\n"
     "КАК ИСПРАВИТЬ:\n"
     "1. Добавить проверку customer в OrderService.create.\n"
     "2. Вернуть 400 при пустом customer.\n"
@@ -34,6 +39,9 @@ MARKDOWN_ANALYSIS = (
     "Сервис авторизации недоступен: Connection refused.\n"
     "\n"
     "**ПРИЧИНА:** Окружение — auth-service:8080 не принимает соединения.\n"
+    "\n"
+    "**Наблюдения:**\n"
+    "- [S1] «Connection refused: auth-service:8080»\n"
     "\n"
     "**Как исправить:**\n"
     "1. Поднять auth-service на стенде.\n"
@@ -183,7 +191,8 @@ def test_fix_loop_counts_distinct_attempts(project: Path, testops: FakeTestOps, 
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: fix") and "попытка 1 из 3" in out
     assert "нет раздела «ПРИЧИНА:»" in out
-    assert "Разобрано: ЧТО СЛОМАЛОСЬ ✓, ПРИЧИНА ✗, КАК ИСПРАВИТЬ ✓" in out
+    assert ("Разобрано: ЧТО СЛОМАЛОСЬ ✓, ПРИЧИНА ✗, НАБЛЮДЕНИЯ: 0, НЕ ХВАТАЕТ ✗, "
+            "КАК ИСПРАВИТЬ ✓") in out
     again = _next(run_dir, capsys)  # та же версия файла — не новая попытка, но с предупреждением
     assert "попытка 1 из 3" in again and "Файл не изменился с прошлого вызова next" in again
 
@@ -244,6 +253,7 @@ def test_next_without_runs(project: Path, capsys) -> None:
 TEST_ANALYSIS = (
     "ЧТО СЛОМАЛОСЬ: Тест ждёт код 200, а API создания заказа теперь отвечает 201.\n"
     "ПРИЧИНА: тест — ожидаемый код ответа устарел.\n"
+    "НАБЛЮДЕНИЯ:\n- [S1] «expected: <200> but was: <500>»\n"
     "КАК ИСПРАВИТЬ:\n1. Ожидать 201 Created в OrderTest.createOrder.\n"
     "КОД: src/test/java/ru/company/orders/OrderTest.java:6 — assertEquals(200, …)\n"
 )

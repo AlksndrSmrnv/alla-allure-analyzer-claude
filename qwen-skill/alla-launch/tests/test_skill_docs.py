@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from skill_fake_testops import FakeTestOps
 from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
-from test_skill_flow import PROPOSAL, TEST_ANALYSIS, VALID_ANALYSIS, _next, _prepare
+from test_skill_flow import MARKDOWN_ANALYSIS, PROPOSAL, TEST_ANALYSIS, _next, _prepare
 from test_skill_parallel import small_batches_fixture  # noqa: F401
 
 from alla_skill_lib.agent_rules import EXECUTOR_RULES, PROBLEM_PREFIX
@@ -173,20 +173,48 @@ def test_protocol_lists_every_status_the_code_prints() -> None:
 # --- примеры справочников против настоящих парсеров --------------------------------
 
 
+_DATA_HEADER_RE = re.compile(r"^--- \[(?P<id>S\d+) · [^\n]*\] ---$", re.MULTILINE)
+
+
+def _example_sources() -> dict[str, dict[str, str]]:
+    """Реестр из образца «Данных» справочника (``<!-- example-data -->``)."""
+    match = re.search(r"<!-- example-data -->\n```text\n(?P<body>.*?)\n```",
+                      _read(REFERENCES / "analysis-format.md"), re.DOTALL)
+    assert match, "в analysis-format.md нет образца данных"
+    body = match.group("body")
+    headers = list(_DATA_HEADER_RE.finditer(body))
+    return {
+        header.group("id"): {"text": body[header.end() + 1:(
+            headers[index + 1].start() if index + 1 < len(headers) else len(body))].strip("\n")}
+        for index, header in enumerate(headers)
+    }
+
+
+def _validate_example(text: str, project: Path) -> list[str]:
+    return validate_analysis(parse_analysis(text), project, frozenset(), task_format=2,
+                             sources=_example_sources())
+
+
+def test_example_data_matches_the_task_header_format() -> None:
+    sources = _example_sources()
+    assert list(sources) == ["S1", "S2", "S3"]
+    assert "customer is null" in sources["S3"]["text"]
+
+
 def test_analysis_examples_that_are_ok_pass_validation(project) -> None:
     examples = _examples("analysis-format.md", "analysis-ok")
-    assert len(examples) >= 3
+    assert len(examples) >= 4
     for _, text in examples:
         parsed = parse_analysis(text)
-        assert validate_analysis(parsed, project, frozenset()) == [], text
+        assert _validate_example(text, project) == [], text
         assert parsed.category is not None
 
 
 def test_analysis_examples_that_are_wrong_give_the_documented_error(project) -> None:
     examples = _examples("analysis-format.md", "analysis-error")
-    assert len(examples) >= 4
+    assert len(examples) >= 9
     for expected, text in examples:
-        errors = validate_analysis(parse_analysis(text), project, frozenset())
+        errors = _validate_example(text, project)
         assert any(expected in error for error in errors), (expected, errors)
 
 
@@ -284,7 +312,7 @@ def test_propose_fix_summary_and_done_outputs_point_to_their_references(
     assert LAST_ATTEMPT_PROPOSAL in out
 
     proposal.write_text(PROPOSAL, encoding="utf-8")
-    (run_dir / "analyses" / f"{login}.md").write_text(VALID_ANALYSIS, encoding="utf-8")
+    (run_dir / "analyses" / f"{login}.md").write_text(MARKDOWN_ANALYSIS, encoding="utf-8")
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: summary") and "references/summary-format.md" in out
     summary_task = _read(run_dir / "summary_task.md")

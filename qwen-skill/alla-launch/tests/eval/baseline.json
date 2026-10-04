@@ -7,7 +7,7 @@
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 0,
-      "max_task_chars": 5138,
+      "max_task_chars": 5966,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 6
@@ -19,7 +19,7 @@
       "evidence_total": 3,
       "groups": 3,
       "hidden_groups": 0,
-      "max_task_chars": 5460,
+      "max_task_chars": 6348,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 6
@@ -31,7 +31,7 @@
       "evidence_total": 40,
       "groups": 40,
       "hidden_groups": 0,
-      "max_task_chars": 5904,
+      "max_task_chars": 6792,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 320
@@ -43,7 +43,7 @@
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 0,
-      "max_task_chars": 4834,
+      "max_task_chars": 5662,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 5
@@ -55,7 +55,7 @@
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 0,
-      "max_task_chars": 5014,
+      "max_task_chars": 5842,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 4
@@ -67,7 +67,7 @@
       "evidence_total": 11,
       "groups": 11,
       "hidden_groups": 0,
-      "max_task_chars": 5946,
+      "max_task_chars": 6834,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 22
@@ -79,7 +79,7 @@
       "evidence_total": 3,
       "groups": 3,
       "hidden_groups": 0,
-      "max_task_chars": 5516,
+      "max_task_chars": 6404,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 6
@@ -103,7 +103,7 @@
       "evidence_total": 4,
       "groups": 4,
       "hidden_groups": 0,
-      "max_task_chars": 4906,
+      "max_task_chars": 5734,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 5
@@ -115,7 +115,7 @@
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 1,
-      "max_task_chars": 5937,
+      "max_task_chars": 6825,
       "precision": 0.5,
       "recall": 1.0,
       "tests": 6
@@ -127,7 +127,7 @@
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 0,
-      "max_task_chars": 4891,
+      "max_task_chars": 5719,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 4
@@ -139,7 +139,7 @@
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 1,
-      "max_task_chars": 5565,
+      "max_task_chars": 6453,
       "precision": 0.5,
       "recall": 1.0,
       "tests": 4
