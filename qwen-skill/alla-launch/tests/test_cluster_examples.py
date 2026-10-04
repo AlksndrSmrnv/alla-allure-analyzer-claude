@@ -151,3 +151,46 @@ def test_duplicate_of_a_chosen_log_does_not_hide_a_third_error() -> None:
     examples = select_examples([0, 1, 2, 3], failures, distance, ([ASSERT] * 4, ["s"] * 4, docs))
     assert [(e.role, e.test_result_id) for e in examples] == [
         ("typical", 50), ("different", 51), ("informative", 53)]
+
+
+@pytest.mark.parametrize("template", [
+    "HTTP статус: {code}", 'response status="{code}"', "response_code={code}",
+    '{{"status":{code},"error":"denied"}}', '"statusCode": {code}', "HTTP/1.1 {code} Denied",
+])
+def test_http_status_formats_keep_examples_apart(template: str) -> None:
+    def distance(a: int, b: int) -> float:
+        return 0.0 if a == b else 0.3
+
+    texts = [template.format(code=code) for code in (401, 403)]
+    failures = [_failure(60 + i, _log(text)) for i, text in enumerate(texts)]
+    docs = [re.sub(r"\d+", "#", text) for text in texts]
+    examples = select_examples([0, 1], failures, distance, ([ASSERT] * 2, ["s"] * 2, docs))
+    assert len(examples) == 2, texts
+
+
+def test_http_status_from_a_json_attachment_reaches_both_examples() -> None:
+    import asyncio
+
+    from alla_core.models.testops import AttachmentMeta
+    from alla_core.services.log_extraction_service import LogExtractionConfig, LogExtractionService
+
+    bodies = {1: b'{"status": 401, "error": "unauthorized"}',
+              2: b'{"status": 403, "error": "forbidden"}',
+              3: b'{"status": 401, "error": "unauthorized"}'}
+
+    class Provider:
+        async def get_attachments_for_test_result(self, test_id: int) -> list[AttachmentMeta]:
+            return [AttachmentMeta(id=test_id, name="response.json", type="application/json")]
+
+        async def get_attachment_content(self, attachment_id: int) -> bytes:
+            return bodies[attachment_id]
+
+    failures = [_failure(test_id) for test_id in bodies]
+    asyncio.run(LogExtractionService(Provider(), LogExtractionConfig()).enrich_with_logs(failures))
+    assert "HTTP статус: 403" in (failures[1].log_snippet or "")
+    report = ClusteringService().cluster_failures(1, failures)
+    cluster, = report.clusters  # одинаковый assertion и шаг — одна группа
+    by_id = {failure.test_result_id: failure for failure in failures}
+    codes = {code for example in cluster.examples for code in ("401", "403")
+             if f"HTTP статус: {code}" in (by_id[example.test_result_id].log_snippet or "")}
+    assert codes == {"401", "403"}

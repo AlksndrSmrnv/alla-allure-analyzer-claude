@@ -99,6 +99,9 @@ _AFTER_QUOTE_RE = re.compile(r"\s*$|\s+[—–(-]")
 # одинаковые с двух сторон (" ' `) внутри цитаты встречаются чётное число раз.
 _QUOTE_PAIRS = {"«": "»", "“": "”", "„": "“", "‘": "’", '"': '"', "'": "'", "`": "`"}
 _OPEN_QUOTES = "".join(_QUOTE_PAIRS)
+# Незаполненный заполнитель шаблона: русский текст в угловых скобках. «<200>» из
+# JUnit-сообщения — настоящее значение, не заполнитель.
+_PLACEHOLDER_RE = re.compile(r"<[^<>]*[а-яё][^<>]*>")
 _CONSISTENCY_KINDS = (
     ("одна причина", "same"),
     ("разные проблемы", "different"),
@@ -188,12 +191,13 @@ class ClusterAnalysis:
     def consistency_kind(self) -> str | None:
         """``same`` | ``different`` | ``insufficient`` из «СОГЛАСОВАННОСТЬ»; иначе ``None``.
 
-        Выбор должен быть однозначным: перечисление вариантов («одна причина | разные
-        проблемы …», скопированный шаблон) или упоминание двух из них — ``None``.
+        Выбор должен быть однозначным: упоминание двух вариантов (перечисление,
+        скопированный шаблон) или незаполненный шаблонный текст в скобках
+        (``<чем отличаются примеры>``) — ``None``. Значения вроде ``<200>`` допустимы.
         """
         text = _one_line(self.consistency).lower()
         mentioned = {kind for prefix, kind in _CONSISTENCY_KINDS if prefix in text}
-        if "|" in text or "<" in text or len(mentioned) != 1:
+        if len(mentioned) != 1 or _PLACEHOLDER_RE.search(text):
             return None
         head = text.lstrip("«\"'*_ ")
         for prefix, kind in _CONSISTENCY_KINDS:
@@ -533,7 +537,7 @@ def consistency_errors(analysis: ClusterAnalysis) -> list[str]:
         return [f"в данных несколько примеров — добавь «СОГЛАСОВАННОСТЬ:» {options}"]
     if analysis.consistency_kind is None:
         return [f"в «СОГЛАСОВАННОСТЬ:» выбери ровно один вариант, без перечисления и шаблонных "
-                f"скобок: {options}"]
+                f"заполнителей в <…>: {options}"]
     if analysis.consistency_kind == "different" and len(analysis.consistency_detail) < 10:
         return ["в «СОГЛАСОВАННОСТЬ: разные проблемы — …» после «—» назови, чем отличаются примеры"]
     return []
