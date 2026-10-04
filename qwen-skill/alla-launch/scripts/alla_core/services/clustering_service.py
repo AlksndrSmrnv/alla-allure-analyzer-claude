@@ -51,7 +51,7 @@ from alla_core.utils.log_events import SOURCE_MARK_RE, strip_source_marks
 from alla_core.utils.log_focus import strip_log_selection_metadata
 from alla_core.utils.log_utils import extract_correlation_from_log
 from alla_core.utils.step_paths import normalize_step_path
-from alla_core.utils.text_normalization import normalize_text
+from alla_core.utils.text_normalization import normalize_text, numeric_codes
 
 logger = logging.getLogger(__name__)
 
@@ -793,6 +793,18 @@ class _Distances:
 
 
 _DIGITS_RE = re.compile(r"\d+")
+_HTTP_STATUS_RE = re.compile(
+    r"\b(?:HTTP(?:/\d(?:\.\d)?)?|status(?:[ _]?code)?|code|returned|response)\s*[:=]?\s*"
+    r"([1-5]\d\d)\b|->\s*([1-5]\d\d)\b",
+    re.IGNORECASE,
+)
+
+
+def _log_codes(failure: FailedTestSummary) -> tuple[str, ...]:
+    """Коды ошибок из исходного лога: нормализованный уже заменил длинные числа на <NUM>."""
+    raw = strip_source_marks(failure.log_snippet or "")
+    http = {"http=" + (a or b) for a, b in _HTTP_STATUS_RE.findall(raw)}
+    return tuple(sorted(set(numeric_codes(raw)) | http))
 
 
 def _error_events(failure: FailedTestSummary) -> int:
@@ -821,8 +833,10 @@ def select_examples(
 
     messages, steps, raw_logs = documents
     # Номера строк, потоков, коротких id в логе (exec-1 / exec-7, Worker.java:40 / :41) — не
-    # другая проблема: для решения «отличается» логи сравниваются без цифр.
-    logs = [_DIGITS_RE.sub("#", log) for log in raw_logs]
+    # другая проблема: логи сравниваются без цифр, но с кодами ошибок (error_code=10001,
+    # ORA-01017, HTTP 401) из исходного лога — разные коды остаются разными ошибками.
+    logs = [(_DIGITS_RE.sub("#", log), _log_codes(failures[index]))
+            for index, log in enumerate(raw_logs)]
     typical = min(indices, key=lambda i: (sum(distance(i, j) for j in indices), test_id(i)))
     chosen = [typical]
     examples = [ClusterExample(role="typical", test_result_id=test_id(typical))]
@@ -830,7 +844,7 @@ def select_examples(
     def differs(a: int, b: int) -> bool:
         # Нет лога у одного из тестов — это не другая проблема: логи сравниваются, только
         # когда есть у обоих.
-        both_logs = bool(logs[a].strip()) and bool(logs[b].strip())
+        both_logs = bool(raw_logs[a].strip()) and bool(raw_logs[b].strip())
         return (messages[a] != messages[b] or steps[a] != steps[b]
                 or (both_logs and logs[a] != logs[b]))
 
@@ -840,11 +854,13 @@ def select_examples(
         if differs(farthest, typical):
             chosen.append(farthest)
             examples.append(ClusterExample(role="different", test_result_id=test_id(farthest)))
-    others = [i for i in indices if i not in chosen and _error_events(failures[i]) > 0]
+    # Повторы уже выбранных логов исключаются до выбора: иначе дубликат с наибольшим числом
+    # ошибок закрывал бы следующий, действительно другой лог.
+    others = [i for i in indices if i not in chosen and _error_events(failures[i]) > 0
+              and all(logs[i] != logs[j] for j in chosen)]
     if others:
         richest = min(others, key=lambda i: (-_error_events(failures[i]), test_id(i)))
-        if all(logs[richest] != logs[i] for i in chosen):
-            examples.append(ClusterExample(role="informative", test_result_id=test_id(richest)))
+        examples.append(ClusterExample(role="informative", test_result_id=test_id(richest)))
     return examples
 
 

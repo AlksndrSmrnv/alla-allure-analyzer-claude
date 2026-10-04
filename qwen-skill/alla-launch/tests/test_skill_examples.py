@@ -41,7 +41,7 @@ def test_consistency_values(line: str, kind: str) -> None:
 
 @pytest.mark.parametrize(("line", "message"), [
     ("", "добавь «СОГЛАСОВАННОСТЬ:»"),
-    ("СОГЛАСОВАННОСТЬ: вроде одинаково\n", "напиши одно из"),
+    ("СОГЛАСОВАННОСТЬ: вроде одинаково\n", "выбери ровно один вариант"),
     ("СОГЛАСОВАННОСТЬ: разные проблемы\n", "назови, чем отличаются примеры"),
 ])
 def test_consistency_errors(line: str, message: str) -> None:
@@ -196,3 +196,58 @@ def test_unchecked_group_is_marked_and_one_cause_keeps_the_usual_flow(
 
     _run_dir, out = _mixed_run(project, capsys, "одна причина")
     assert out.startswith("STATUS: propose")  # обычная группа «тест» с КОД — правку предлагают
+
+
+@pytest.mark.parametrize("line", [
+    "СОГЛАСОВАННОСТЬ: одна причина | разные проблемы — <чем отличаются примеры> | "
+    "недостаточно данных\n",
+    "СОГЛАСОВАННОСТЬ: одна причина или разные проблемы\n",
+    "СОГЛАСОВАННОСТЬ: одна причина, хотя возможно разные проблемы\n",
+    "СОГЛАСОВАННОСТЬ: разные проблемы — <чем отличаются примеры>\n",
+])
+def test_ambiguous_consistency_is_rejected(line: str) -> None:
+    assert parse_analysis(HEAD + line + TAIL).consistency_kind is None
+    assert any("выбери ровно один вариант" in error for error in _errors(line))
+
+
+def test_copied_template_does_not_unlock_a_common_fix(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    template = ("одна причина | разные проблемы — <чем отличаются примеры> | "
+                "недостаточно данных")
+    _run_dir, out = _mixed_run(project, capsys, template)
+    assert out.startswith("STATUS: fix") and "выбери ровно один вариант" in out
+
+
+def test_headers_of_many_short_errors_with_long_names_stay_within_the_budget() -> None:
+    long_name = "createOrder[" + ", ".join(f"param{i}=value-{i}" for i in range(60)) + "]"
+    assert len(long_name) > 1000
+    tests = {}
+    for test_id, error in ((1, "PoolTimeout"), (2, "NullPointer"), (3, "Deadlock")):
+        log = "\n\n".join(f"[строка {n}]\n2026-10-03 10:00:00 [ERROR] {error} {n}"
+                          for n in range(1, 81))
+        tests[test_id] = FailedTestSummary(
+            test_result_id=test_id, name=f"{long_name}-{test_id}", status="failed",
+            status_message=f"expected: <200> but was: <500> {error}", failed_step_path="step",
+            log_snippet=f"--- [файл: {long_name}.log] ---\n{log}")
+    settings = Settings()
+
+    def task(count: int) -> str:
+        cluster = FailureCluster(
+            cluster_id="c", label="x", signature=ClusterSignature(), member_test_ids=[1, 2, 3],
+            member_count=3, representative_test_id=1, example_message=tests[1].status_message,
+            examples=[ClusterExample(role=role, test_result_id=i) for i, role in
+                      zip(range(1, count + 1), ("typical", "different", "informative"))])
+        return build_cluster_task_with_sources(
+            cluster=cluster, position=1, total=1, launch_id=1, answer_path="/a.md",
+            next_command="next", tests_by_id=tests, log_snippet=tests[1].log_snippet,
+            full_trace=None, frames=[], hints=[], settings=settings).text
+
+    one, three = task(1), task(3)
+    data = three.split("## Данные", 1)[1].split("--- Тесты кластера", 1)[0]
+    # Лог с заголовками кусков — в пределах лимита лога (плюс сообщения и шапки примеров).
+    limits = (settings.llm_prompt_log_max_chars + settings.llm_prompt_message_max_chars
+              + settings.llm_prompt_trace_max_chars)
+    assert len(data) <= limits + 3 * 200, len(data)
+    assert len(three) <= len(one) + 2500, (len(one), len(three))
+    assert long_name not in data.split("### Пример 1", 1)[1]  # длинное имя не повторяется

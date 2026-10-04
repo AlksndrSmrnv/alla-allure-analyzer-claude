@@ -27,6 +27,7 @@ __all__ = [
     "PromptExample",
     "PromptSource",
     "build_cluster_examples_prompt",
+    "log_header_overhead",
     "LaunchSummaryPrompt",
     "build_cluster_analysis_prompt",
     "build_launch_summary_prompt",
@@ -65,12 +66,44 @@ class PromptSource:
     lines: str | None = None
     test_result_id: int | None = None
 
-    def header(self) -> str:
+    def header(self, block_test: str | None = None) -> str:
+        """Заголовок куска; имя теста — только если кусок не от теста, названного у блока."""
         what = {"message": "сообщение об ошибке", "trace": "стек-трейс"}.get(self.kind)
         if what is None:
-            what = f"{self.section} {self.attachment}" if self.attachment else (self.section or "лог")
-        parts = [self.id, what, self.lines, f"тест {self.test_name}" if self.test_name else None]
+            name = _clip_label(self.attachment) if self.attachment else None
+            what = f"{self.section} {name}" if name else (self.section or "лог")
+        test = (f"тест {_clip_label(self.test_name)}"
+                if self.test_name and self.test_name != block_test else None)
+        parts = [self.id, what, self.lines, test]
         return "--- [" + " · ".join(part for part in parts if part) + "] ---"
+
+
+MAX_HEADER_LABEL_CHARS = 60  # имя вложения или теста в заголовке куска
+
+
+def _clip_label(text: str) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= MAX_HEADER_LABEL_CHARS else text[:MAX_HEADER_LABEL_CHARS - 1] + "…"
+
+
+def log_header_overhead(log_text: str, test_label: str = "") -> int:
+    """Сколько символов добавят заголовки кусков лога (``S…``, вложение, строки).
+
+    Нужен, чтобы отбирать лог под бюджет задания с учётом заголовков: на логе из
+    сотни коротких ошибок они иначе в разы превышают лимит.
+    """
+    total = 0
+    for piece in log_pieces(log_text):
+        if piece.meta:
+            continue
+        header = _SECTION_HEADER_RE.match(piece.header or "")
+        name = _clip_label(header.group("name")) if header else ""
+        # «--- [S99 · лог <имя> · <строки>] ---» плюс пустая строка; пометка строк уходит из
+        # текста в заголовок, поэтому её длина уже учтена в тексте лога.
+        total += len("--- [S99 · журнал  · ] ---") + len(name) + 2
+        if test_label:  # лог не того теста, что назван у блока: «· тест …» в каждом заголовке
+            total += len(" · тест ") + len(_clip_label(test_label))
+    return total
 
 
 @dataclass(frozen=True)
@@ -151,12 +184,16 @@ def build_cluster_analysis_prompt(
         parts.append(f"Шаг теста: {cluster.example_step_path}")
     sources: list[PromptSource] = []
 
+    block_test = message_test or log_test
+    if source_ids and block_test:
+        parts.append(f"Данные теста: {block_test}")
+
     def add_source(kind: str, text: str, test: str | None, **where: str | None) -> None:
         test_id = log_test_id if kind == "log" else message_test_id
         source = PromptSource(f"S{len(sources) + 1}", kind, text, test,
                               test_result_id=test_id, **where)
         sources.append(source)
-        parts.append(f"\n{source.header()}\n{text}")
+        parts.append(f"\n{source.header(block_test)}\n{text}")
 
     message_chars = 0
     if cluster.example_message:
@@ -247,6 +284,8 @@ def build_cluster_examples_prompt(
     multi = len(examples) > 1
     if not multi and examples and examples[0].step:
         parts.append(f"Шаг теста: {examples[0].step}")
+    if not multi and examples:
+        parts.append(f"Данные теста: {examples[0].test_name}")
     if multi:
         roles = ", ".join(example.role for example in examples)
         parts.append(f"Примеров в данных: {len(examples)} ({roles}) — тесты группы отличаются, "
@@ -259,14 +298,16 @@ def build_cluster_examples_prompt(
         source = PromptSource(f"S{len(sources) + 1}", kind, text, example.test_name,
                               test_result_id=example.test_result_id, **where)
         sources.append(source)
-        parts.append(f"\n{source.header()}\n{text}")
+        # Тест назван в шапке блока «### Пример N … · тест …» (или строкой «Данные теста»).
+        parts.append(f"\n{source.header(example.test_name)}\n{text}")
         chars[kind] += len(text)
 
     first = examples[0] if examples else None
     for number, example in enumerate(examples, start=1):
         share = example_shares(len(examples), number)
         if multi:
-            parts.append(f"\n### Пример {number} — {example.role} · тест {example.test_name}")
+            parts.append(f"\n### Пример {number} — {example.role} · тест "
+                         f"{_clip_label(example.test_name)}")
             if example.step:
                 parts.append(f"Шаг теста: {example.step}")
         same_message = (number > 1 and first is not None and bool(example.message)

@@ -26,20 +26,24 @@
 
 В разделе «Данные» задания каждый кусок идёт под заголовком `--- [S… · …] ---` со своим
 id. Номера идут по порядку из тех кусков, что есть: обычно сообщение об ошибке, стек-трейс,
-затем фрагменты лога с вложением, строками и тестом; нет сообщения — S1 уже трейс. Бери id
+затем фрагменты лога с вложением и строками; нет сообщения — S1 уже трейс. Чей это тест,
+сказано один раз («Данные теста: …» или шапка примера); в заголовке куска тест назван, только
+если кусок от другого теста. Бери id
 только из заголовка куска. Пример (на нём построены примеры ниже, если у примера не сказано
 другое):
 
 <!-- example-data -->
 ```text
---- [S1 · сообщение об ошибке · тест createOrder] ---
+Данные теста: createOrder
+
+--- [S1 · сообщение об ошибке] ---
 expected: <200> but was: <500>
 
---- [S2 · стек-трейс · тест createOrder] ---
+--- [S2 · стек-трейс] ---
 java.lang.AssertionError: expected: <200> but was: <500>
 	at ru.company.orders.OrderTest.createOrder(OrderTest.java:6)
 
---- [S3 · лог app.log · строки 2–4 · тест createOrder] ---
+--- [S3 · лог app.log · строки 2–4] ---
 2026-09-01 10:00:01 [ERROR] OrderService: failed to create order
 java.lang.NullPointerException: customer is null
 	at ru.company.OrderService.create(OrderService.java:10)
@@ -89,7 +93,7 @@ java.lang.NullPointerException: customer is null
   существу.
 - **СОГЛАСОВАННОСТЬ** — только если в «Данных» несколько примеров (строка «Примеров в
   данных: …» и блоки «### Пример 1 — …»); иначе строку не пиши. Сравни примеры и напиши
-  одно из трёх: `одна причина` — ошибки всех примеров сводятся к одной; `разные проблемы —
+  ровно один вариант из трёх (не перечисляй их и не копируй строку шаблона с «|»): `одна причина` — ошибки всех примеров сводятся к одной; `разные проблемы —
   <чем отличаются примеры>` — у примеров разные ошибки (например, в логах разные
   исключения), тогда ПРИЧИНУ пиши по первому (типичному) примеру; `недостаточно данных` —
   сравнить нечем. Наблюдения можно брать из любого примера — у каждого куска свой id.
@@ -135,14 +139,16 @@ java.lang.NullPointerException: customer is null
 
 <!-- example-data: test -->
 ```text
---- [S1 · сообщение об ошибке · тест createOrder] ---
+Данные теста: createOrder
+
+--- [S1 · сообщение об ошибке] ---
 expected: <200> but was: <201>
 
---- [S2 · стек-трейс · тест createOrder] ---
+--- [S2 · стек-трейс] ---
 java.lang.AssertionError: expected: <200> but was: <201>
 	at ru.company.orders.OrderTest.createOrder(OrderTest.java:6)
 
---- [S3 · лог app.log · строки 7–7 · тест createOrder] ---
+--- [S3 · лог app.log · строки 7–7] ---
 2026-09-01 10:00:01 [INFO] OrderController: POST /orders -> 201 Created
 ```
 
@@ -182,10 +188,10 @@ java.lang.AssertionError: expected: <200> but was: <201>
 ### Пример 1 — типичный · тест createOrder
 Шаг теста: Отправить запрос POST /orders
 
---- [S1 · сообщение об ошибке · тест createOrder] ---
+--- [S1 · сообщение об ошибке] ---
 expected: <200> but was: <500>
 
---- [S2 · лог app.log · строки 2–5 · тест createOrder] ---
+--- [S2 · лог app.log · строки 2–5] ---
 2026-10-03 10:00:30 [ERROR] OrderRepository: could not save order
 java.sql.SQLTransientConnectionException: HikariPool-1 - Connection is not available, request timed out after 30000ms.
 
@@ -193,7 +199,7 @@ java.sql.SQLTransientConnectionException: HikariPool-1 - Connection is not avail
 Шаг теста: Отправить запрос POST /orders
 Сообщение об ошибке — такое же, как в примере 1.
 
---- [S3 · лог app.log · строки 2–4 · тест createPromoOrder] ---
+--- [S3 · лог app.log · строки 2–4] ---
 2026-10-03 10:00:00 [ERROR] DiscountService: failed to apply discount
 java.lang.NullPointerException: Cannot invoke "Discount.percent()" because "discount" is null
 ```
@@ -216,10 +222,12 @@ java.lang.NullPointerException: Cannot invoke "Discount.percent()" because "disc
 
 <!-- example-data: timeout -->
 ```text
---- [S1 · сообщение об ошибке · тест createOrder] ---
+Данные теста: createOrder
+
+--- [S1 · сообщение об ошибке] ---
 java.net.SocketTimeoutException: Read timed out
 
---- [S2 · стек-трейс · тест createOrder] ---
+--- [S2 · стек-трейс] ---
 java.net.SocketTimeoutException: Read timed out
 	at ru.company.orders.OrderClient.post(OrderClient.java:31)
 ```

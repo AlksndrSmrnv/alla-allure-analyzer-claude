@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import re
+
+import pytest
+
 import skill_fixtures  # noqa: F401  # scripts/ в sys.path
 
 from alla_core.models.clustering import ClusteringReport
@@ -114,3 +118,36 @@ def test_logs_differing_only_in_numbers_are_not_different_problems() -> None:
     assert len(select_examples([0, 1], failures, distance, ([ASSERT] * 2, ["s"] * 2, logs))) == 1
     other = [logs[0], "ERROR [nio-8080-exec-7] Pool.get(Pool.java:12) pool exhausted"]
     assert len(select_examples([0, 1], failures, distance, ([ASSERT] * 2, ["s"] * 2, other))) == 2
+
+
+@pytest.mark.parametrize(("first", "second"), [
+    ("gateway failed error_code=10001", "gateway failed error_code=10002"),
+    ("ORA-01017: invalid username/password", "ORA-12541: invalid username/password"),
+    ("upstream answered HTTP 401", "upstream answered HTTP 403"),
+    ("POST /orders -> 401", "POST /orders -> 403"),
+])
+def test_logs_with_different_error_codes_stay_different(first: str, second: str) -> None:
+    def distance(a: int, b: int) -> float:
+        return 0.0 if a == b else 0.3
+
+    failures = [_failure(40, _log(first)), _failure(41, _log(second))]
+    # Документ лога кластеризации уже без длинных чисел и, для сравнения, без цифр.
+    docs = [re.sub(r"\d+", "#", first), re.sub(r"\d+", "#", second)]
+    examples = select_examples([0, 1], failures, distance, ([ASSERT] * 2, ["s"] * 2, docs))
+    assert [e.test_result_id for e in examples] == [40, 41]
+
+
+def test_duplicate_of_a_chosen_log_does_not_hide_a_third_error() -> None:
+    far = {frozenset({0, 1}): 0.3, frozenset({0, 2}): 0.2, frozenset({0, 3}): 0.2}
+
+    def distance(a: int, b: int) -> float:
+        return 0.0 if a == b else far.get(frozenset({a, b}), 0.5)
+
+    # Логи A, B, A, C: у повтора A больше всего ошибок, но он уже показан типичным.
+    logs = [_log("pool exhausted"), _log("discount is null"),
+            _log("pool exhausted", "pool exhausted", "pool exhausted"), _log("deadlock found")]
+    failures = [_failure(50 + i, log) for i, log in enumerate(logs)]
+    docs = ["pool exhausted", "discount is null", "pool exhausted", "deadlock found"]
+    examples = select_examples([0, 1, 2, 3], failures, distance, ([ASSERT] * 4, ["s"] * 4, docs))
+    assert [(e.role, e.test_result_id) for e in examples] == [
+        ("typical", 50), ("different", 51), ("informative", 53)]

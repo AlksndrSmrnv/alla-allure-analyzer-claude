@@ -25,6 +25,7 @@ from alla_core.services.prompt_builder_service import (
     build_cluster_analysis_prompt,
     build_cluster_examples_prompt,
     example_shares,
+    log_header_overhead,
 )
 from alla_core.utils.log_focus import focus_log, selection_error_text
 
@@ -259,6 +260,24 @@ EXAMPLE_ROLES = {
 }
 
 
+MIN_LOG_BUDGET = 200
+
+
+def fit_log(log: str, error: str, budget: int, *, truncated: bool, test_label: str = "") -> str:
+    """Отобрать лог так, чтобы вместе с заголовками кусков (``--- [S3 · …] ---``) он
+    уложился в ``budget``: на логе из сотни коротких ошибок заголовки иначе в разы
+    превышают лимит задания."""
+    target = budget
+    text = focus_log(log, error, target, log_selection_truncated=truncated)
+    for _ in range(4):
+        excess = len(text) + log_header_overhead(text, test_label) - budget
+        if excess <= 0 or target <= MIN_LOG_BUDGET:
+            break
+        target = max(MIN_LOG_BUDGET, target - excess)
+        text = focus_log(log, error, target, log_selection_truncated=truncated)
+    return text
+
+
 def example_tests(
     cluster: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],
@@ -315,13 +334,16 @@ def build_cluster_task_with_sources(
         source = select_log_source(cluster, tests_by_id)
         if source is not None and source.log_snippet == log_snippet:
             log_test = source
-        log_snippet = focus_log(
+        other_test = (log_test.name if log_test is not None and representative is not None
+                      and log_test is not representative else "")
+        log_snippet = fit_log(
             log_snippet,
             (log_test.log_selection_error
              if log_test is not None and log_test.log_selection_error is not None
              else error_text_for(cluster, full_trace)),
             settings.llm_prompt_log_max_chars,
-            log_selection_truncated=bool(log_test is not None and log_test.log_selection_truncated),
+            truncated=bool(log_test is not None and log_test.log_selection_truncated),
+            test_label=other_test,
         )
     prompt = build_cluster_analysis_prompt(
         cluster,
@@ -374,8 +396,7 @@ def _examples_task(
             error = (test.log_selection_error if test.log_selection_error is not None
                      else selection_error_text(test.status_message, test.status_trace,
                                                test.correlation_hint))
-            log = focus_log(log, error, budget,
-                            log_selection_truncated=test.log_selection_truncated)
+            log = fit_log(log, error, budget, truncated=test.log_selection_truncated)
         prompt_examples.append(PromptExample(
             role=EXAMPLE_ROLES.get(role, role), test_result_id=test.test_result_id,
             test_name=test.name, step=test.failed_step_path, message=test.status_message,

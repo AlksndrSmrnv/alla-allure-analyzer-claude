@@ -44,8 +44,10 @@ def test_every_piece_of_data_has_an_id_and_exact_text() -> None:
     assert [(s.id, s.kind) for s in prompt.sources] == [
         ("S1", "message"), ("S2", "trace"), ("S3", "log"), ("S4", "log")]
     text = prompt.user_prompt
-    assert "--- [S1 · сообщение об ошибке · тест createOrder] ---\nexpected: <200>" in text
-    assert "--- [S2 · стек-трейс · тест createOrder] ---\njava.lang.AssertionError" in text
+    assert "Данные теста: createOrder" in text
+    assert "--- [S1 · сообщение об ошибке] ---\nexpected: <200>" in text
+    assert "--- [S2 · стек-трейс] ---\njava.lang.AssertionError" in text
+    # Лог от другого теста — его имя в заголовке куска.
     assert ("--- [S3 · лог app.log · строки 2–4 · повторялось 3 раза: 2–4, 9–11, 15–17 · "
             "тест member] ---\n2026-09-01 10:00:01 [ERROR] OrderService: failed") in text
     assert "--- [S4 · HTTP response.json · тест member] ---\nHTTP status: 500" in text
@@ -53,7 +55,7 @@ def test_every_piece_of_data_has_an_id_and_exact_text() -> None:
     assert "\n[… пропущено блоков: 2, строк: 7 …]\n" in text
     assert "\n[строки 2–4" not in text
     for source in prompt.sources:
-        assert f"{source.header()}\n{source.text}" in text
+        assert f"{source.header('createOrder')}\n{source.text}" in text
     assert prompt.sources[2].text == (
         "2026-09-01 10:00:01 [ERROR] OrderService: failed\n"
         "java.lang.NullPointerException: customer is null")
