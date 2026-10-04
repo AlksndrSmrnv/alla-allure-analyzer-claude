@@ -29,6 +29,7 @@ from alla_core.utils.log_events import (
 )
 from alla_core.utils.log_focus import focus_log
 from alla_core.utils.log_utils import parse_log_sections
+from alla_core.utils.text_normalization import numeric_codes
 from eval import corpus_dev
 
 REPEATED = "".join(
@@ -269,3 +270,33 @@ def test_every_paragraph_of_an_event_carries_its_lines() -> None:
     focused = focus_log("--- [файл: app.log] ---\n" + blocks + "\n" + "x" * 50,
                         "IOException disk", 220)
     assert "[… пропущено блоков: 1, строк: 3 …]\n\n[строка 5]\nCaused by: java.io.IOException: disk" in focused
+
+
+@pytest.mark.parametrize(("text", "codes"), [
+    ('gateway failed payload={"error_code":10001}', ["error_code=10001"]),
+    ('{"error_code": "10002"}', ["error_code=10002"]),
+    ("{'status': 50301}", ["status=50301"]),
+    ("error_code=-10001", ["error_code=-10001"]),
+    ("error_code=10001 then ORA-01017", ["error_code=10001", "ora-01017"]),
+    ("worker thread-1234 failed", []),
+    ("status 2026-10-03 failed", []),
+])
+def test_numeric_codes_read_quoted_and_signed_values(text: str, codes: list[str]) -> None:
+    assert numeric_codes(text) == codes
+
+
+@pytest.mark.parametrize("pair", [
+    ('payload={"error_code":10001}', 'payload={"error_code":10002}'),
+    ("error_code=-10001", "error_code=-10002"),
+])
+def test_quoted_and_negative_codes_are_not_folded(pair: tuple[str, str]) -> None:
+    first, second = pair
+    log = (f"2026-10-03 10:00:00 [ERROR] gateway failed {first}\n"
+           f"2026-10-03 10:00:01 [ERROR] gateway failed {second}\n")
+    blocks = render_error_blocks(log)
+
+    assert "повторялось" not in blocks
+    assert second in blocks
+    one = _enrich({"app.log": log.splitlines(keepends=True)[0]}, status_message="request failed")
+    both = _enrich({"app.log": log}, status_message="request failed")
+    assert _signature(one)[0] != _signature(both)[0]

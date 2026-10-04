@@ -136,12 +136,14 @@ def canonicalize_kb_error_example(text: str) -> str:
 # Коды ошибок — не волатильные данные: «error_code=10001» и «error_code=10002» —
 # разные ошибки, хотя normalize_text сводит оба числа к <NUM>. Используются в
 # сигнатуре (numeric fingerprint) и в свёртке повторов лога.
+# Имя поля и значение могут быть в кавычках (JSON: "error_code":"10001"), число — со
+# знаком (error_code=-10001).
 _NUMERIC_CONTEXT_RE = re.compile(
     r"\b(?P<label>"
     r"code|status|status_code|error_code|response_code|http_status|errno|exit_code|rc"
-    r")\b"
-    r"(?:\s*(?:=|:|is|was|got|returned|returning|return|with))?\s*"
-    r"(?P<number>\d{4,})\b",
+    r")\b[\"']?"
+    r"(?:\s*(?:=|:|is|was|got|returned|returning|return|with))?\s*[\"']?"
+    r"(?P<number>-?\d{4,})\b",
     re.IGNORECASE,
 )
 _EMBEDDED_NUMERIC_CODE_RE = re.compile(
