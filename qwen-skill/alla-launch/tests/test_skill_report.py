@@ -399,6 +399,29 @@ def test_symptom_markdown_does_not_break_the_rest_of_the_brief(
     assert "Полный разбор: [report.md](" in console
 
 
+def test_summary_markdown_does_not_break_the_rest_of_the_report(tmp_path: Path) -> None:
+    """«Коротко» модель пишет сама; блочная разметка в начале её строк убирается и в брифе,
+    и в report.md, иначе незакрытая ограда ``` показала бы остаток отчёта как код."""
+    summary = (
+        "## Итог\n\n"
+        "```text\n"
+        "Упало 2 теста, это 1 проблема.\n\n\n"
+        "> Главное — сервис заказов отвечает 500.\n"
+        "- Начните с сервиса заказов."
+    )
+    console, full = _render(tmp_path, _run([2]), [APP], summary=summary)
+    expected = (
+        "### Коротко\nИтог\n\nУпало 2 теста, это 1 проблема.\n\n"
+        "Главное — сервис заказов отвечает 500.\nНачните с сервиса заказов.\n"
+    )
+    assert expected in console and expected in full
+    for line in console.splitlines():
+        if line.startswith(("### ", "## ")) or line == "---":
+            continue
+        assert not any(re.match(pattern, line) for pattern in _QWEN_BLOCK_STARTS), line
+    assert "```" not in console and "```" not in full
+
+
 def test_terminal_tags_show_repeats_and_known_problems(tmp_path: Path) -> None:
     run = _run([2])
     run["clusters"][0]["history"] = {"launches": 3, "first_date": "2026-09-12", "last_date": "2026-09-28"}
