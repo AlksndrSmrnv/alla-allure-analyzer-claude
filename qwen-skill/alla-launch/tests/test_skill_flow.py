@@ -87,8 +87,9 @@ def test_prepare_builds_run(project: Path, testops: FakeTestOps, capsys) -> None
     assert "недоверенный" in first
     assert "customer is null" in first  # лог из вложения
     assert "2026-09-01 10:00:01 [ERROR] OrderService" in first  # время не стёрто
-    # Строки источника видны модели: блок лога начинается пометкой из вложения.
-    assert "--- [файл: app.log] ---\n[строки 2–4]\n2026-09-01 10:00:01 [ERROR]" in first
+    # Каждый кусок данных — под своим id; у фрагмента лога видно вложение, строки и тест.
+    assert "--- [S1 · сообщение об ошибке · тест createOrder] ---\nexpected: <200>" in first
+    assert "--- [S3 · лог app.log · строки 2–4 · тест createOrder] ---\n2026-09-01 10:00:01 [ERROR]" in first
     assert "<TS>" not in first and "<ID>" not in first
     assert "«неизвестно» — только если ни одну из четырёх остальных нельзя обосновать" in first
     assert "ru.company.orders.OrderTest.createOrder" in first

@@ -12,12 +12,13 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from alla_core.config import Settings
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
-from alla_core.services.prompt_builder_service import build_cluster_analysis_prompt
+from alla_core.services.prompt_builder_service import PromptSource, build_cluster_analysis_prompt
 from alla_core.utils.log_focus import focus_log, selection_error_text
 
 from alla_skill_lib.agent_rules import ANALYSIS_FORMAT_REF, EXECUTOR_RULES, reference_line
@@ -199,7 +200,22 @@ def _is_framework_frame(line: str) -> bool:
     return False
 
 
-def build_cluster_task(
+@dataclass(frozen=True)
+class ClusterTask:
+    """Текст задания и куски его данных под id (``S1``…) для реестра источников."""
+
+    text: str
+    sources: tuple[PromptSource, ...]
+    message_test: FailedTestSummary | None
+    log_test: FailedTestSummary | None
+
+
+def build_cluster_task(**kwargs: Any) -> str:
+    """Текст задания кластера (см. :func:`build_cluster_task_with_sources`)."""
+    return build_cluster_task_with_sources(**kwargs).text
+
+
+def build_cluster_task_with_sources(
     *,
     cluster: FailureCluster,
     position: int,
@@ -215,22 +231,26 @@ def build_cluster_task(
     settings: Settings,
     kb_matches: list[dict[str, Any]] | None = None,
     recurrence: dict[str, Any] | None = None,
-) -> str:
+) -> ClusterTask:
     """Собрать markdown-задание на анализ одного кластера.
 
     Лог и трейс идут без нормализации (ID и время сохраняются), а лог длиннее
     лимита отбирается по связи с ошибкой (:func:`focus_log`), а не режется
-    по началу.
+    по началу. Каждый кусок данных — под своим id (``S1``…), см. ``sources.py``.
     """
+    representative = tests_by_id.get(cluster.representative_test_id or -1)
+    log_test: FailedTestSummary | None = None
     if log_snippet:
         source = select_log_source(cluster, tests_by_id)
-        source_matches = source is not None and source.log_snippet == log_snippet
+        if source is not None and source.log_snippet == log_snippet:
+            log_test = source
         log_snippet = focus_log(
             log_snippet,
-            (source.log_selection_error if source_matches and source.log_selection_error is not None
+            (log_test.log_selection_error
+             if log_test is not None and log_test.log_selection_error is not None
              else error_text_for(cluster, full_trace)),
             settings.llm_prompt_log_max_chars,
-            log_selection_truncated=bool(source_matches and source.log_selection_truncated),
+            log_selection_truncated=bool(log_test is not None and log_test.log_selection_truncated),
         )
     prompt = build_cluster_analysis_prompt(
         cluster,
@@ -240,6 +260,9 @@ def build_cluster_task(
         trace_max_chars=settings.llm_prompt_trace_max_chars,
         log_max_chars=settings.llm_prompt_log_max_chars,
         normalize_evidence=False,
+        source_ids=True,
+        message_test=representative.name if representative else None,
+        log_test=log_test.name if log_test else None,
     )
     evidence_chars = prompt.message_chars + prompt.trace_chars + prompt.log_chars
     task = build_task_text(
@@ -291,7 +314,7 @@ def build_cluster_task(
         sections.append(CODE_NOT_FOUND_NOTE.format(
             next_step=CODE_NOT_FOUND_WITH_FRAMES if with_files else CODE_NOT_FOUND_NO_FRAMES))
     sections += ["", "## Задание", task, "", reference_line(ANALYSIS_FORMAT_REF)]
-    return "\n".join(sections) + "\n"
+    return ClusterTask("\n".join(sections) + "\n", prompt.sources, representative, log_test)
 
 
 def build_task_text(*, has_symptom: bool, has_log: bool, low_evidence: bool, has_kb: bool) -> str:

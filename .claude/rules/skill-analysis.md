@@ -1,6 +1,7 @@
 ---
 paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/cluster_task.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/sources.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/analysis_format.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/code_hints.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/report.py"
@@ -9,6 +10,7 @@ paths:
   - "qwen-skill/alla-launch/references/analysis-format.md"
   - "qwen-skill/alla-launch/references/summary-format.md"
   - "qwen-skill/alla-launch/tests/test_skill_prompts.py"
+  - "qwen-skill/alla-launch/tests/test_skill_sources.py"
   - "qwen-skill/alla-launch/tests/test_skill_report.py"
   - "qwen-skill/alla-launch/tests/test_code_references.py"
   - "qwen-skill/alla-launch/tests/test_summary_refresh.py"
@@ -19,8 +21,15 @@ paths:
 ## Задание кластера (`cluster_task`, `clusters/NN.md`)
 
 - «Данные» — из ядра (`prompt_builder_service`) с `normalize_evidence=False`: ID и время в
-  логе сохраняются; блок лога начинается пометкой строк источника `[строки a–b]` (см.
-  `core.md`). Плюс список тестов (без ссылок TestOps и без повторов шага),
+  логе сохраняются. Каждый кусок данных идёт под своим id (`source_ids=True`): `S1` —
+  сообщение, `S2` — трейс, дальше блоки отобранного лога, например
+  `--- [S3 · лог app.log · строки 120–134 · тест createOrder] ---` (пометка строк из
+  `core.md` уходит в заголовок). Пометки отбора (пропуски, «не вошло», пояснение и итог
+  обрезки) остаются в данных без id.
+- Реестр источников — `evidence/NN.sources.json` (`sources.py`): id → вид, тест (id и имя),
+  секция и вложение (имя, id из `log_attachments`), строки и **ровно тот текст**, что видела
+  модель. `evidence/NN.txt` не меняется: на нём держатся `match_cluster` и проверка
+  признака. Плюс список тестов (без ссылок TestOps и без повторов шага),
   корреляция, кадры стека, подсказки по коду (`code_hints`). Раздел «Где искать код
   автотеста» печатается всегда: без подсказок — «исходник не удалось сопоставить» (подсказок
   нет и при нераспознанном или неоднозначном имени теста, так что «файлов нет» было бы

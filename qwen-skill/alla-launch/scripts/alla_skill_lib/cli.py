@@ -60,7 +60,7 @@ from alla_skill_lib.analysis_format import (
 )
 from alla_skill_lib.batch_task import BATCH_AGENT, install_batch_agent, render_batch_task
 from alla_skill_lib.cluster_task import (
-    build_cluster_task,
+    build_cluster_task_with_sources,
     failed_prepare_analysis,
     has_evidence,
     no_evidence_analysis,
@@ -103,6 +103,7 @@ from alla_skill_lib.report import (
     render_green_report,
     render_report,
 )
+from alla_skill_lib.sources import registry, write_registry
 
 if TYPE_CHECKING:
     from alla_skill_lib.pipeline import LaunchData
@@ -550,7 +551,7 @@ def _write_run(
 
             full_names = list(islice(_member_full_names(cluster, tests_by_id), 5))
             frames = project_frames(full_trace)
-            task = build_cluster_task(
+            task = build_cluster_task_with_sources(
                 cluster=cluster,
                 position=position,
                 total=len(clusters),
@@ -566,7 +567,9 @@ def _write_run(
                 kb_matches=kb_matches,
                 recurrence=entry["history"],
             )
-            ws.write_text(paths.cluster_task(file_id), task)
+            ws.write_text(paths.cluster_task(file_id), task.text)
+            write_registry(paths.sources(file_id), registry(
+                task.sources, task.message_test, task.log_test))
         except Exception as exc:  # один битый кластер не должен ронять весь prepare
             logger.exception("Не удалось подготовить кластер %s", file_id)
             local_warnings.append(
@@ -577,6 +580,7 @@ def _write_run(
                 auto=True, signature=None, fingerprint="", kb=[], history=None
             )
             paths.evidence(file_id).unlink(missing_ok=True)
+            paths.sources(file_id).unlink(missing_ok=True)
             paths.cluster_task(file_id).unlink(missing_ok=True)
             ws.write_text(paths.analysis(file_id), failed_prepare_analysis(type(exc).__name__))
 

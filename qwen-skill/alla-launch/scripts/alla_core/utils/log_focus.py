@@ -176,6 +176,44 @@ def focus_log(
     return result if len(result) <= budget else result[: budget - 1] + "…"
 
 
+_NOT_SELECTED_RE = re.compile(r"^\[вложение не вошло в лимит задания: (?:\d+|\?) строк\]$")
+
+
+@dataclass(frozen=True)
+class LogPiece:
+    """Блок отобранного лога по порядку: заголовок секции и текст блока.
+
+    ``meta`` — служебная пометка отбора (пропуски, «не вошло», пояснение и итог
+    обрезки), а не текст лога.
+    """
+
+    header: str | None
+    text: str
+    meta: bool
+
+
+def is_selection_note(block: str) -> bool:
+    """Блок — служебная пометка отбора, а не строки лога."""
+    stripped = block.strip()
+    return (stripped == FOCUS_NOTE or _is_gap_marker(stripped)
+            or bool(_NOT_SELECTED_RE.fullmatch(stripped))
+            or bool(_EXTRACTION_MARKER_RE.fullmatch(stripped)))
+
+
+def log_pieces(snippet: str) -> list[LogPiece]:
+    """Блоки лога (результат :func:`focus_log` или ``log_snippet``) с их секциями."""
+    return [
+        LogPiece(header, block, is_selection_note(block))
+        for header, blocks in _split_sections(snippet)
+        for block in blocks
+    ]
+
+
+def split_source_mark(text: str) -> tuple[str | None, str]:
+    """Пометка строк источника в начале блока и остальной текст."""
+    return _split_source_mark(text)
+
+
 def _split_sections(snippet: str) -> list[tuple[str | None, list[str]]]:
     matches = list(_SECTION_HEADER_RE.finditer(snippet))
     if not matches:

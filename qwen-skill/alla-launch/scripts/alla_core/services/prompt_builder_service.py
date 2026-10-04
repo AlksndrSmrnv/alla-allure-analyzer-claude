@@ -12,16 +12,19 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from alla_core.models.clustering import ClusteringReport, FailureCluster
 from alla_core.models.llm import LLMAnalysisResult
 from alla_core.models.testops import TriageReport
+from alla_core.utils.log_focus import log_pieces, split_source_mark
 from alla_core.utils.text_normalization import normalize_text_for_llm
 
 __all__ = [
     "ClusterAnalysisPrompt",
+    "PromptSource",
     "LaunchSummaryPrompt",
     "build_cluster_analysis_prompt",
     "build_launch_summary_prompt",
@@ -36,6 +39,35 @@ DEFAULT_LOG_MAX_CHARS = 8000
 
 DATA_HEADING = "## Данные"
 _TRUNCATION_SUFFIX = "...[обрезано]"
+
+
+_SECTION_HEADER_RE = re.compile(r"^--- \[(?P<kind>[^\]:\s][^\]:]*?): (?P<name>.+?)\] ---$")
+_LOG_KIND_LABELS = {"файл": "лог", "HTTP": "HTTP", "журнал": "журнал"}
+
+
+@dataclass(frozen=True)
+class PromptSource:
+    """Кусок данных задания под своим id (``S1``, ``S2``…): ровно тот текст, что видит модель.
+
+    ``kind`` — ``message`` | ``trace`` | ``log``; у фрагмента лога — вложение
+    (``attachment``, имя из заголовка секции, и ``section`` — её вид: лог, HTTP, журнал)
+    и строки источника (``lines``: «строки 120–134 · повторялось …», если блок помечен).
+    """
+
+    id: str
+    kind: str
+    text: str
+    test_name: str | None = None
+    section: str | None = None
+    attachment: str | None = None
+    lines: str | None = None
+
+    def header(self) -> str:
+        what = {"message": "сообщение об ошибке", "trace": "стек-трейс"}.get(self.kind)
+        if what is None:
+            what = f"{self.section} {self.attachment}" if self.attachment else (self.section or "лог")
+        parts = [self.id, what, self.lines, f"тест {self.test_name}" if self.test_name else None]
+        return "--- [" + " · ".join(part for part in parts if part) + "] ---"
 
 
 @dataclass(frozen=True)
@@ -53,6 +85,7 @@ class ClusterAnalysisPrompt:
     message_chars: int
     trace_chars: int
     log_chars: int
+    sources: tuple[PromptSource, ...] = ()
 
     @property
     def has_symptom(self) -> bool:
@@ -88,12 +121,20 @@ def build_cluster_analysis_prompt(
     trace_max_chars: int = DEFAULT_TRACE_MAX_CHARS,
     log_max_chars: int = DEFAULT_LOG_MAX_CHARS,
     normalize_evidence: bool = True,
+    source_ids: bool = False,
+    message_test: str | None = None,
+    log_test: str | None = None,
 ) -> ClusterAnalysisPrompt:
     """Собрать данные одного кластера.
 
     ``normalize_evidence=False`` оставляет в трейсе и логе ID, время и IP как
     есть (без ``<ID>``/``<TS>``/``<IP>``): по ним агент связывает падение
     с конкретной операцией и восстанавливает порядок событий.
+
+    ``source_ids=True`` — каждый кусок данных идёт под своим id: ``S1`` сообщение,
+    ``S2`` трейс, дальше фрагменты лога (блоки отбора) с вложением и строками
+    источника; ``message_test`` / ``log_test`` — чьи это данные. Куски возвращаются
+    в ``sources`` ровно с тем текстом, что попал в задание.
     """
     parts: list[str] = [
         DATA_HEADING,
@@ -103,12 +144,21 @@ def build_cluster_analysis_prompt(
     ]
     if cluster.example_step_path:
         parts.append(f"Шаг теста: {cluster.example_step_path}")
+    sources: list[PromptSource] = []
+
+    def add_source(kind: str, text: str, test: str | None, **where: str | None) -> None:
+        source = PromptSource(f"S{len(sources) + 1}", kind, text, test, **where)
+        sources.append(source)
+        parts.append(f"\n{source.header()}\n{text}")
 
     message_chars = 0
     if cluster.example_message:
         msg = _truncate_prompt_text(cluster.example_message, message_max_chars)
         message_chars = len(msg)
-        parts.append(f"\n--- Сообщение об ошибке ---\n{msg}")
+        if source_ids:
+            add_source("message", msg, message_test)
+        else:
+            parts.append(f"\n--- Сообщение об ошибке ---\n{msg}")
 
     trace_text = full_trace or cluster.example_trace_snippet
     trace_chars = 0
@@ -117,20 +167,39 @@ def build_cluster_analysis_prompt(
             trace_text = normalize_text_for_llm(trace_text)
         trace_text = _truncate_prompt_text(trace_text, trace_max_chars)
         trace_chars = len(trace_text)
-        parts.append(f"\n--- Стек-трейс ---\n{trace_text}")
+        if source_ids:
+            add_source("trace", trace_text, message_test)
+        else:
+            parts.append(f"\n--- Стек-трейс ---\n{trace_text}")
 
     log_chars = 0
     if log_snippet:
         log_text = normalize_text_for_llm(log_snippet) if normalize_evidence else log_snippet
         log_text = _truncate_prompt_text(log_text, log_max_chars)
         log_chars = len(log_text)
-        parts.append(f"\n--- Фрагмент лога ---\n{log_text}")
+        if source_ids:
+            for piece in log_pieces(log_text):
+                if piece.meta:
+                    parts.append(f"\n{piece.text}")
+                    continue
+                mark, body = split_source_mark(piece.text)
+                header = _SECTION_HEADER_RE.match(piece.header or "")
+                kind = header.group("kind") if header else "файл"
+                add_source(
+                    "log", body, log_test,
+                    section=_LOG_KIND_LABELS.get(kind, kind),
+                    attachment=header.group("name") if header else None,
+                    lines=mark[1:-1] if mark else None,
+                )
+        else:
+            parts.append(f"\n--- Фрагмент лога ---\n{log_text}")
 
     return ClusterAnalysisPrompt(
         user_prompt="\n".join(parts),
         message_chars=message_chars,
         trace_chars=trace_chars,
         log_chars=log_chars,
+        sources=tuple(sources),
     )
 
 

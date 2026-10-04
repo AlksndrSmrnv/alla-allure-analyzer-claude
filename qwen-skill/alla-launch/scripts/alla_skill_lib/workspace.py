@@ -108,6 +108,10 @@ class RunPaths:
     def evidence(self, file_id: str) -> Path:
         return self.root / "evidence" / f"{file_id}.txt"
 
+    def sources(self, file_id: str) -> Path:
+        """Реестр источников задания кластера (``S1``, ``S2``…), см. ``sources.py``."""
+        return self.root / "evidence" / f"{file_id}.sources.json"
+
     def proposal(self, file_id: str) -> Path:
         return self.root / "proposals" / f"{file_id}.md"
 

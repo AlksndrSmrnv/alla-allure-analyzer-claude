@@ -296,7 +296,7 @@ def test_broken_cluster_degrades_to_unknown(
     def boom(**kwargs: object) -> str:
         raise ValueError("битый кластер")
 
-    monkeypatch.setattr(cli, "build_cluster_task", boom)
+    monkeypatch.setattr(cli, "build_cluster_task_with_sources", boom)
     run_dir, run, out = _prepare(project, capsys)
 
     assert all(entry["auto"] for entry in run["clusters"])
