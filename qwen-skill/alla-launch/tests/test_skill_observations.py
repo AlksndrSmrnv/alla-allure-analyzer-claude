@@ -241,6 +241,9 @@ def test_legacy_run_report_has_no_observations(
     ("- [S1] 'can't connect' — ошибка в 'login'", "can't connect"),
     ("- [S1] 'it's the user's fault' — x", "it's the user's fault"),
     ('- [S3] "value \\"id\\" missing" — note', 'value \\"id\\" missing'),
+    ('- [S1] "missing directory C:\\\\logs\\\\"', 'missing directory C:\\\\logs\\\\'),
+    ('- [S1] "path C:\\\\logs\\\\" — нет каталога', 'path C:\\\\logs\\\\'),
+    ('- [S1] "a \\\\\\"b\\" c" — x', 'a \\\\\\"b\\" c'),
 ])
 def test_comment_after_the_quote_is_not_part_of_it(line: str, quote: str) -> None:
     observation, = parse_analysis(HEAD + "НАБЛЮДЕНИЯ:\n" + line + "\n" + TAIL).observations

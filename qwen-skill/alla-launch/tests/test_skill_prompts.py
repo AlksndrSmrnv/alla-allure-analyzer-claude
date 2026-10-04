@@ -155,6 +155,8 @@ def test_summary_task_keeps_unknown_causes_unknown() -> None:
     text = " ".join(SUMMARY_TASK.split())
     assert "«неизвестно» — так и скажи" in text and "каких данных не хватает" in text
     assert "своих версий причины" in text
+    # E07: сводка выдала название шага «Выгрузить месячный отчёт» за результат.
+    assert "не больше, чем сказано в разборе" in text and "название шага — не результат" in text
 
 
 @pytest.mark.parametrize("variant", VARIANTS)

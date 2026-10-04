@@ -739,7 +739,14 @@ def check_cause_unknown(ctx: Context) -> dict[str, Any]:
 
 def check_unknown_by_model(ctx: Context) -> dict[str, Any]:
     """Разбор нового формата написала модель: «неизвестно», «НЕ ХВАТАЕТ» по существу, без
-    исчерпанных попыток (иначе разбор принят с пометкой «формат нарушен»)."""
+    исчерпанных попыток (иначе разбор принят с пометкой «формат нарушен»).
+
+    Заглушку ``skip`` пишет скрипт: такой кластер (``state.skipped``) не засчитывается, а
+    запись файла разбора моделью подтверждается по trace.
+    """
+    project = canonical(ctx.project)
+    written = {target for call in ctx.trace.calls if call.name in WRITE_TOOLS
+               for target in ctx.tool_targets(project, path_of(call))}
     found: list[str] = []
     for run_dir in ctx.run_dirs():
         run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
@@ -757,6 +764,10 @@ def check_unknown_by_model(ctx: Context) -> dict[str, Any]:
             attempts = int(state.get("attempts", {}).get(entry["file_id"], {}).get("count", 0))
             if not text.strip():
                 return bad(f"кластер {entry['file_id']}: разбора нет")
+            if entry["file_id"] in state.get("skipped", []):
+                return bad(f"кластер {entry['file_id']}: пропущен (skip), разбор написал скрипт")
+            if canonical(path.resolve()) not in written:
+                return bad(f"кластер {entry['file_id']}: модель не записывала {path.name}")
             if attempts >= 3:
                 return bad(f"кластер {entry['file_id']}: формат нарушен после {attempts} попыток")
             if missing.lower().strip(" .") in ("", "нет", "-"):

@@ -286,9 +286,14 @@ def parse_observation(line: str) -> Observation | None:
 
 def _not_a_quote_mark(text: str, index: int) -> bool:
     """Символ кавычки, который не открывает и не закрывает: ``can't``, ``\\"``."""
+    slashes = 0
+    while slashes < index and text[index - 1 - slashes] == "\\":
+        slashes += 1
+    if slashes % 2:  # «\"» экранирована, а «\\"» — слеш, а за ним настоящая кавычка
+        return True
     before = text[index - 1] if index else ""
     after = text[index + 1] if index + 1 < len(text) else ""
-    return before == "\\" or (before.isalnum() and after.isalnum())
+    return before.isalnum() and after.isalnum()
 
 
 def _closing_quote(text: str) -> int | None:

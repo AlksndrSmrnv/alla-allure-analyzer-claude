@@ -404,16 +404,23 @@ def test_sandbox_check_stops_the_stand_when_reads_leak(tmp_path: Path) -> None:
         qwen_stand.check_sandbox(leaky, project, home, venv=None)
 
 
-def _scant_run(tmp_path: Path, analysis: str | None, attempts: int = 0) -> Context:
+def _scant_run(tmp_path: Path, analysis: str | None, attempts: int = 0, *,
+               skipped: bool = False, written_by_model: bool = True) -> Context:
     run_dir = tmp_path / "p" / "alla-reports" / "781-20261004-100000"
     (run_dir / "analyses").mkdir(parents=True)
     (run_dir / "run.json").write_text(json.dumps({"clusters": [
         {"file_id": "01", "auto": False, "task_format": 2}]}), encoding="utf-8")
-    (run_dir / "state.json").write_text(json.dumps(
-        {"attempts": {"01": {"count": attempts}} if attempts else {}}), encoding="utf-8")
+    state: dict[str, Any] = {"attempts": {"01": {"count": attempts}} if attempts else {}}
+    if skipped:
+        state["skipped"] = ["01"]
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    events_: list[dict[str, Any]] = []
     if analysis is not None:
-        (run_dir / "analyses" / "01.md").write_text(analysis, encoding="utf-8")
-    return context(tmp_path, [], "E07")
+        target = run_dir / "analyses" / "01.md"
+        target.write_text(analysis, encoding="utf-8")
+        if written_by_model:
+            events_ = events(("write_file", {"file_path": str(target), "content": analysis}, "ok"))
+    return context(tmp_path, events_, "E07")
 
 
 UNKNOWN = ("ЧТО СЛОМАЛОСЬ: Проверка в тесте не прошла, без сообщения.\n"
@@ -432,6 +439,19 @@ UNKNOWN = ("ЧТО СЛОМАЛОСЬ: Проверка в тесте не пр�
 def test_unknown_by_model_check(tmp_path: Path, analysis: str | None, attempts: int,
                                 status: str) -> None:
     assert CHECKS["unknown_by_model"](_scant_run(tmp_path, analysis, attempts))["status"] == status
+
+
+def test_unknown_by_model_rejects_a_skip_stub_and_a_file_not_written_by_the_model(
+    tmp_path: Path,
+) -> None:
+    from alla_skill_lib.cluster_task import skipped_analysis
+
+    skipped = CHECKS["unknown_by_model"](_scant_run(tmp_path / "a", skipped_analysis(""),
+                                                    skipped=True))
+    assert skipped["status"] == "fail" and "skip" in skipped["evidence"]
+    silent = CHECKS["unknown_by_model"](_scant_run(tmp_path / "b", UNKNOWN,
+                                                   written_by_model=False))
+    assert silent["status"] == "fail" and "модель не записывала" in silent["evidence"]
 
 
 def test_scant_fixture_gives_the_model_a_task_without_a_cause(tmp_path: Path) -> None:
