@@ -194,3 +194,20 @@ def test_http_status_from_a_json_attachment_reaches_both_examples() -> None:
     codes = {code for example in cluster.examples for code in ("401", "403")
              if f"HTTP статус: {code}" in (by_id[example.test_result_id].log_snippet or "")}
     assert codes == {"401", "403"}
+
+
+def test_durations_are_not_http_statuses() -> None:
+    far = {frozenset({0, 1}): 0.3, frozenset({0, 2}): 0.2, frozenset({0, 3}): 0.2}
+
+    def distance(a: int, b: int) -> float:
+        return 0.0 if a == b else far.get(frozenset({a, b}), 0.5)
+
+    # Повтор ошибки пула отличается только длительностью ответа — это не другая ошибка.
+    texts = ["pool exhausted, response 401ms", "discount is null",
+             "pool exhausted, response 403ms", "relation orders_v2 does not exist"]
+    logs = [_log(texts[0]), _log(texts[1]), _log(texts[2], texts[2], texts[2]), _log(texts[3])]
+    failures = [_failure(70 + i, log) for i, log in enumerate(logs)]
+    docs = [re.sub(r"\d+", "#", text) for text in texts]
+    examples = select_examples([0, 1, 2, 3], failures, distance, ([ASSERT] * 4, ["s"] * 4, docs))
+    assert [(e.role, e.test_result_id) for e in examples] == [
+        ("typical", 70), ("different", 71), ("informative", 73)]

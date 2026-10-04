@@ -34,10 +34,15 @@ def _errors(consistency: str, examples: int = 2) -> list[str]:
     ("СОГЛАСОВАННОСТЬ: разные проблемы — оба теста видят expected: <200> but was: <500>, "
      "но у первого пул БД, у второго NPE\n", "different"),
     ("СОГЛАСОВАННОСТЬ: одна причина — в обоих логах code=<NUM> не важен, ошибка одна\n", "same"),
+    ("СОГЛАСОВАННОСТЬ: разные проблемы — у первого expected: <Подтверждено> but was: <Ошибка>, "
+     "у второго пул БД\n", "different"),
     ("СОГЛАСОВАННОСТЬ: разные проблемы — у одного теста пул БД, у другого NPE\n", "different"),
     ("**Согласованность:** недостаточно данных — у второго примера нет лога\n", "insufficient"),
 ])
 def test_consistency_values(line: str, kind: str) -> None:
+    from alla_skill_lib.analysis_format import TEMPLATE_PLACEHOLDERS
+
+    assert "<чем отличаются примеры>" in TEMPLATE_PLACEHOLDERS
     assert _errors(line) == []
     assert parse_analysis(HEAD + line + TAIL).consistency_kind == kind
 

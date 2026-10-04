@@ -795,11 +795,12 @@ class _Distances:
 _DIGITS_RE = re.compile(r"\d+")
 # HTTP-статус в логе: «HTTP 401», «HTTP/1.1 403», «HTTP статус: 401» (так пишет сам
 # извлекатель), «status=401», «status="401"», «"status":401», «statusCode: 401»,
-# «response_code=401», «POST /orders -> 401».
+# «response_code=401», «POST /orders -> 401». За числом не должно идти буквы или дробной
+# части: «response 401ms», «took 401.5s» — длительность, а не статус.
 _HTTP_STATUS_RE = re.compile(
     r"\b(?:HTTP(?:/\d(?:\.\d)?)?(?:\s+(?:статус|status))?|статус|"
     r"(?:http[ _]?)?status(?:[ _]?code)?|response[ _]?code|code|returned|response)"
-    r"[\"']?\s*[:=]?\s*[\"']?([1-5]\d\d)(?!\d)|->\s*([1-5]\d\d)(?!\d)",
+    r"[\"']?\s*[:=]?\s*[\"']?([1-5]\d\d)(?![\w]|\.\d)|->\s*([1-5]\d\d)(?![\w]|\.\d)",
     re.IGNORECASE,
 )
 
