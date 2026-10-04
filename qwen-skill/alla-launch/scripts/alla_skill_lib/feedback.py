@@ -98,8 +98,9 @@ def remember(
             source.read_text(encoding="utf-8"), entry, project_root, paths)
         if analysis_errors:
             return "fix", _fix_body(paths, file_id, [
-                "разбор кластера не прошёл проверку формата — запиши причину и рецепт "
-                "в файл обратной связи"
+                "разбор кластера не прошёл проверку формата ("
+                + "; ".join(analysis_errors[:3]) + ") — analyses/NN.md не переписывай: "
+                "спроси пользователя причину и рецепт и запиши их в файл обратной связи"
             ], entry_id)
 
     kb = project_kb(run, entry)

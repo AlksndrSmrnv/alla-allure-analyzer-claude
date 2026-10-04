@@ -198,3 +198,44 @@ def test_legacy_run_report_has_no_observations(
 
     # Старый разбор: реестра нет — ни подписей источников, ни пометки о логе.
     assert "Наблюдения" not in report and "не подтверждена логом" not in report
+
+
+# --- регрессии по чтению инструкций глазами исполнителя ---------------------------
+
+
+@pytest.mark.parametrize(("line", "quote"), [
+    ("- [S2] «at a.B.c(B.java:6)» — проверка в `createOrder`", "at a.B.c(B.java:6)"),
+    ('- [S3] «constraint «uk_profile_email» violated» — ключ "uk"',
+     "constraint «uk_profile_email» violated"),
+    ("- **[S3]** «customer is null»", "customer is null"),
+    ("- [S3] «error: x — y» — пояснение", "error: x — y"),
+])
+def test_comment_after_the_quote_is_not_part_of_it(line: str, quote: str) -> None:
+    observation, = parse_analysis(HEAD + "НАБЛЮДЕНИЯ:\n" + line + "\n" + TAIL).observations
+    assert observation.quote == quote
+
+
+@pytest.mark.parametrize("written", ["НАБЛЮДЕНИЯ: нет\n", "НАБЛЮДЕНИЯ:\n- нет\n", "НАБЛЮДЕНИЯ:\n-\n"])
+def test_unknown_cause_with_no_observations_written_as_none(written: str) -> None:
+    text = ("ЧТО СЛОМАЛОСЬ: Тест упал.\nПРИЧИНА: неизвестно — данных мало.\n" + written
+            + "НЕ ХВАТАЕТ: лога сервиса за время теста.\n" + TAIL)
+    analysis = parse_analysis(text)
+    assert analysis.observations == [] and analysis.bad_observations == []
+    assert validate_analysis(analysis, Path("."), task_format=2, sources=SOURCES) == []
+
+
+def test_verify_names_the_cluster_task_and_remember_lists_the_reasons(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    bad = VALID_ANALYSIS.replace("«java.lang.NullPointerException: customer is null»",
+                                 "«pool exhausted somewhere»")
+    (run_dir / "analyses" / f"{order}.md").write_text(bad, encoding="utf-8")
+
+    _code, verify = _run(["verify", order, "--run", str(run_dir)], capsys)
+    assert f"Задание кластера (данные и куски S…): {run_dir / 'clusters' / f'{order}.md'}" in verify
+
+    _code, out = _run(["remember", order, "--run", str(run_dir), "--from-analysis"], capsys)
+    assert "цитаты «pool exhausted somewhere» нет в S3" in out
+    assert "analyses/NN.md не переписывай: спроси пользователя причину и рецепт" in out

@@ -176,11 +176,12 @@ def test_protocol_lists_every_status_the_code_prints() -> None:
 _DATA_HEADER_RE = re.compile(r"^--- \[(?P<id>S\d+) · [^\n]*\] ---$", re.MULTILINE)
 
 
-def _example_sources() -> dict[str, dict[str, str]]:
-    """Реестр из образца «Данных» справочника (``<!-- example-data -->``)."""
-    match = re.search(r"<!-- example-data -->\n```text\n(?P<body>.*?)\n```",
+def _example_sources(name: str | None = None) -> dict[str, dict[str, str]]:
+    """Реестр из образца «Данных» справочника (``<!-- example-data[: name] -->``)."""
+    marker = f"<!-- example-data: {name} -->" if name else "<!-- example-data -->"
+    match = re.search(re.escape(marker) + r"\n```text\n(?P<body>.*?)\n```",
                       _read(REFERENCES / "analysis-format.md"), re.DOTALL)
-    assert match, "в analysis-format.md нет образца данных"
+    assert match, f"в analysis-format.md нет образца данных {marker}"
     body = match.group("body")
     headers = list(_DATA_HEADER_RE.finditer(body))
     return {
@@ -190,24 +191,28 @@ def _example_sources() -> dict[str, dict[str, str]]:
     }
 
 
-def _validate_example(text: str, project: Path) -> list[str]:
+def _validate_example(text: str, project: Path, data: str | None = None) -> list[str]:
     return validate_analysis(parse_analysis(text), project, frozenset(), task_format=2,
-                             sources=_example_sources())
+                             sources=_example_sources(data))
 
 
 def test_example_data_matches_the_task_header_format() -> None:
     sources = _example_sources()
     assert list(sources) == ["S1", "S2", "S3"]
     assert "customer is null" in sources["S3"]["text"]
+    assert list(_example_sources("timeout")) == ["S1", "S2"]
+    assert "201 Created" in _example_sources("test")["S3"]["text"]
 
 
 def test_analysis_examples_that_are_ok_pass_validation(project) -> None:
     examples = _examples("analysis-format.md", "analysis-ok")
-    assert len(examples) >= 4
-    for _, text in examples:
+    assert len(examples) >= 5
+    for data, text in examples:
         parsed = parse_analysis(text)
-        assert _validate_example(text, project) == [], text
+        assert _validate_example(text, project, data) == [], text
         assert parsed.category is not None
+    # Пример «неизвестно» без наблюдений действительно без строки НАБЛЮДЕНИЯ.
+    assert any("НАБЛЮДЕНИЯ" not in text and "неизвестно" in text for _, text in examples)
 
 
 def test_analysis_examples_that_are_wrong_give_the_documented_error(project) -> None:

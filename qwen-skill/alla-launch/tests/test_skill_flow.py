@@ -191,8 +191,7 @@ def test_fix_loop_counts_distinct_attempts(project: Path, testops: FakeTestOps, 
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: fix") and "попытка 1 из 3" in out
     assert "нет раздела «ПРИЧИНА:»" in out
-    assert ("Разобрано: ЧТО СЛОМАЛОСЬ ✓, ПРИЧИНА ✗, НАБЛЮДЕНИЯ: 0, НЕ ХВАТАЕТ ✗, "
-            "КАК ИСПРАВИТЬ ✓") in out
+    assert "Разобрано: ЧТО СЛОМАЛОСЬ ✓, ПРИЧИНА ✗, НАБЛЮДЕНИЯ: 0, КАК ИСПРАВИТЬ ✓" in out
     again = _next(run_dir, capsys)  # та же версия файла — не новая попытка, но с предупреждением
     assert "попытка 1 из 3" in again and "Файл не изменился с прошлого вызова next" in again
 

@@ -88,9 +88,11 @@ SECTION_TITLES = {
     "fix": "КАК ИСПРАВИТЬ",
 }
 _OBSERVATION_RE = re.compile(
-    r"^\s*(?:[-*•]|\d+[.)])?\s*\[?\s*(?P<id>S\d+)\s*\]?\s*[:—–-]?\s*(?P<rest>.*)$",
+    r"^\s*(?:[-*•]|\d+[.)])?\s*[*_]*\[?\s*(?P<id>S\d+)\s*\]?[*_]*\s*[:—–-]?\s*(?P<rest>.*)$",
     re.IGNORECASE,
 )
+# Пояснение после цитаты: закрывающая кавычка, затем « — », « – » или « - ».
+_COMMENT_AFTER_RE = re.compile(r"\s+[—–-]\s")
 _OPEN_QUOTES = "«\"“„'`‘"
 _CLOSE_QUOTES = "»\"”'`’“"
 _NOTHING_MISSING = {"нет", "-", "—", "ничего", "всего хватает"}
@@ -251,8 +253,8 @@ def parse_analysis(text: str) -> ClusterAnalysis:
     analysis.fingerprint = _join(buckets["fingerprint"])
     analysis.missing = _join(buckets["missing"])
     for line in buckets["observations"]:
-        if not line.strip():
-            continue
+        if line.strip(" -*•—–.").lower() in ("", "нет", "нету", "отсутствуют"):
+            continue  # «НАБЛЮДЕНИЯ: нет» при категории «неизвестно» — значит, наблюдений нет
         observation = parse_observation(line)
         if observation is None:
             analysis.bad_observations.append(line.strip()[:120])
@@ -269,9 +271,13 @@ def parse_observation(line: str) -> Observation | None:
     rest = match.group("rest").strip()
     if not rest or rest[0] not in _OPEN_QUOTES:
         return None
-    end = max(rest.rfind(char) for char in _CLOSE_QUOTES)
-    if end <= 0:
+    closes = [index for index, char in enumerate(rest) if index and char in _CLOSE_QUOTES]
+    if not closes:
         return None
+    # Цитата кончается кавычкой перед « — пояснение» (в пояснении тоже бывают кавычки и
+    # `код`), а без пояснения — последней кавычкой строки.
+    end = next((index for index in closes if _COMMENT_AFTER_RE.match(rest, index + 1)),
+               closes[-1])
     quote = rest[1:end].strip()
     return Observation(match.group("id").upper(), quote) if quote else None
 
@@ -317,7 +323,8 @@ def parse_summary(analysis: ClusterAnalysis, task_format: int = 1) -> str:
         parts.append(part)
         if key == "cause" and task_format >= 2:
             parts.append(f"НАБЛЮДЕНИЯ: {len(analysis.observations)}")
-            parts.append(f"НЕ ХВАТАЕТ {'✓' if analysis.missing else '✗'}")
+            if analysis.category == "неизвестно":  # обязателен только при «неизвестно»
+                parts.append(f"НЕ ХВАТАЕТ {'✓' if analysis.missing_text else '✗'}")
     line = "Разобрано: " + ", ".join(parts)
     if analysis.unrecognized:
         line += (

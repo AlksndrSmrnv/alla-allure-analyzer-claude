@@ -1179,6 +1179,7 @@ def cmd_verify(run_dir: str | None, clusters: list[str], reports_dir: Path) -> i
                 *(f"- {error}" for error in errors),
                 parse_summary(analysis, task_format(entry)),
                 f"Исправь файл: {path}",
+                f"Задание кластера (данные и куски S…): {paths.cluster_task(file_id)}",
             ]
             formats.add(expected_format(entry))
         else:
