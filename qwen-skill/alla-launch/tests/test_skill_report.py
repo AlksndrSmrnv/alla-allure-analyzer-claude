@@ -378,6 +378,8 @@ _QWEN_BLOCK_STARTS = (
     (" - Заказ не создаётся.", "Заказ не создаётся."),
     (" 1. Заказ не создаётся.", "Заказ не создаётся."),
     (" ---", None),
+    (" _ _ _", None),
+    (" * * *", None),
 ])
 def test_symptom_markdown_does_not_break_the_rest_of_the_brief(
     tmp_path: Path, what: str, shown: str | None
@@ -407,12 +409,13 @@ def test_summary_markdown_does_not_break_the_rest_of_the_report(tmp_path: Path) 
         "```text\n"
         "Упало 2 теста, это 1 проблема.\n\n\n"
         "> Главное — сервис заказов отвечает 500.\n"
+        "_ _ _\n"
         "- Начните с сервиса заказов."
     )
     console, full = _render(tmp_path, _run([2]), [APP], summary=summary)
     expected = (
         "### Коротко\nИтог\n\nУпало 2 теста, это 1 проблема.\n\n"
-        "Главное — сервис заказов отвечает 500.\nНачните с сервиса заказов.\n"
+        "Главное — сервис заказов отвечает 500.\n\nНачните с сервиса заказов.\n"
     )
     assert expected in console and expected in full
     for line in console.splitlines():
@@ -420,6 +423,7 @@ def test_summary_markdown_does_not_break_the_rest_of_the_report(tmp_path: Path) 
             continue
         assert not any(re.match(pattern, line) for pattern in _QWEN_BLOCK_STARTS), line
     assert "```" not in console and "```" not in full
+    assert "_ _ _" not in console and "_ _ _" not in full
 
 
 def test_terminal_tags_show_repeats_and_known_problems(tmp_path: Path) -> None:
