@@ -137,6 +137,8 @@ FLAGGED_TAG = "ФОРМАТ НАРУШЕН"
 _BLOCK_MARKUP_RE = re.compile(
     r"^(?:\s*(?:`{3,}|~{3,}|\${2}|#{1,6}(?=\s|$)|>|\||[-*_]{3,}(?=\s|$)|[-*+](?=\s|$)|\d+[.)](?=\s|$)))+\s*"
 )
+# Строка-ограда целиком: ``` или ~~~ с необязательным языком («```text»).
+_FENCE_LINE_RE = re.compile(r"^\s*(?:`{3,}|~{3,})\s*[\w+-]*\s*$")
 CATEGORY_LABELS = {
     "тест": "ошибка в автотесте",
     "приложение": "возможная ошибка приложения",
@@ -380,7 +382,8 @@ def render_report(
     ]
     groups = [(bucket, title, group) for bucket, title, group in groups if group]
     brief = _brief_header(run, groups)
-    brief += ["", "### Коротко", summary.strip(), "", "---"]
+    summary = _plain_text(summary)
+    brief += ["", "### Коротко", summary, "", "---"]
     for bucket, title, group in groups:
         brief += ["", *_brief_section(bucket, title, group, tests, reasons)]
     if notes:
@@ -388,7 +391,7 @@ def render_report(
     brief += ["", "---", "", FEEDBACK_INVITATION, "", link]
 
     full = _header(run)
-    full += ["", "### Коротко", summary.strip()]
+    full += ["", "### Коротко", summary]
     for bucket, title, hint in SECTIONS:
         group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
         if group:
@@ -681,6 +684,20 @@ def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) 
 def _plain_line(text: str) -> str:
     """Текст модели для строки без подписи: без блочной разметки в начале."""
     return _BLOCK_MARKUP_RE.sub("", text)
+
+
+def _plain_text(text: str) -> str:
+    """Многострочный текст модели («Коротко»): без блочной разметки в начале строк.
+
+    Пустые строки между абзацами сохраняются, но не больше одной подряд (строка из одной
+    ограды ``` становится пустой).
+    """
+    lines: list[str] = []
+    for raw in text.strip().splitlines():
+        line = "" if _FENCE_LINE_RE.match(raw) else _plain_line(raw.strip())
+        if line or (lines and lines[-1]):
+            lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def _brief_field(label: str, text: str) -> str:
