@@ -37,7 +37,7 @@ def test_server_serves_fixture_and_logs_requests(tmp_path: Path) -> None:
     assert methods == ["POST", "GET", "GET"]
 
 
-@pytest.mark.parametrize("spec", ["default", "green", "info_only", "injection", "many:12"])
+@pytest.mark.parametrize("spec", ["default", "green", "info_only", "injection", "scant", "many:12"])
 def test_build_fixture_known_specs(spec: str) -> None:
     assert build_fixture(spec).results
 
@@ -402,3 +402,40 @@ def test_sandbox_check_stops_the_stand_when_reads_leak(tmp_path: Path) -> None:
     leaky.write_text(text, encoding="utf-8")  # штатный профиль: читать можно всё
     with pytest.raises(qwen_stand.StandError, match="вне проекта"):
         qwen_stand.check_sandbox(leaky, project, home, venv=None)
+
+
+def _scant_run(tmp_path: Path, analysis: str | None, attempts: int = 0) -> Context:
+    run_dir = tmp_path / "p" / "alla-reports" / "781-20261004-100000"
+    (run_dir / "analyses").mkdir(parents=True)
+    (run_dir / "run.json").write_text(json.dumps({"clusters": [
+        {"file_id": "01", "auto": False, "task_format": 2}]}), encoding="utf-8")
+    (run_dir / "state.json").write_text(json.dumps(
+        {"attempts": {"01": {"count": attempts}} if attempts else {}}), encoding="utf-8")
+    if analysis is not None:
+        (run_dir / "analyses" / "01.md").write_text(analysis, encoding="utf-8")
+    return context(tmp_path, [], "E07")
+
+
+UNKNOWN = ("ЧТО СЛОМАЛОСЬ: Проверка в тесте не прошла, без сообщения.\n"
+           "ПРИЧИНА: неизвестно — по голому AssertionError причину не установить.\n"
+           "НЕ ХВАТАЕТ: кода ReportTest.exportMonthly и ошибки сервиса отчётов.\n"
+           "КАК ИСПРАВИТЬ:\n1. Добавить сообщение в assertTrue.\n")
+
+
+@pytest.mark.parametrize(("analysis", "attempts", "status"), [
+    (UNKNOWN, 1, "pass"),
+    (UNKNOWN.replace("НЕ ХВАТАЕТ: кода ReportTest.exportMonthly и ошибки сервиса отчётов.",
+                     "НЕ ХВАТАЕТ: нет"), 0, "fail"),
+    (UNKNOWN, 3, "fail"),
+    (None, 0, "fail"),
+])
+def test_unknown_by_model_check(tmp_path: Path, analysis: str | None, attempts: int,
+                                status: str) -> None:
+    assert CHECKS["unknown_by_model"](_scant_run(tmp_path, analysis, attempts))["status"] == status
+
+
+def test_scant_fixture_gives_the_model_a_task_without_a_cause(tmp_path: Path) -> None:
+    fixture = build_fixture("scant")
+    failed, = [r for r in fixture.results if r["status"] == "failed"]
+    assert failed["statusDetails"]["message"] == "java.lang.AssertionError"
+    assert b"[ERROR]" not in fixture.contents[9401]
