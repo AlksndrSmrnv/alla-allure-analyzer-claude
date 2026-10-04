@@ -140,3 +140,57 @@ def test_three_big_examples_stay_within_the_old_limits_plus_headers() -> None:
     # пометки пропусков и текст про «СОГЛАСОВАННОСТЬ».
     assert len(three.text) <= len(one.text) + 2500, (len(one.text), len(three.text))
     assert {source.test_result_id for source in three.sources} == {1, 2, 3}
+
+
+def _mixed_run(project: Path, capsys: pytest.CaptureFixture[str], consistency: str,
+               category: str = "тест") -> tuple[Path, str]:
+    case = same_assertion_db_vs_npe()
+    with replay(case.fixture):
+        run_dir, _run, _ = _prepare(project, capsys, launch_id=case.fixture.launch["id"])
+    sources = json.loads((run_dir / "evidence" / "01.sources.json").read_text("utf-8"))
+    log_id = next(key for key, record in sources.items() if record["kind"] == "log")
+    quote = sources[log_id]["text"].splitlines()[1][:60]
+    (run_dir / "analyses" / "01.md").write_text(
+        "ЧТО СЛОМАЛОСЬ: Тесты создания заказа получили 500 вместо 200.\n"
+        f"ПРИЧИНА: {category} — тест ждёт 200 при сбое сервиса.\n"
+        f"НАБЛЮДЕНИЯ:\n- [{log_id}] «{quote}»\nНЕ ХВАТАЕТ: нет\n"
+        f"СОГЛАСОВАННОСТЬ: {consistency}\n"
+        "КАК ИСПРАВИТЬ:\n1. Разобрать падения по отдельности.\n"
+        "КОД: src/test/java/ru/company/orders/OrderTest.java:6 — assertEquals(200, …)\n",
+        encoding="utf-8")
+    return run_dir, _next(run_dir, capsys)
+
+
+def test_mixed_group_is_flagged_and_gets_no_common_fix(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    detail = "у одного теста исчерпан пул БД, у другого NPE в DiscountService"
+    run_dir, out = _mixed_run(project, capsys, f"разные проблемы — {detail}")
+    # Категория «тест» с КОД, но правку для неоднородной группы не предлагают.
+    assert out.startswith("STATUS: summary"), out
+    summary_task = (run_dir / "summary_task.md").read_text(encoding="utf-8")
+    assert f"СОГЛАСОВАННОСТЬ: разные проблемы — {detail}" in summary_task
+    (run_dir / "summary.md").write_text("Итог.", encoding="utf-8")
+    out = _next(run_dir, capsys)
+    assert out.startswith("STATUS: done") and "apply 1" not in out
+    brief = out.split("===ОТЧЁТ===\n", 1)[1].split("\n===КОНЕЦ===", 1)[0]
+    assert "### Требуют вашего внимания (1)" in brief
+    assert "в группе, похоже, несколько проблем" in brief
+    report = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert f"- В группе, похоже, несколько проблем: {detail}" in report
+    assert f"- **В группе, похоже, несколько проблем:** {detail}" in report
+
+
+def test_unchecked_group_is_marked_and_one_cause_keeps_the_usual_flow(
+    project: Path, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    run_dir, out = _mixed_run(project, capsys, "недостаточно данных — у второго примера нет "
+                                               "кода ответа", category="приложение")
+    assert out.startswith("STATUS: summary")
+    (run_dir / "summary.md").write_text("Итог.", encoding="utf-8")
+    _next(run_dir, capsys)
+    report = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert "- Однородность группы не проверена: недостаточно данных, чтобы сравнить примеры" in report
+
+    _run_dir, out = _mixed_run(project, capsys, "одна причина")
+    assert out.startswith("STATUS: propose")  # обычная группа «тест» с КОД — правку предлагают

@@ -745,6 +745,10 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
             and analysis.category == "тест"
             and analysis.code
         ):
+            if analysis.consistency_kind == "different":
+                # Одна общая правка для неоднородной группы не предлагается.
+                not_proposed[file_id] = MIXED_GROUP_NOT_PROPOSED
+                continue
             candidates += 1
             if candidates > MAX_PROPOSALS:
                 not_proposed[file_id] = (
@@ -803,6 +807,11 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     # Уже применённую или неоднозначную правку повторно не предлагаем.
     offered = {file_id: p for file_id, p in fixes.items() if states[file_id] == "not_applied"}
     return "done", _done_body(console, paths, offered, feedback=True)
+
+
+MIXED_GROUP_NOT_PROPOSED = (
+    "в группе, похоже, несколько проблем — одна правка на все тесты не предлагается"
+)
 
 
 def _read_state(paths: ws.RunPaths) -> dict[str, Any]:

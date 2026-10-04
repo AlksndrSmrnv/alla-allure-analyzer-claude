@@ -229,6 +229,9 @@ class ClusterAnalysis:
         missing = _clip(self.missing_text, COMPACT_MISSING_CHARS)
         if missing:  # чего не хватает — сводка не должна выдавать причину за установленную
             lines.append(f"НЕ ХВАТАЕТ: {missing}")
+        if self.consistency_kind in ("different", "insufficient"):
+            # Сводка не должна выдавать неоднородную группу за одну проблему.
+            lines.append(f"СОГЛАСОВАННОСТЬ: {_clip(_one_line(self.consistency), COMPACT_MISSING_CHARS)}")
         step = _clip(self.first_fix_step(), COMPACT_STEP_CHARS)
         if step:
             lines.append(f"ПЕРВЫЙ ШАГ ИСПРАВЛЕНИЯ: {step}")

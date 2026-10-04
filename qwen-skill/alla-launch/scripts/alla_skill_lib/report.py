@@ -403,7 +403,8 @@ def _problem(
     if proposal is not None and proposal.is_fix and not is_flagged:
         # Состояние неизвестно: apply её не применит, обещать «агент поправит» нельзя.
         bucket = MANUAL if state == "unknown" else AGENT
-    elif is_flagged or analysis.category in (None, "приложение", "неизвестно"):
+    elif (is_flagged or analysis.category in (None, "приложение", "неизвестно")
+          or analysis.consistency_kind == "different"):
         bucket = ATTENTION
     elif analysis.category == "тест":
         bucket = MANUAL
@@ -475,6 +476,7 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
         if what:
             lines.append(f"- Что случилось: {what}")
         lines.append(f"- Агент считает: {_opinion(problem, _reason(problem))}{_unconfirmed(problem)}")
+        lines += _consistency_lines(analysis, "- ")
         lines += _evidence_lines(analysis, "- Наблюдения:", "- Не хватает: ")
     if problem.bucket == AGENT and problem.proposal is not None:
         lines += [
@@ -603,6 +605,24 @@ def _unconfirmed(problem: _Problem) -> str:
     return f" ({UNCONFIRMED_NOTE})" if not problem.flagged and problem.analysis.unconfirmed_by_log else ""
 
 
+MIXED_GROUP_NOTE = "в группе, похоже, несколько проблем"
+UNCHECKED_GROUP_NOTE = "однородность группы не проверена: недостаточно данных"
+
+
+def _consistency_lines(analysis: ClusterAnalysis, prefix: str, *, bold: bool = False) -> list[str]:
+    """Пометка о неоднородной группе: примеры говорят о разных проблемах или сравнить нечем."""
+    kind = analysis.consistency_kind
+    if kind == "different":
+        title = "В группе, похоже, несколько проблем"
+        text = analysis.consistency_detail
+    elif kind == "insufficient":
+        title = "Однородность группы не проверена"
+        text = "недостаточно данных, чтобы сравнить примеры"
+    else:
+        return []
+    return [f"{prefix}{title}:** {text}" if bold else f"{prefix}{title}: {text}"]
+
+
 def _evidence_lines(analysis: ClusterAnalysis, title: str, missing_title: str) -> list[str]:
     """Цитаты с понятным источником и чего не хватает — отдельно от предположения о причине."""
     lines: list[str] = []
@@ -620,6 +640,8 @@ def _evidence_lines(analysis: ClusterAnalysis, title: str, missing_title: str) -
 
 def _brief_tags(problem: _Problem) -> list[str]:
     tags: list[str] = []
+    if not problem.flagged and problem.analysis.consistency_kind == "different":
+        tags.append(MIXED_GROUP_NOTE)
     if not problem.flagged and problem.analysis.unconfirmed_by_log:
         tags.append("не подтверждено логом")
     history = problem.entry.get("history")
@@ -714,6 +736,7 @@ def _details(
                 f"- **Что случилось:** {_one_line(analysis.what)}",
                 f"- **Агент считает:** {_opinion(problem, analysis.cause_reason)}"
                 f"{_unconfirmed(problem)}",
+                *_consistency_lines(analysis, "- **", bold=True),
                 *_evidence_lines(analysis, "- **Наблюдения:**", "- **Не хватает:** "),
                 "- **Как исправить:**",
                 *(f"   {line}" for line in analysis.fix.splitlines()),
