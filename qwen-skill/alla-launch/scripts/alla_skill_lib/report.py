@@ -5,11 +5,12 @@
 что нужно править вручную и что похоже на стенд или данные. Раздел определяет
 код (категория разбора и наличие принятой правки), а не модель.
 
-В терминал агент выводит краткий разбор: шапка, общий анализ и по нескольку строк
-на проблему в каждом разделе — что случилось, что думает агент о причине и что
-делать, — а в конце ссылка на ``report.md``. Полный разбор (тексты целиком, все
-шаги, все тесты, правки БЫЛО/СТАЛО) лежит в ``report.md``.
-Краткий текст повторно попадает в контекст модели при каждом ``next``, поэтому
+В терминал агент выводит краткий разбор: шапка с полоской прошедших тестов и
+обзором разделов, общий анализ и по блоку на проблему в каждом разделе — что
+случилось, что думает агент о причине и что делать, — а в конце ссылка на
+``report.md``. Эмодзи — только у разделов (срочность цветом), остальное — ASCII.
+Полный разбор (тексты целиком, все шаги, все тесты, правки БЫЛО/СТАЛО) лежит
+в ``report.md``. Краткий текст повторно попадает в контекст модели при каждом ``next``, поэтому
 на него действуют потолки; файл в контекст не попадает и ничем не ограничен.
 """
 
@@ -45,6 +46,8 @@ BRIEF_STEP_CHARS = 140  # «что делать»
 BRIEF_REASON_CHARS = 160  # «почему агент не правил сам»
 BRIEF_TEST_NAME_CHARS = 60
 BRIEF_WARNING_CHARS = 140
+BRIEF_BAR_CELLS = 10  # полоска прошедших тестов: [####------]
+BRIEF_LABEL_WIDTH = 15  # подписи строк проблемы выровнены в колонку
 # Предупреждения и замечания в терминале: число и длина ограничены — их повторяет каждый next.
 MAX_BRIEF_NOTES = 5
 BRIEF_NOTE_CHARS = 300
@@ -110,6 +113,23 @@ SECTIONS = (
         "код автотестов, скорее всего, ни при чём.",
     ),
 )
+# Краткий разбор: значок раздела (срочность цветом) и короткое имя для обзора в шапке.
+# Эмодзи без селектора U+FE0F: с ним в части терминалов съезжает ширина строки.
+BRIEF_SECTIONS = {
+    ATTENTION: ("🔴", "требуют вашего внимания"),
+    AGENT: ("🟢", "агент поправит сам"),
+    MANUAL: ("🟡", "править вручную"),
+    ENVIRONMENT: ("🔵", "стенд и данные"),
+}
+# Категория в кратком разборе — ASCII-меткой: «Агент считает: [ПРИЛОЖЕНИЕ] …».
+CATEGORY_TAGS = {
+    "тест": "АВТОТЕСТ",
+    "приложение": "ПРИЛОЖЕНИЕ",
+    "окружение": "СТЕНД",
+    "данные": "ДАННЫЕ",
+    "неизвестно": "НЕ ЯСНО",
+}
+FLAGGED_TAG = "ФОРМАТ НАРУШЕН"
 CATEGORY_LABELS = {
     "тест": "ошибка в автотесте",
     "приложение": "возможная ошибка приложения",
@@ -148,6 +168,13 @@ class _Problem:
         if self.flagged or self.analysis.category is None:
             return FLAGGED_LABEL
         return CATEGORY_LABELS[self.analysis.category]
+
+    @property
+    def tag(self) -> str:
+        """Категория ASCII-меткой для краткого разбора."""
+        if self.flagged or self.analysis.category is None:
+            return FLAGGED_TAG
+        return CATEGORY_TAGS[self.analysis.category]
 
 
 @dataclass
@@ -340,15 +367,18 @@ def render_report(
     reasons = not_proposed or {}
     link = _report_link(paths)
 
-    brief = _header(run, brief=True)
-    brief += ["", "### Коротко", summary.strip()]
-    for bucket, title, _ in SECTIONS:
-        group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
-        if group:
-            brief += ["", *_brief_section(title, group, tests, reasons)]
+    groups = [
+        (bucket, title, sorted((p for p in problems if p.bucket == bucket), key=_sort_key))
+        for bucket, title, _ in SECTIONS
+    ]
+    groups = [(bucket, title, group) for bucket, title, group in groups if group]
+    brief = _brief_header(run, groups)
+    brief += ["", "### Коротко", summary.strip(), "", "---"]
+    for bucket, title, group in groups:
+        brief += ["", *_brief_section(bucket, title, group, tests, reasons)]
     if notes:
         brief += ["", "### Замечания", *_brief_lines(notes, "- ", "замечаний")]
-    brief += ["", FEEDBACK_INVITATION, "", link]
+    brief += ["", "---", "", FEEDBACK_INVITATION, "", link]
 
     full = _header(run)
     full += ["", "### Коротко", summary.strip()]
@@ -374,7 +404,7 @@ def render_report(
 def _report_link(paths: RunPaths) -> str:
     """Ссылка на полный разбор: кликабельная ``file://`` и путь, который можно скопировать."""
     report = paths.report.absolute()
-    return f"Полный разбор со всеми подробностями: [{report.name}]({report.as_uri()})\nФайл: {report}"
+    return f"Полный разбор: [{report.name}]({report.as_uri()})\nФайл: {report}"
 
 
 def render_green_report(run: dict[str, Any], paths: RunPaths) -> tuple[str, str]:
@@ -421,7 +451,7 @@ def _sort_key(problem: _Problem) -> tuple[int, int, int]:
     return (0 if likely_bug else 1, -problem.size, problem.number)
 
 
-def _header(run: dict[str, Any], brief: bool = False) -> list[str]:
+def _header(run: dict[str, Any]) -> list[str]:
     counts = run["counts"]
     title = f"## Разбор прогона #{run['launch_id']}"
     if run.get("launch_name"):
@@ -441,16 +471,8 @@ def _header(run: dict[str, Any], brief: bool = False) -> list[str]:
             f"В разборе: {active} {_plural(active, 'упавший тест', 'упавших теста', 'упавших тестов')}"
             f" → {problems} {_plural(problems, 'проблема', 'проблемы', 'проблем')}"
         )
-        muted = counts.get("muted_failures", 0)
-        if muted:
-            scope += (
-                f" (ещё {muted} "
-                f"{_plural(muted, 'отключённый muted-тест', 'отключённых muted-теста', 'отключённых muted-тестов')}"
-                " не учитываем)"
-            )
-        lines.append(scope + ".")
-    warnings = [f"Внимание: {warning}" for warning in run.get("warnings", [])]
-    return lines + (_brief_lines(warnings, "", "предупреждений") if brief else warnings)
+        lines.append(scope + _muted_note(counts) + ".")
+    return lines + [f"Внимание: {warning}" for warning in run.get("warnings", [])]
 
 
 def _section(
@@ -512,25 +534,91 @@ def _fix_lines(analysis: ClusterAnalysis) -> list[str]:
 # --- краткий разбор для терминала -------------------------------------------
 
 
+def _muted_note(counts: dict[str, Any]) -> str:
+    muted = counts.get("muted_failures", 0)
+    if not muted:
+        return ""
+    noun = _plural(muted, "отключённый muted-тест", "отключённых muted-теста", "отключённых muted-тестов")
+    return f" (ещё {muted} {noun} не учитываем)"
+
+
+def _brief_header(
+    run: dict[str, Any],
+    groups: list[tuple[str, str, list[_Problem]]],
+) -> list[str]:
+    """Шапка краткого разбора: полоска прошедших тестов, счётчики без нулей и обзор разделов."""
+    counts = run["counts"]
+    title = f"## Разбор прогона #{run['launch_id']}"
+    if run.get("launch_name"):
+        title += f" — {run['launch_name']}"
+    total = counts["total"]
+    failed = counts["failed"] + counts["broken"]
+    parts = [f"прошло {counts['passed']}", f"упало {failed}"]
+    if counts["broken"]:
+        parts[-1] += f" (из них broken {counts['broken']})"
+    if counts["skipped"]:
+        parts.append(f"пропущено {counts['skipped']}")
+    if counts.get("unknown"):
+        parts.append(f"статус не определён {counts['unknown']}")
+    stats = f"{total} {_plural(total, 'тест', 'теста', 'тестов')}: " + ", ".join(parts)
+    lines = [title, "", f"{_pass_bar(counts['passed'], total)} {stats}" if total else stats]
+    problems = len(run["clusters"])
+    if problems:
+        active = counts["active_failures"]
+        scope = (
+            f"{active} {_plural(active, 'упавший тест', 'упавших теста', 'упавших тестов')}"
+            f" -> {problems} {_plural(problems, 'проблема', 'проблемы', 'проблем')}"
+        )
+        lines.append(scope + _muted_note(counts) + ":")
+        width = max(len(name) for _, name in BRIEF_SECTIONS.values()) + 4
+        for bucket, _, group in groups:
+            icon, name = BRIEF_SECTIONS[bucket]
+            size = sum(p.size for p in group)
+            lines.append(
+                f"   {icon} {name} {'.' * (width - len(name))} {len(group)} "
+                f"({size} {_plural(size, 'тест', 'теста', 'тестов')})"
+            )
+    lines.append(f"TestOps: {run['launch_url']}")
+    return lines + _brief_lines(run.get("warnings", []), "(!) ", "предупреждений")
+
+
+def _pass_bar(passed: int, total: int) -> str:
+    """«[####------]»: доля прошедших тестов.
+
+    Пустая — только если не прошёл ни один, полная — только если не упал ни один.
+    """
+    cells = round(BRIEF_BAR_CELLS * passed / total)
+    if passed and not cells:
+        cells = 1
+    if passed < total and cells == BRIEF_BAR_CELLS:
+        cells -= 1
+    return "[" + "#" * cells + "-" * (BRIEF_BAR_CELLS - cells) + "]"
+
+
 def _brief_section(
+    bucket: str,
     title: str,
     group: list[_Problem],
     tests: _Tests,
     not_proposed: dict[str, str],
 ) -> list[str]:
-    lines = [f"### {title} ({len(group)})"]
+    icon, _ = BRIEF_SECTIONS[bucket]
+    lines = [f"### {icon} {title} ({len(group)})"]
     for problem in group[:MAX_BRIEF_ITEMS]:
-        lines += _brief_item(problem, tests, not_proposed)
+        lines += ["", *_brief_item(problem, tests, not_proposed)]
     rest = group[MAX_BRIEF_ITEMS:]
     if rest:
         # Без номеров: голый список номеров ничего не говорит, а при тысячах проблем
         # рос бы с каждым next. Сколько их и где смотреть — достаточно.
         count = sum(p.size for p in rest)
-        lines.append(
-            f"- … и ещё {len(rest)} {_plural(len(rest), 'проблема', 'проблемы', 'проблем')} "
-            f"({count} {_plural(count, 'тест', 'теста', 'тестов')}) — "
-            f"полный список в report.md, раздел «{title}»"
-        )
+        lines += [
+            "",
+            (
+                f"- … и ещё {len(rest)} {_plural(len(rest), 'проблема', 'проблемы', 'проблем')} "
+                f"({count} {_plural(count, 'тест', 'теста', 'тестов')}) — "
+                f"полный список в report.md, раздел «{title}»"
+            ),
+        ]
     return lines
 
 
@@ -544,45 +632,54 @@ def _brief_lines(items: list[str], prefix: str, what: str) -> list[str]:
 
 
 def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> list[str]:
-    """Проблема в терминале: что случилось, что думает агент, что делать.
+    """Проблема в терминале — блок: «Проблема N · размер · [метки]», что случилось и строки
+    с подписями в колонку: что думает агент, что делать, пример теста.
 
     Для правки вместо «что делать» — где она и в каком состоянии, плюс «Проверьте»,
     если есть; для «править вручную» — ещё и почему агент не правил сам.
     """
     analysis = problem.analysis
-    head = f"- **Проблема {problem.number}** · {_size_with_example(problem, tests)}"
-    tags = "".join(f" · {tag}" for tag in _brief_tags(problem))
+    size = f"{problem.size} {_plural(problem.size, 'тест', 'теста', 'тестов')}"
+    tags = "".join(f" · [{tag}]" for tag in _brief_tags(problem))
+    lines = [f"**Проблема {problem.number}** · {size}{tags}"]
     if problem.flagged:
-        return [f"{head} — причина не ясна: разбор не прошёл проверку формата, текст — в report.md{tags}"]
+        text = f"[{problem.tag}] разбор не прошёл проверку формата, текст — в report.md"
+        lines.append(_brief_field("Агент считает:", text))
+        return lines + _brief_example(problem, tests)
     what = analysis.what_first_sentence()
-    lines = [(f"{head} — {_truncate(what, BRIEF_TEXT_CHARS)}" if what else head) + tags]
-    lines.append(f"  Агент считает: {_opinion(problem, _reason(problem), BRIEF_CAUSE_CHARS)}")
+    if what:
+        lines.append(_truncate(what, BRIEF_TEXT_CHARS))
+    reason = _truncate(_one_line(_reason(problem)), BRIEF_CAUSE_CHARS) or problem.label
+    lines.append(_brief_field("Агент считает:", f"[{problem.tag}] {reason}"))
     proposal = problem.proposal
     if problem.bucket == AGENT and proposal is not None:
         status = "уже применено" if problem.applied else "ждёт вашего «да»"
-        lines.append(f"  Правка: `{proposal.location}` ({status})")
+        lines.append(_brief_field("Правка:", f"`{proposal.location}` — {status}"))
         lines += [
-            f"  Проверьте: {_truncate(warning, BRIEF_WARNING_CHARS)}"
+            _brief_field("Проверьте:", _truncate(warning, BRIEF_WARNING_CHARS))
             for warning in weakening_warnings(proposal.before, proposal.after)[:1]
         ]
-        return lines
+        return lines + _brief_example(problem, tests)
     step = analysis.first_fix_step()
     if step:
-        lines.append(f"  Что делать: {_truncate(step, BRIEF_STEP_CHARS)}")
+        lines.append(_brief_field("Что делать:", _truncate(step, BRIEF_STEP_CHARS)))
     if problem.bucket == MANUAL:
         reason = _truncate(_one_line(_not_fixed_reason(problem, not_proposed)), BRIEF_REASON_CHARS)
-        lines.append(f"  Почему агент не правил сам: {reason}")
-    return lines
+        lines.append(_brief_field("Почему не сам:", reason))
+    return lines + _brief_example(problem, tests)
 
 
-def _size_with_example(problem: _Problem, tests: _Tests) -> str:
-    """«5 тестов, напр. OrderTest.create»: масштаб проблемы и один узнаваемый тест."""
-    size = f"{problem.size} {_plural(problem.size, 'тест', 'теста', 'тестов')}"
+def _brief_field(label: str, text: str) -> str:
+    return f"   {label:<{BRIEF_LABEL_WIDTH}}{text}"
+
+
+def _brief_example(problem: _Problem, tests: _Tests) -> list[str]:
+    """Один узнаваемый тест проблемы: «Например:» или «Тест:», если он единственный."""
     members = tests.of_cluster(problem.entry)
     if not members:
-        return size
+        return []
     name = _truncate(_one_line(str(members[0].get("name") or members[0]["test_result_id"])), BRIEF_TEST_NAME_CHARS)
-    return f"{size}, напр. {name}"
+    return [_brief_field("Например:" if problem.size > 1 else "Тест:", name)]
 
 
 def _reason(problem: _Problem) -> str:
@@ -593,11 +690,9 @@ def _reason(problem: _Problem) -> str:
     return problem.analysis.cause_reason
 
 
-def _opinion(problem: _Problem, reason: str, limit: int | None = None) -> str:
-    """Что агент думает о причине: категория и обоснование (``limit`` режет только обоснование)."""
+def _opinion(problem: _Problem, reason: str) -> str:
+    """Что агент думает о причине: категория и обоснование."""
     text = _one_line(reason)
-    if limit:
-        text = _truncate(text, limit)
     return f"{problem.label} — {text}" if text else problem.label
 
 
@@ -648,8 +743,8 @@ def _brief_tags(problem: _Problem) -> list[str]:
     if history:
         launches = history["launches"]
         tags.append(
-            f"повторяется (уже была в {launches} "
-            f"{_plural(launches, 'другом прогоне', 'других прогонах', 'других прогонах')})"
+            f"повторяется: уже была в {launches} "
+            f"{_plural(launches, 'другом прогоне', 'других прогонах', 'других прогонах')}"
         )
     if not problem.flagged and problem.analysis.kb_ref:
         tags.append(f"известная проблема: {problem.analysis.kb_ref}")

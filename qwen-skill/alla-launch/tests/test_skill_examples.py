@@ -184,7 +184,7 @@ def test_mixed_group_is_flagged_and_gets_no_common_fix(
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: done") and "apply 1" not in out
     brief = out.split("===ОТЧЁТ===\n", 1)[1].split("\n===КОНЕЦ===", 1)[0]
-    assert "### Требуют вашего внимания (1)" in brief
+    assert "### 🔴 Требуют вашего внимания (1)" in brief
     assert "в группе, похоже, несколько проблем" in brief
     report = (run_dir / "report.md").read_text(encoding="utf-8")
     assert f"- В группе, похоже, несколько проблем: {detail}" in report

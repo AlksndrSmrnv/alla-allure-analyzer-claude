@@ -156,22 +156,22 @@ def test_full_flow_until_done(project: Path, testops: FakeTestOps, capsys) -> No
     assert "Разбор прогона #777 — Regression nightly" in brief
     assert "Главная — NPE в OrderService." in brief
     # В терминале — кратко: у каждой проблемы что случилось, что думает агент и что делать.
-    assert "- **Проблема 1** · 2 теста, напр. " in brief
-    assert "Агент считает: возможная ошибка приложения" in brief
-    assert "Агент считает: проблема стенда или окружения" in brief
-    assert "Агент считает: причина не ясна" in brief
-    assert "  Что делать: Добавить проверку customer в OrderService.create." in brief
-    assert "### Требуют вашего внимания (2)" in brief
+    assert "**Проблема 1** · 2 теста\n" in brief
+    assert "Агент считает: [ПРИЛОЖЕНИЕ]" in brief
+    assert "Агент считает: [СТЕНД]" in brief
+    assert "Агент считает: [НЕ ЯСНО]" in brief
+    assert "   Что делать:    Добавить проверку customer в OrderService.create." in brief
+    assert "### 🔴 Требуют вашего внимания (2)" in brief
     assert brief.index("Требуют вашего внимания (2)") < brief.index("Стенд и тестовые данные (1)")
-    assert brief.index("возможная ошибка приложения") < brief.index("причина не ясна")
+    assert brief.index("[ПРИЛОЖЕНИЕ]") < brief.index("[НЕ ЯСНО]")
     assert "По категориям" not in brief and "[приложение]" not in brief
     assert "testresult" not in brief and "### Что делать" not in brief  # подробности — в файле
     # И ссылка на файл с полным разбором (кликабельная и обычный путь).
     link = (run_dir / "report.md").absolute()
     assert f"[report.md]({link.as_uri()})" in brief and brief.rstrip().endswith(f"Файл: {link}")
     report = _full_report(run_dir)
-    # Шапка и «Коротко» в файле те же; ниже файл содержит тексты целиком и все тесты.
-    assert report.startswith(brief.split("\n\n### Требуют вашего внимания", 1)[0])
+    # «Коротко» в файле тот же; ниже файл содержит тексты целиком и все тесты.
+    assert "### Коротко\nУпало 4 теста, выявлено 3 проблемы. Главная — NPE в OrderService." in report
     assert "### Что делать" not in report and "## Подробности по проблемам" in report
     assert "- Агент считает: возможная ошибка приложения — " in report
     assert "[silent](https://testops.example/launch/777/testresult/108)" in report
@@ -212,7 +212,7 @@ def test_fix_loop_counts_distinct_attempts(project: Path, testops: FakeTestOps, 
     (run_dir / "summary.md").write_text("Итог.", encoding="utf-8")
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: done")
-    assert "причина не ясна: разбор не прошёл проверку формата, текст — в report.md" in out
+    assert "[ФОРМАТ НАРУШЕН] разбор не прошёл проверку формата, текст — в report.md" in out
     report = _full_report(run_dir)
     assert "Разбор не прошёл проверку формата, его текст — в подробностях ниже." in report
     assert "ПРИЧИНА: баг\nсовсем без формата" in report
@@ -300,11 +300,11 @@ def test_test_cluster_gets_fix_proposal_and_apply(project: Path, testops: FakeTe
 
     proposal.write_text(PROPOSAL, encoding="utf-8")
     out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
-    assert "### Агент может поправить сам (1)" in out
+    assert "### 🟢 Агент может поправить сам (1)" in out
     assert (
-        "  Агент считает: ошибка в автотесте — API создания заказа по контракту возвращает "
+        "   Агент считает: [АВТОТЕСТ] API создания заказа по контракту возвращает "
         "201 Created\n"
-        "  Правка: `src/test/java/ru/company/orders/OrderTest.java:6` (ждёт вашего «да»)" in out
+        "   Правка:        `src/test/java/ru/company/orders/OrderTest.java:6` — ждёт вашего «да»" in out
     )
     assert "apply 01 --run" in out and "--yes" in out
     report = _full_report(run_dir)
@@ -330,7 +330,7 @@ def test_test_cluster_gets_fix_proposal_and_apply(project: Path, testops: FakeTe
     assert "assertEquals(201" in test_file.read_text(encoding="utf-8")
     assert (run_dir / "proposals" / f"{order}.applied.json").is_file()
     assert (run_dir / "proposals" / f"{order}.orig").is_file()
-    assert "(уже применено)" in _next(run_dir, capsys)
+    assert "— уже применено" in _next(run_dir, capsys)
     assert "- Статус: уже применено" in _full_report(run_dir)
 
     code, out = _run(["apply", "1", "--run", str(run_dir), "--yes", "--diff", diff_hash], capsys)
@@ -339,7 +339,7 @@ def test_test_cluster_gets_fix_proposal_and_apply(project: Path, testops: FakeTe
     code, out = _run(["revert", "1", "--run", str(run_dir)], capsys)
     assert code == 0 and out.startswith("STATUS: reverted")
     assert "assertEquals(200" in test_file.read_text(encoding="utf-8")
-    assert "(уже применено)" not in _next(run_dir, capsys)
+    assert "— уже применено" not in _next(run_dir, capsys)
     assert "- Статус: уже применено" not in _full_report(run_dir)
     code, out = _run(["revert", "1", "--run", str(run_dir)], capsys)
     assert code == 1 and out.startswith("STATUS: error") and "откатывать нечего" in out
@@ -362,7 +362,7 @@ def test_report_says_why_agent_declined_to_fix(project: Path, testops: FakeTestO
         "РЕШЕНИЕ: не трогать\nПОЧЕМУ: ожидаемый код задан в общем контракте\n", encoding="utf-8"
     )
     out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
-    assert "### Автотест сломан, но править вручную (1)" in out
+    assert "### 🟡 Автотест сломан, но править вручную (1)" in out
     assert "### Агент может поправить сам" not in out and "apply 01" not in out
     assert (
         "- Почему агент не правил сам: агент решил не трогать код: ожидаемый код задан"
@@ -395,7 +395,7 @@ def test_report_says_when_proposal_limit_is_reached(
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: analyze")  # правку не предлагали — сразу к следующему
     out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
-    assert "### Автотест сломан, но править вручную (1)" in out
+    assert "### 🟡 Автотест сломан, но править вручную (1)" in out
     assert (
         "- Почему агент не правил сам: лимит — не больше 0 предложений правок"
         in _full_report(run_dir)
@@ -468,7 +468,7 @@ def test_feedback_is_remembered_and_recognized_next_launch(
         order: VALID_ANALYSIS + f"БАЗА ЗНАНИЙ: {entry_id}\n", login: MARKDOWN_ANALYSIS,
     })
     assert f"известная проблема: {entry_id}" in out
-    assert "повторяется (уже была в 1 другом прогоне)" in out
+    assert "[повторяется: уже была в 1 другом прогоне]" in out
     report2 = _full_report(run_dir2)
     assert f"- Известная проблема: {entry_id}" in report2
     assert "- Повторяется: уже была в 1 другом прогоне, впервые" in report2
