@@ -79,6 +79,8 @@ def test_merged_cluster_shows_both_server_errors_and_needs_consistency(
     assert [example["role"] for example in entry["examples"]] == ["typical", "different"]
     task = (run_dir / "clusters" / "01.md").read_text(encoding="utf-8")
     assert "Примеров в данных: 2 (типичный, наиболее отличающийся)" in task
+    # E08: сводка писала «логи остальных тестов не сохранились» — они просто не в задании.
+    assert "Данные остальных тестов группы в задание не вошли (в TestOps они есть)" in task
     assert "### Пример 1 — типичный · тест " in task and "### Пример 2 — наиболее отличающийся" in task
     assert 'Cannot invoke "Discount.percent()"' in task and "HikariPool-1" in task
     assert "Сообщение об ошибке — такое же, как в примере 1." in task
