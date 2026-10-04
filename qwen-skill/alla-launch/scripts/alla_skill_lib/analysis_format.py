@@ -91,10 +91,12 @@ _OBSERVATION_RE = re.compile(
     r"^\s*(?:[-*•]|\d+[.)])?\s*[*_]*\[?\s*(?P<id>S\d+)\s*\]?[*_]*\s*[:—–-]?\s*(?P<rest>.*)$",
     re.IGNORECASE,
 )
-# Пояснение после цитаты: закрывающая кавычка, затем « — », « – » или « - ».
-_COMMENT_AFTER_RE = re.compile(r"\s+[—–-]\s")
-_OPEN_QUOTES = "«\"“„'`‘"
-_CLOSE_QUOTES = "»\"”'`’“"
+# После закрывающей кавычки цитаты — конец строки или пояснение: « — …», « (…)».
+_AFTER_QUOTE_RE = re.compile(r"\s*$|\s+[—–(-]")
+# Открывающая кавычка → закрывающая. Парные (« », “ ”) вкладываются друг в друга;
+# одинаковые с двух сторон (" ' `) внутри цитаты встречаются чётное число раз.
+_QUOTE_PAIRS = {"«": "»", "“": "”", "„": "“", "‘": "’", '"': '"', "'": "'", "`": "`"}
+_OPEN_QUOTES = "".join(_QUOTE_PAIRS)
 _NOTHING_MISSING = {"нет", "-", "—", "ничего", "всего хватает"}
 _HEADER_NAMES = "|".join(sorted(_SECTIONS, key=len, reverse=True))
 # Оформление и нумерация перед именем раздела («### », «- **», «1. **»), затем
@@ -127,6 +129,7 @@ MAX_CHECKED_FILE_BYTES = 5_000_000
 COMPACT_CAUSE_CHARS = 240
 COMPACT_WHAT_CHARS = 160
 COMPACT_STEP_CHARS = 160
+COMPACT_MISSING_CHARS = 160
 UNCONFIRMED_NOTE = "причина не подтверждена логом"
 
 
@@ -188,8 +191,8 @@ class ClusterAnalysis:
     def compact(self) -> str:
         """Сжатый разбор для задания на общий анализ.
 
-        Причина с категорией, первое предложение «что сломалось» и первый шаг
-        исправления — из них сводка собирает ключевые проблемы и приоритетные
+        Причина с категорией, первое предложение «что сломалось», чего не хватает и
+        первый шаг исправления — из них сводка собирает ключевые проблемы и приоритетные
         исправления, не тратя контекст на полные разборы. Каждое поле
         обрезано: длинная причина одного кластера не должна вытеснять остальные.
         """
@@ -198,6 +201,9 @@ class ClusterAnalysis:
         what = _clip(self.what_first_sentence(), COMPACT_WHAT_CHARS)
         if what:
             lines.append(f"ЧТО СЛОМАЛОСЬ: {what}")
+        missing = _clip(self.missing_text, COMPACT_MISSING_CHARS)
+        if missing:  # чего не хватает — сводка не должна выдавать причину за установленную
+            lines.append(f"НЕ ХВАТАЕТ: {missing}")
         step = _clip(self.first_fix_step(), COMPACT_STEP_CHARS)
         if step:
             lines.append(f"ПЕРВЫЙ ШАГ ИСПРАВЛЕНИЯ: {step}")
@@ -271,15 +277,37 @@ def parse_observation(line: str) -> Observation | None:
     rest = match.group("rest").strip()
     if not rest or rest[0] not in _OPEN_QUOTES:
         return None
-    closes = [index for index, char in enumerate(rest) if index and char in _CLOSE_QUOTES]
-    if not closes:
+    end = _closing_quote(rest)
+    if end is None:
         return None
-    # Цитата кончается кавычкой перед « — пояснение» (в пояснении тоже бывают кавычки и
-    # `код`), а без пояснения — последней кавычкой строки.
-    end = next((index for index in closes if _COMMENT_AFTER_RE.match(rest, index + 1)),
-               closes[-1])
     quote = rest[1:end].strip()
     return Observation(match.group("id").upper(), quote) if quote else None
+
+
+def _closing_quote(text: str) -> int | None:
+    """Позиция кавычки, закрывающей цитату, которая открыта первым символом ``text``.
+
+    Кавычки внутри цитаты (``«key "id"»``) и в пояснении после неё
+    (``«…» (поле «customer»)``, ``«…» — в `createOrder```) границу не сдвигают:
+    закрывающая — парная открывающей и стоит перед концом строки или пояснением.
+    """
+    opening, closing = text[0], _QUOTE_PAIRS[text[0]]
+    candidates: list[int] = []
+    depth = 0
+    for index in range(1, len(text)):
+        char = text[index]
+        if opening != closing and char == opening:
+            depth += 1
+        elif char == closing:
+            if opening != closing and depth:
+                depth -= 1
+                continue
+            inner = text[1:index].count(closing) if opening == closing else 0
+            if inner % 2 == 0 and _AFTER_QUOTE_RE.match(text, index + 1):
+                return index
+            candidates.append(index)
+    # Пары не сошлись (кавычки разного вида, обрыв) — последняя подходящая кавычка.
+    return candidates[-1] if candidates else None
 
 
 def _match_header(
@@ -377,8 +405,9 @@ def validate_analysis(
 
     ``task_format`` — формат задания кластера (1 — папки до наблюдений). С 2
     нужны наблюдения с цитатами, найденными в своём источнике из ``sources``
-    (реестр кластера; ``None`` — реестра нет, цитаты не сверяются), а при
-    категории «неизвестно» — содержательный «НЕ ХВАТАЕТ».
+    (реестр кластера; ``None`` — реестр не найден или повреждён: наблюдения с ним
+    не проверить, это ошибка), а при категории «неизвестно» — содержательный
+    «НЕ ХВАТАЕТ».
     """
     errors: list[str] = []
     if not analysis.what:
@@ -409,6 +438,11 @@ MIN_QUOTE_CHARS = 8  # значимых символов (буквы и цифр
 _ELLIPSIS_RE = re.compile(r"…|\.{3,}")
 _QUOTE_NORMALIZE = str.maketrans({char: '"' for char in "«»“”„‘’`'"})
 OBSERVATION_LINE = "«- [S3] «дословная цитата»»"
+REGISTRY_MISSING = (
+    "реестр источников этого кластера (evidence/NN.sources.json) не найден или повреждён — "
+    "цитаты нельзя проверить. Разбор не меняй: это неполадка скилла, сообщи о ней в блоке "
+    "«Проблемы скилла»"
+)
 
 
 def normalize_quote_text(text: str) -> str:
@@ -462,6 +496,8 @@ def observation_errors(
             "проверка различит версии причины"
         )
     if sources is None:
+        if analysis.observations:
+            errors.append(REGISTRY_MISSING)
         return errors
     known = ", ".join(sorted(sources, key=lambda key: int(key[1:]) if key[1:].isdigit() else 0))
     for observation in analysis.observations:

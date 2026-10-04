@@ -64,7 +64,12 @@ def load_registry(path: Path) -> Registry | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict) or not all(
+        isinstance(key, str) and isinstance(record, dict) and isinstance(record.get("text"), str)
+        for key, record in data.items()
+    ):
+        return None
+    return data
 
 
 def describe(record: dict[str, Any]) -> str:

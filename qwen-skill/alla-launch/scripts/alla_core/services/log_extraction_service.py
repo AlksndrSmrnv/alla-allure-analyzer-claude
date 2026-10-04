@@ -7,6 +7,7 @@
 
 import asyncio
 import logging
+from collections import Counter
 import os
 import re
 from collections.abc import Sequence
@@ -392,6 +393,11 @@ def _apply_status_details_correlation_fallback(
     return fallback
 
 
+def _attachment_label(att: AttachmentMeta) -> str:
+    """Имя вложения для заголовка секции: одной строкой."""
+    return (att.name or f"attachment-{att.id}").replace("\n", " ").replace("\r", " ").strip()
+
+
 class LogExtractionConfig:
     """Параметры извлечения логов из аттачментов."""
 
@@ -616,6 +622,7 @@ class LogExtractionService:
                 att for att in all_attachments
                 if att not in details_atts and self._is_processable_attachment(att)
             ]
+            name_counts = Counter(_attachment_label(att) for att in processable)
             if not processable:
                 summary.correlation_hint = _apply_status_details_correlation_fallback(
                     summary,
@@ -647,7 +654,11 @@ class LogExtractionService:
                         )
                         continue
 
-                att_name = (att.name or f"attachment-{att.id}").replace("\n", " ").replace("\r", " ").strip()
+                att_name = _attachment_label(att)
+                if name_counts[att_name] > 1:
+                    # Одинаковые имена (два app.log): заголовок секции и происхождение
+                    # фрагмента должны указывать на своё вложение.
+                    att_name = f"{att_name} #{att.id}"
                 fallback_mime = (att.type or att.content_type or "").lower()
                 detected_type = _detect_content_type(content_bytes, fallback_mime=fallback_mime)
 

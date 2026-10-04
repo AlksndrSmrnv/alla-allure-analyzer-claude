@@ -78,9 +78,32 @@ def test_legacy_format_needs_no_observations() -> None:
     assert "НАБЛЮДЕНИЯ" in EXPECTED_FORMAT and "НАБЛЮДЕНИЯ" not in LEGACY_EXPECTED_FORMAT
 
 
-def test_missing_registry_checks_only_the_structure() -> None:
-    analysis = parse_analysis(HEAD + "НАБЛЮДЕНИЯ:\n- [S7] «anything at all here»\n" + TAIL)
-    assert validate_analysis(analysis, Path("."), task_format=2, sources=None) == []
+def test_missing_registry_rejects_observations_of_the_new_format() -> None:
+    analysis = parse_analysis(HEAD + "НАБЛЮДЕНИЯ:\n- [S999] «anything at all here»\n" + TAIL)
+    errors = validate_analysis(analysis, Path("."), task_format=2, sources=None)
+    assert any("реестр источников этого кластера" in error and "Проблемы скилла" in error
+               for error in errors)
+
+
+@pytest.mark.parametrize("content", [None, "{не json", "[]", '{"S1": "текст"}',
+                                     '{"S1": {"kind": "message"}}'])
+def test_next_and_verify_reject_quotes_when_the_registry_is_broken(
+    content: str | None, project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order = run["clusters"][0]["file_id"]
+    registry = run_dir / "evidence" / f"{order}.sources.json"
+    if content is None:
+        registry.unlink()
+    else:
+        registry.write_text(content, encoding="utf-8")
+    fake = VALID_ANALYSIS.replace("- [S3] «java.lang", "- [S999] «java.lang")
+    (run_dir / "analyses" / f"{order}.md").write_text(fake, encoding="utf-8")
+
+    out = _next(run_dir, capsys)
+    assert out.startswith("STATUS: fix") and "реестр источников этого кластера" in out
+    _code, verify = _run(["verify", order, "--run", str(run_dir)], capsys)
+    assert verify.startswith("STATUS: fix")
 
 
 def test_quote_parts_must_follow_in_order() -> None:
@@ -209,6 +232,12 @@ def test_legacy_run_report_has_no_observations(
      "constraint «uk_profile_email» violated"),
     ("- **[S3]** «customer is null»", "customer is null"),
     ("- [S3] «error: x — y» — пояснение", "error: x — y"),
+    ('- [S3] «key "id" — missing required value»', 'key "id" — missing required value'),
+    ("- [S3] «customer is null» (поле «customer» отсутствует)", "customer is null"),
+    ('- [S3] "key "id" — missing required value"', 'key "id" — missing required value'),
+    ('- [S3] "key "id" — missing" — note "x"', 'key "id" — missing'),
+    ("- [S2] `at a.B.c` — проверка в `createOrder`", "at a.B.c"),
+    ("- [S1] 'can't connect' - see log", "can't connect"),
 ])
 def test_comment_after_the_quote_is_not_part_of_it(line: str, quote: str) -> None:
     observation, = parse_analysis(HEAD + "НАБЛЮДЕНИЯ:\n" + line + "\n" + TAIL).observations
@@ -239,3 +268,21 @@ def test_verify_names_the_cluster_task_and_remember_lists_the_reasons(
     _code, out = _run(["remember", order, "--run", str(run_dir), "--from-analysis"], capsys)
     assert "цитаты «pool exhausted somewhere» нет в S3" in out
     assert "analyses/NN.md не переписывай: спроси пользователя причину и рецепт" in out
+
+
+def test_what_is_missing_reaches_the_summary_and_refreshes_it(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_dir, _brief, summary_task = _done(project, capsys)
+    assert "НЕ ХВАТАЕТ: лога auth-service за время теста." in summary_task
+    assert "НЕ ХВАТАЕТ: нет" not in summary_task
+
+    run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]][1]
+    path = run_dir / "analyses" / f"{login}.md"
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        "лога auth-service за время теста.", "адреса auth-service в конфигурации тестов."),
+        encoding="utf-8")
+    # Поменялось только «НЕ ХВАТАЕТ» — сводка устарела и запрашивается заново.
+    assert _next(run_dir, capsys).startswith("STATUS: summary")
+    assert "адреса auth-service в конфигурации" in (run_dir / "summary_task.md").read_text("utf-8")

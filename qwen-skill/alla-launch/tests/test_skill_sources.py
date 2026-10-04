@@ -115,3 +115,33 @@ def test_prepare_writes_a_registry_per_cluster(
     assert [record["kind"] for record in login_records.values()] == ["message", "trace"]
     auto = next(entry["file_id"] for entry in run["clusters"] if entry["auto"])
     assert not (run_dir / "evidence" / f"{auto}.sources.json").exists()
+
+
+def test_same_named_attachments_keep_their_own_ids() -> None:
+    import asyncio
+
+    from alla_core.models.testops import AttachmentMeta
+    from alla_core.services.log_extraction_service import LogExtractionConfig, LogExtractionService
+
+    logs = {100: "2026-09-01 10:00:01 [ERROR] first service failed\n",
+            101: "2026-09-01 10:00:02 [ERROR] second service failed\n"}
+
+    class Provider:
+        async def get_attachments_for_test_result(self, _test_id: int) -> list[AttachmentMeta]:
+            return [AttachmentMeta(id=key, name="app.log", type="text/plain") for key in logs]
+
+        async def get_attachment_content(self, attachment_id: int) -> bytes:
+            return logs[attachment_id].encode()
+
+    member = FailedTestSummary(test_result_id=2, name="member", status="failed")
+    asyncio.run(LogExtractionService(Provider(), LogExtractionConfig()).enrich_with_logs([member]))
+    assert member.log_snippet is not None
+    assert "--- [файл: app.log #100] ---" in member.log_snippet
+    assert "--- [файл: app.log #101] ---" in member.log_snippet
+
+    prompt = build_cluster_analysis_prompt(_cluster(None), member.log_snippet, source_ids=True,
+                                           normalize_evidence=False, log_test="member")
+    records = registry(prompt.sources, None, member)
+    by_text = {record["text"].split("] ", 1)[1]: record["attachment_id"]
+               for record in records.values()}
+    assert by_text == {"first service failed": 100, "second service failed": 101}
