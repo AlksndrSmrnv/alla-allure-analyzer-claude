@@ -80,5 +80,5 @@ def test_done_does_not_offer_apply_again_for_an_ordinary_applied_file(
                           "--yes", "--diff", digest], capsys)
     assert code == 0 and applied.startswith("STATUS: applied")
     done = _next(run_dir, capsys)
-    assert "(уже применено)" in done
+    assert "— уже применено" in done
     assert f"apply {order} --run" not in done

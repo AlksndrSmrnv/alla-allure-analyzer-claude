@@ -425,10 +425,10 @@ def test_unknown_fix_state_is_reported_and_blocks_reapply(project: Path, testops
     edited = test_file.read_text(encoding="utf-8").replace("assertEquals(201", "assertEquals(202")
     test_file.write_text(edited, encoding="utf-8")
     out = _next(run_dir, capsys)
-    assert "(уже применено)" not in out
+    assert "уже применено" not in out
     # Отчёт не обещает правку, которую apply откажется применять, и модели её не предлагает.
     assert "ждёт вашего «да»" not in out and "### Агент может поправить сам" not in out
-    assert "### Автотест сломан, но править вручную (1)" in out
+    assert "### 🟡 Автотест сломан, но править вручную (1)" in out
     assert "Правка автотеста для проблемы" not in out
     report = (run_dir / "report.md").read_text(encoding="utf-8")
     assert "стоит ли она, неизвестно" in report and "ждёт вашего «да»" not in report

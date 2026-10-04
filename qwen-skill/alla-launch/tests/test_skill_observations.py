@@ -201,7 +201,7 @@ def test_report_separates_observations_from_the_presumed_cause(
     assert "(причина не подтверждена логом)" in summary_task
     # В терминале — одна короткая метка, без цитат.
     login_line = next(line for line in brief.splitlines() if "не подтверждено логом" in line)
-    assert login_line.startswith("- **Проблема ")
+    assert login_line.startswith("**Проблема ") and login_line.endswith("[не подтверждено логом]")
     assert brief.count("не подтверждено логом") == 1
     assert "Наблюдения" not in brief and "«java.lang.NullPointerException" not in brief
 
