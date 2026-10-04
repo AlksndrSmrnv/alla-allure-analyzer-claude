@@ -125,6 +125,7 @@ MAX_CHECKED_FILE_BYTES = 5_000_000
 COMPACT_CAUSE_CHARS = 240
 COMPACT_WHAT_CHARS = 160
 COMPACT_STEP_CHARS = 160
+UNCONFIRMED_NOTE = "причина не подтверждена логом"
 
 
 @dataclass(frozen=True)
@@ -159,6 +160,18 @@ class ClusterAnalysis:
     sources: dict[str, dict[str, Any]] | None = None
 
     @property
+    def unconfirmed_by_log(self) -> bool:
+        """Причина вне теста опирается только на сообщение и трейс теста, без лога.
+
+        Для категорий «приложение», «окружение», «данные» разбора нового формата
+        (есть реестр источников): ни одна цитата не из лога.
+        """
+        if self.sources is None or self.category in (None, "тест", "неизвестно"):
+            return False
+        kinds = {str(self.sources.get(item.source_id, {}).get("kind")) for item in self.observations}
+        return bool(kinds) and kinds <= {"message", "trace"}
+
+    @property
     def missing_text(self) -> str:
         """«НЕ ХВАТАЕТ» по существу; «нет» и пусто — пустая строка."""
         text = _one_line(self.missing)
@@ -178,7 +191,8 @@ class ClusterAnalysis:
         исправления, не тратя контекст на полные разборы. Каждое поле
         обрезано: длинная причина одного кластера не должна вытеснять остальные.
         """
-        lines = [f"ПРИЧИНА: {_clip(_one_line(self.cause), COMPACT_CAUSE_CHARS)}"]
+        lines = [f"ПРИЧИНА: {_clip(_one_line(self.cause), COMPACT_CAUSE_CHARS)}"
+                 + (f" ({UNCONFIRMED_NOTE})" if self.unconfirmed_by_log else "")]
         what = _clip(self.what_first_sentence(), COMPACT_WHAT_CHARS)
         if what:
             lines.append(f"ЧТО СЛОМАЛОСЬ: {what}")

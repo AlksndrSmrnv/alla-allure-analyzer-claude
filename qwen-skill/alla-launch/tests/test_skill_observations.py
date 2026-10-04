@@ -140,3 +140,61 @@ def test_registry_is_what_the_task_shows(
     for record in sources.values():
         assert record["text"] in task
     assert "НАБЛЮДЕНИЯ:" in task and "НЕ ХВАТАЕТ:" in task
+
+
+def _done(project: Path, capsys: pytest.CaptureFixture[str]) -> tuple[Path, str, str]:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    login_text = MARKDOWN_ANALYSIS.replace(
+        "**Как исправить:**",
+        "НЕ ХВАТАЕТ: лога auth-service за время теста.\n\n**Как исправить:**")
+    for file_id, text in ((order, VALID_ANALYSIS), (login, login_text)):
+        (run_dir / "analyses" / f"{file_id}.md").write_text(text, encoding="utf-8")
+    assert _next(run_dir, capsys).startswith("STATUS: summary")
+    summary_task = (run_dir / "summary_task.md").read_text(encoding="utf-8")
+    (run_dir / "summary.md").write_text("Итог прогона.", encoding="utf-8")
+    out = _next(run_dir, capsys)
+    assert out.startswith("STATUS: done")
+    brief = out.split("===ОТЧЁТ===\n", 1)[1].split("\n===КОНЕЦ===", 1)[0]
+    return run_dir, brief, summary_task
+
+
+def test_report_separates_observations_from_the_presumed_cause(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_dir, brief, summary_task = _done(project, capsys)
+    report = (run_dir / "report.md").read_text(encoding="utf-8")
+
+    # Цитаты — с понятным источником: тест, вложение, строки.
+    assert "- Наблюдения:\n   - «java.lang.NullPointerException: customer is null» — лог app.log, " \
+           "строки 2–4, тест createOrder" in report
+    assert "   - «expected: <200> but was: <500>» — сообщение об ошибке, тест createOrder" in report
+    assert "- **Наблюдения:**" in report and "- **Не хватает:** лога auth-service" in report
+    assert "- Не хватает: лога auth-service за время теста." in report
+    assert "Не хватает: нет" not in report  # «нет» не показывается
+    # «окружение» только по сообщению теста — пометка; у ошибки приложения есть цитата из лога.
+    assert "не принимает соединения. (причина не подтверждена логом)" in report
+    assert report.count("(причина не подтверждена логом)") == 2  # раздел и подробности
+    assert "(причина не подтверждена логом)" in summary_task
+    # В терминале — одна короткая метка, без цитат.
+    login_line = next(line for line in brief.splitlines() if "не подтверждено логом" in line)
+    assert login_line.startswith("- **Проблема ")
+    assert brief.count("не подтверждено логом") == 1
+    assert "Наблюдения" not in brief and "«java.lang.NullPointerException" not in brief
+
+
+def test_legacy_run_report_has_no_observations(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from alla_skill_lib import workspace
+    from eval.legacy import restore_legacy_run
+
+    run_dir = restore_legacy_run(project, workspace.SKILL_DIR, workspace.ENTRYPOINT)
+    (run_dir / "analyses" / "03.md").write_text(MARKDOWN_ANALYSIS, encoding="utf-8")
+    assert _next(run_dir, capsys).startswith("STATUS: summary")
+    (run_dir / "summary.md").write_text("Итог.", encoding="utf-8")
+    assert _next(run_dir, capsys).startswith("STATUS: done")
+    report = (run_dir / "report.md").read_text(encoding="utf-8")
+
+    # Старый разбор: реестра нет — ни подписей источников, ни пометки о логе.
+    assert "Наблюдения" not in report and "не подтверждена логом" not in report

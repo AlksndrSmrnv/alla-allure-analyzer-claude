@@ -14,6 +14,7 @@ from test_skill_report import APP, _run as report_run
 from alla_skill_lib import report, workspace as ws
 from alla_skill_lib.analysis_format import parse_analysis
 from alla_skill_lib.history import load_history
+from alla_skill_lib.sources import check_entry_analysis
 
 
 def _ready(project: Path, capsys) -> tuple[Path, dict, str]:
@@ -40,11 +41,14 @@ def test_summary_hash_uses_the_same_data_block_as_task(
     directory, run, _ = _ready(project, capsys)
     assert _next(directory, capsys).startswith("STATUS: summary")
     analyses = {
-        entry["file_id"]: parse_analysis((directory / "analyses" / f"{entry['file_id']}.md")
-                                       .read_text(encoding="utf-8"))
+        entry["file_id"]: check_entry_analysis(
+            (directory / "analyses" / f"{entry['file_id']}.md").read_text(encoding="utf-8"),
+            entry, Path(run["project_root"]), ws.RunPaths(directory))[0]
         for entry in run["clusters"]
     }
     data = report.build_summary_data(run, analyses, set())
+    # Причина «окружение» у login опирается только на сообщение теста — пометка в сводке.
+    assert "не принимает соединения. (причина не подтверждена логом)" in data
     task = (directory / "summary_task.md").read_text(encoding="utf-8")
     assert data in task
     assert _state(directory)["summary_data_hash"] == hashlib.sha256(data.encode()).hexdigest()

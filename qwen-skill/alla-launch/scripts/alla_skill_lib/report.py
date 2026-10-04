@@ -25,10 +25,11 @@ from alla_core.models.testops import TriageReport
 from alla_core.services.prompt_builder_service import build_launch_summary_prompt
 
 from alla_skill_lib.agent_rules import EXECUTOR_RULES, SUMMARY_FORMAT_REF, reference_line
-from alla_skill_lib.analysis_format import ClusterAnalysis
+from alla_skill_lib.analysis_format import UNCONFIRMED_NOTE, ClusterAnalysis
 from alla_skill_lib.cluster_task import UNTRUSTED_NOTE
 from alla_skill_lib.history import format_date
 from alla_skill_lib.proposals import Proposal, weakening_warnings
+from alla_skill_lib.sources import describe
 from alla_skill_lib.workspace import RunPaths
 
 MAX_FLAGGED_SUMMARY_CHARS = 300
@@ -301,7 +302,8 @@ def _summary_text(analysis: ClusterAnalysis, flagged: bool, detailed: bool) -> s
         return _truncate(_one_line(analysis.raw), limit)
     if detailed:
         return analysis.compact()
-    return f"ПРИЧИНА: {_truncate(_one_line(analysis.cause), SUMMARY_SHORT_CAUSE_CHARS)}"
+    note = f" ({UNCONFIRMED_NOTE})" if analysis.unconfirmed_by_log else ""
+    return f"ПРИЧИНА: {_truncate(_one_line(analysis.cause), SUMMARY_SHORT_CAUSE_CHARS)}{note}"
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +472,8 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
         what = _one_line(analysis.what)
         if what:
             lines.append(f"- Что случилось: {what}")
-        lines.append(f"- Агент считает: {_opinion(problem, _reason(problem))}")
+        lines.append(f"- Агент считает: {_opinion(problem, _reason(problem))}{_unconfirmed(problem)}")
+        lines += _evidence_lines(analysis, "- Наблюдения:", "- Не хватает: ")
     if problem.bucket == AGENT and problem.proposal is not None:
         lines += [
             f"- Обратите внимание: {warning}"
@@ -594,8 +597,29 @@ def _opinion(problem: _Problem, reason: str, limit: int | None = None) -> str:
     return f"{problem.label} — {text}" if text else problem.label
 
 
+def _unconfirmed(problem: _Problem) -> str:
+    return f" ({UNCONFIRMED_NOTE})" if not problem.flagged and problem.analysis.unconfirmed_by_log else ""
+
+
+def _evidence_lines(analysis: ClusterAnalysis, title: str, missing_title: str) -> list[str]:
+    """Цитаты с понятным источником и чего не хватает — отдельно от предположения о причине."""
+    lines: list[str] = []
+    # Без реестра (папка до наблюдений) источник не назвать — цитаты не показываем.
+    if analysis.observations and analysis.sources is not None:
+        lines.append(title)
+        for item in analysis.observations:
+            record = analysis.sources.get(item.source_id)
+            where = describe(record) if record else item.source_id
+            lines.append(f"   - «{_one_line(item.quote)}» — {where}")
+    if analysis.missing_text:
+        lines.append(f"{missing_title}{analysis.missing_text}")
+    return lines
+
+
 def _brief_tags(problem: _Problem) -> list[str]:
     tags: list[str] = []
+    if not problem.flagged and problem.analysis.unconfirmed_by_log:
+        tags.append("не подтверждено логом")
     history = problem.entry.get("history")
     if history:
         launches = history["launches"]
@@ -686,7 +710,9 @@ def _details(
         else:
             lines += [
                 f"- **Что случилось:** {_one_line(analysis.what)}",
-                f"- **Агент считает:** {_opinion(problem, analysis.cause_reason)}",
+                f"- **Агент считает:** {_opinion(problem, analysis.cause_reason)}"
+                f"{_unconfirmed(problem)}",
+                *_evidence_lines(analysis, "- **Наблюдения:**", "- **Не хватает:** "),
                 "- **Как исправить:**",
                 *(f"   {line}" for line in analysis.fix.splitlines()),
             ]
