@@ -13,6 +13,18 @@ class ClusterSignature(BaseModel):
     representative_message: str | None = None
 
 
+class ClusterExample(BaseModel):
+    """Пример кластера для задания модели: роль и тест.
+
+    Роли: ``typical`` — медоид (ближе всех к остальным участникам), ``different`` —
+    самый далёкий от типичного, если он действительно отличается, ``informative`` —
+    больше всего событий-ошибок в логе среди остальных, если его лог другой.
+    """
+
+    role: str
+    test_result_id: int
+
+
 class FailureCluster(BaseModel):
     """Кластер — группа тестов, упавших по одной причине."""
 
@@ -27,6 +39,9 @@ class FailureCluster(BaseModel):
     example_step_path: str | None = None
     example_correlation: str | None = None
     example_correlation_test_id: int | None = None
+    # Примеры для задания (первый — типичный). Сигнатура и база знаний держатся на
+    # representative_test_id; старые run.json без поля читаются как пустой список.
+    examples: list[ClusterExample] = Field(default_factory=list)
 
 
 class ClusteringReport(BaseModel):

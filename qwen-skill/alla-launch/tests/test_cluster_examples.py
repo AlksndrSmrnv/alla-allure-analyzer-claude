@@ -1,0 +1,104 @@
+"""Примеры кластера: типичный, наиболее отличающийся и самый информативный."""
+
+from __future__ import annotations
+
+import skill_fixtures  # noqa: F401  # scripts/ в sys.path
+
+from alla_core.models.clustering import ClusteringReport
+from alla_core.models.testops import FailedTestSummary
+from alla_core.services.clustering_service import ClusteringService, select_examples
+from alla_skill_lib.report import load_models
+
+ASSERT = "expected: <200> but was: <500>"
+
+
+def _failure(test_id: int, log: str | None = None, message: str = ASSERT,
+             step: str = "Отправить запрос POST /orders") -> FailedTestSummary:
+    return FailedTestSummary(test_result_id=test_id, name=f"t{test_id}", status="failed",
+                             status_message=message, failed_step_path=step, log_snippet=log)
+
+
+def _log(*errors: str) -> str:
+    return "--- [файл: app.log] ---\n" + "\n\n".join(
+        f"[строка {n}]\n2026-10-03 10:00:0{n} [ERROR] {error}" for n, error in enumerate(errors, 1))
+
+
+def _roles(failures: list[FailedTestSummary]) -> list[tuple[str, int]]:
+    report = ClusteringService().cluster_failures(1, failures)
+    cluster, = [c for c in report.clusters if c.member_count == len(failures)]
+    return [(example.role, example.test_result_id) for example in cluster.examples]
+
+
+def test_same_assertion_with_different_server_errors_gets_both_shown() -> None:
+    import asyncio
+
+    from alla_core.config import Settings
+    from alla_skill_lib.pipeline import collect_launch
+    from eval.cassette import replay
+    from eval.corpus_dev import same_assertion_db_vs_npe
+
+    case = same_assertion_db_vs_npe()
+    group = {test: g["id"] for g in case.labels["groups"] for test in g["tests"]}
+    settings = Settings.load(environ={"ALLURE_ENDPOINT": "https://testops.example",
+                                      "ALLURE_TOKEN": "token"})
+    with replay(case.fixture):
+        data = asyncio.run(collect_launch(case.fixture.launch["id"], settings))
+    assert data.clustering is not None
+    cluster, = data.clustering.clusters  # нынешний алгоритм склеивает обе группы
+
+    assert [example.role for example in cluster.examples] == ["typical", "different"]
+    assert {group[example.test_result_id] for example in cluster.examples} == {
+        "orders-500-db", "orders-500-npe"}
+
+
+def test_identical_failures_give_one_example() -> None:
+    log = _log("OrderService: failed to create order")
+    assert _roles([_failure(1, log), _failure(2, log), _failure(3, log)]) == [("typical", 1)]
+
+
+def test_singleton_and_empty_clusters_have_their_test_as_the_example() -> None:
+    report = ClusteringService().cluster_failures(
+        1, [_failure(1), FailedTestSummary(test_result_id=9, name="silent", status="failed")])
+    by_id = {c.representative_test_id: c for c in report.clusters}
+    assert [(e.role, e.test_result_id) for e in by_id[9].examples] == [("typical", 9)]
+
+
+def test_medoid_ties_and_informative_example() -> None:
+    def distance(a: int, b: int) -> float:
+        return 0.0 if a == b else 0.2
+
+    failures = [_failure(10 + i, log) for i, log in enumerate(
+        [None, None, _log("first"), _log("second", "third", "fourth")])]
+    documents = ([ASSERT] * 4, ["step"] * 4, ["", "", "first", "second third fourth"])
+    examples = select_examples([0, 1, 2, 3], failures, distance, documents)
+
+    # Ничья по сумме расстояний — меньший id. Самый далёкий (ничья — 11) ничем не
+    # отличается от типичного — не берётся; информативный — больше всего событий-ошибок.
+    assert [(e.role, e.test_result_id) for e in examples] == [
+        ("typical", 10), ("informative", 13)]
+
+
+def test_farthest_example_is_taken_only_when_it_really_differs() -> None:
+    far = {(0, 2): 0.9, (1, 2): 0.8, (0, 1): 0.1}
+
+    def distance(a: int, b: int) -> float:
+        return 0.0 if a == b else far[tuple(sorted((a, b)))]  # type: ignore[index]
+
+    failures = [_failure(20 + i) for i in range(3)]
+    differing = ([ASSERT, ASSERT, "expected: <200> but was: <502>"], ["s"] * 3, [""] * 3)
+    examples = select_examples([0, 1, 2], failures, distance, differing)
+    assert [(e.role, e.test_result_id) for e in examples] == [("typical", 21), ("different", 22)]
+
+    same = ([ASSERT] * 3, ["s"] * 3, [""] * 3)  # отличие только в расстоянии — один пример
+    assert len(select_examples([0, 1, 2], failures, distance, same)) == 1
+
+
+def test_old_run_json_without_examples_still_loads() -> None:
+    report = ClusteringReport.model_validate({
+        "launch_id": 1, "total_failures": 1, "cluster_count": 1,
+        "clusters": [{"cluster_id": "c", "label": "x", "signature": {},
+                      "member_test_ids": [1], "member_count": 1, "representative_test_id": 1}]})
+    assert report.clusters[0].examples == []
+    triage = {"launch_id": 1, "total_results": 1, "failed_tests": []}
+    _triage, clustering = load_models({"triage": triage, "clustering": report.model_dump()})
+    assert clustering is not None and clustering.clusters[0].examples == []

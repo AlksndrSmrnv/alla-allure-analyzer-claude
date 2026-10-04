@@ -32,6 +32,7 @@
 import hashlib
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -40,12 +41,13 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from alla_core.models.clustering import (
+    ClusterExample,
     ClusteringReport,
     ClusterSignature,
     FailureCluster,
 )
 from alla_core.models.testops import FailedTestSummary
-from alla_core.utils.log_events import strip_source_marks
+from alla_core.utils.log_events import SOURCE_MARK_RE, strip_source_marks
 from alla_core.utils.log_focus import strip_log_selection_metadata
 from alla_core.utils.log_utils import extract_correlation_from_log
 from alla_core.utils.step_paths import normalize_step_path
@@ -298,6 +300,7 @@ class ClusteringService:
         failures: list[FailedTestSummary],
     ) -> ClusteringReport:
         """Кластеризовать список ошибок и вернуть ``ClusteringReport``."""
+        self._last_condensed: np.ndarray | None = None
         if not failures:
             return ClusteringReport(
                 launch_id=launch_id,
@@ -365,16 +368,21 @@ class ClusteringService:
             for idx, label in zip(has_text_indices, labels):
                 cluster_groups.setdefault(label, []).append(idx)
 
+        distance = _Distances(has_text_indices, self._last_condensed)
+        documents = (message_documents, step_documents, log_documents)
+
         # 4. Конвертация в выходные модели
         result_clusters: list[FailureCluster] = []
 
         for group_indices in cluster_groups.values():
             cluster = self._build_cluster(group_indices, failures)
+            cluster.examples = select_examples(group_indices, failures, distance, documents)
             result_clusters.append(cluster)
 
         # Singleton-кластеры — тесты без текста
         for idx in empty_indices:
             cluster = self._build_cluster([idx], failures)
+            cluster.examples = select_examples([idx], failures, distance, documents)
             result_clusters.append(cluster)
 
         # Сортировка: самые крупные кластеры первыми, при равенстве — по ID
@@ -566,6 +574,8 @@ class ClusteringService:
             final_stats = (final_min, final_sum / len(condensed), final_max)
             self._log_similarity_stats(message_sim, trace_sim, final_stats)
         np.clip(condensed, 0.0, 1.0, out=condensed)
+        # Итоговые попарные расстояния нужны выбору примеров кластера (медоид и т. п.).
+        self._last_condensed = condensed
 
         # Агломеративная кластеризация (complete linkage)
         linkage_matrix = linkage(condensed, method="complete")
@@ -763,6 +773,69 @@ def generate_cluster_id(
         components.append("|".join(str(tid) for tid in sorted(member_ids)))
     raw = "\n".join(components)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+class _Distances:
+    """Итоговое попарное расстояние двух падений из condensed-вектора кластеризации."""
+
+    def __init__(self, indices: list[int], condensed: np.ndarray | None) -> None:
+        self._position = {index: position for position, index in enumerate(indices)}
+        self._n = len(indices)
+        self._condensed = condensed
+
+    def __call__(self, a: int, b: int) -> float:
+        if a == b:
+            return 0.0
+        if self._condensed is None or a not in self._position or b not in self._position:
+            return 1.0
+        i, j = sorted((self._position[a], self._position[b]))
+        return float(self._condensed[self._n * i - i * (i + 1) // 2 + (j - i - 1)])
+
+
+def _error_events(failure: FailedTestSummary) -> int:
+    """Сколько событий-ошибок в логе теста: по пометкам строк источника (шаг 2)."""
+    return len(SOURCE_MARK_RE.findall(failure.log_snippet or ""))
+
+
+def select_examples(
+    indices: list[int],
+    failures: list[FailedTestSummary],
+    distance: Callable[[int, int], float],
+    documents: tuple[list[str], list[str], list[str]],
+) -> list[ClusterExample]:
+    """До трёх примеров кластера, детерминированно; ничья — меньший id теста.
+
+    * ``typical`` — медоид: минимальная сумма расстояний до остальных участников;
+    * ``different`` — самый далёкий от типичного, если его сообщение, шаг или лог
+      отличаются после нормализации;
+    * ``informative`` — больше всего событий-ошибок в логе среди остальных, если его
+      лог отличается от логов уже выбранных.
+
+    Кластер из одного теста или без различий — один пример.
+    """
+    def test_id(index: int) -> int:
+        return failures[index].test_result_id
+
+    messages, steps, logs = documents
+    typical = min(indices, key=lambda i: (sum(distance(i, j) for j in indices), test_id(i)))
+    chosen = [typical]
+    examples = [ClusterExample(role="typical", test_result_id=test_id(typical))]
+
+    def differs(a: int, b: int) -> bool:
+        return (messages[a], steps[a], logs[a]) != (messages[b], steps[b], logs[b])
+
+    rest = [i for i in indices if i != typical]
+    if rest:
+        farthest = min(rest, key=lambda i: (-distance(typical, i), test_id(i)))
+        if differs(farthest, typical):
+            chosen.append(farthest)
+            examples.append(ClusterExample(role="different", test_result_id=test_id(farthest)))
+    others = [i for i in indices if i not in chosen and _error_events(failures[i]) > 0]
+    if others:
+        richest = min(others, key=lambda i: (-_error_events(failures[i]), test_id(i)))
+        if all(logs[richest] != logs[i] for i in chosen):
+            examples.append(ClusterExample(role="informative", test_result_id=test_id(richest)))
+    return examples
 
 
 def _first_n_lines(text: str | None, n: int) -> str | None:
