@@ -309,6 +309,8 @@ def test_quoted_and_negative_codes_are_not_folded(pair: tuple[str, str]) -> None
     ("http-nio-8080-exec-1", "http-nio-8080-exec-7"),
     ("pool-1-thread-3", "pool-4-thread-12"),
     ("ForkJoinPool.commonPool-worker-1", "ForkJoinPool.commonPool-worker-9"),
+    ("ForkJoinPool-1-worker-1", "ForkJoinPool-1-worker-7"),
+    ("ForkJoinPool-2-worker-3", "ForkJoinPool-5-worker-3"),
     ("catalina-exec-12", "catalina-exec-305"),
 ])
 def test_thread_names_do_not_change_the_signature(first: str, second: str) -> None:

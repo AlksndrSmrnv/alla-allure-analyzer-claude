@@ -216,13 +216,14 @@ def numeric_codes(text: str) -> list[str]:
 
 
 # Имена потоков: «http-nio-8080-exec-7», «https-jsse-nio-8443-exec-1», «catalina-exec-12»,
-# «pool-3-thread-1», «ForkJoinPool.commonPool-worker-5», «Thread-42». Номер потока — свойство
-# запуска, а не ошибки: для сигнатуры одна ошибка на разных потоках — одна.
+# «pool-3-thread-1», «ForkJoinPool.commonPool-worker-5», «ForkJoinPool-1-worker-7»,
+# «Thread-42». Номер потока — свойство запуска, а не ошибки: для сигнатуры одна ошибка на
+# разных потоках — одна.
 _THREAD_NAME_RE = re.compile(
     r"\b(?:(?:https?|ajp)(?:-jsse)?-nio2?-\d+-exec-\d+"
     r"|[A-Za-z][\w.]*-exec-\d+"
     r"|pool-\d+-thread-\d+"
-    r"|ForkJoinPool(?:\.commonPool)?-worker-\d+"
+    r"|ForkJoinPool(?:\.commonPool|-\d+)?-worker-\d+"
     r"|Thread-\d+)\b"
 )
 

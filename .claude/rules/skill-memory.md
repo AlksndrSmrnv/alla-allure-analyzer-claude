@@ -45,7 +45,7 @@ paths:
   общий со свёрткой повторов лога; имена потоков кодами не считаются.
 - Строки якоря, сообщение и текст аудита нормализуются с заменой имён потоков на `<THREAD>`
   (`replace_thread_names`: `http-nio-8080-exec-7`, `pool-3-thread-1`,
-  `ForkJoinPool.commonPool-worker-5`, `Thread-42`): одна ошибка на разных потоках даёт одну
+  `ForkJoinPool.commonPool-worker-5`, `ForkJoinPool-1-worker-7`, `Thread-42`): одна ошибка на разных потоках даёт одну
   сигнатуру. Это часть v6.
 - Пометки строк источника (`[строки a–b]`) в материал не входят: `_log_evidence` их
   вырезает (`strip_source_marks`), поэтому их нет и в `evidence/NN.txt`.
