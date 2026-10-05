@@ -38,7 +38,15 @@ from skill_fake_testops import TOKEN, LaunchFixture  # noqa: E402
 from eval import corpus_dev, corpus_holdout  # noqa: E402
 from eval.cassette import load_cassette, replay  # noqa: E402
 from eval.corpus import Case, validate_labels  # noqa: E402
-from eval.metrics import ClusterView, combine, coverage, evaluate, summary  # noqa: E402
+from eval.metrics import (  # noqa: E402
+    RETRY_KEYS,
+    ClusterView,
+    combine,
+    coverage,
+    evaluate,
+    evaluate_retries,
+    summary,
+)
 
 BASELINE = Path(__file__).resolve().parent / "baseline.json"
 SETS: dict[str, dict[str, Callable[[], Case]]] = {
@@ -54,6 +62,7 @@ class PreparedRun:
     run_dir: Path
     clusters: list[ClusterView]
     seconds: float
+    triage: dict[str, Any]
 
     @property
     def max_task_chars(self) -> int:
@@ -128,7 +137,7 @@ def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
             visible=tuple(sorted(visible)),
             task_text=text,
         ))
-    return PreparedRun(run_dir, views, seconds)
+    return PreparedRun(run_dir, views, seconds, run["triage"])
 
 
 def evaluate_fixture(fixture: LaunchFixture, labels: dict[str, Any]) -> dict[str, Any]:
@@ -136,6 +145,8 @@ def evaluate_fixture(fixture: LaunchFixture, labels: dict[str, Any]) -> dict[str
     with tempfile.TemporaryDirectory(prefix="alla-eval-") as tmp:
         prepared = run_prepare(fixture, Path(tmp))
         result = evaluate(labels, prepared.clusters)
+        if labels.get("retries"):
+            result.update(evaluate_retries(labels["retries"], prepared.triage))
     result["max_task_chars"] = prepared.max_task_chars
     result["seconds"] = round(prepared.seconds, 2)
     return result
@@ -163,7 +174,12 @@ def evaluate_cases(
 
 def baseline_entry(result: dict[str, Any]) -> dict[str, Any]:
     """Метрики для базовой линии: без времени (оно зависит от машины)."""
-    return {**summary(result), "max_task_chars": result["max_task_chars"]}
+    return {**summary(result), **retry_summary(result), "max_task_chars": result["max_task_chars"]}
+
+
+def retry_summary(result: dict[str, Any]) -> dict[str, int]:
+    """Числа связи попыток — только у сценариев с разметкой ``retries``."""
+    return {key: result[key] for key in RETRY_KEYS if key in result}
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +211,19 @@ def print_table(results: dict[str, dict[str, dict[str, Any]]]) -> None:
             print(_row(_cells(case_name, result)))
         print(_row(_cells("ИТОГО", {**combine(cases.values()),
                                      "max_task_chars": "", "seconds": ""})))
+        for case_name, result in cases.items():
+            if "retry_links" in result:
+                print(f"повторы {case_name}: {_retry_cells(result)}")
+
+
+def _retry_cells(result: dict[str, Any]) -> str:
+    return (
+        f"связано {result['retry_links_found']}/{result['retry_links']}, "
+        f"лишних {result['retry_links_wrong']}; «та же ошибка» "
+        f"{result['retry_same_found']}/{result['retry_same']}; прошли после повтора "
+        f"{result['passed_after_retry_found']}/{result['passed_after_retry']}, "
+        f"лишних {result['passed_after_retry_wrong']}"
+    )
 
 
 def print_details(results: dict[str, dict[str, dict[str, Any]]]) -> None:
@@ -207,6 +236,7 @@ def print_details(results: dict[str, dict[str, dict[str, Any]]]) -> None:
             lines += [f"  скрыта: {group}" for group in result["hidden"]]
             lines += [f"  потеряна ({item['reason']}): {item['group']}: {item['line']}"
                       for item in result["lost"]]
+            lines += [f"  повторы: {problem}" for problem in result.get("retry_problems", [])]
             if result["unclustered"] or result["unlabeled"]:
                 lines.append(f"  вне кластеров: {result['unclustered']}, "
                              f"без разметки: {result['unlabeled']}")
@@ -280,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"Разметка не подходит к кассете: {exc}", file=sys.stderr)
             return 2
-        print(json.dumps({**summary(result), **coverage(result),
+        print(json.dumps({**summary(result), **retry_summary(result), **coverage(result),
                           "max_task_chars": result["max_task_chars"],
                           "seconds": result["seconds"]}, ensure_ascii=False, indent=2))
         if result["unclustered"] or result["unlabeled"]:

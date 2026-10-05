@@ -44,6 +44,8 @@ class LaunchBuilder:
         self._next_attachment = launch_id * 100_000
         self._fixture = LaunchFixture(launch=self._launch, results=[])
         self._groups: dict[str, _Group] = {}
+        self._retry_links: list[dict[str, Any]] = []
+        self._passed_after_retry: list[int] = []
 
     def _result_id(self) -> int:
         self._next_result += 1
@@ -126,12 +128,30 @@ class LaunchBuilder:
             self._fixture.contents[self._next_attachment] = log.encode("utf-8")
         return result_id
 
+    def add_detail(self, result_id: int, *, message: str | None = None,
+                   trace: str | None = None) -> None:
+        """Ответ ``GET /api/testresult/{id}`` — например, для попытки без ``statusDetails``."""
+        details = {key: value for key, value in (("message", message), ("trace", trace)) if value}
+        self._fixture.details[result_id] = {"id": result_id, "statusDetails": details}
+
+    def expect_attempts(self, final: int, attempts: Iterable[tuple[int, bool | None]]) -> None:
+        """Разметка повторов: попытки финального результата по порядку и «та же ошибка»."""
+        self._retry_links.append({"final": final, "attempts": [
+            {"id": attempt, "same": same} for attempt, same in attempts]})
+
+    def expect_passed_after_retry(self, final: int) -> None:
+        self._passed_after_retry.append(final)
+
     def labels(self) -> dict[str, Any]:
-        return {"groups": [
+        labels: dict[str, Any] = {"groups": [
             {"id": group.id, "cause": group.cause, "category": group.category,
              "tests": list(group.tests), "evidence": list(group.evidence)}
             for group in self._groups.values()
         ]}
+        if self._retry_links or self._passed_after_retry:
+            labels["retries"] = {"links": list(self._retry_links),
+                                 "passed_after_retry": list(self._passed_after_retry)}
+        return labels
 
     def build(self, name: str, *, heavy: bool = False) -> Case:
         case = Case(name, self._fixture, self.labels(), heavy)
@@ -167,6 +187,17 @@ def validate_labels(fixture: LaunchFixture, labels: dict[str, Any]) -> None:
         raise ValueError(f"активные падения без группы: {missing}")
     if extra := sorted(set(seen) - active):
         raise ValueError(f"в разметке не активные падения: {extra}")
+    retries = labels.get("retries")
+    if retries:
+        hidden = {int(result["id"]) for result in fixture.results if result.get("hidden")}
+        for link in retries.get("links", []):
+            if link["final"] not in active:
+                raise ValueError(f"повторы: {link['final']} — не активное падение")
+            if strange := sorted({a["id"] for a in link["attempts"]} - hidden):
+                raise ValueError(f"повторы: {strange} — не hidden-результаты")
+        finals = {int(result["id"]) for result in fixture.results if not result.get("hidden")}
+        if strange := sorted(set(retries.get("passed_after_retry", [])) - finals):
+            raise ValueError(f"прошли после повтора: {strange} — нет таких финальных результатов")
 
 
 def java_trace(exception: str, frames: Iterable[str]) -> str:

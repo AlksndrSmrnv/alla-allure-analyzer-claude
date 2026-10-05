@@ -97,16 +97,24 @@
       "tests": 3
     },
     "retries": {
-      "clusters": 4,
+      "clusters": 5,
       "evidence_loss": 0.0,
       "evidence_lost": 0,
-      "evidence_total": 4,
-      "groups": 4,
+      "evidence_total": 5,
+      "groups": 5,
       "hidden_groups": 0,
-      "max_task_chars": 6174,
+      "max_task_chars": 6564,
+      "passed_after_retry": 1,
+      "passed_after_retry_found": 1,
+      "passed_after_retry_wrong": 0,
       "precision": 1.0,
       "recall": 1.0,
-      "tests": 5
+      "retry_links": 6,
+      "retry_links_found": 6,
+      "retry_links_wrong": 0,
+      "retry_same": 6,
+      "retry_same_found": 6,
+      "tests": 6
     },
     "same_assertion_db_vs_npe": {
       "clusters": 1,
