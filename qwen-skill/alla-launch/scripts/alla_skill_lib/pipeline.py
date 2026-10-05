@@ -16,11 +16,11 @@ from alla_core.config import Settings
 from alla_core.models.clustering import ClusteringReport
 from alla_core.models.testops import TriageReport
 from alla_core.services.clustering_service import ClusteringConfig, ClusteringService
-from alla_core.services.retry_linking import retry_warnings
 from alla_core.services.log_extraction_service import (
     LogExtractionConfig,
     LogExtractionService,
 )
+from alla_core.services.retry_linking import retry_warnings
 from alla_core.services.triage_service import TriageService
 
 logger = logging.getLogger(__name__)
