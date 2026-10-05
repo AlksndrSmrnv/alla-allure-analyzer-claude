@@ -345,7 +345,7 @@ class TriageService:
             async with semaphore:
                 try:
                     detail = await self._client.get_test_result_detail(item.test_result_id)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 — любой сбой: ошибка попытки неизвестна
                     logger.warning(
                         "Не удалось получить ошибку попытки %d: %s", item.test_result_id, exc,
                     )

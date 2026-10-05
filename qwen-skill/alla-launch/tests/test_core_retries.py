@@ -127,13 +127,13 @@ def test_no_hidden_results_means_no_link_field() -> None:
 def test_warnings_only_when_something_is_unlinked_or_unknown() -> None:
     assert retry_warnings(RetryInfo(linked_by="historyId", hidden_total=3, linked=3)) == []
     assert retry_warnings(RetryInfo(hidden_total=2, no_key=2)) == [
-        "Повторы не связаны с финальными результатами (скрытых попыток: 2): в ответах "
-        "TestOps нет ни historyId/historyKey, ни testCaseId с параметрами или окружением."
+        ("Повторы не связаны с финальными результатами (скрытых попыток: 2): в ответах "
+         "TestOps нет ни historyId/historyKey, ни testCaseId с параметрами или окружением.")
     ]
     assert retry_warnings(RetryInfo(linked_by="historyId", hidden_total=5, linked=3,
                                     no_final=1, ambiguous=1)) == [
-        "Не удалось связать 2 из 5 скрытых попыток (связь по historyId; без финального "
-        "результата: 1, ключ у нескольких результатов: 1)."
+        ("Не удалось связать 2 из 5 скрытых попыток (связь по historyId; без финального "
+         "результата: 1, ключ у нескольких результатов: 1).")
     ]
 
 
@@ -277,8 +277,8 @@ async def test_only_last_five_attempts_and_request_cap() -> None:
     assert client.detail_calls == [3, 4]
     assert (report.retries.errors_total, report.retries.errors_capped) == (5, 3)
     assert retry_warnings(report.retries) == [
-        "Ошибки повторов известны для 0 из 5 неудачных попыток; 3 не запрошены из-за лимита "
-        "ALLURE_RETRY_MAX_DETAIL_REQUESTS."
+        ("Ошибки повторов известны для 0 из 5 неудачных попыток; 3 не запрошены из-за лимита "
+         "ALLURE_RETRY_MAX_DETAIL_REQUESTS.")
     ]
 
 
