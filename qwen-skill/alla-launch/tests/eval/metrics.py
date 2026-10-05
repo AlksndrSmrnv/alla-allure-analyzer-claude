@@ -156,3 +156,58 @@ def combine(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     total["evidence_loss"] = (round(total["evidence_lost"] / total["evidence_total"], 4)
                               if total["evidence_total"] else 0.0)
     return {key: total[key] for key in SUMMARY_KEYS}
+
+
+RETRY_KEYS = (
+    "retry_links", "retry_links_found", "retry_links_wrong", "retry_same", "retry_same_found",
+    "passed_after_retry", "passed_after_retry_found", "passed_after_retry_wrong",
+)
+
+
+def evaluate_retries(expected: dict[str, Any], triage: dict[str, Any]) -> dict[str, Any]:
+    """Связь попыток (шаг 5) против разметки ``retries``.
+
+    * ``retry_links`` / ``_found`` — ожидаемые попытки и найденные у своего финального
+      результата; ``retry_links_wrong`` — попытки у размеченных финальных результатов,
+      которых там быть не должно (смешаны параметры, окружение или чужой тест);
+    * ``retry_same`` / ``_found`` — попытки с размеченным «та же ошибка» и верно
+      определённые среди найденных;
+    * ``passed_after_retry`` / ``_found`` / ``_wrong`` — прошедшие после повтора.
+    """
+    found = {int(test["test_result_id"]): {int(a["test_result_id"]): a
+                                           for a in test.get("attempts") or []}
+             for test in triage.get("failed_tests", [])}
+    totals = dict.fromkeys(RETRY_KEYS, 0)
+    problems: list[str] = []
+    for link in expected.get("links", []):
+        final = int(link["final"])
+        actual = found.get(final, {})
+        wanted = {int(a["id"]): a.get("same") for a in link["attempts"]}
+        totals["retry_links"] += len(wanted)
+        for attempt_id, same in wanted.items():
+            got = actual.get(attempt_id)
+            if got is None:
+                problems.append(f"{final}: не связана попытка {attempt_id}")
+                continue
+            totals["retry_links_found"] += 1
+            if same is not None:
+                totals["retry_same"] += 1
+                if got.get("same_as_final") is same:
+                    totals["retry_same_found"] += 1
+                else:
+                    problems.append(f"{final}: попытка {attempt_id} — «та же ошибка» "
+                                    f"{got.get('same_as_final')}, ожидалось {same}")
+        for attempt_id in sorted(set(actual) - set(wanted)):
+            totals["retry_links_wrong"] += 1
+            problems.append(f"{final}: лишняя попытка {attempt_id}")
+    wanted_passed = {int(item) for item in expected.get("passed_after_retry", [])}
+    got_passed = {int(item["test_result_id"])
+                  for item in (triage.get("retries") or {}).get("passed_after_retry", [])}
+    totals["passed_after_retry"] = len(wanted_passed)
+    totals["passed_after_retry_found"] = len(wanted_passed & got_passed)
+    totals["passed_after_retry_wrong"] = len(got_passed - wanted_passed)
+    problems += [f"не найден прошедший после повтора {item}"
+                 for item in sorted(wanted_passed - got_passed)]
+    problems += [f"лишний прошедший после повтора {item}"
+                 for item in sorted(got_passed - wanted_passed)]
+    return {**totals, "retry_problems": problems}

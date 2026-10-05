@@ -11,7 +11,7 @@ from skill_fake_testops import default_launch
 
 from eval import run_eval
 from eval.cassette import save_cassette
-from eval.metrics import ClusterView, combine, evaluate, summary
+from eval.metrics import ClusterView, combine, evaluate, evaluate_retries, summary
 
 LABELS = {"groups": [
     {"id": "db", "cause": "db-pool", "tests": [1, 2], "evidence": ["HikariPool-1 - timeout"]},
@@ -163,3 +163,35 @@ def test_duplicate_group_ids_are_rejected(tmp_path: Path, capsys: pytest.Capture
 
     assert code == 2
     assert "повторяется id группы orders" in capsys.readouterr().err
+
+
+def test_retry_metrics_count_found_wrong_and_same_error() -> None:
+    expected = {
+        "links": [{"final": 10, "attempts": [{"id": 1, "same": True}, {"id": 2, "same": False}]},
+                  {"final": 20, "attempts": []}],
+        "passed_after_retry": [30],
+    }
+    triage = {
+        "failed_tests": [
+            {"test_result_id": 10, "attempts": [
+                {"test_result_id": 1, "same_as_final": True},
+                {"test_result_id": 2, "same_as_final": True}]},
+            # попытка другого окружения ошибочно привязана к финальному результату
+            {"test_result_id": 20, "attempts": [{"test_result_id": 3, "same_as_final": None}]},
+        ],
+        "retries": {"passed_after_retry": [{"test_result_id": 40}]},
+    }
+
+    result = evaluate_retries(expected, triage)
+
+    assert {key: value for key, value in result.items() if key != "retry_problems"} == {
+        "retry_links": 2, "retry_links_found": 2, "retry_links_wrong": 1,
+        "retry_same": 2, "retry_same_found": 1,
+        "passed_after_retry": 1, "passed_after_retry_found": 0, "passed_after_retry_wrong": 1,
+    }
+    assert result["retry_problems"] == [
+        "10: попытка 2 — «та же ошибка» True, ожидалось False",
+        "20: лишняя попытка 3",
+        "не найден прошедший после повтора 30",
+        "лишний прошедший после повтора 40",
+    ]

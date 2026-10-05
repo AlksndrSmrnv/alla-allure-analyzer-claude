@@ -470,7 +470,8 @@ def auth_down_symptoms() -> Case:
 def retries() -> Case:
     """Ретраи для шага 5: hidden-попытки с полями связи (``historyId``, ``testCaseId``…).
 
-    Разметка — только по финальным активным падениям; связи попыток проверяет шаг 5.
+    Группы — по финальным активным падениям; разметка ``retries`` — какие попытки к какому
+    финальному результату относятся и та ли у них ошибка.
     """
     builder = LaunchBuilder(5111, "Retries")
     test_class = "ru.company.cart.CartTest"
@@ -488,50 +489,68 @@ def retries() -> Case:
     # прошёл после повтора
     builder.add_result(name="addItem", status="failed", message=flaky, hidden=True,
                        extra=extra("h-add", 501))
-    builder.add_result(name="addItem", status="passed", extra=extra("h-add", 501))
+    passed = builder.add_result(name="addItem", status="passed", extra=extra("h-add", 501))
+    builder.expect_passed_after_retry(passed)
     # все попытки с одной ошибкой
-    for _ in range(2):
-        builder.add_result(name="cartTotal", status="failed", message=stable, hidden=True,
-                           extra=extra("h-total", 502))
-    builder.add_failure(
+    same = [builder.add_result(name="cartTotal", status="failed", message=stable, hidden=True,
+                               extra=extra("h-total", 502)) for _ in range(2)]
+    final = builder.add_failure(
         "retry-same", cause="cart-total-zero", category="приложение", name="cartTotal",
         full_name=f"{test_class}.cartTotal", message=stable,
         trace=_assert_trace(stable, test_class, "cartTotal", 33), step="Проверить сумму",
         evidence=[stable], extra=extra("h-total", 502),
     )
+    builder.expect_attempts(final, [(attempt, True) for attempt in same])
     # попытки с разными ошибками
-    builder.add_result(name="removeItem", status="broken",
-                       message="java.net.ConnectException: Connection refused: cart:8080",
-                       hidden=True, extra=extra("h-remove", 503))
+    other = builder.add_result(name="removeItem", status="broken",
+                               message="java.net.ConnectException: Connection refused: cart:8080",
+                               hidden=True, extra=extra("h-remove", 503))
     removed = "Item SKU-9 is still in cart after removal"
-    builder.add_failure(
+    final = builder.add_failure(
         "retry-different", cause="cart-remove-ignored", category="приложение",
         name="removeItem", full_name=f"{test_class}.removeItem", message=removed,
         trace=_assert_trace(removed, test_class, "removeItem", 48), step="Удалить товар",
         evidence=[removed], extra=extra("h-remove", 503),
     )
+    builder.expect_attempts(final, [(other, False)])
     # параметризованный тест: один testCaseId, разные параметры
     coupon = "Coupon SPRING applied discount 0% instead of 10%"
     for browser in ("chrome", "firefox"):
-        builder.add_result(name=f"applyCoupon[{browser}]", status="failed", message=coupon,
-                           hidden=True, extra=extra(f"h-coupon-{browser}", 504, browser))
-        builder.add_failure(
+        attempt = builder.add_result(name=f"applyCoupon[{browser}]", status="failed",
+                                     message=coupon, hidden=True,
+                                     extra=extra(f"h-coupon-{browser}", 504, browser))
+        final = builder.add_failure(
             "retry-param", cause="coupon-spring-expired", category="данные",
             name=f"applyCoupon[{browser}]", full_name=f"{test_class}.applyCoupon",
             message=coupon, trace=_assert_trace(coupon, test_class, "applyCoupon", 61),
             step="Применить купон", evidence=[coupon],
             extra=extra(f"h-coupon-{browser}", 504, browser),
         )
-    # смена окружения между попытками
+        builder.expect_attempts(final, [(attempt, True)])
+    # смена окружения между попытками: попытка другого окружения — не повтор
     checkout = "Checkout returned HTTP 503 Service Unavailable"
     builder.add_result(name="checkout", status="failed", message=checkout, hidden=True,
                        extra=extra("h-checkout-1", 505, stand="stage-1"))
-    builder.add_failure(
+    final = builder.add_failure(
         "retry-env", cause="checkout-stand-down", category="окружение", name="checkout",
         full_name=f"{test_class}.checkout", message=checkout,
         trace=_assert_trace(checkout, test_class, "checkout", 75), step="Оформить заказ",
         evidence=[checkout], extra=extra("h-checkout-2", 505, stand="stage-2"),
     )
+    builder.expect_attempts(final, [])
+    # ошибки попытки нет в списке результатов — только в GET /api/testresult/{id}
+    attempt = builder.add_result(name="updateQty", status="broken", hidden=True,
+                                 extra=extra("h-qty", 506))
+    builder.add_detail(attempt, trace="java.net.SocketTimeoutException: Read timed out\n"
+                                      "\tat ru.company.cart.CartClient.update(CartClient.java:40)")
+    quantity = "Quantity of SKU-3 expected 2 but was 1"
+    final = builder.add_failure(
+        "retry-detail", cause="cart-qty-lost", category="приложение", name="updateQty",
+        full_name=f"{test_class}.updateQty", message=quantity,
+        trace=_assert_trace(quantity, test_class, "updateQty", 90), step="Изменить количество",
+        evidence=[quantity], extra=extra("h-qty", 506),
+    )
+    builder.expect_attempts(final, [(attempt, False)])
     return builder.build("retries")
 
 

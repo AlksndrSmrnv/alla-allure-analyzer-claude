@@ -51,7 +51,7 @@ def test_retries_keep_hidden_attempts_out_of_labels() -> None:
     hidden = [result for result in case.fixture.results if result.get("hidden")]
     labeled = {test for group in case.labels["groups"] for test in group["tests"]}
 
-    assert len(hidden) == 7
+    assert len(hidden) == 8
     assert not labeled & {result["id"] for result in hidden}
     assert all("historyId" in result for result in case.fixture.results)
 

@@ -91,7 +91,7 @@ def test_prepare_puts_retries_into_the_cluster_task(
     assert "- все попытки упали с той же ошибкой." in total
     assert "Повторы в TestOps" not in checkout  # другое окружение — не повтор
     assert run["triage"]["retries"]["passed_after_retry"][0]["name"] == "addItem"
-    assert "Внимание: Не удалось связать 1 из 7 скрытых попыток" in out
+    assert "Внимание: Не удалось связать 1 из 8 скрытых попыток" in out
     # Попытки не меняют ни кластеры, ни сигнатуру: у кластеров нет следов попыток.
     assert all("1006" not in str(entry["signature"]) for entry in run["clusters"])
 
