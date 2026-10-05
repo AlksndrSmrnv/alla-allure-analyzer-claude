@@ -191,3 +191,105 @@ async def test_triage_without_link_fields_works_as_before() -> None:
     assert [test.test_result_id for test in report.failed_tests] == [2]
     assert report.failed_tests[0].attempts == []
     assert (report.retries.linked_by, report.retries.no_key) == (None, 1)
+
+
+def _details(message: str) -> dict[str, Any]:
+    return {"statusDetails": {"message": message}}
+
+
+@pytest.mark.asyncio
+async def test_attempt_errors_from_list_need_no_requests() -> None:
+    client = _Client([
+        _result(1, hidden=True, historyId="h", **_details("Total 0 at 2026-10-03 10:00:00")),
+        _result(2, "broken", hidden=True, historyId="h",
+                **_details("ConnectException: Connection refused")),
+        _result(3, historyId="h", **_details("Total 0 at 2026-10-03 11:30:00")),
+    ])
+
+    report = await TriageService(client, _settings()).analyze_launch(9)  # type: ignore[arg-type]
+
+    attempts = report.failed_tests[0].attempts
+    assert [(a.test_result_id, a.status.value, a.same_as_final) for a in attempts] == [
+        (1, "failed", True), (2, "broken", False)]
+    assert attempts[1].message == "ConnectException: Connection refused"
+    assert client.detail_calls == []
+    assert (report.retries.errors_total, report.retries.errors_known) == (2, 2)
+
+
+@pytest.mark.asyncio
+async def test_error_codes_make_attempt_errors_different() -> None:
+    client = _Client([
+        _result(1, hidden=True, historyId="h", **_details("Gateway error_code=10001")),
+        _result(2, historyId="h", **_details("Gateway error_code=10002")),
+    ])
+
+    report = await TriageService(client, _settings()).analyze_launch(9)  # type: ignore[arg-type]
+
+    assert report.failed_tests[0].attempts[0].same_as_final is False
+
+
+@pytest.mark.asyncio
+async def test_attempt_without_list_error_is_fetched_and_failures_stay_unknown() -> None:
+    client = _Client(
+        [_result(1, hidden=True, historyId="h"), _result(2, hidden=True, historyId="h"),
+         _result(3, historyId="h", **_details("boom"))],
+        details={1: ResultResponse(id=1, trace="java.lang.IllegalStateException: boom\n\tat x"),
+                 2: RuntimeError("503")},
+    )
+
+    report = await TriageService(client, _settings()).analyze_launch(9)  # type: ignore[arg-type]
+
+    attempts = report.failed_tests[0].attempts
+    assert sorted(client.detail_calls) == [1, 2]
+    assert attempts[0].message == "java.lang.IllegalStateException: boom"
+    assert attempts[0].same_as_final is False
+    assert (attempts[1].message, attempts[1].same_as_final) == (None, None)
+    assert (report.retries.errors_total, report.retries.errors_known) == (2, 1)
+
+
+@pytest.mark.asyncio
+async def test_only_last_five_attempts_and_request_cap() -> None:
+    hidden = [_result(index, hidden=True, historyId="h") for index in range(1, 8)]
+    client = _Client([*hidden, _result(8, historyId="h", **_details("boom"))])
+
+    report = await TriageService(  # type: ignore[arg-type]
+        client, _settings(retry_max_detail_requests=2)).analyze_launch(9)
+
+    test = report.failed_tests[0]
+    assert [a.test_result_id for a in test.attempts] == [3, 4, 5, 6, 7]
+    assert test.attempts_omitted == 2
+    assert client.detail_calls == [3, 4]
+    assert (report.retries.errors_total, report.retries.errors_capped) == (5, 3)
+    assert retry_warnings(report.retries) == [
+        "Ошибки повторов известны для 0 из 5 неудачных попыток; 3 не запрошены из-за лимита "
+        "ALLURE_RETRY_MAX_DETAIL_REQUESTS."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_passed_after_retry_is_listed_without_requests() -> None:
+    client = _Client([
+        _result(1, hidden=True, historyId="h", **_details("expected: <3> but was: <2>")),
+        _result(2, hidden=True, historyId="h"),
+        _result(3, "passed", historyId="h", fullName="ru.CartTest.addItem"),
+        _result(4, "passed", historyId="other"),
+    ])
+
+    report = await TriageService(client, _settings()).analyze_launch(9)  # type: ignore[arg-type]
+
+    assert client.detail_calls == []
+    assert [item.model_dump() for item in report.retries.passed_after_retry] == [{
+        "test_result_id": 3, "name": "test3", "full_name": "ru.CartTest.addItem",
+        "link": "https://allure.test/launch/9/testresult/3", "failed_attempts": 2,
+        "message": "expected: <3> but was: <2>",
+    }]
+    assert report.failed_tests == []
+
+
+def test_long_attempt_message_is_clipped_to_first_line() -> None:
+    from alla_core.services.triage_service import ATTEMPT_MESSAGE_CHARS, _attempt_message
+
+    message = _attempt_message({"message": "\n  " + "x" * 400 + "\nsecond"}, None)
+
+    assert message is not None and len(message) == ATTEMPT_MESSAGE_CHARS
+    assert message.endswith("…")

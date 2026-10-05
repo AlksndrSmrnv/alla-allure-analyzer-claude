@@ -36,6 +36,16 @@ paths:
   связываются. Порядок попыток — `createdDate`, затем id. Итог — `TriageReport.retries`
   (`RetryInfo`: поле связи и числа, в `run.json` внутри `triage`); предупреждения прогона
   (`retry_warnings`) — только если что-то не связалось или ошибки попыток известны не все.
+- Попытки активного падения — `FailedTestSummary.attempts` (`AttemptSummary`: id, статус,
+  первая строка ошибки до 300 символов, `same_as_final`), последние 5; более ранние —
+  число в `attempts_omitted`. Ошибка — из `statusDetails` списка (message, затем trace,
+  затем верхний `trace`), иначе `GET /api/testresult/{id}` с параллелизмом
+  `ALLURE_DETAIL_CONCURRENCY` и потолком `ALLURE_RETRY_MAX_DETAIL_REQUESTS` на прогон (по
+  порядку падений; не запрошенные — `errors_capped`). «Та же ошибка» — `repeat_key` первых
+  строк (как свёртка повторов лога: без времени, UUID и длинных чисел, но с кодами ошибок);
+  `None` — у попытки или финального результата ошибки нет. Сбой запроса — ошибка
+  неизвестна. Финальный `passed` с неудачными попытками — `RetryInfo.passed_after_retry`
+  (ошибка только из списка, без запросов). Попытки не участвуют в сигнатуре и кластеризации.
 - muted failed/broken считаются отдельно и в активные кластеры не попадают.
 - Ошибка берётся из execution tree, затем из `statusDetails`, затем fallback
   `GET /api/testresult/{id}`.
@@ -151,6 +161,7 @@ paths:
 | `ALLURE_LLM_PROMPT_MESSAGE_MAX_CHARS` | нет | `2000` | Лимит message в задании |
 | `ALLURE_LLM_PROMPT_TRACE_MAX_CHARS` | нет | `400` | Лимит trace в задании |
 | `ALLURE_LLM_PROMPT_LOG_MAX_CHARS` | нет | `8000` | Лимит log в задании |
+| `ALLURE_RETRY_MAX_DETAIL_REQUESTS` | нет | `200` | Потолок `GET /api/testresult/{id}` за ошибками попыток на прогон; `0` — не запрашивать |
 
 ## Тесты ядра
 
