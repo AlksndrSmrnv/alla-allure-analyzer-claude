@@ -880,7 +880,7 @@ def _details(
             lines.append(f"- **Почему агент не правил сам:** {reason}")
         lines += _history_lines(problem)
         members = tests.of_cluster(problem.entry)
-        retries = report_line(retry_facts(test.get("attempts") or [] for test in members))
+        retries = report_line(retry_facts(members))
         if retries:
             lines.append(f"- **Повторы:** {retries}")
         lines.append("- **Тесты:**")
