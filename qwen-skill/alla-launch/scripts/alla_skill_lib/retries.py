@@ -41,6 +41,8 @@ class RetryFacts:
     Тест с попытками попадает ровно в одну группу: ``different`` — хоть одна неудачная
     попытка с другой ошибкой; ``passed`` — иначе хоть одна попытка прошла; ``same`` — все
     неудачные попытки с той же ошибкой; ``unknown`` — остальные (ошибка попыток неизвестна).
+    Ядро хранит только последние попытки теста, ``omitted`` — сколько более ранних не
+    разобрано: тогда утверждения и число попыток — только о разобранных.
     """
 
     tests: int = 0
@@ -50,6 +52,8 @@ class RetryFacts:
     different: int = 0
     passed: int = 0
     unknown: int = 0
+    omitted: int = 0
+    same_partial: int = 0
     different_messages: list[str] = field(default_factory=list)
 
     def items(self) -> list[str]:
@@ -59,7 +63,8 @@ class RetryFacts:
 
         items: list[str] = []
         if self.same:
-            items.append(f"{who(self.same)}все попытки упали с той же ошибкой")
+            which = "все разобранные попытки" if self.same_partial else "все попытки"
+            items.append(f"{who(self.same)}{which} упали с той же ошибкой")
         if self.different:
             text = f"{who(self.different)}есть попытка с другой ошибкой"
             shown = self.different_messages[:MAX_DIFFERENT]
@@ -77,19 +82,27 @@ class RetryFacts:
 
     def headline(self) -> str:
         count = f"неудачных попыток до финальной: {self.attempts}"
+        if self.tests != 1:
+            count += ", всего по группе"
+        if self.omitted:
+            count = f"разобранных {count}; более ранних попыток не разобрано: {self.omitted}"
         if self.tests == 1:
             return f"Тест запускался повторно ({count})"
-        return f"Повторы были у {self.retried} из {_tests(self.tests)} ({count}, всего по группе)"
+        return f"Повторы были у {self.retried} из {_tests(self.tests)} ({count})"
 
 
-def retry_facts(attempt_lists: Iterable[Sequence[Mapping[str, Any]]]) -> RetryFacts:
-    """Подсчитать повторы по спискам попыток тестов (словари ``AttemptSummary`` из run.json)."""
+def retry_facts(tests: Iterable[Mapping[str, Any]]) -> RetryFacts:
+    """Подсчитать повторы по тестам: ``attempts`` (словари ``AttemptSummary``) и
+    ``attempts_omitted`` из ``FailedTestSummary`` в run.json."""
     facts = RetryFacts()
-    for attempts in attempt_lists:
+    for test in tests:
         facts.tests += 1
+        attempts: Sequence[Mapping[str, Any]] = test.get("attempts") or []
         if not attempts:
             continue
+        omitted = int(test.get("attempts_omitted") or 0)
         facts.retried += 1
+        facts.omitted += omitted
         failures = [a for a in attempts if str(a.get("status")) in FAILURE_STATUSES]
         facts.attempts += len(failures)
         differing = [a for a in failures if a.get("same_as_final") is False]
@@ -103,6 +116,8 @@ def retry_facts(attempt_lists: Iterable[Sequence[Mapping[str, Any]]]) -> RetryFa
             facts.passed += 1
         elif failures and all(a.get("same_as_final") is True for a in failures):
             facts.same += 1
+            if omitted:
+                facts.same_partial += 1
         else:
             facts.unknown += 1
     return facts

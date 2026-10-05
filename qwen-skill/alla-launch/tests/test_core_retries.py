@@ -229,6 +229,22 @@ async def test_error_codes_make_attempt_errors_different() -> None:
 
 
 @pytest.mark.asyncio
+async def test_errors_are_compared_before_clipping() -> None:
+    prefix = "Gateway rejected the request " + "x" * 400
+    client = _Client([
+        _result(1, hidden=True, historyId="h", **_details(prefix + " error_code=10001")),
+        _result(2, hidden=True, historyId="h", **_details(prefix + " error_code=10002")),
+        _result(3, historyId="h", **_details(prefix + " error_code=10002")),
+    ])
+
+    report = await TriageService(client, _settings()).analyze_launch(9)  # type: ignore[arg-type]
+
+    attempts = report.failed_tests[0].attempts
+    assert attempts[0].message == attempts[1].message  # показ обрезан одинаково
+    assert [a.same_as_final for a in attempts] == [False, True]
+
+
+@pytest.mark.asyncio
 async def test_attempt_without_list_error_is_fetched_and_failures_stay_unknown() -> None:
     client = _Client(
         [_result(1, hidden=True, historyId="h"), _result(2, hidden=True, historyId="h"),

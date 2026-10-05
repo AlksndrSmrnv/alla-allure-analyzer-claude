@@ -464,7 +464,7 @@ def _assemble(
         sections += [*render_recurrence(recurrence, has_exact_kb=has_exact), ""]
     sections += [_render_members(cluster, tests_by_id)]
     retry_lines = render_task_section(retry_facts(
-        [attempt.model_dump(mode="json") for attempt in tests_by_id[test_id].attempts]
+        tests_by_id[test_id].model_dump(mode="json", include={"attempts", "attempts_omitted"})
         for test_id in cluster.member_test_ids if test_id in tests_by_id
     ))
     if retry_lines:

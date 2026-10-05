@@ -27,8 +27,12 @@ OTHER = {"status": "broken", "message": "ConnectException: refused", "same_as_fi
 UNKNOWN = {"status": "failed", "message": None, "same_as_final": None}
 
 
+def _tests(*attempt_lists: list[dict[str, Any]], omitted: int = 0) -> list[dict[str, Any]]:
+    return [{"attempts": attempts, "attempts_omitted": omitted} for attempts in attempt_lists]
+
+
 def test_facts_put_each_retried_test_in_one_group() -> None:
-    facts = retry_facts([[SAME, SAME], [SAME, OTHER], [{"status": "passed"}], [UNKNOWN], []])
+    facts = retry_facts(_tests([SAME, SAME], [SAME, OTHER], [{"status": "passed"}], [UNKNOWN], []))
 
     assert (facts.tests, facts.retried, facts.attempts) == (5, 4, 5)
     assert (facts.same, facts.different, facts.passed, facts.unknown) == (1, 1, 1, 1)
@@ -36,7 +40,7 @@ def test_facts_put_each_retried_test_in_one_group() -> None:
 
 
 def test_task_section_states_facts_and_that_retries_are_not_a_cause() -> None:
-    lines = render_task_section(retry_facts([[SAME, SAME]] * 4 + [[OTHER], [], []]))
+    lines = render_task_section(retry_facts(_tests(*[[SAME, SAME]] * 4, [OTHER], [], [])))
     text = "\n".join(lines)
 
     assert lines[0] == "--- Повторы в TestOps ---"
@@ -54,21 +58,36 @@ def test_task_section_states_facts_and_that_retries_are_not_a_cause() -> None:
 
 
 def test_task_section_for_one_test_and_without_different_attempts() -> None:
-    text = "\n".join(render_task_section(retry_facts([[SAME, SAME]])))
+    text = "\n".join(render_task_section(retry_facts(_tests([SAME, SAME]))))
 
     assert "Тест запускался повторно (неудачных попыток до финальной: 2):" in text
     assert "- все попытки упали с той же ошибкой." in text
     assert "другой ошибкой" not in text
 
 
+def test_omitted_attempts_limit_the_claims_to_the_shown_ones() -> None:
+    # Ядро хранит последние 5 попыток: более ранняя могла упасть иначе.
+    one = "\n".join(render_task_section(retry_facts(_tests([SAME] * 5, omitted=2))))
+
+    assert ("Тест запускался повторно (разобранных неудачных попыток до финальной: 5; "
+            "более ранних попыток не разобрано: 2):") in one
+    assert "- все разобранные попытки упали с той же ошибкой." in one
+
+    group = report_line(retry_facts([*_tests([SAME] * 5, omitted=1), *_tests([SAME])]))
+    assert group == (
+        "Повторы были у 2 из 2 тестов (разобранных неудачных попыток до финальной: 6, всего "
+        "по группе; более ранних попыток не разобрано: 1): у 2 тестов все разобранные "
+        "попытки упали с той же ошибкой.")
+
+
 def test_no_retries_no_section() -> None:
-    facts = retry_facts([[], []])
+    facts = retry_facts(_tests([], []))
     assert render_task_section(facts) == [] and report_line(facts) is None
 
 
 def test_different_messages_are_limited() -> None:
     attempts = [{**OTHER, "message": f"error {index}"} for index in range(4)]
-    line = report_line(retry_facts([attempts]))
+    line = report_line(retry_facts(_tests(attempts)))
 
     assert line is not None and "«error 0», «error 1» и ещё 2" in line
 

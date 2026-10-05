@@ -41,18 +41,27 @@ def _first_line(text: str | None) -> str | None:
     return None
 
 
-def _attempt_message(status_details: object, trace: str | None) -> str | None:
-    """Первая строка ошибки попытки: из ``statusDetails.message``, иначе ``.trace``,
-    иначе верхнего ``trace``; длиннее :data:`ATTEMPT_MESSAGE_CHARS` — с «…»."""
+def _attempt_line(status_details: object, trace: str | None) -> str | None:
+    """Первая строка ошибки попытки целиком: из ``statusDetails.message``, иначе
+    ``.trace``, иначе верхнего ``trace``. По ней сравниваются ошибки (до обрезки)."""
     details = status_details if isinstance(status_details, dict) else {}
-    line = (
+    return (
         _first_line(_diagnostic_text(details.get("message")))
         or _first_line(_diagnostic_text(details.get("trace")))
         or _first_line(_diagnostic_text(trace))
     )
+
+
+def _clip_attempt_line(line: str | None) -> str | None:
+    """Строка для run.json: длиннее :data:`ATTEMPT_MESSAGE_CHARS` — с «…»."""
     if line and len(line) > ATTEMPT_MESSAGE_CHARS:
-        line = line[:ATTEMPT_MESSAGE_CHARS - 1].rstrip() + "…"
+        return line[:ATTEMPT_MESSAGE_CHARS - 1].rstrip() + "…"
     return line
+
+
+def _attempt_message(status_details: object, trace: str | None) -> str | None:
+    """Первая строка ошибки попытки, обрезанная для показа."""
+    return _clip_attempt_line(_attempt_line(status_details, trace))
 
 
 class TriageService:
@@ -302,16 +311,22 @@ class TriageService:
         info = links.info()
         failure_statuses = TestStatus.failure_statuses()
         pending: list[AttemptSummary] = []
+        # Полные первые строки ошибок попыток по id: «та же ошибка» сравнивается до
+        # обрезки, иначе различие после ATTEMPT_MESSAGE_CHARS (код ошибки) терялось бы.
+        lines: dict[int, str] = {}
         for summary in summaries:
             attempts = links.attempts.get(summary.test_result_id, [])
             recent = attempts[-MAX_ATTEMPTS_PER_TEST:]
             summary.attempts_omitted = len(attempts) - len(recent)
             for attempt in recent:
+                line = _attempt_line(attempt.status_details, attempt.trace)
                 item = AttemptSummary(
                     test_result_id=attempt.id,
                     status=self._normalize_status(attempt.status),
-                    message=_attempt_message(attempt.status_details, attempt.trace),
+                    message=_clip_attempt_line(line),
                 )
+                if line is not None:
+                    lines[attempt.id] = line
                 summary.attempts.append(item)
                 if item.status in failure_statuses:
                     info.errors_total += 1
@@ -335,20 +350,24 @@ class TriageService:
                         "Не удалось получить ошибку попытки %d: %s", item.test_result_id, exc,
                     )
                     return
-            item.message = _attempt_message(detail.status_details, detail.trace)
+            line = _attempt_line(detail.status_details, detail.trace)
+            item.message = _clip_attempt_line(line)
+            if line is not None:
+                lines[item.test_result_id] = line
 
         await asyncio.gather(*(fetch_one(item) for item in allowed))
 
         for summary in summaries:
-            # Та же первая строка с той же обрезкой, что у попыток.
-            final = _attempt_message({"message": summary.status_message}, summary.status_trace)
+            # Первая строка финального падения выбирается так же, как у попыток.
+            final = _attempt_line({"message": summary.status_message}, summary.status_trace)
             for item in summary.attempts:
                 if item.status not in failure_statuses:
                     continue
-                if item.message is not None:
+                line = lines.get(item.test_result_id)
+                if line is not None:
                     info.errors_known += 1
                     if final is not None:
-                        item.same_as_final = repeat_key(item.message) == repeat_key(final)
+                        item.same_as_final = repeat_key(line) == repeat_key(final)
 
         info.passed_after_retry = self._passed_after_retry(links, results, launch_id)
         return info
