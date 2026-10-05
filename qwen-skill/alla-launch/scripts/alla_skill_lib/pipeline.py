@@ -16,6 +16,7 @@ from alla_core.config import Settings
 from alla_core.models.clustering import ClusteringReport
 from alla_core.models.testops import TriageReport
 from alla_core.services.clustering_service import ClusteringConfig, ClusteringService
+from alla_core.services.retry_linking import retry_warnings
 from alla_core.services.log_extraction_service import (
     LogExtractionConfig,
     LogExtractionService,
@@ -55,6 +56,7 @@ async def collect_launch(
     async with AllureTestOpsClient(settings, auth) as client:
         say(f"Получаю результаты прогона #{launch_id} из TestOps…")
         triage = await TriageService(client, settings).analyze_launch(launch_id)
+        warnings.extend(retry_warnings(triage.retries))
         say(
             f"Результатов: {triage.total_results}, активных падений: "
             f"{len(triage.failed_tests)}"

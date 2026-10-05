@@ -26,7 +26,16 @@ paths:
 `TriageService` → `LogExtractionService` → `ClusteringService`, склеены в
 `alla_skill_lib/pipeline.py`.
 
-- `hidden` results исключаются из статистики и анализа как retry/non-final.
+- `hidden` results исключаются из статистики и анализа как retry/non-final, но до фильтрации
+  связываются с финальными (`services/retry_linking.py`, шаг 5). Ключ один на прогон:
+  `historyId`, затем `historyKey` (есть значение хотя бы у одной hidden-попытки), иначе
+  `testCaseId` + `parameters` + `environment` (только если есть `testCaseId` и хотя бы одно из
+  полей; пары «имя=значение» отсортированы, `excluded: true` пропускаются), иначе не
+  связываются. Один `testCaseId` — не ключ (смешал бы параметризованные тесты); смена
+  окружения или параметров — другой ключ. Финальных с одним ключом несколько — попытки не
+  связываются. Порядок попыток — `createdDate`, затем id. Итог — `TriageReport.retries`
+  (`RetryInfo`: поле связи и числа, в `run.json` внутри `triage`); предупреждения прогона
+  (`retry_warnings`) — только если что-то не связалось или ошибки попыток известны не все.
 - muted failed/broken считаются отдельно и в активные кластеры не попадают.
 - Ошибка берётся из execution tree, затем из `statusDetails`, затем fallback
   `GET /api/testresult/{id}`.

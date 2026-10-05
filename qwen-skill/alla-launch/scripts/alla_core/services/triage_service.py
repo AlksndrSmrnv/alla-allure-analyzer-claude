@@ -13,6 +13,7 @@ from alla_core.models.testops import (
     TestResultResponse,
     TriageReport,
 )
+from alla_core.services.retry_linking import link_attempts
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,9 @@ class TriageService:
         # 2. Все результаты тестов
         all_results = await self._client.get_all_test_results_for_launch(launch_id)
 
-        # 2.1. Исключить hidden-результаты (retry-попытки, не финальные)
+        # 2.1. Связать hidden-результаты (попытки до финального) с финальными — до
+        # фильтрации; статистика и активные падения считаются без hidden, как раньше.
+        links = link_attempts(all_results)
         results = [r for r in all_results if not r.hidden]
         hidden_count = len(all_results) - len(results)
         if hidden_count:
@@ -99,6 +102,7 @@ class TriageService:
             unknown_count=status_counts.get(TestStatus.UNKNOWN, 0),
             muted_failure_count=muted_failure_count,
             failed_tests=failed_tests,
+            retries=links.info(),
         )
 
         self._log_report(report)
