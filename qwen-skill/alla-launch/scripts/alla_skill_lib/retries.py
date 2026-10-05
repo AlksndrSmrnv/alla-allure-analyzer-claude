@@ -17,14 +17,20 @@ DIFFERENT_CHARS = 200
 MAX_REPORT_PASSED = 20
 
 TASK_NOTE = (
-    "Повторы показывают, воспроизводится ли сбой, но причину не устанавливают: одинаковые "
-    "падения попыток — не довод ни за одну категорию. Причину определяй по сообщению, "
-    "трейсу, логу и коду.{different} Этот раздел не цитируй в НАБЛЮДЕНИЯХ: у него нет id "
-    "куска."
+    "Правило скилла (не данные TestOps): повторы показывают, воспроизводится ли сбой, но "
+    "причину не устанавливают. Ни один факт этого раздела (одинаковые падения, прошедшая "
+    "попытка, неизвестная ошибка попытки) не довод ни за одну категорию; причину и "
+    "категорию определяй по сообщению, трейсу, логу и коду.{different} В СОГЛАСОВАННОСТЬ "
+    "ошибки попыток не входят. Этот раздел не цитируй в НАБЛЮДЕНИЯХ: у него нет id куска."
 )
+# Ошибка попытки бывает похожа на «окружение» (ConnectionRefused), а правило категорий
+# относится к ошибке теста и логу: без запрета модель выбрала бы «окружение» (ревью
+# qwen-executor-review, E09).
 TASK_NOTE_DIFFERENT = (
-    " Попытку с другой ошибкой можно упомянуть, но не выдавай её ошибку за причину "
-    "финального падения."
+    " Ошибка попытки — не ошибка финального падения: по ней категорию не выбирай (правило "
+    "про ConnectionRefused и таймауты — для сообщения теста и лога), в ПРИЧИНУ и КАК "
+    "ИСПРАВИТЬ её не переноси; упомяни её не больше чем одной фразой в ЧТО СЛОМАЛОСЬ или "
+    "не упоминай."
 )
 
 
@@ -73,7 +79,7 @@ class RetryFacts:
         count = f"неудачных попыток до финальной: {self.attempts}"
         if self.tests == 1:
             return f"Тест запускался повторно ({count})"
-        return f"Повторы были у {self.retried} из {_tests(self.tests)} ({count})"
+        return f"Повторы были у {self.retried} из {_tests(self.tests)} ({count}, всего по группе)"
 
 
 def retry_facts(attempt_lists: Iterable[Sequence[Mapping[str, Any]]]) -> RetryFacts:
@@ -110,7 +116,8 @@ def render_task_section(facts: RetryFacts) -> list[str]:
     lines = ["--- Повторы в TestOps ---", facts.headline() + ":"]
     lines += [f"- {item}{';' if index < len(items) else '.'}"
               for index, item in enumerate(items, start=1)]
-    return [*lines, TASK_NOTE.format(different=TASK_NOTE_DIFFERENT if facts.different else "")]
+    note = TASK_NOTE.format(different=TASK_NOTE_DIFFERENT if facts.different else "")
+    return [*lines, "", note]
 
 
 def report_line(facts: RetryFacts) -> str | None:
