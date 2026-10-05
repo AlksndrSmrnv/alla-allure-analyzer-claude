@@ -31,6 +31,7 @@ from alla_skill_lib.analysis_format import UNCONFIRMED_NOTE, ClusterAnalysis, fi
 from alla_skill_lib.cluster_task import UNTRUSTED_NOTE
 from alla_skill_lib.history import format_date
 from alla_skill_lib.proposals import Proposal, weakening_warnings
+from alla_skill_lib.retries import MAX_REPORT_PASSED, passed_after_retry, report_line, retry_facts
 from alla_skill_lib.sources import describe
 from alla_skill_lib.workspace import RunPaths
 
@@ -396,6 +397,7 @@ def render_report(
         group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
         if group:
             full += ["", *_section(title, hint, group, tests, reasons)]
+    full += _passed_after_retry_section(run)
     if notes:
         full += ["", "### Замечания", *(f"- {note}" for note in notes)]
     full += [
@@ -424,7 +426,7 @@ def render_green_report(run: dict[str, Any], paths: RunPaths) -> tuple[str, str]
         message = f"Упавших тестов нет, кроме отключённых (muted): {muted} — разбирать нечего."
     else:
         message = "Упавших тестов нет — разбирать нечего."
-    lines = [*_header(run), "", message]
+    lines = [*_header(run), "", message, *_passed_after_retry_section(run)]
     console = "\n".join([*lines, "", _report_link(paths)])
     return console, "\n".join(lines) + "\n"
 
@@ -482,6 +484,8 @@ def _header(run: dict[str, Any]) -> list[str]:
             f" → {problems} {_plural(problems, 'проблема', 'проблемы', 'проблем')}"
         )
         lines.append(scope + _muted_note(counts) + ".")
+    if passed := len(passed_after_retry(run)):
+        lines.append(f"Прошли после повтора: {passed} — в разбор не входят, список ниже.")
     return lines + [f"Внимание: {warning}" for warning in run.get("warnings", [])]
 
 
@@ -572,6 +576,8 @@ def _brief_header(
         parts.append(f"статус не определён {counts['unknown']}")
     stats = f"{total} {_plural(total, 'тест', 'теста', 'тестов')}: " + ", ".join(parts)
     lines = [title, "", f"{_pass_bar(counts['passed'], total)} {stats}" if total else stats]
+    if passed := len(passed_after_retry(run)):
+        lines.append(f"Прошли после повтора: {passed} (список в полном разборе)")
     problems = len(run["clusters"])
     if problems:
         active = counts["active_failures"]
@@ -873,13 +879,39 @@ def _details(
             reason = _not_fixed_reason(problem, not_proposed)
             lines.append(f"- **Почему агент не правил сам:** {reason}")
         lines += _history_lines(problem)
-        lines.append("- **Тесты:**")
         members = tests.of_cluster(problem.entry)
+        retries = report_line(retry_facts(test.get("attempts") or [] for test in members))
+        if retries:
+            lines.append(f"- **Повторы:** {retries}")
+        lines.append("- **Тесты:**")
         for test in members[:MAX_DETAIL_TESTS]:
             lines.append(f"   - {_test_link(test)}")
         if problem.size > len(members[:MAX_DETAIL_TESTS]):
             hidden = problem.size - len(members[:MAX_DETAIL_TESTS])
             lines.append(f"   - и ещё {hidden} — полный список в TestOps: {launch_url}")
+    return lines
+
+
+def _passed_after_retry_section(run: dict[str, Any]) -> list[str]:
+    """«Прошли после повтора» в report.md: тесты, которые в разбор не входят."""
+    passed = passed_after_retry(run)
+    if not passed:
+        return []
+    lines = [
+        "",
+        f"### Прошли после повтора ({len(passed)})",
+        "Эти тесты упали, но прошли при повторе в этом же прогоне. В разбор они не входят; "
+        "нестабильность стоит проверить отдельно.",
+    ]
+    for item in passed[:MAX_REPORT_PASSED]:
+        count = int(item.get("failed_attempts") or 0)
+        attempts = _plural(count, "неудачная попытка", "неудачные попытки", "неудачных попыток")
+        line = f"- {_test_link(item)} — {count} {attempts}"
+        if item.get("message"):
+            line += f": «{_truncate(_one_line(str(item['message'])), 200)}»"
+        lines.append(line)
+    if len(passed) > MAX_REPORT_PASSED:
+        lines.append(f"- … и ещё {len(passed) - MAX_REPORT_PASSED}")
     return lines
 
 
