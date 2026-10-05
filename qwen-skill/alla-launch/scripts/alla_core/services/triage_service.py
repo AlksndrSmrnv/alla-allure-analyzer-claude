@@ -8,19 +8,51 @@ from alla_core.clients.base import TestResultsProvider
 from alla_core.config import Settings
 from alla_core.models.common import TestStatus
 from alla_core.models.testops import (
+    AttemptSummary,
     ExecutionStep,
     FailedTestSummary,
+    PassedAfterRetry,
+    RetryInfo,
     TestResultResponse,
     TriageReport,
 )
-from alla_core.services.retry_linking import link_attempts
+from alla_core.services.retry_linking import RetryLinks, link_attempts
+from alla_core.utils.text_normalization import repeat_key
 
 logger = logging.getLogger(__name__)
+
+
+# Ошибки попыток: не больше стольких последних попыток на тест, первая строка — до
+# стольких символов.
+MAX_ATTEMPTS_PER_TEST = 5
+ATTEMPT_MESSAGE_CHARS = 300
 
 
 def _diagnostic_text(value) -> str | None:
     """Unvalidated statusDetails values must not bypass model field types."""
     return value if isinstance(value, str) and value.strip() else None
+
+
+def _first_line(text: str | None) -> str | None:
+    """Первая непустая строка без краевых пробелов; ``None`` — текста нет."""
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return None
+
+
+def _attempt_message(status_details: object, trace: str | None) -> str | None:
+    """Первая строка ошибки попытки: из ``statusDetails.message``, иначе ``.trace``,
+    иначе верхнего ``trace``; длиннее :data:`ATTEMPT_MESSAGE_CHARS` — с «…»."""
+    details = status_details if isinstance(status_details, dict) else {}
+    line = (
+        _first_line(_diagnostic_text(details.get("message")))
+        or _first_line(_diagnostic_text(details.get("trace")))
+        or _first_line(_diagnostic_text(trace))
+    )
+    if line and len(line) > ATTEMPT_MESSAGE_CHARS:
+        line = line[:ATTEMPT_MESSAGE_CHARS - 1].rstrip() + "…"
+    return line
 
 
 class TriageService:
@@ -34,6 +66,7 @@ class TriageService:
         self._client = client
         self._endpoint = str(settings.endpoint).rstrip("/")
         self._detail_concurrency = settings.detail_concurrency
+        self._retry_max_detail_requests = settings.retry_max_detail_requests
 
     async def analyze_launch(self, launch_id: int) -> TriageReport:
         """Получить результаты тестов для запуска и сформировать отчёт триажа.
@@ -90,6 +123,9 @@ class TriageService:
         # 5.5. Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}
         await self._fetch_missing_traces(failed_tests)
 
+        # 5.6. Попытки активных падений с ошибками и прошедшие после повтора
+        retries = await self._attach_attempts(failed_tests, links, results, launch_id)
+
         report = TriageReport(
             launch_id=launch_id,
             launch_name=launch.name,
@@ -102,7 +138,7 @@ class TriageService:
             unknown_count=status_counts.get(TestStatus.UNKNOWN, 0),
             muted_failure_count=muted_failure_count,
             failed_tests=failed_tests,
-            retries=links.info(),
+            retries=retries,
         )
 
         self._log_report(report)
@@ -248,6 +284,106 @@ class TriageService:
                 "Fallback: получен trace для теста %d из GET /api/testresult/{id}",
                 summary.test_result_id,
             )
+
+    async def _attach_attempts(
+        self,
+        summaries: list[FailedTestSummary],
+        links: RetryLinks,
+        results: list[TestResultResponse],
+        launch_id: int,
+    ) -> RetryInfo:
+        """Заполнить ``attempts`` активных падений и найти прошедшие после повтора.
+
+        Ошибка попытки — из ``statusDetails`` списка результатов; нет её там — из
+        ``GET /api/testresult/{id}``, не больше ``retry_max_detail_requests`` запросов на
+        прогон (по порядку падений). Берутся последние :data:`MAX_ATTEMPTS_PER_TEST`
+        попыток теста. Сбой запроса — ошибка попытки неизвестна, разбор продолжается.
+        """
+        info = links.info()
+        failure_statuses = TestStatus.failure_statuses()
+        pending: list[AttemptSummary] = []
+        for summary in summaries:
+            attempts = links.attempts.get(summary.test_result_id, [])
+            recent = attempts[-MAX_ATTEMPTS_PER_TEST:]
+            summary.attempts_omitted = len(attempts) - len(recent)
+            for attempt in recent:
+                item = AttemptSummary(
+                    test_result_id=attempt.id,
+                    status=self._normalize_status(attempt.status),
+                    message=_attempt_message(attempt.status_details, attempt.trace),
+                )
+                summary.attempts.append(item)
+                if item.status in failure_statuses:
+                    info.errors_total += 1
+                    if item.message is None:
+                        pending.append(item)
+
+        allowed = pending[:self._retry_max_detail_requests]
+        info.errors_capped = len(pending) - len(allowed)
+        if allowed:
+            logger.info(
+                "Ошибки повторов: запрос GET /api/testresult/{id} для %d попыток", len(allowed),
+            )
+        semaphore = asyncio.Semaphore(self._detail_concurrency)
+
+        async def fetch_one(item: AttemptSummary) -> None:
+            async with semaphore:
+                try:
+                    detail = await self._client.get_test_result_detail(item.test_result_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Не удалось получить ошибку попытки %d: %s", item.test_result_id, exc,
+                    )
+                    return
+            item.message = _attempt_message(detail.status_details, detail.trace)
+
+        await asyncio.gather(*(fetch_one(item) for item in allowed))
+
+        for summary in summaries:
+            # Та же первая строка с той же обрезкой, что у попыток.
+            final = _attempt_message({"message": summary.status_message}, summary.status_trace)
+            for item in summary.attempts:
+                if item.status not in failure_statuses:
+                    continue
+                if item.message is not None:
+                    info.errors_known += 1
+                    if final is not None:
+                        item.same_as_final = repeat_key(item.message) == repeat_key(final)
+
+        info.passed_after_retry = self._passed_after_retry(links, results, launch_id)
+        return info
+
+    def _passed_after_retry(
+        self,
+        links: RetryLinks,
+        results: list[TestResultResponse],
+        launch_id: int,
+    ) -> list[PassedAfterRetry]:
+        """Финальный ``passed`` с неудачными попытками; ошибка — только из списка результатов."""
+        failure_statuses = TestStatus.failure_statuses()
+        found: list[PassedAfterRetry] = []
+        for result in results:
+            if self._normalize_status(result.status) != TestStatus.PASSED:
+                continue
+            failed = [
+                attempt for attempt in links.attempts.get(result.id, [])
+                if self._normalize_status(attempt.status) in failure_statuses
+            ]
+            if not failed:
+                continue
+            found.append(PassedAfterRetry(
+                test_result_id=result.id,
+                name=result.name or f"test-result-{result.id}",
+                full_name=result.full_name,
+                link=f"{self._endpoint}/launch/{launch_id}/testresult/{result.id}",
+                failed_attempts=len(failed),
+                message=next(
+                    (message for attempt in failed
+                     if (message := _attempt_message(attempt.status_details, attempt.trace))),
+                    None,
+                ),
+            ))
+        return found
 
     @staticmethod
     def _extract_error_from_step(
