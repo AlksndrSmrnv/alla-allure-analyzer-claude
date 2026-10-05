@@ -122,6 +122,56 @@ class LogAttachmentRef(BaseModel):
     name: str
 
 
+class AttemptSummary(BaseModel):
+    """Скрытая (``hidden``) попытка того же выполнения теста, что и финальный результат.
+
+    ``message`` — первая строка ошибки попытки (``None`` — не загружена или её нет);
+    ``same_as_final`` — та же ли ошибка, что у финального результата (``repeat_key``:
+    без времени, UUID и длинных чисел, но с кодами ошибок); ``None`` — сравнить нечем.
+    """
+
+    test_result_id: int
+    status: TestStatus
+    message: str | None = None
+    same_as_final: bool | None = None
+
+
+class PassedAfterRetry(BaseModel):
+    """Тест, который прошёл после неудачных попыток: в активные кластеры не входит."""
+
+    test_result_id: int
+    name: str
+    full_name: str | None = None
+    link: str | None = None
+    failed_attempts: int
+    message: str | None = None
+
+
+class RetryInfo(BaseModel):
+    """Связь попыток с финальными результатами — только числа и имя поля связи.
+
+    ``linked_by`` — поле, по которому связаны попытки (``historyId``, ``historyKey``,
+    ``testCaseId+parameters+environment``), ``None`` — связать было не по чему.
+    Скрытые попытки делятся на ``linked`` и несвязанные: ``no_key`` (нет значения
+    ключа), ``no_final`` (нет финального результата с тем же ключом), ``ambiguous``
+    (финальных результатов с этим ключом несколько). ``errors_total`` — неудачные
+    попытки активных падений, чьи ошибки нужны (не больше 5 на тест);
+    ``errors_known`` — у скольких из них ошибка известна; ``errors_capped`` — сколько не
+    запрошено из-за общего потолка запросов.
+    """
+
+    linked_by: str | None = None
+    hidden_total: int = 0
+    linked: int = 0
+    no_key: int = 0
+    no_final: int = 0
+    ambiguous: int = 0
+    errors_total: int = 0
+    errors_known: int = 0
+    errors_capped: int = 0
+    passed_after_retry: list[PassedAfterRetry] = Field(default_factory=list)
+
+
 class FailedTestSummary(BaseModel):
     """Доменная модель: краткое описание упавшего теста для вывода триажа.
 
@@ -154,6 +204,11 @@ class FailedTestSummary(BaseModel):
     log_attachments: list[LogAttachmentRef] = Field(default_factory=list, exclude=True)
     correlation_hint: str | None = None
     failed_step_path: str | None = None
+    # Попытки до финального результата (шаг 5): последние MAX_ATTEMPTS_PER_TEST по
+    # порядку; ``attempts_omitted`` — сколько более ранних не показано. В сигнатуре и
+    # кластеризации не участвуют.
+    attempts: list[AttemptSummary] = Field(default_factory=list)
+    attempts_omitted: int = 0
 
 
 class TriageReport(BaseModel):
@@ -177,6 +232,7 @@ class TriageReport(BaseModel):
     unknown_count: int = 0
     muted_failure_count: int = 0
     failed_tests: list[FailedTestSummary] = []
+    retries: RetryInfo = Field(default_factory=RetryInfo)
 
     @property
     def failure_count(self) -> int:

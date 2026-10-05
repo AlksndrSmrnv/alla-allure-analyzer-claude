@@ -215,6 +215,15 @@ def numeric_codes(text: str) -> list[str]:
     return list(dict.fromkeys(values))
 
 
+def repeat_key(text: str) -> str:
+    """Ключ «та же ошибка»: равны после :func:`normalize_text` и с теми же кодами ошибок.
+
+    Так сворачиваются повторы событий лога и сравниваются ошибки попыток теста: время,
+    UUID и длинные числа не различают ошибки, а коды (:func:`numeric_codes`) — различают.
+    """
+    return normalize_text(text) + "\0" + "|".join(numeric_codes(text))
+
+
 # Имена потоков: «http-nio-8080-exec-7», «https-jsse-nio-8443-exec-1», «catalina-exec-12»,
 # «pool-3-thread-1», «ForkJoinPool.commonPool-worker-5», «ForkJoinPool-1-worker-7»,
 # «Thread-42». Номер потока — свойство запуска, а не ошибки: для сигнатуры одна ошибка на

@@ -30,7 +30,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from alla_core.utils.text_normalization import normalize_text, numeric_codes
+from alla_core.utils.text_normalization import repeat_key
 
 ERROR_LEVELS = frozenset({
     "ERROR", "ERR", "FATAL", "SEVERE", "CRITICAL", "CRIT", "ALERT", "EMERG", "EMERGENCY",
@@ -264,7 +264,7 @@ def render_error_blocks(text: str) -> str:
     places: dict[str, list[tuple[int, int]]] = {}
     for event in error_events(text):
         # Коды ошибок различают события, хотя normalize_text сводит числа к <NUM>.
-        key = normalize_text(event.text) + "\0" + "|".join(numeric_codes(event.text))
+        key = repeat_key(event.text)
         first_events.setdefault(key, event)
         places.setdefault(key, []).append(_event_span(event))
     return "\n\n".join(_marked_event(event, places[key]) for key, event in first_events.items())
