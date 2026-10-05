@@ -40,11 +40,16 @@ def test_task_section_states_facts_and_that_retries_are_not_a_cause() -> None:
     text = "\n".join(lines)
 
     assert lines[0] == "--- Повторы в TestOps ---"
-    assert "Повторы были у 5 из 7 тестов (неудачных попыток до финальной: 9):" in text
+    assert "Повторы были у 5 из 7 тестов (неудачных попыток до финальной: 9, всего по группе):" \
+        in text
     assert "- у 4 тестов все попытки упали с той же ошибкой;" in text
     assert "- у 1 теста есть попытка с другой ошибкой: «ConnectException: refused»." in text
-    assert "причину не устанавливают" in text and "не довод ни за одну категорию" in text
-    assert "не выдавай её ошибку за причину" in text
+    # Правило отделено от данных пустой строкой и подписано как правило скилла.
+    assert lines[-2] == "" and lines[-1].startswith("Правило скилла (не данные TestOps):")
+    assert "причину не устанавливают" in text and "прошедшая попытка" in text
+    assert "не довод ни за одну категорию" in text
+    assert "по ней категорию не выбирай" in text and "в ПРИЧИНУ и КАК ИСПРАВИТЬ её не переноси" in text
+    assert "В СОГЛАСОВАННОСТЬ ошибки попыток не входят" in text
     assert "не цитируй" in text
 
 
@@ -120,7 +125,8 @@ def test_report_shows_retries_and_tests_passed_after_retry(tmp_path: Path) -> No
     assert "- [flaky_0](https://testops.example/testresult/900) — 1 неудачная попытка: " \
            "«expected: <3> but was: <2>»" in passed
     assert passed.count("[flaky_") == MAX_REPORT_PASSED and "- … и ещё 2" in passed
-    assert ("- **Повторы:** Повторы были у 2 из 3 тестов (неудачных попыток до финальной: 3): "
+    assert ("- **Повторы:** Повторы были у 2 из 3 тестов (неудачных попыток до финальной: 3, "
+            "всего по группе): "
             "у 1 теста все попытки упали с той же ошибкой; у 1 теста есть попытка с другой "
             "ошибкой: «ConnectException: refused».") in full
 

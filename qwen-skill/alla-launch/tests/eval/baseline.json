@@ -103,7 +103,7 @@
       "evidence_total": 5,
       "groups": 5,
       "hidden_groups": 0,
-      "max_task_chars": 6564,
+      "max_task_chars": 6896,
       "passed_after_retry": 1,
       "passed_after_retry_found": 1,
       "passed_after_retry_wrong": 0,
