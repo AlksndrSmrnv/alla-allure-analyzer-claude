@@ -476,3 +476,23 @@ def test_mixed_group_found_check(tmp_path: Path, consistency: str, status: str) 
     (run_dir / "analyses" / "01.md").write_text(
         "ЧТО СЛОМАЛОСЬ: 500.\nПРИЧИНА: приложение — сбой.\n" + consistency, encoding="utf-8")
     assert CHECKS["mixed_group_found"](context(tmp_path, [], "E08"))["status"] == status
+
+
+@pytest.mark.parametrize(("task", "report", "status"), [
+    ("--- Повторы в TestOps ---\n", "### Прошли после повтора (1)\n- **Повторы:** …\n", "pass"),
+    ("", "### Прошли после повтора (1)\n- **Повторы:** …\n", "fail"),
+    ("--- Повторы в TestOps ---\n", "- **Повторы:** …\n", "fail"),
+])
+def test_retries_in_report_check(tmp_path: Path, task: str, report: str, status: str) -> None:
+    run_dir = tmp_path / "p" / "alla-reports" / "5111-20261005-100000"
+    (run_dir / "clusters").mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}", encoding="utf-8")
+    (run_dir / "clusters" / "01.md").write_text(task, encoding="utf-8")
+    (run_dir / "report.md").write_text(report, encoding="utf-8")
+    assert CHECKS["retries_in_report"](context(tmp_path, [], "E09"))["status"] == status
+
+
+def test_retries_fixture_has_hidden_attempts() -> None:
+    fixture = build_fixture("retries")
+    assert fixture.launch["id"] == SCENARIOS["E09"].launch_id
+    assert sum(1 for result in fixture.results if result.get("hidden")) == 8
