@@ -41,6 +41,7 @@ FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
     "injection": injection_launch,
     "scant": scant_launch,
     "mixed": lambda: _mixed_launch(),
+    "retries": lambda: _retries_launch(),
 }
 
 
@@ -51,9 +52,16 @@ def _mixed_launch() -> LaunchFixture:
     return same_assertion_db_vs_npe().fixture
 
 
+def _retries_launch() -> LaunchFixture:
+    """Повторы: те же и другие ошибки попыток, прошёл после повтора (корпус эталона, E09)."""
+    from eval.corpus_dev import retries
+
+    return retries().fixture
+
+
 def build_fixture(spec: str) -> LaunchFixture:
     """``default`` | ``green`` | ``info_only`` | ``injection`` | ``scant`` | ``mixed`` |
-    ``many:<число>``."""
+    ``retries`` | ``many:<число>``."""
     name, _, arg = spec.partition(":")
     if name == "many":
         return many_launch(int(arg or 40))
