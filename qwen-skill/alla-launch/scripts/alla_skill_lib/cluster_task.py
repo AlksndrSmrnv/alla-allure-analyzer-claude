@@ -32,6 +32,7 @@ from alla_core.utils.log_focus import focus_log, selection_error_text
 from alla_skill_lib.agent_rules import ANALYSIS_FORMAT_REF, EXECUTOR_RULES, reference_line
 from alla_skill_lib.code_hints import CodeHint
 from alla_skill_lib.history import render_recurrence
+from alla_skill_lib.retries import render_task_section, retry_facts
 
 MAX_LISTED_TESTS = 20
 MAX_FRAME_LINES = 40
@@ -462,6 +463,12 @@ def _assemble(
         has_exact = any(match["origin"] == "exact" for match in kb_matches or [])
         sections += [*render_recurrence(recurrence, has_exact_kb=has_exact), ""]
     sections += [_render_members(cluster, tests_by_id)]
+    retry_lines = render_task_section(retry_facts(
+        [attempt.model_dump(mode="json") for attempt in tests_by_id[test_id].attempts]
+        for test_id in cluster.member_test_ids if test_id in tests_by_id
+    ))
+    if retry_lines:
+        sections += ["", *retry_lines]
     with_files = has_frame_files(frames)
     if with_files:
         sections += ["", "--- Кадры стека из кода проекта ---", *frames]
