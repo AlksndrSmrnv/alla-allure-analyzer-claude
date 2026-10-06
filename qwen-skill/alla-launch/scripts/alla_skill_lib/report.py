@@ -172,6 +172,7 @@ class _Problem:
     known: KnownRecord | None = None
     mismatch: KnownRecord | None = None
     group: KnownIssue | None = None
+    rejected: KnownRecord | None = None
 
     @property
     def applied(self) -> bool:
@@ -254,6 +255,7 @@ def build_summary_data(
     top = {entry["file_id"] for entry in largest[:MAX_SUMMARY_LISTED]}
     listed = [entry for entry in run["clusters"] if entry["file_id"] in top]  # порядок номеров
     listed_ids = {entry["cluster_id"] for entry in listed}
+    rejected = known.rejected if known else {}
     cluster_analyses = {
         entry["cluster_id"]: LLMClusterAnalysis(
             cluster_id=entry["cluster_id"],
@@ -261,7 +263,7 @@ def build_summary_data(
                 analyses[entry["file_id"]],
                 entry["file_id"] in flagged,
                 entry["file_id"] in detailed,
-            ),
+            ) + (f"\n({REJECTED_SUMMARY_NOTE})" if entry["file_id"] in rejected else ""),
         )
         for entry in listed
     }
@@ -356,18 +358,23 @@ def _summary_known(known: KnownIssues) -> list[str]:
     for group in known.groups[:MAX_SUMMARY_GROUPS]:
         record = group.record
         category = f" [{record.category}]" if record.category else ""
+        step = _truncate(_one_line(record.first_step), SUMMARY_LABEL_CHARS)
         lines.append(
             f"«{_truncate(_one_line(record.title), SUMMARY_LABEL_CHARS)}»{category}: "
             f"{_numbers_phrase(group.file_ids)} — {group.size} "
             f"{_plural(group.size, 'тест', 'теста', 'тестов')}"
+            + (f"; первый шаг рецепта: {step}" if step else "")
         )
     rest = known.groups[MAX_SUMMARY_GROUPS:]
     if rest:
         problems = sum(len(group.file_ids) for group in rest)
         tests = sum(group.size for group in rest)
+        count = len(rest)
+        kinds = _plural(count, "известная проблема", "известные проблемы", "известных проблем")
+        verb = "объединяет" if _plural(count, "1", "", "") else "объединяют"
         lines.append(
-            f"Ещё {len(rest)} {_plural(len(rest), 'известная проблема', 'известные проблемы', 'известных проблем')} "
-            f"объединяют {problems} {_plural(problems, 'проблему', 'проблемы', 'проблем')} "
+            f"Кроме них, ещё {count} {kinds} поменьше (у каждой своя причина) {verb} "
+            f"{problems} {_plural(problems, 'проблему', 'проблемы', 'проблем')} "
             f"({tests} {_plural(tests, 'тест', 'теста', 'тестов')})."
         )
     return lines
@@ -512,6 +519,7 @@ def _problem(
             known=known.refs.get(file_id),
             mismatch=known.mismatched.get(file_id),
             group=known.group_of(file_id),
+            rejected=known.rejected.get(file_id),
         )
     # Без проверки по базе знаний (вызов без known): ссылка разбора как есть.
     ref = None if is_flagged or not analysis.kb_ref else KnownRecord(
@@ -921,6 +929,8 @@ def _brief_tags(problem: _Problem) -> list[str]:
         tags.append(f"известная проблема: {problem.known.id}")
     if problem.mismatch is not None:
         tags.append(f"расходится с базой знаний: {problem.mismatch.id}")
+    if problem.rejected is not None:
+        tags.append(REJECTED_TAG)
     return tags
 
 
@@ -978,6 +988,13 @@ def _history_lines(problem: _Problem) -> list[str]:
     return lines
 
 
+REJECTED_TAG = "разбор опирался на отвергнутую запись базы знаний"
+REJECTED_SUMMARY_NOTE = (
+    "разбор опирался на запись базы знаний, которую пользователь потом отверг для этой "
+    "проблемы: причина не подтверждена, не называй её установленной"
+)
+
+
 def _known_lines(problem: _Problem) -> list[str]:
     """Известная проблема у проблемы в report.md: запись, группа или расхождение с записью."""
     if problem.group is not None and problem.known is not None:
@@ -989,6 +1006,12 @@ def _known_lines(problem: _Problem) -> list[str]:
         )]
     if problem.known is not None:
         return [f"- Известная проблема: {problem.known.id} (есть в базе знаний проекта)"]
+    if problem.rejected is not None:
+        return [(
+            f"- Разбор опирался на запись базы знаний {problem.rejected.id} "
+            f"(«{_one_line(problem.rejected.title)}»), но пользователь отверг её для этой проблемы — "
+            "причина не подтверждена; если она известна, сохраните её в базу знаний"
+        )]
     record = problem.mismatch
     if record is None:
         return []
