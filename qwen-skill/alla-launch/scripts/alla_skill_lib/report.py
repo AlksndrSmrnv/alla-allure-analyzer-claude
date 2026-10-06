@@ -610,7 +610,7 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
         what = _one_line(analysis.what)
         if what:
             lines.append(f"- Что случилось: {what}")
-        lines.append(f"- Агент считает: {_opinion(problem, _reason(problem))}{_unconfirmed(problem)}")
+        lines.append(f"- {_opinion_label(problem)} {_opinion(problem, _reason(problem))}{_unconfirmed(problem)}")
         lines += _consistency_lines(analysis, "- ")
         lines += _evidence_lines(analysis, "- Наблюдения:", "- Не хватает: ")
     if problem.bucket == AGENT and problem.proposal is not None:
@@ -624,7 +624,7 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
             else "- Статус: ждёт вашего «да» — агент покажет изменения перед записью"
         )
     elif not problem.flagged:
-        lines += _fix_lines(analysis)
+        lines += _fix_lines(analysis, "Разбор предлагал:" if problem.rejected else "Что делать:")
         if analysis.code:
             lines.append("- Где в коде: " + "; ".join(analysis.code))
     if problem.bucket == MANUAL:
@@ -636,12 +636,12 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
     return lines
 
 
-def _fix_lines(analysis: ClusterAnalysis) -> list[str]:
+def _fix_lines(analysis: ClusterAnalysis, label: str = "Что делать:") -> list[str]:
     """«Что делать»: все шаги разбора."""
     steps = [line for line in analysis.fix.splitlines() if line.strip()]
     if len(steps) <= 1:  # единственный шаг — в строку, без номера «1.»
-        return [f"- Что делать: {analysis.first_fix_step()}"] if steps else []
-    return ["- Что делать:", *(f"   {line.strip()}" for line in steps)]
+        return [f"- {label} {analysis.first_fix_step()}"] if steps else []
+    return [f"- {label}", *(f"   {line.strip()}" for line in steps)]
 
 
 # --- краткий разбор для терминала -------------------------------------------
@@ -810,7 +810,7 @@ def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) 
     if what:
         lines.append(_truncate(what, BRIEF_TEXT_CHARS))
     reason = _truncate(_one_line(_reason(problem)), BRIEF_CAUSE_CHARS) or problem.label
-    lines.append(_brief_field("Агент считает:", f"[{problem.tag}] {reason}"))
+    lines.append(_brief_field(_opinion_label(problem), f"[{problem.tag}] {reason}"))
     proposal = problem.proposal
     if problem.bucket == AGENT and proposal is not None:
         status = "уже применено" if problem.applied else "ждёт вашего «да»"
@@ -820,7 +820,8 @@ def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) 
             for warning in weakening_warnings(proposal.before, proposal.after)[:1]
         ]
         return lines + _brief_example(problem, tests)
-    step = analysis.first_fix_step()
+    # Шаги разбора по отвергнутой записи лечат не подтверждённую причину — не советуем их.
+    step = analysis.first_fix_step() if problem.rejected is None else ""
     if step:
         lines.append(_brief_field("Что делать:", _truncate(step, BRIEF_STEP_CHARS)))
     if problem.bucket == MANUAL:
@@ -867,6 +868,11 @@ def _reason(problem: _Problem) -> str:
     if problem.bucket == AGENT and proposal is not None:
         return proposal.why
     return problem.analysis.cause_reason
+
+
+def _opinion_label(problem: _Problem) -> str:
+    """Подпись мнения агента: о разборе по отвергнутой записи — в прошедшем времени."""
+    return "Агент считал:" if problem.rejected is not None else "Агент считает:"
 
 
 def _opinion(problem: _Problem, reason: str) -> str:
@@ -1046,11 +1052,11 @@ def _details(
         else:
             lines += [
                 f"- **Что случилось:** {_one_line(analysis.what)}",
-                f"- **Агент считает:** {_opinion(problem, analysis.cause_reason)}"
-                f"{_unconfirmed(problem)}",
+                (f"- **{_opinion_label(problem)}** {_opinion(problem, analysis.cause_reason)}"
+                 f"{_unconfirmed(problem)}"),
                 *_consistency_lines(analysis, "- **", bold=True),
                 *_evidence_lines(analysis, "- **Наблюдения:**", "- **Не хватает:** "),
-                "- **Как исправить:**",
+                "- **Разбор предлагал:**" if problem.rejected else "- **Как исправить:**",
                 *(f"   {line}" for line in analysis.fix.splitlines()),
             ]
             if analysis.code:

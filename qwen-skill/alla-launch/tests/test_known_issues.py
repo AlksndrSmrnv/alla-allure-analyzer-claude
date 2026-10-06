@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import skill_fixtures  # noqa: F401  # scripts/ в sys.path — раньше alla_skill_lib
 from alla_skill_lib.analysis_format import parse_analysis
 from alla_skill_lib.history import run_records
 from alla_skill_lib.kb import KBRecord, ProjectKB
@@ -385,6 +386,12 @@ def test_rejected_record_marks_the_analysis_as_unconfirmed(tmp_path: Path) -> No
     assert "**Проблема 3** · 1 тест · [разбор опирался на отвергнутую запись базы знаний]" in console
     assert "- Разбор опирался на запись базы знаний payment_db_pool_1a2b3c4d" in full
     assert "пользователь отверг её для этой проблемы — причина не подтверждена" in full
+    # Причина и шаги разбора — в прошедшем времени и не как совет.
+    item3 = console.split("**Проблема 3**")[1].split("**Проблема")[0]
+    assert "Агент считал:" in item3 and "Агент считает:" not in item3
+    assert "Что делать:" not in item3
+    assert "- Агент считал: " in full and "- Разбор предлагал:" in full
+    assert "- **Агент считал:** " in full and "- **Разбор предлагал:**" in full
     data = build_summary_data(run, analyses, set(), known)
     assert data.count("которую пользователь потом отверг для этой проблемы") == 1
 
