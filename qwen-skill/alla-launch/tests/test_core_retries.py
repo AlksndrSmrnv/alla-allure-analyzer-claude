@@ -86,11 +86,35 @@ def test_environment_change_is_not_mixed() -> None:
     assert (links.linked, links.no_final) == (0, 1)
 
 
+@pytest.mark.parametrize("context", [
+    {"parameters": None, "environment": None},
+    {"parameters": [{"name": "browser", "value": "chrome"}]},
+    {"environment": [{"name": "stand", "value": "stage-1"}]},
+    {"parameters": [], "environment": None},
+    {"parameters": "chrome", "environment": []},
+])
+def test_unknown_context_is_not_a_link_key(context: dict[str, Any]) -> None:
+    # null или нет поля — контекст неизвестен: связь по одному testCaseId приписала бы
+    # тесту чужую попытку и «прошёл после повтора».
+    links = link_attempts([_result(1, hidden=True, testCaseId=7, **context),
+                           _result(2, "passed", testCaseId=7, **context)])
+
+    assert (links.linked_by, links.no_key, _linked(links)) == (None, 1, {})
+    assert retry_warnings(links.info())
+
+
+def test_explicitly_empty_context_is_a_link_key() -> None:
+    context = {"testCaseId": 7, "parameters": [], "environment": {}}
+    links = link_attempts([_result(1, hidden=True, **context), _result(2, **context)])
+
+    assert (links.linked_by, _linked(links)) == (CONTEXT_KEY, {2: [1]})
+
+
 def test_parameter_order_and_excluded_parameters_do_not_matter() -> None:
-    attempt = _result(1, hidden=True, testCaseId=7, parameters=[
+    attempt = _result(1, hidden=True, testCaseId=7, environment=[], parameters=[
         {"name": "b", "value": 2}, {"name": "a", "value": 1},
         {"name": "run", "value": "x-1", "excluded": True}])
-    final = _result(2, testCaseId=7, parameters=[
+    final = _result(2, testCaseId=7, environment=[], parameters=[
         {"name": "a", "value": "1"}, {"name": "b", "value": "2"},
         {"name": "run", "value": "x-2", "excluded": True}])
 
@@ -128,7 +152,7 @@ def test_warnings_only_when_something_is_unlinked_or_unknown() -> None:
     assert retry_warnings(RetryInfo(linked_by="historyId", hidden_total=3, linked=3)) == []
     assert retry_warnings(RetryInfo(hidden_total=2, no_key=2)) == [
         ("Повторы не связаны с финальными результатами (скрытых попыток: 2): в ответах "
-         "TestOps нет ни historyId/historyKey, ни testCaseId с параметрами или окружением.")
+         "TestOps нет ни historyId/historyKey, ни testCaseId с параметрами и окружением.")
     ]
     assert retry_warnings(RetryInfo(linked_by="historyId", hidden_total=5, linked=3,
                                     no_final=1, ambiguous=1)) == [

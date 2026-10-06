@@ -39,8 +39,9 @@ class RetryFacts:
     """Сколько тестов группы повторялись и как упали их попытки.
 
     Тест с попытками попадает ровно в одну группу: ``different`` — хоть одна неудачная
-    попытка с другой ошибкой; ``passed`` — иначе хоть одна попытка прошла; ``same`` — все
-    неудачные попытки с той же ошибкой; ``unknown`` — остальные (ошибка попыток неизвестна).
+    попытка с другой ошибкой; ``passed`` — иначе хоть одна попытка прошла; ``unknown`` —
+    иначе у неудачной попытки ошибка неизвестна; ``other`` — иначе есть попытка с другим
+    статусом (skipped, unknown); ``same`` — все разобранные попытки упали с той же ошибкой.
     Ядро хранит только последние попытки теста, ``omitted`` — сколько более ранних не
     разобрано: тогда утверждения и число попыток — только о разобранных.
     """
@@ -52,9 +53,11 @@ class RetryFacts:
     different: int = 0
     passed: int = 0
     unknown: int = 0
+    other: int = 0
     omitted: int = 0
     same_partial: int = 0
     different_messages: list[str] = field(default_factory=list)
+    other_statuses: list[str] = field(default_factory=list)
 
     def items(self) -> list[str]:
         """Пункты «у N тестов …» без маркеров и знаков в конце; у одного теста — без «у N»."""
@@ -78,6 +81,9 @@ class RetryFacts:
             items.append(f"{who(self.passed)}одна из попыток прошла")
         if self.unknown:
             items.append(f"{who(self.unknown)}ошибка попыток неизвестна")
+        if self.other:
+            statuses = ", ".join(self.other_statuses)
+            items.append(f"{who(self.other)}есть попытка со статусом {statuses}")
         return items
 
     def headline(self) -> str:
@@ -114,12 +120,18 @@ def retry_facts(tests: Iterable[Mapping[str, Any]]) -> RetryFacts:
                     facts.different_messages.append(message)
         elif any(str(a.get("status")) == "passed" for a in attempts):
             facts.passed += 1
-        elif failures and all(a.get("same_as_final") is True for a in failures):
+        elif any(a.get("same_as_final") is None for a in failures):
+            facts.unknown += 1
+        elif len(failures) < len(attempts):
+            facts.other += 1
+            for attempt in attempts:
+                status = str(attempt.get("status") or "unknown")
+                if status not in FAILURE_STATUSES and status not in facts.other_statuses:
+                    facts.other_statuses.append(status)
+        else:
             facts.same += 1
             if omitted:
                 facts.same_partial += 1
-        else:
-            facts.unknown += 1
     return facts
 
 
