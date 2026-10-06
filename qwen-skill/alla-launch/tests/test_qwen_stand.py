@@ -15,6 +15,7 @@ import skill_fixtures  # noqa: F401 — добавляет scripts/ в sys.path
 from fake_testops_server import FakeTestOpsServer, build_fixture
 from qwen_stand import (
     CHECKS,
+    KNOWLEDGE,
     SCENARIOS,
     Context,
     build_project,
@@ -38,7 +39,7 @@ def test_server_serves_fixture_and_logs_requests(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("spec", ["default", "green", "info_only", "injection", "scant", "mixed",
-                                  "many:12"])
+                                  "retries", "known", "many:12"])
 def test_build_fixture_known_specs(spec: str) -> None:
     assert build_fixture(spec).results
 
@@ -496,3 +497,88 @@ def test_retries_fixture_has_hidden_attempts() -> None:
     fixture = build_fixture("retries")
     assert fixture.launch["id"] == SCENARIOS["E09"].launch_id
     assert sum(1 for result in fixture.results if result.get("hidden")) == 8
+
+
+def test_known_fixture_offers_the_stand_record_to_the_pool_problems(tmp_path: Path) -> None:
+    from alla_skill_lib import workspace
+    from alla_skill_lib.kb import KBRecord, normalize_fp, record_matches
+    from eval.run_eval import run_prepare
+
+    scenario = SCENARIOS["E10"]
+    fixture = build_fixture(scenario.fixture)
+    assert fixture.launch["id"] == scenario.launch_id
+    record = KBRecord.from_json(KNOWLEDGE[scenario.knowledge][0])
+    prepared = run_prepare(fixture, tmp_path)
+    run = json.loads((prepared.run_dir / "run.json").read_text(encoding="utf-8"))
+    paths = workspace.RunPaths(prepared.run_dir)
+    offered = [
+        entry["file_id"] for entry in run["clusters"]
+        if record_matches(record, entry["signature"],
+                          normalize_fp(paths.evidence(entry["file_id"]).read_text(encoding="utf-8")))
+    ]
+    # 01 — UI-симптом пула (его «к проблеме 1 не относится» пользователь и отвергает), 04 — каталог.
+    assert offered == ["01", "02", "03"]
+
+
+def test_build_project_commits_the_scenario_knowledge(tmp_path: Path) -> None:
+    project = build_project(tmp_path, "http://127.0.0.1:1", venv=None, knowledge="payments_pool")
+    record = KNOWLEDGE["payments_pool"][0]
+    assert json.loads((project / "alla-kb" / f"{record['id']}.json").read_text())["id"] == record["id"]
+    status = subprocess.run(["git", "-C", str(project), "status", "--porcelain"],
+                            capture_output=True, text=True, check=True).stdout
+    assert status == ""
+
+
+def _known_run(tmp_path: Path, refs: dict[str, str | None], *, offered: tuple[str, ...] = ("01", "02", "03"),
+               report: str = "### Известные проблемы из базы знаний (1)\n") -> Path:
+    record_id = KNOWLEDGE["payments_pool"][0]["id"]
+    run_dir = tmp_path / "p" / "alla-reports" / "5112-20261006-100000"
+    (run_dir / "analyses").mkdir(parents=True)
+    clusters = []
+    for file_id, ref in refs.items():
+        clusters.append({"file_id": file_id, "signature": f"v6:{file_id}",
+                         "kb": [{"id": record_id}] if file_id in offered else []})
+        if ref is not None:
+            (run_dir / "analyses" / f"{file_id}.md").write_text(
+                "ЧТО СЛОМАЛОСЬ: 500.\nПРИЧИНА: приложение — пул.\n"
+                + (f"БАЗА ЗНАНИЙ: {ref}\n" if ref else ""), encoding="utf-8")
+    (run_dir / "run.json").write_text(json.dumps({"clusters": clusters}), encoding="utf-8")
+    (run_dir / "report.md").write_text(report, encoding="utf-8")
+    return run_dir
+
+
+def test_known_issue_grouped_check(tmp_path: Path) -> None:
+    record_id = KNOWLEDGE["payments_pool"][0]["id"]
+    check = CHECKS["known_issue_grouped"]
+    _known_run(tmp_path / "a", {"01": record_id, "02": record_id, "03": record_id, "04": ""})
+    assert check(context(tmp_path / "a", [], "E10"))["status"] == "pass"
+    _known_run(tmp_path / "b", {"01": record_id, "02": "", "03": record_id, "04": ""})
+    assert check(context(tmp_path / "b", [], "E10"))["status"] == "fail"
+    _known_run(tmp_path / "c", {"01": record_id, "02": record_id, "03": record_id, "04": record_id})
+    assert check(context(tmp_path / "c", [], "E10"))["status"] == "fail"
+    _known_run(tmp_path / "d", {"01": record_id, "02": record_id, "03": record_id}, report="")
+    assert check(context(tmp_path / "d", [], "E10"))["status"] == "fail"
+
+
+@pytest.mark.parametrize(("number", "then_next", "saved", "status"), [
+    ("1", True, True, "pass"),
+    ("01", True, True, "pass"),
+    ("2", True, True, "fail"),
+    ("1", False, True, "fail"),
+    ("1", True, False, "fail"),
+])
+def test_kb_rejected_check(tmp_path: Path, number: str, then_next: bool, saved: bool,
+                           status: str) -> None:
+    record = KNOWLEDGE["payments_pool"][0]
+    run_dir = _known_run(tmp_path, {"01": record["id"], "02": record["id"]}, report=(
+        f"- Разбор опирался на запись базы знаний {record['id']} («…»), но пользователь "
+        "отверг её для этой проблемы\n"))
+    (tmp_path / "p" / "alla-kb").mkdir()
+    (tmp_path / "p" / "alla-kb" / f"{record['id']}.json").write_text(json.dumps(
+        {**record, "rejected_signatures": ["v6:01"] if saved else []}), encoding="utf-8")
+    calls = [("run_shell_command", {"command": f"python3 {SKILL} reject {number} {record['id']} "
+                                               f"--run {run_dir}"}, "Запись указана…")]
+    if then_next:
+        calls.append(("run_shell_command", {"command": f"python3 {SKILL} next {run_dir}"},
+                      "STATUS: summary"))
+    assert CHECKS["kb_rejected"](context(tmp_path, events(*calls), "E10"))["status"] == status
