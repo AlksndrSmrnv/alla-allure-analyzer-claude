@@ -203,6 +203,15 @@ KNOWLEDGE: dict[str, list[dict[str, Any]]] = {
 }
 
 
+# Эталон: каким проблемам запись базы знаний сценария относится на самом деле (номера prepare).
+# Проверка сверяет разборы с ним, а не с тем, что скилл предложил: ложное предложение
+# посторонней проблеме, принятое моделью, — провал.
+KNOWLEDGE_TARGETS: dict[str, tuple[str, ...]] = {
+    # 01 — «элемент не найден», 02 — таймаут, 03 — 500 оплаты; 04 — каталог (NPE), не пул.
+    "payments_pool": ("01", "02", "03"),
+}
+
+
 def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str = "") -> Path:
     project = work / "project"
     java = project / "src" / "test" / "java" / "ru" / "company"
@@ -860,13 +869,14 @@ def _known_record(ctx: Context) -> dict[str, Any] | None:
 
 
 def check_known_issue_grouped(ctx: Context) -> dict[str, Any]:
-    """Модель приняла запись базы знаний во всех проблемах её причины, посторонняя — без неё,
-    и в report.md есть блок известных проблем."""
+    """Модель приняла запись базы знаний ровно в проблемах её причины по эталону сценария
+    (``KNOWLEDGE_TARGETS``), посторонняя — без неё, и в report.md есть блок известных проблем."""
     from alla_skill_lib.analysis_format import parse_analysis
 
     record = _known_record(ctx)
     if record is None:
         return bad("у сценария нет базы знаний")
+    expected = list(KNOWLEDGE_TARGETS[ctx.scenario.knowledge])
     found: list[str] = []
     for run_dir in ctx.run_dirs():
         run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
@@ -876,14 +886,14 @@ def check_known_issue_grouped(ctx: Context) -> dict[str, Any]:
             ref = parse_analysis(path.read_text(encoding="utf-8")).kb_ref if path.is_file() else None
             if any(match["id"] == record["id"] for match in entry.get("kb", [])):
                 offered.append(entry["file_id"])
-                if ref == record["id"]:
-                    accepted.append(entry["file_id"])
-            elif ref == record["id"]:
-                return bad(f"кластер {entry['file_id']}: запись, которая не предлагалась")
-        if len(offered) < 2:
-            return bad(f"{run_dir.name}: запись предложена кластерам {offered}")
-        if accepted != offered:
-            return bad(f"{run_dir.name}: запись предложена {offered}, принята {accepted}")
+            if ref == record["id"]:
+                accepted.append(entry["file_id"])
+        missing = [file_id for file_id in expected if file_id not in offered]
+        if missing:
+            return bad(f"{run_dir.name}: скилл не предложил запись проблемам {missing} (предложил {offered})")
+        if accepted != expected:
+            return bad(f"{run_dir.name}: запись принята в {accepted}, по эталону — {expected} "
+                       f"(предложена {offered})")
         report = run_dir / "report.md"
         text = report.read_text(encoding="utf-8") if report.is_file() else ""
         if "### Известные проблемы из базы знаний" not in text:

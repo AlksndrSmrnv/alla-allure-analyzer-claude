@@ -65,6 +65,8 @@ MAX_SUMMARY_LISTED = 40
 MAX_SUMMARY_GROUPS = 10
 # Свёрнутая известная проблема в кратком разборе: номера проблем, дальше «и ещё N».
 MAX_BRIEF_GROUP_NUMBERS = 5
+# Номера проблем одной известной проблемы в данных сводки, дальше «и ещё N».
+MAX_SUMMARY_GROUP_NUMBERS = 20
 SUMMARY_SHORT_CAUSE_CHARS = 160
 SUMMARY_LABEL_CHARS = 120
 
@@ -285,7 +287,7 @@ def build_summary_data(
     rest = largest[MAX_SUMMARY_LISTED:]
     return "\n".join([
         prompt.user_prompt,
-        *(["", _summary_rest(rest, analyses, flagged)] if rest else []),
+        *(["", _summary_rest(rest, analyses, flagged, rejected)] if rest else []),
         *(["", *_summary_known(known)] if known and known.groups else []),
     ])
 
@@ -330,8 +332,13 @@ def _summary_rest(
     rest: list[dict[str, Any]],
     analyses: dict[str, ClusterAnalysis],
     flagged: set[str],
+    rejected: dict[str, KnownRecord],
 ) -> str:
-    """Проблемы, не вошедшие в задание по одной, — одной строкой: сколько их и по каким причинам."""
+    """Проблемы, не вошедшие в задание по одной, — одной строкой: сколько их и по каким причинам.
+
+    Разборы по отвергнутой записи считаются и здесь: иначе ``reject`` маленькой проблемы
+    не менял бы данные сводки, и она осталась бы прежней.
+    """
     problems: Counter[str] = Counter()
     tests: Counter[str] = Counter()
     for entry in rest:
@@ -345,10 +352,15 @@ def _summary_rest(
         f"({tests[key]} {_plural(tests[key], 'тест', 'теста', 'тестов')})"
         for key, count in sorted(problems.items(), key=lambda item: (-tests[item[0]], item[0]))
     ]
+    unconfirmed = sum(1 for entry in rest if entry["file_id"] in rejected)
+    note = (
+        f"; у {unconfirmed} из них разбор опирался на запись базы знаний, которую пользователь "
+        "потом отверг, — их причина не подтверждена" if unconfirmed else ""
+    )
     return (
         f"--- Ещё {len(rest)} {_plural(len(rest), 'проблема', 'проблемы', 'проблем')} поменьше "
         f"({total} {_plural(total, 'тест', 'теста', 'тестов')}), по причинам: "
-        + "; ".join(parts) + " ---"
+        + "; ".join(parts) + note + " ---"
     )
 
 
@@ -361,7 +373,7 @@ def _summary_known(known: KnownIssues) -> list[str]:
         step = _truncate(_one_line(record.first_step), SUMMARY_LABEL_CHARS)
         lines.append(
             f"«{_truncate(_one_line(record.title), SUMMARY_LABEL_CHARS)}»{category}: "
-            f"{_numbers_phrase(group.file_ids)} — {group.size} "
+            f"{_numbers_phrase(group.file_ids, MAX_SUMMARY_GROUP_NUMBERS)} — {group.size} "
             f"{_plural(group.size, 'тест', 'теста', 'тестов')}"
             + (f"; первый шаг рецепта: {step}" if step else "")
         )
