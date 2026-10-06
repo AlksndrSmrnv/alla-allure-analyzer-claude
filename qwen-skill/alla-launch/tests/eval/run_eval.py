@@ -165,27 +165,32 @@ def kb_offers(
     """Какие записи из ``records`` подходят каждому кластеру — по правилу ``prepare``.
 
     Записи подбираются после ``prepare`` по его ``evidence/NN.txt`` и сигнатуре кластера
-    (``match_cluster``), поэтому задания и остальные метрики от них не зависят.
+    (``match_cluster``), поэтому задания и остальные метрики от них не зависят. Сигнатура
+    первой группы причины считается подтверждённой, как после ``remember``.
     """
     import re
 
     from alla_skill_lib import workspace
     from alla_skill_lib.kb import CATEGORY_TO_KB, KBRecord, match_cluster, store_fingerprint
 
+    paths = workspace.RunPaths(prepared.run_dir)
+    run = workspace.read_json(paths.run_json)
+    members = {cluster.file_id: cluster.members for cluster in prepared.clusters}
+    signature_of = {test: entry.get("signature") for entry in run["clusters"]
+                    for test in members[entry["file_id"]]}
     kb_records = []
     cause_of: dict[str, str] = {}
     for record in records:
         entry_id = re.sub(r"[^a-z0-9]+", "_", record["cause"].lower()).strip("_")
         cause_of[entry_id] = record["cause"]
+        confirmed = {signature_of.get(test) for test in record["confirmed_tests"]} - {None}
         kb_records.append(KBRecord(
             id=entry_id, title=record["cause"],
             category=CATEGORY_TO_KB.get(str(record["category"]), "service"),
             description="", resolution_steps=["-"],
             error_example=store_fingerprint(record["error_example"]),
+            confirmed_signatures=sorted(str(signature) for signature in confirmed),
         ))
-    paths = workspace.RunPaths(prepared.run_dir)
-    run = workspace.read_json(paths.run_json)
-    members = {cluster.file_id: cluster.members for cluster in prepared.clusters}
     offers: list[tuple[str, tuple[int, ...], set[str]]] = []
     for entry in run["clusters"]:
         evidence = paths.evidence(entry["file_id"])

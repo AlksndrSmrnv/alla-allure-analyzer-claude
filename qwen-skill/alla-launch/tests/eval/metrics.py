@@ -219,9 +219,11 @@ KB_OFFER_KEYS = ("kb_offers", "kb_offers_found", "kb_offers_wrong")
 def kb_offer_records(labels: dict[str, Any]) -> list[dict[str, Any]]:
     """Синтетические записи базы знаний для причин, у которых несколько групп симптомов.
 
-    Признак записи — первая строка ``evidence`` первой группы причины (как если бы
-    пользователь запомнил её по этой группе). Остальные группы той же причины узнаются,
-    только если эта строка есть и в их данных.
+    Запись — как после ``remember`` по первой группе причины: признак — первая строка её
+    ``evidence``, подтверждённая сигнатура — сигнатура кластера с её тестами
+    (``confirmed_tests``). Остальные группы той же причины узнаются, только если строка
+    признака есть и в их данных; чужие кластеры с той же сигнатурой (общий assertion) —
+    ложное точное совпадение.
     """
     by_cause: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for group in labels["groups"]:
@@ -232,7 +234,7 @@ def kb_offer_records(labels: dict[str, Any]) -> list[dict[str, Any]]:
         evidence = next((group["evidence"][0] for group in groups if group.get("evidence")), None)
         if len(groups) > 1 and evidence:
             records.append({"cause": cause, "category": groups[0].get("category"),
-                            "error_example": evidence})
+                            "error_example": evidence, "confirmed_tests": list(groups[0]["tests"])})
     return records
 
 
