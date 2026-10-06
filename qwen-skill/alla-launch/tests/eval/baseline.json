@@ -72,7 +72,7 @@
       "hidden_groups": 0,
       "kb_offers": 3,
       "kb_offers_found": 3,
-      "kb_offers_wrong": 0,
+      "kb_offers_wrong": 1,
       "max_task_chars": 6881,
       "precision": 1.0,
       "recall": 1.0,
