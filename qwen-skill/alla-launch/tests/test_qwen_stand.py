@@ -16,6 +16,7 @@ from fake_testops_server import FakeTestOpsServer, build_fixture
 from qwen_stand import (
     CHECKS,
     KNOWLEDGE,
+    KNOWLEDGE_TARGETS,
     SCENARIOS,
     Context,
     build_project,
@@ -517,7 +518,7 @@ def test_known_fixture_offers_the_stand_record_to_the_pool_problems(tmp_path: Pa
                           normalize_fp(paths.evidence(entry["file_id"]).read_text(encoding="utf-8")))
     ]
     # 01 — UI-симптом пула (его «к проблеме 1 не относится» пользователь и отвергает), 04 — каталог.
-    assert offered == ["01", "02", "03"]
+    assert offered == list(KNOWLEDGE_TARGETS[scenario.knowledge])
 
 
 def test_build_project_commits_the_scenario_knowledge(tmp_path: Path) -> None:
@@ -558,6 +559,18 @@ def test_known_issue_grouped_check(tmp_path: Path) -> None:
     assert check(context(tmp_path / "c", [], "E10"))["status"] == "fail"
     _known_run(tmp_path / "d", {"01": record_id, "02": record_id, "03": record_id}, report="")
     assert check(context(tmp_path / "d", [], "E10"))["status"] == "fail"
+    # Скилл ошибочно предложил запись каталогу, модель приняла — провал, а не «как предложено».
+    _known_run(tmp_path / "e", {"01": record_id, "02": record_id, "03": record_id, "04": record_id},
+               offered=("01", "02", "03", "04"))
+    assert check(context(tmp_path / "e", [], "E10"))["status"] == "fail"
+    # Предложено каталогу, но модель не приняла — проверка проходит.
+    _known_run(tmp_path / "f", {"01": record_id, "02": record_id, "03": record_id, "04": ""},
+               offered=("01", "02", "03", "04"))
+    assert check(context(tmp_path / "f", [], "E10"))["status"] == "pass"
+    # Проблеме 02 запись не предложена — модель не могла её принять: провал скилла.
+    _known_run(tmp_path / "g", {"01": record_id, "02": "", "03": record_id, "04": ""},
+               offered=("01", "03"))
+    assert check(context(tmp_path / "g", [], "E10"))["status"] == "fail"
 
 
 @pytest.mark.parametrize(("number", "then_next", "saved", "status"), [

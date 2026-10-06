@@ -14,6 +14,8 @@ from alla_skill_lib.kb import KBRecord, ProjectKB
 from alla_skill_lib.known_issues import KnownIssues, known_issues
 from alla_skill_lib.report import (
     MAX_BRIEF_ITEMS,
+    MAX_SUMMARY_GROUP_NUMBERS,
+    MAX_SUMMARY_LISTED,
     _brief_units,
     _problem,
     _sort_key,
@@ -373,6 +375,34 @@ def test_summary_data_limits_known_issues(tmp_path: Path) -> None:
         "Кроме них, ещё 5 известных проблем поменьше (у каждой своя причина) объединяют "
         "10 проблем (10 тестов)."
     ) in data
+
+
+def test_summary_data_bounds_one_large_known_issue(tmp_path: Path) -> None:
+    def size(count: int) -> int:
+        run, analyses, paths = _setup(tmp_path / str(count), [1] * count, [_kb(APP)] * count)
+        data = build_summary_data(run, analyses, set(), _known(run, analyses, paths))
+        line = next(line for line in data.splitlines() if line.startswith("«Пул"))
+        assert f" и ещё {count - MAX_SUMMARY_GROUP_NUMBERS} — {count} тестов" in line
+        return len(data)
+
+    small, large = size(100), size(1000)
+    assert large - small < 300  # только числа в строках, без номеров каждой проблемы
+
+
+def test_reject_beyond_listed_problems_changes_the_summary(tmp_path: Path) -> None:
+    count = MAX_SUMMARY_LISTED + 1
+    record = _record()
+    # 40 больших проблем без записи и одна маленькая с одиночной ссылкой на запись.
+    texts = [APP] * (count - 1) + [_kb(APP)]
+    run, analyses, paths = _setup(tmp_path, [10] * (count - 1) + [1], texts, records=[record])
+    before = _hash(run, analyses, _known(run, analyses, paths))
+    record.reject(f"v6:sig{count}")
+    ProjectKB(Path(run["kb_dir"])).save(record)
+    known = _known(run, analyses, paths)
+    assert set(known.rejected) == {str(count)}
+    assert _hash(run, analyses, known) != before
+    data = build_summary_data(run, analyses, set(), known)
+    assert "у 1 из них разбор опирался на запись базы знаний, которую пользователь потом отверг" in data
 
 
 def test_rejected_record_marks_the_analysis_as_unconfirmed(tmp_path: Path) -> None:
