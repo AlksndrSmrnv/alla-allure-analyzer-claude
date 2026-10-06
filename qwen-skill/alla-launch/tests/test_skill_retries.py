@@ -65,6 +65,23 @@ def test_task_section_for_one_test_and_without_different_attempts() -> None:
     assert "другой ошибкой" not in text
 
 
+@pytest.mark.parametrize("other", ["skipped", "unknown"])
+def test_attempt_with_other_status_is_not_called_the_same_failure(other: str) -> None:
+    facts = retry_facts(_tests([SAME, {"status": other, "message": None, "same_as_final": None}]))
+    line = report_line(facts)
+
+    assert (facts.same, facts.other) == (0, 1)
+    assert line is not None and "той же ошибкой" not in line
+    assert f"есть попытка со статусом {other}" in line
+
+
+def test_unknown_error_wins_over_other_status() -> None:
+    facts = retry_facts(_tests([UNKNOWN, {"status": "skipped"}], [{"status": "skipped"}]))
+
+    assert (facts.unknown, facts.other, facts.same) == (1, 1, 0)
+    assert facts.other_statuses == ["skipped"]
+
+
 def test_omitted_attempts_limit_the_claims_to_the_shown_ones() -> None:
     # Ядро хранит последние 5 попыток: более ранняя могла упасть иначе.
     one = "\n".join(render_task_section(retry_facts(_tests([SAME] * 5, omitted=2))))

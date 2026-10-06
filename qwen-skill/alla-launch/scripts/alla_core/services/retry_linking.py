@@ -8,8 +8,9 @@
 
 1. ``historyId``, затем ``historyKey``;
 2. ``testCaseId`` + нормализованные ``parameters`` + ``environment`` — только если есть
-   ``testCaseId`` и хотя бы одно из двух полей: один ``testCaseId`` смешал бы
-   параметризованные тесты;
+   ``testCaseId`` и оба поля известны (список или словарь, пустой тоже). Нет поля или
+   ``null`` — контекст неизвестен, а не пуст: иначе ключом стал бы один ``testCaseId``,
+   который смешал бы параметризованные тесты и прогоны на разных окружениях;
 3. иначе попытки не связываются, и это видно в :class:`RetryInfo`.
 
 Чистые функции без сети; ошибки попыток догружает ``TriageService``.
@@ -116,7 +117,7 @@ def retry_warnings(info: RetryInfo) -> list[str]:
         warnings.append(
             f"Повторы не связаны с финальными результатами (скрытых попыток: "
             f"{info.hidden_total}): в ответах TestOps нет ни historyId/historyKey, ни "
-            "testCaseId с параметрами или окружением."
+            "testCaseId с параметрами и окружением."
         )
     elif unlinked := info.no_key + info.no_final + info.ambiguous:
         parts = [
@@ -158,30 +159,31 @@ def _text(value: Any) -> str | None:
 
 
 def _context_key(result: TestResultResponse) -> str | None:
-    """``testCaseId`` + параметры + окружение; без ``testCaseId`` или без обоих полей — ``None``."""
+    """``testCaseId`` + параметры + окружение; ``None`` — нет ``testCaseId`` или контекст
+    неизвестен: одного из полей нет, оно ``null`` или не список/словарь."""
     extra = result.model_extra or {}
-    if result.test_case_id is None or not any(name in extra for name in _CONTEXT_FIELDS):
+    if result.test_case_id is None:
         return None
     parts = [str(result.test_case_id)]
-    parts += [json.dumps(_pairs(extra.get(name)), ensure_ascii=False) for name in _CONTEXT_FIELDS]
+    for name in _CONTEXT_FIELDS:
+        value = extra.get(name)
+        if not isinstance(value, (list, dict)):
+            return None
+        parts.append(json.dumps(_pairs(value), ensure_ascii=False))
     return "\x1f".join(parts)
 
 
-def _pairs(value: Any) -> list[list[str]]:
+def _pairs(value: list[Any] | dict[str, Any]) -> list[list[str]]:
     """Параметры или окружение — отсортированные пары ``[имя, значение]``.
 
     Порядок в ответе не важен. Параметры с ``excluded: true`` пропускаются: Allure не
     включает их в ``historyId``.
     """
-    if value is None:
-        return []
     items: list[Any]
     if isinstance(value, dict):
         items = [{"name": key, "value": item} for key, item in value.items()]
-    elif isinstance(value, list):
-        items = value
     else:
-        items = [value]
+        items = list(value)
     pairs: list[list[str]] = []
     for item in items:
         if isinstance(item, dict):
