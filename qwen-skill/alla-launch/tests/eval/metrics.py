@@ -211,3 +211,56 @@ def evaluate_retries(expected: dict[str, Any], triage: dict[str, Any]) -> dict[s
     problems += [f"лишний прошедший после повтора {item}"
                  for item in sorted(got_passed - wanted_passed)]
     return {**totals, "retry_problems": problems}
+
+
+KB_OFFER_KEYS = ("kb_offers", "kb_offers_found", "kb_offers_wrong")
+
+
+def kb_offer_records(labels: dict[str, Any]) -> list[dict[str, Any]]:
+    """Синтетические записи базы знаний для причин, у которых несколько групп симптомов.
+
+    Признак записи — первая строка ``evidence`` первой группы причины (как если бы
+    пользователь запомнил её по этой группе). Остальные группы той же причины узнаются,
+    только если эта строка есть и в их данных.
+    """
+    by_cause: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for group in labels["groups"]:
+        if group.get("cause"):
+            by_cause[group["cause"]].append(group)
+    records: list[dict[str, Any]] = []
+    for cause, groups in by_cause.items():
+        evidence = next((group["evidence"][0] for group in groups if group.get("evidence")), None)
+        if len(groups) > 1 and evidence:
+            records.append({"cause": cause, "category": groups[0].get("category"),
+                            "error_example": evidence})
+    return records
+
+
+def evaluate_kb_offers(
+    labels: dict[str, Any],
+    offers: Iterable[tuple[str, tuple[int, ...], set[str]]],
+) -> dict[str, Any]:
+    """Кому ``prepare`` предложил записи из :func:`kb_offer_records` (шаг 6).
+
+    ``offers`` — (кластер, его тесты, причины предложенных записей). Пара «кластер — запись»
+    ожидается, если в кластере есть тест этой причины:
+
+    * ``kb_offers`` / ``_found`` — ожидаемые пары и предложенные из них (запись дошла до
+      всех проблем своей причины — иначе их не сгруппировать);
+    * ``kb_offers_wrong`` — предложения кластерам без тестов этой причины (ложное
+      предложение и согласие модели дали бы ложную известную проблему).
+    """
+    causes = {record["cause"] for record in kb_offer_records(labels)}
+    cause_of = {test: group.get("cause") for group in labels["groups"] for test in group["tests"]}
+    totals = dict.fromkeys(KB_OFFER_KEYS, 0)
+    problems: list[str] = []
+    for file_id, members, offered in offers:
+        present = {cause_of.get(test) for test in members} & causes
+        totals["kb_offers"] += len(present)
+        totals["kb_offers_found"] += len(present & offered)
+        totals["kb_offers_wrong"] += len(offered - present)
+        problems += [f"кластер {file_id}: не предложена запись причины {cause}"
+                     for cause in sorted(present - offered)]
+        problems += [f"кластер {file_id}: предложена запись чужой причины {cause}"
+                     for cause in sorted(offered - present)]
+    return {**totals, "kb_offer_problems": problems}
