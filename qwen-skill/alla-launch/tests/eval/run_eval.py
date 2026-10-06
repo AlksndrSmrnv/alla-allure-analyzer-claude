@@ -39,12 +39,15 @@ from eval import corpus_dev, corpus_holdout  # noqa: E402
 from eval.cassette import load_cassette, replay  # noqa: E402
 from eval.corpus import Case, validate_labels  # noqa: E402
 from eval.metrics import (  # noqa: E402
+    KB_OFFER_KEYS,
     RETRY_KEYS,
     ClusterView,
     combine,
     coverage,
     evaluate,
+    evaluate_kb_offers,
     evaluate_retries,
+    kb_offer_records,
     summary,
 )
 
@@ -147,9 +150,50 @@ def evaluate_fixture(fixture: LaunchFixture, labels: dict[str, Any]) -> dict[str
         result = evaluate(labels, prepared.clusters)
         if labels.get("retries"):
             result.update(evaluate_retries(labels["retries"], prepared.triage))
+        records = kb_offer_records(labels)
+        if records:
+            result.update(evaluate_kb_offers(labels, kb_offers(prepared, records)))
     result["max_task_chars"] = prepared.max_task_chars
     result["seconds"] = round(prepared.seconds, 2)
     return result
+
+
+def kb_offers(
+    prepared: PreparedRun,
+    records: list[dict[str, Any]],
+) -> list[tuple[str, tuple[int, ...], set[str]]]:
+    """Какие записи из ``records`` подходят каждому кластеру — по правилу ``prepare``.
+
+    Записи подбираются после ``prepare`` по его ``evidence/NN.txt`` и сигнатуре кластера
+    (``match_cluster``), поэтому задания и остальные метрики от них не зависят.
+    """
+    import re
+
+    from alla_skill_lib import workspace
+    from alla_skill_lib.kb import CATEGORY_TO_KB, KBRecord, match_cluster, store_fingerprint
+
+    kb_records = []
+    cause_of: dict[str, str] = {}
+    for record in records:
+        entry_id = re.sub(r"[^a-z0-9]+", "_", record["cause"].lower()).strip("_")
+        cause_of[entry_id] = record["cause"]
+        kb_records.append(KBRecord(
+            id=entry_id, title=record["cause"],
+            category=CATEGORY_TO_KB.get(str(record["category"]), "service"),
+            description="", resolution_steps=["-"],
+            error_example=store_fingerprint(record["error_example"]),
+        ))
+    paths = workspace.RunPaths(prepared.run_dir)
+    run = workspace.read_json(paths.run_json)
+    members = {cluster.file_id: cluster.members for cluster in prepared.clusters}
+    offers: list[tuple[str, tuple[int, ...], set[str]]] = []
+    for entry in run["clusters"]:
+        evidence = paths.evidence(entry["file_id"])
+        text = evidence.read_text(encoding="utf-8") if evidence.is_file() else ""
+        matches = match_cluster(kb_records, entry.get("signature"), text)
+        offers.append((entry["file_id"], members[entry["file_id"]],
+                       {cause_of[match["id"]] for match in matches}))
+    return offers
 
 
 def evaluate_cases(
@@ -174,7 +218,13 @@ def evaluate_cases(
 
 def baseline_entry(result: dict[str, Any]) -> dict[str, Any]:
     """Метрики для базовой линии: без времени (оно зависит от машины)."""
-    return {**summary(result), **retry_summary(result), "max_task_chars": result["max_task_chars"]}
+    return {**summary(result), **retry_summary(result), **kb_offer_summary(result),
+            "max_task_chars": result["max_task_chars"]}
+
+
+def kb_offer_summary(result: dict[str, Any]) -> dict[str, int]:
+    """Числа предложения записей — только у сценариев с причиной из нескольких групп."""
+    return {key: result[key] for key in KB_OFFER_KEYS if key in result}
 
 
 def retry_summary(result: dict[str, Any]) -> dict[str, int]:
@@ -214,6 +264,11 @@ def print_table(results: dict[str, dict[str, dict[str, Any]]]) -> None:
         for case_name, result in cases.items():
             if "retry_links" in result:
                 print(f"повторы {case_name}: {_retry_cells(result)}")
+        for case_name, result in cases.items():
+            if "kb_offers" in result:
+                print(f"записи базы знаний {case_name}: предложены своей причине "
+                      f"{result['kb_offers_found']}/{result['kb_offers']}, чужой "
+                      f"{result['kb_offers_wrong']}")
 
 
 def _retry_cells(result: dict[str, Any]) -> str:
@@ -237,6 +292,7 @@ def print_details(results: dict[str, dict[str, dict[str, Any]]]) -> None:
             lines += [f"  потеряна ({item['reason']}): {item['group']}: {item['line']}"
                       for item in result["lost"]]
             lines += [f"  повторы: {problem}" for problem in result.get("retry_problems", [])]
+            lines += [f"  база знаний: {problem}" for problem in result.get("kb_offer_problems", [])]
             if result["unclustered"] or result["unlabeled"]:
                 lines.append(f"  вне кластеров: {result['unclustered']}, "
                              f"без разметки: {result['unlabeled']}")

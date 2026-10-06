@@ -467,6 +467,59 @@ def auth_down_symptoms() -> Case:
     return builder.build("auth_down_symptoms")
 
 
+PAYMENT_POOL_LOG = (
+    "2026-10-03 10:00:00 [INFO] PaymentController: POST /payments\n"
+    "2026-10-03 10:00:30 [ERROR] PaymentRepository: could not load payment\n"
+    "java.sql.SQLTransientConnectionException: HikariPool-2 - Connection is not available, "
+    "request timed out after 30000ms.\n"
+    "\tat com.zaxxer.hikari.pool.HikariPool.createTimeoutException(HikariPool.java:696)\n"
+    "\tat ru.company.payments.PaymentRepository.find(PaymentRepository.java:57)\n"
+    "2026-10-03 10:00:30 [INFO] PaymentController: POST /payments -> 500\n"
+)
+CATALOG_NPE_LOG = (
+    "2026-10-03 10:00:00 [INFO] CatalogController: GET /catalog\n"
+    "2026-10-03 10:00:00 [ERROR] PriceService: failed to build price list\n"
+    "java.lang.NullPointerException: Cannot invoke \"Price.amount()\" because \"price\" is null\n"
+    "\tat ru.company.catalog.PriceService.list(PriceService.java:33)\n"
+    "2026-10-03 10:00:00 [INFO] CatalogController: GET /catalog -> 500\n"
+)
+POOL_EVIDENCE = "HikariPool-2 - Connection is not available, request timed out after 30000ms."
+
+
+def known_issue_symptoms() -> Case:
+    """Одна причина (пул БД платежей) — три симптома, у каждого строка пула в логе.
+
+    Кластеры остаются разными (разные симптомы), но запись базы знаний с признаком пула
+    должна предлагаться всем трём и не предлагаться посторонней проблеме (шаг 6, стенд E10).
+    """
+    builder = LaunchBuilder(5112, "Payments regression")
+    test_class = "ru.company.payments.PaymentTest"
+    timeout = "java.net.SocketTimeoutException: Read timed out"
+    ui_message, ui_trace = _selenide("#payment-status", "PaymentPage", "status")
+    cases: list[tuple[str, str, str, str, str | None, str | None, tuple[str, ...]]] = [
+        ("pay-pool-500", "payment-db-pool", ASSERT_500, "Оплатить заказ", PAYMENT_POOL_LOG, None,
+         ("payByCard", "payBySbp")),
+        ("pay-pool-timeout", "payment-db-pool", timeout, "Вернуть платёж", PAYMENT_POOL_LOG,
+         java_trace(timeout, ["ru.company.payments.PaymentClient.refund(PaymentClient.java:19)"]),
+         ("refundFull", "refundPartial")),
+        ("pay-pool-ui", "payment-db-pool", ui_message, "Открыть статус оплаты", PAYMENT_POOL_LOG,
+         ui_trace, ("paymentStatusUi", "paymentStatusMobile")),
+        ("catalog-npe", "catalog-price-null", ASSERT_500, "Открыть каталог", CATALOG_NPE_LOG, None,
+         ("catalogPage", "catalogSearch")),
+    ]
+    for group, cause, message, step, log, trace, methods in cases:
+        evidence = POOL_EVIDENCE if log is PAYMENT_POOL_LOG else (
+            "Cannot invoke \"Price.amount()\" because \"price\" is null")
+        for index, method in enumerate(methods):
+            builder.add_failure(
+                group, cause=cause, category="приложение", name=method,
+                full_name=f"{test_class}.{method}", message=message,
+                trace=trace or _assert_trace(message, test_class, method, 30 + index * 9),
+                step=step, log=log, evidence=[evidence], status="broken" if trace else "failed",
+            )
+    return builder.build("known_issue_symptoms")
+
+
 def retries() -> Case:
     """Ретраи для шага 5: hidden-попытки с полями связи (``historyId``, ``testCaseId``…).
 
@@ -608,6 +661,7 @@ CASES: dict[str, Callable[[], Case]] = {
     "data_validation": data_validation,
     "no_data": no_data,
     "auth_down_symptoms": auth_down_symptoms,
+    "known_issue_symptoms": known_issue_symptoms,
     "retries": retries,
     "big_launch": big_launch,
 }
