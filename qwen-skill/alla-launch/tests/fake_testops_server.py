@@ -42,6 +42,7 @@ FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
     "scant": scant_launch,
     "mixed": lambda: _mixed_launch(),
     "retries": lambda: _retries_launch(),
+    "known": lambda: _known_launch(),
 }
 
 
@@ -57,6 +58,13 @@ def _retries_launch() -> LaunchFixture:
     from eval.corpus_dev import retries
 
     return retries().fixture
+
+
+def _known_launch() -> LaunchFixture:
+    """Одна причина за тремя симптомами и посторонняя проблема (корпус эталона, E10)."""
+    from eval.corpus_dev import known_issue_symptoms
+
+    return known_issue_symptoms().fixture
 
 
 def build_fixture(spec: str) -> LaunchFixture:
