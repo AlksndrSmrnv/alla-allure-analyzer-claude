@@ -91,8 +91,14 @@ def run_records(
     analyses: dict[str, ClusterAnalysis],
     flagged: set[str],
     run_name: str,
+    known_refs: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Записи истории по завершённому разбору (кластеры без данных пропускаются)."""
+    """Записи истории по завершённому разбору (кластеры без данных пропускаются).
+
+    ``known_refs`` — подтверждённые ссылки на записи базы знаний (file_id → id, см.
+    ``known_issues``): отвергнутая после разбора запись не должна считать повторы. Без
+    него — ссылка из разбора как есть.
+    """
     records: list[dict[str, Any]] = []
     for entry in run["clusters"]:
         if entry.get("auto") or not entry.get("signature"):
@@ -112,7 +118,10 @@ def run_records(
             "cause": " ".join(analysis.cause_reason.split())[:MAX_CAUSE_CHARS]
             if trusted and analysis else None,
             "members": entry["member_count"],
-            "kb_entry": analysis.kb_ref if trusted and analysis else None,
+            "kb_entry": (
+                known_refs.get(entry["file_id"]) if known_refs is not None
+                else analysis.kb_ref if trusted and analysis else None
+            ),
         })
     return records
 

@@ -476,6 +476,15 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     # Пользователь сказал, что запись здесь ни при чём — в следующий раз её нет.
     code, out = _run(["reject", "1", entry_id, "--run", str(run_dir2)], capsys)
     assert code == 0 and out.startswith("STATUS: saved")
+    assert f"Запись указана в разборах проблемы {int(order)}" in out
+    assert f"next {run_dir2}" in out
+    # Отчёт пересобирается по текущей базе знаний: отвергнутая запись — уже не известная проблема.
+    out = _next(run_dir2, capsys)
+    assert f"[известная проблема: {entry_id}]" not in out and out.startswith("STATUS: done")
+    assert "Известная проблема" not in _full_report(run_dir2)
+    history = (project / "alla-reports" / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    latest = [json.loads(line) for line in history if json.loads(line)["launch_id"] == 778]
+    assert next(r for r in reversed(latest) if r["file_id"] == order)["kb_entry"] is None
     FakeTestOps(default_launch(779)).install(monkeypatch)
     _, run3, _ = _prepare(project, capsys, launch_id=779)
     assert next(e for e in run3["clusters"] if e["file_id"] == order)["kb"] == []

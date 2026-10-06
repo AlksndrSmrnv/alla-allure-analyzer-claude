@@ -30,6 +30,7 @@ from alla_skill_lib.agent_rules import EXECUTOR_RULES, SUMMARY_FORMAT_REF, refer
 from alla_skill_lib.analysis_format import UNCONFIRMED_NOTE, ClusterAnalysis, first_sentence
 from alla_skill_lib.cluster_task import UNTRUSTED_NOTE
 from alla_skill_lib.history import format_date
+from alla_skill_lib.known_issues import KnownIssue, KnownIssues, KnownRecord
 from alla_skill_lib.proposals import Proposal, weakening_warnings
 from alla_skill_lib.retries import MAX_REPORT_PASSED, passed_after_retry, report_line, retry_facts
 from alla_skill_lib.sources import describe
@@ -60,6 +61,10 @@ MAX_DETAIL_TESTS = 200
 # остальные — одной сводной строкой по причинам, чтобы задание не росло с числом проблем.
 MAX_SUMMARY_DETAILED = 10
 MAX_SUMMARY_LISTED = 40
+# Известные проблемы в данных сводки: самые большие группы строкой, остальные — одной строкой.
+MAX_SUMMARY_GROUPS = 10
+# Свёрнутая известная проблема в кратком разборе: номера проблем, дальше «и ещё N».
+MAX_BRIEF_GROUP_NUMBERS = 5
 SUMMARY_SHORT_CAUSE_CHARS = 160
 SUMMARY_LABEL_CHARS = 120
 
@@ -82,6 +87,9 @@ SUMMARY_TASK = """\
    сказано в разборе: название шага — не результат (при голом assertion — «не
    прошла проверка на шаге «Выгрузить отчёт»», а не «отчёт не выгрузился»).
 3. С чего начать инженеру: 1–2 конкретных действия.
+Если в данных есть блок «Известные проблемы из базы знаний», проблемы из одной его строки —
+одна причина: называй их одной проблемой с номерами из блока («проблемы 3, 7 и 12 — одна
+известная проблема: …»), а не разными сбоями.
 Полный список проблем строит отчёт — не перечисляй все проблемы и не пересказывай
 каждую."""
 
@@ -160,6 +168,10 @@ class _Problem:
     proposal: Proposal | None
     state: str  # applied_state правки: applied | not_applied | unknown
     bucket: str
+    # Запись базы знаний, подтверждённая для разбора, и расхождение категории с ней.
+    known: KnownRecord | None = None
+    mismatch: KnownRecord | None = None
+    group: KnownIssue | None = None
 
     @property
     def applied(self) -> bool:
@@ -224,6 +236,7 @@ def build_summary_data(
     run: dict[str, Any],
     analyses: dict[str, ClusterAnalysis],
     flagged: set[str],
+    known: KnownIssues | None = None,
 ) -> str:
     """Общий блок данных для задания сводки и проверки её актуальности.
 
@@ -271,6 +284,7 @@ def build_summary_data(
     return "\n".join([
         prompt.user_prompt,
         *(["", _summary_rest(rest, analyses, flagged)] if rest else []),
+        *(["", *_summary_known(known)] if known and known.groups else []),
     ])
 
 
@@ -281,10 +295,11 @@ def build_summary_task(
     paths: RunPaths,
     *,
     data: str | None = None,
+    known: KnownIssues | None = None,
 ) -> str:
     """Данные сводки с правилами, путями и заданием для агента."""
     if data is None:
-        data = build_summary_data(run, analyses, flagged)
+        data = build_summary_data(run, analyses, flagged, known)
     return "\n".join([
         f"# Общий анализ прогона #{run['launch_id']}",
         "",
@@ -335,6 +350,39 @@ def _summary_rest(
     )
 
 
+def _summary_known(known: KnownIssues) -> list[str]:
+    """Известные проблемы из базы знаний: какие проблемы отчёта — одна причина."""
+    lines = ["--- Известные проблемы из базы знаний (подтверждены пользователем) ---"]
+    for group in known.groups[:MAX_SUMMARY_GROUPS]:
+        record = group.record
+        category = f" [{record.category}]" if record.category else ""
+        lines.append(
+            f"«{_truncate(_one_line(record.title), SUMMARY_LABEL_CHARS)}»{category}: "
+            f"{_numbers_phrase(group.file_ids)} — {group.size} "
+            f"{_plural(group.size, 'тест', 'теста', 'тестов')}"
+        )
+    rest = known.groups[MAX_SUMMARY_GROUPS:]
+    if rest:
+        problems = sum(len(group.file_ids) for group in rest)
+        tests = sum(group.size for group in rest)
+        lines.append(
+            f"Ещё {len(rest)} {_plural(len(rest), 'известная проблема', 'известные проблемы', 'известных проблем')} "
+            f"объединяют {problems} {_plural(problems, 'проблему', 'проблемы', 'проблем')} "
+            f"({tests} {_plural(tests, 'тест', 'теста', 'тестов')})."
+        )
+    return lines
+
+
+def _numbers_phrase(file_ids: list[str], limit: int | None = None) -> str:
+    """«проблемы 3, 7, 12»; с лимитом — «проблемы 3, 7, 12, 15, 20 и ещё 4»."""
+    numbers = [str(int(file_id)) for file_id in file_ids]
+    shown = numbers if limit is None else numbers[:limit]
+    text = "проблемы " + ", ".join(shown)
+    if len(numbers) > len(shown):
+        text += f" и ещё {len(numbers) - len(shown)}"
+    return text
+
+
 def _summary_text(analysis: ClusterAnalysis, flagged: bool, detailed: bool) -> str:
     if flagged:  # формат нарушен — разделов нет, берём начало текста как есть
         limit = MAX_FLAGGED_SUMMARY_CHARS if detailed else SUMMARY_SHORT_CAUSE_CHARS
@@ -360,18 +408,21 @@ def render_report(
     apply_states: dict[str, str] | None = None,
     notes: list[str] | None = None,
     not_proposed: dict[str, str] | None = None,
+    known: KnownIssues | None = None,
 ) -> tuple[str, str]:
     """Вернуть (краткий текст для консоли, полный текст report.md).
 
     ``proposals`` — принятые предложения (и «исправить», и «не трогать»);
     ``apply_states`` — ``applied_state`` каждой правки (нет записи = не применена);
-    ``not_proposed`` — почему по проблеме «тест» правку не предлагали.
+    ``not_proposed`` — почему по проблеме «тест» правку не предлагали;
+    ``known`` — подтверждённые известные проблемы (``known_issues``); без него ссылка
+    разбора на запись базы знаний показывается как есть, без групп.
     """
     proposals = proposals or {}
     apply_states = apply_states or {}
     tests = _Tests.of(run)
     problems = [
-        _problem(entry, analyses[entry["file_id"]], flagged, proposals, apply_states)
+        _problem(entry, analyses[entry["file_id"]], flagged, proposals, apply_states, known)
         for entry in run["clusters"]
     ]
     reasons = not_proposed or {}
@@ -393,6 +444,8 @@ def render_report(
 
     full = _header(run)
     full += ["", "### Коротко", summary]
+    if known and known.groups:
+        full += ["", *_known_section(known, problems)]
     for bucket, title, hint in SECTIONS:
         group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
         if group:
@@ -437,6 +490,7 @@ def _problem(
     flagged: set[str],
     proposals: dict[str, Proposal],
     apply_states: dict[str, str],
+    known: KnownIssues | None = None,
 ) -> _Problem:
     file_id = entry["file_id"]
     is_flagged = file_id in flagged
@@ -452,7 +506,19 @@ def _problem(
         bucket = MANUAL
     else:
         bucket = ENVIRONMENT
-    return _Problem(entry, analysis, is_flagged, proposal, state, bucket)
+    if known is not None:
+        return _Problem(
+            entry, analysis, is_flagged, proposal, state, bucket,
+            known=known.refs.get(file_id),
+            mismatch=known.mismatched.get(file_id),
+            group=known.group_of(file_id),
+        )
+    # Без проверки по базе знаний (вызов без known): ссылка разбора как есть.
+    ref = None if is_flagged or not analysis.kb_ref else KnownRecord(
+        kb_dir="", id=analysis.kb_ref, title=analysis.kb_ref, category=None, description="",
+        first_step="", verified=False,
+    )
+    return _Problem(entry, analysis, is_flagged, proposal, state, bucket, known=ref)
 
 
 def _sort_key(problem: _Problem) -> tuple[int, int, int]:
@@ -487,6 +553,31 @@ def _header(run: dict[str, Any]) -> list[str]:
     if passed := len(passed_after_retry(run)):
         lines.append(f"Прошли после повтора: {passed} — в разбор не входят, список ниже.")
     return lines + [f"Внимание: {warning}" for warning in run.get("warnings", [])]
+
+
+def _known_section(known: KnownIssues, problems: list[_Problem]) -> list[str]:
+    """«Известные проблемы из базы знаний» в report.md: какие проблемы — одна причина."""
+    labels = {p.number: p.label for p in problems}
+    lines = [
+        f"### Известные проблемы из базы знаний ({len(known.groups)})",
+        ("Причина этих проблем уже записана в базе знаний проекта, а разборы её подтвердили. "
+         "Ниже проблемы остаются под своими номерами."),
+    ]
+    for group in known.groups:
+        record = group.record
+        label = labels.get(int(group.file_ids[0]), "")
+        where = f", модуль {record.module}" if known.several_modules and record.module else ""
+        size = f"{group.size} {_plural(group.size, 'тест', 'теста', 'тестов')}"
+        lines += [
+            "",
+            (f"- «{_one_line(record.title)}» (`{record.id}`{where}; {label}) — "
+             f"{_numbers_phrase(group.file_ids)} · {size}"),
+        ]
+        if record.description:
+            lines.append(f"   Причина: {record.description}")
+        if record.first_step:
+            lines.append(f"   Что делать: {_one_line(record.first_step)}")
+    return lines
 
 
 def _section(
@@ -620,9 +711,11 @@ def _brief_section(
 ) -> list[str]:
     icon, _ = BRIEF_SECTIONS[bucket]
     lines = [f"### {icon} {title} ({len(group)})"]
-    for problem in group[:MAX_BRIEF_ITEMS]:
-        lines += ["", *_brief_item(problem, tests, not_proposed)]
-    rest = group[MAX_BRIEF_ITEMS:]
+    units = _brief_units(bucket, group)
+    for unit in units[:MAX_BRIEF_ITEMS]:
+        item = _brief_item(unit[0], tests, not_proposed) if len(unit) == 1 else _brief_known(unit, tests)
+        lines += ["", *item]
+    rest = [problem for unit in units[MAX_BRIEF_ITEMS:] for problem in unit]
     if rest:
         # Без номеров: голый список номеров ничего не говорит, а при тысячах проблем
         # рос бы с каждым next. Сколько их и где смотреть — достаточно.
@@ -636,6 +729,47 @@ def _brief_section(
             ),
         ]
     return lines
+
+
+def _brief_units(bucket: str, group: list[_Problem]) -> list[list[_Problem]]:
+    """Пункты раздела брифа: проблема или несколько проблем одной известной проблемы.
+
+    Проблемы одной группы в разделе сворачиваются в один пункт на месте первой из них.
+    В «Агент может поправить сам» не сворачиваются: у каждой своя правка и своя команда.
+    """
+    units: list[list[_Problem]] = []
+    placed: dict[tuple[str, str], list[_Problem]] = {}
+    for problem in group:
+        key = problem.group.record.key if problem.group is not None and bucket != AGENT else None
+        if key is not None and key in placed:
+            placed[key].append(problem)
+            continue
+        unit = [problem]
+        units.append(unit)
+        if key is not None:
+            placed[key] = unit
+    return units
+
+
+def _brief_known(unit: list[_Problem], tests: _Tests) -> list[str]:
+    """Свёрнутая известная проблема: номера, запись базы знаний, её первый шаг и пример теста."""
+    first = unit[0]
+    assert first.group is not None
+    record = first.group.record
+    size = sum(p.size for p in unit)
+    numbers = _numbers_phrase([p.entry["file_id"] for p in unit], MAX_BRIEF_GROUP_NUMBERS)
+    lines = [
+        (f"**{numbers[0].upper()}{numbers[1:]}** · {size} {_plural(size, 'тест', 'теста', 'тестов')} "
+         f"· [известная проблема: {record.id}]"),
+        _truncate(f"Одна известная проблема: «{_plain_line(_one_line(record.title))}»", BRIEF_TEXT_CHARS),
+    ]
+    reason = record.description or _one_line(_reason(first))
+    lines.append(_brief_field("База знаний:", f"[{first.tag}] {_truncate(_plain_line(reason), BRIEF_CAUSE_CHARS)}"))
+    step = _one_line(record.first_step) or first.analysis.first_fix_step()
+    if step:
+        lines.append(_brief_field("Что делать:", _truncate(_plain_line(step), BRIEF_STEP_CHARS)))
+    largest = max(unit, key=lambda p: (p.size, -p.number))
+    return lines + _brief_example(largest, tests)
 
 
 def _brief_lines(items: list[str], prefix: str, what: str) -> list[str]:
@@ -783,8 +917,10 @@ def _brief_tags(problem: _Problem) -> list[str]:
             f"повторяется: уже была в {launches} "
             f"{_plural(launches, 'другом прогоне', 'других прогонах', 'других прогонах')}"
         )
-    if not problem.flagged and problem.analysis.kb_ref:
-        tags.append(f"известная проблема: {problem.analysis.kb_ref}")
+    if problem.known is not None:
+        tags.append(f"известная проблема: {problem.known.id}")
+    if problem.mismatch is not None:
+        tags.append(f"расходится с базой знаний: {problem.mismatch.id}")
     return tags
 
 
@@ -838,9 +974,30 @@ def _history_lines(problem: _Problem) -> list[str]:
             f"- Повторяется: уже была в {launches} {where}, "
             f"впервые {format_date(history['first_date'])}"
         )
-    if not problem.flagged and problem.analysis.kb_ref:
-        lines.append(f"- Известная проблема: {problem.analysis.kb_ref} (есть в базе знаний проекта)")
+    lines += _known_lines(problem)
     return lines
+
+
+def _known_lines(problem: _Problem) -> list[str]:
+    """Известная проблема у проблемы в report.md: запись, группа или расхождение с записью."""
+    if problem.group is not None and problem.known is not None:
+        others = [str(int(file_id)) for file_id in problem.group.file_ids if int(file_id) != problem.number]
+        together = ("с проблемой " if len(others) == 1 else "с проблемами ") + ", ".join(others)
+        return [(
+            f"- Известная проблема: {problem.known.id} — «{_one_line(problem.known.title)}», "
+            f"вместе {together}"
+        )]
+    if problem.known is not None:
+        return [f"- Известная проблема: {problem.known.id} (есть в базе знаний проекта)"]
+    record = problem.mismatch
+    if record is None:
+        return []
+    named = problem.analysis.category or "не названа"
+    return [(
+        f"- Разбор ссылается на известную проблему {record.id} («{_one_line(record.title)}»), "
+        f"но называет другую причину ({named}; в базе знаний — {record.category}) — "
+        "проверьте разбор или запись"
+    )]
 
 
 # ---------------------------------------------------------------------------

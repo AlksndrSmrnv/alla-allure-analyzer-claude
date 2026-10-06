@@ -159,6 +159,14 @@ def test_summary_task_keeps_unknown_causes_unknown() -> None:
     assert "не больше, чем сказано в разборе" in text and "название шага — не результат" in text
 
 
+def test_summary_task_names_a_known_issue_as_one_problem() -> None:
+    # Шаг 6: проблемы одной записи базы знаний — одна причина, а не разные сбои.
+    from alla_skill_lib.report import SUMMARY_TASK
+    text = " ".join(SUMMARY_TASK.split())
+    assert "«Известные проблемы из базы знаний»" in text
+    assert "называй их одной проблемой с номерами из блока" in text
+
+
 @pytest.mark.parametrize("variant", VARIANTS)
 def test_every_variant_asks_for_quoted_observations_and_what_is_missing(variant: str) -> None:
     task = _task(variant)

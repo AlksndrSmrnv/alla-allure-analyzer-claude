@@ -71,6 +71,7 @@ from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
 from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
 from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, reject
 from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
+from alla_skill_lib.known_issues import known_issues
 from alla_skill_lib.kb import (
     KBRecord,
     ProjectKB,
@@ -774,7 +775,9 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
             + "."
         )
 
-    summary_data = build_summary_data(run, analyses, flagged)
+    known = known_issues(run, analyses, flagged, paths)
+    notes += known.notes
+    summary_data = build_summary_data(run, analyses, flagged, known)
     summary_hash = hashlib.sha256(summary_data.encode("utf-8")).hexdigest()
     previous_hash = state.get("summary_data_hash")
     summary = ws.read_text(paths.summary) if paths.summary.is_file() else ""
@@ -784,7 +787,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     if not summary.strip():
         ws.write_text(
             paths.summary_task,
-            build_summary_task(run, analyses, flagged, paths, data=summary_data),
+            build_summary_task(run, analyses, flagged, paths, data=summary_data, known=known),
         )
         state["summary_data_hash"] = summary_hash
         ws.write_json(paths.state_json, state)
@@ -793,7 +796,10 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     if previous_hash is None:  # сводка старой версии принимается без повторного написания
         state["summary_data_hash"] = summary_hash
         ws.write_json(paths.state_json, state)
-    append_changed_run(paths.reports_dir, run_records(run, analyses, flagged, paths.root.name))
+    known_refs = {file_id: ref.id for file_id, ref in known.refs.items()}
+    append_changed_run(
+        paths.reports_dir, run_records(run, analyses, flagged, paths.root.name, known_refs)
+    )
 
     fixes = {file_id: p for file_id, p in proposals.items() if p.is_fix}
     states = {
@@ -801,7 +807,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
         for file_id, p in fixes.items()
     }
     console, full = render_report(
-        run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed
+        run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed, known
     )
     ws.write_text(paths.report, full)
     # Уже применённую или неоднозначную правку повторно не предлагаем.

@@ -182,10 +182,12 @@ def remember(
 
     record.confirm(signature)
     changed = [kb.save(record)]
+    touched = [record.id]
     for other in records:
         if other.id != record.id and signature in other.confirmed_signatures:
             other.confirmed_signatures.remove(signature)
             changed.append(kb.save(other))
+            touched.append(other.id)
     return "saved", "\n".join([
         f"Запомнено в базе знаний ({action}): {record.id} — «{record.title}»",
         *(
@@ -196,6 +198,7 @@ def remember(
         *(f"- {path}" for path in changed),
         "Скажи пользователю, что рецепт сохранён, и напомни закоммитить папку "
         f"{kb.label}/, чтобы им пользовалась вся команда.",
+        *_report_refresh(paths, run, kb, touched),
     ])
 
 
@@ -234,7 +237,38 @@ def reject(
         f"Запись {record.id} больше не будет предлагаться для этой ошибки.",
         f"Изменён файл: {path}",
         f"Напомни пользователю закоммитить папку {kb.label}/.",
+        *_report_refresh(paths, run, kb, [record.id]),
     ])
+
+
+def _report_refresh(
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    kb: ProjectKB,
+    entry_ids: list[str],
+) -> list[str]:
+    """Попросить пересобрать отчёт, если изменённую запись называют разборы этого прогона.
+
+    Известные проблемы отчёта проверяются по текущим файлам базы знаний
+    (``known_issues``): после ``reject`` проблема выходит из группы, но только при
+    следующей сборке отчёта.
+    """
+    numbers: list[str] = []
+    for item in run["clusters"]:
+        directory = Path(item.get("kb_dir") or run.get("kb_dir") or "")
+        analysis_path = paths.analysis(item["file_id"])
+        if directory != kb.directory or not analysis_path.is_file():
+            continue
+        if parse_analysis(ws.read_text(analysis_path)).kb_ref in entry_ids:
+            numbers.append(str(int(item["file_id"])))
+    if not numbers:
+        return []
+    noun = "проблемы" if len(numbers) == 1 else "проблем"
+    return [(
+        f"Запись указана в разборах {noun} {', '.join(numbers)} — известные проблемы в отчёте "
+        f"изменятся. Выполни {paths.next_command()} и выведи пользователю новый краткий разбор, "
+        "как обычно."
+    )]
 
 
 def _blocked(paths: ws.RunPaths, entry: dict[str, Any]) -> str | None:
