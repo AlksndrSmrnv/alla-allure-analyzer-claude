@@ -66,6 +66,9 @@ class KnownIssues:
     groups: list[KnownIssue] = field(default_factory=list)
     # Разбор ссылается на запись, но называет другую категорию причины.
     mismatched: dict[str, KnownRecord] = field(default_factory=dict)
+    # Разбор опирается на запись, которую пользователь потом отверг для этой ошибки
+    # (``reject``): текст разбора остался прежним, его причина не подтверждена.
+    rejected: dict[str, KnownRecord] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     # В прогоне записи из нескольких папок базы знаний (модулей): модуль надо называть.
     several_modules: bool = False
@@ -105,7 +108,12 @@ def known_issues(
             result.refs[file_id] = _from_snapshot(kb_dir, analysis.kb_ref, snapshot, entry)
             continue
         record = _load(cache, directory, analysis.kb_ref, run, result.notes)
-        if record is None or not _matches(record, entry, paths):
+        if record is None:
+            continue
+        if entry.get("signature") and entry["signature"] in record.rejected_signatures:
+            result.rejected[file_id] = _from_record(kb_dir, record, entry)
+            continue
+        if not _matches(record, entry, paths):
             continue
         known = _from_record(kb_dir, record, entry)
         if analysis.category != known.category:

@@ -343,7 +343,10 @@ def test_summary_data_names_known_issues_and_changes_after_reject(tmp_path: Path
     known = _known(run, analyses, paths)
     data = build_summary_data(run, analyses, set(), known)
     assert "--- Известные проблемы из базы знаний (подтверждены пользователем) ---" in data
-    assert "«Пул соединений БД платежей исчерпан» [приложение]: проблемы 1, 2 — 5 тестов" in data
+    assert (
+        "«Пул соединений БД платежей исчерпан» [приложение]: проблемы 1, 2 — 5 тестов; "
+        "первый шаг рецепта: Увеличить пул payment-db"
+    ) in data
     before = _hash(run, analyses, known)
 
     other = _record("unused_entry_11112222", title="Чужая запись")
@@ -365,7 +368,25 @@ def test_summary_data_limits_known_issues(tmp_path: Path) -> None:
     run, analyses, paths = _setup(tmp_path, [1] * 30, texts, evidence=evidence, records=records)
     data = build_summary_data(run, analyses, set(), _known(run, analyses, paths))
     assert data.count("[приложение]: проблемы") == 10
-    assert "Ещё 5 известных проблем объединяют 10 проблем (10 тестов)." in data
+    assert (
+        "Кроме них, ещё 5 известных проблем поменьше (у каждой своя причина) объединяют "
+        "10 проблем (10 тестов)."
+    ) in data
+
+
+def test_rejected_record_marks_the_analysis_as_unconfirmed(tmp_path: Path) -> None:
+    record = _record()
+    run, analyses, paths = _setup(tmp_path, [3, 2, 1], [_kb(APP)] * 3, records=[record])
+    record.reject("v6:sig3")
+    ProjectKB(Path(run["kb_dir"])).save(record)
+    known = _known(run, analyses, paths)
+    assert set(known.rejected) == {"03"} and "03" not in known.refs
+    console, full = _render(run, analyses, paths, known)
+    assert "**Проблема 3** · 1 тест · [разбор опирался на отвергнутую запись базы знаний]" in console
+    assert "- Разбор опирался на запись базы знаний payment_db_pool_1a2b3c4d" in full
+    assert "пользователь отверг её для этой проблемы — причина не подтверждена" in full
+    data = build_summary_data(run, analyses, set(), known)
+    assert data.count("которую пользователь потом отверг для этой проблемы") == 1
 
 
 def test_history_keeps_only_confirmed_references(tmp_path: Path) -> None:

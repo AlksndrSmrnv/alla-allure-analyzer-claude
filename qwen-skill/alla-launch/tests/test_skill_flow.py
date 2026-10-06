@@ -479,9 +479,17 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     assert f"Запись указана в разборах проблемы {int(order)}" in out
     assert f"next {run_dir2}" in out
     # Отчёт пересобирается по текущей базе знаний: отвергнутая запись — уже не известная проблема.
+    # Разбор опирался на отвергнутую запись — данные сводки изменились, она пишется заново.
     out = _next(run_dir2, capsys)
-    assert f"[известная проблема: {entry_id}]" not in out and out.startswith("STATUS: done")
-    assert "Известная проблема" not in _full_report(run_dir2)
+    assert out.startswith("STATUS: summary"), out
+    assert "которую пользователь потом отверг" in (run_dir2 / "summary_task.md").read_text(encoding="utf-8")
+    (run_dir2 / "summary.md").write_text("Итог после reject.", encoding="utf-8")
+    out = _next(run_dir2, capsys)
+    assert out.startswith("STATUS: done"), out
+    assert f"[известная проблема: {entry_id}]" not in out
+    assert "[разбор опирался на отвергнутую запись базы знаний]" in out
+    report = _full_report(run_dir2)
+    assert "Известная проблема" not in report and f"Разбор опирался на запись базы знаний {entry_id}" in report
     history = (project / "alla-reports" / "history.jsonl").read_text(encoding="utf-8").splitlines()
     latest = [json.loads(line) for line in history if json.loads(line)["launch_id"] == 778]
     assert next(r for r in reversed(latest) if r["file_id"] == order)["kb_entry"] is None
