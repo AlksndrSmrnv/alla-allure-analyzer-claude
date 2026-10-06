@@ -398,13 +398,27 @@ def match_cluster(
     by_fingerprint: list[dict[str, Any]] = []
     haystack = normalize_fp(evidence)  # один раз на кластер, а не на каждую запись
     for record in records:
-        if signature and signature in record.rejected_signatures:
-            continue
-        if signature and signature in record.confirmed_signatures:
-            exact.append(_snapshot(record, "exact"))
-        elif fingerprint_lines(record.error_example) and not _missing_in(record.error_example, haystack):
-            by_fingerprint.append(_snapshot(record, "fingerprint"))
+        origin = record_matches(record, signature, haystack)
+        if origin == "exact":
+            exact.append(_snapshot(record, origin))
+        elif origin == "fingerprint":
+            by_fingerprint.append(_snapshot(record, origin))
     return (exact + by_fingerprint)[:MAX_MATCHES]
+
+
+def record_matches(record: KBRecord, signature: str | None, haystack: str) -> str | None:
+    """Как запись подходит кластеру: ``exact`` | ``fingerprint`` | ``None``.
+
+    ``haystack`` — данные кластера после ``normalize_fp``. Одно правило для подбора
+    записей в ``prepare`` и для проверки известной проблемы при сборке отчёта.
+    """
+    if signature and signature in record.rejected_signatures:
+        return None
+    if signature and signature in record.confirmed_signatures:
+        return "exact"
+    if fingerprint_lines(record.error_example) and not _missing_in(record.error_example, haystack):
+        return "fingerprint"
+    return None
 
 
 def _snapshot(record: KBRecord, origin: str) -> dict[str, Any]:
