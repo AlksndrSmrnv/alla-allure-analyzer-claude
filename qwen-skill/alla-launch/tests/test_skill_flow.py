@@ -498,6 +498,43 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     assert next(e for e in run3["clusters"] if e["file_id"] == order)["kb"] == []
 
 
+def test_reject_withdraws_a_fix_built_on_the_rejected_record(
+    project: Path, testops: FakeTestOps, monkeypatch, capsys
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    (run_dir / "feedback" / f"{order}.md").write_text(FEEDBACK, encoding="utf-8")
+    assert _run(["remember", "1", "--run", str(run_dir)], capsys)[1].startswith("STATUS: saved")
+    entry_id = next((project / "alla-kb").glob("*.json")).stem
+
+    # Следующий прогон: разбор «автотест» опирается на запись и получает правку.
+    FakeTestOps(default_launch(778)).install(monkeypatch)
+    run_dir2, _, _ = _prepare(project, capsys, launch_id=778)
+    (run_dir2 / "analyses" / f"{order}.md").write_text(
+        TEST_ANALYSIS + f"БАЗА ЗНАНИЙ: {entry_id}\n", encoding="utf-8"
+    )
+    assert _next(run_dir2, capsys).startswith("STATUS: propose")
+    (run_dir2 / "proposals" / f"{order}.md").write_text(PROPOSAL, encoding="utf-8")
+    out = _finish(run_dir2, capsys, {login: MARKDOWN_ANALYSIS})
+    assert "ждёт вашего «да»" in out and "apply 01 --run" in out
+
+    # Пользователь отверг запись: правка по её причине снимается до подтверждения причины.
+    code, out = _run(["reject", "1", entry_id, "--run", str(run_dir2)], capsys)
+    assert code == 0 and out.startswith("STATUS: saved")
+    assert _next(run_dir2, capsys).startswith("STATUS: summary")
+    (run_dir2 / "summary.md").write_text("Итог после reject.", encoding="utf-8")
+    out = _next(run_dir2, capsys)
+    assert out.startswith("STATUS: done"), out
+    assert "ждёт вашего «да»" not in out and "apply 01" not in out
+    assert "### 🟡 Автотест сломан, но править вручную (1)" in out
+    assert "правка снята, пока причина не подтверждена" in _full_report(run_dir2)
+    code, out = _run(["apply", "1", "--run", str(run_dir2)], capsys)
+    assert code == 1 and out.startswith("STATUS: error") and f"запись базы знаний {entry_id}" in out
+    test_file = project / "src/test/java/ru/company/orders/OrderTest.java"
+    assert "assertEquals(200" in test_file.read_text(encoding="utf-8")
+
+
 def test_update_suggestions_keep_the_source_the_user_chose(
     project: Path, testops: FakeTestOps, capsys
 ) -> None:

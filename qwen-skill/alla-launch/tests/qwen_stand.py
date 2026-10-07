@@ -926,7 +926,24 @@ def check_kb_rejected(ctx: Context) -> dict[str, Any]:
     report = (runs[-1] / "report.md").read_text(encoding="utf-8")
     if f"Разбор опирался на запись базы знаний {record['id']}" not in report:
         return bad("в report.md проблема 1 не помечена отвергнутой записью")
+    still = _group_lines_with(report, record["id"], 1)
+    if still:
+        return bad(f"в report.md проблема 1 всё ещё в группе записи: {still[0][:200]}")
     return ok(at(later[0], command_of(later[0])))
+
+
+def _group_lines_with(report: str, entry_id: str, number: int) -> list[str]:
+    """Строки report.md о группе записи ``entry_id``, в которых есть проблема ``number``:
+    строка раздела «Известные проблемы из базы знаний» и «вместе с проблемами …» у карточек."""
+    found = []
+    for line in report.splitlines():
+        if f"`{entry_id}`" not in line and f"Известная проблема: {entry_id}" not in line:
+            continue
+        for numbers in re.findall(r"проблем(?:ы|ой|ами)\s+(\d+(?:,\s*\d+)*)", line):
+            if number in {int(item) for item in numbers.split(",")}:
+                found.append(line)
+                break
+    return found
 
 
 def check_subagents_used(ctx: Context) -> dict[str, Any]:
