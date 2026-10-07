@@ -266,7 +266,7 @@ def _launch_id(text: str) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    common = argparse.ArgumentParser(add_help=False)
+    common = _Parser(add_help=False)
     common.add_argument(
         "--project-root",
         help="корень проекта автотестов (по умолчанию определяется по .qwen/skills)",
@@ -318,7 +318,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # Папка разбора обязательна: после нового prepare «последний» разбор — уже
     # другой прогон, и обратная связь или правка ушли бы не туда.
-    run_option = argparse.ArgumentParser(add_help=False)
+    run_option = _Parser(add_help=False)
     run_option.add_argument(
         "--run", required=True, help="папка разбора, к отчёту которого относится команда"
     )

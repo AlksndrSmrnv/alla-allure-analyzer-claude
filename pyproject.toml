@@ -9,6 +9,12 @@ line-length = 100
 python_version = "3.11"
 strict = true
 
+# У этих библиотек нет аннотаций (scipy-stubs не ставим ради одного импорта), а libmagic есть
+# не везде: без исключения mypy ругается на сам импорт, и число ошибок зависит от машины.
+[[tool.mypy.overrides]]
+module = ["ijson", "ijson.*", "magic", "scipy.*", "sklearn.*"]
+ignore_missing_imports = true
+
 # scripts/ попадает в sys.path только во время работы (alla_skill.py, skill_fixtures),
 # поэтому pyright указываются пути к пакетам скилла и к фикстурам тестов. Pyright нужен
 # для навигации по коду; типы проверяет mypy, а режим basic даёт ложные ошибки на

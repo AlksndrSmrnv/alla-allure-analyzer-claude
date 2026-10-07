@@ -611,7 +611,7 @@ class ClusteringService:
         except ValueError:
             return np.eye(n, dtype=np.float64)
 
-        subset_sim = cosine_similarity(tfidf_matrix)
+        subset_sim: np.ndarray = cosine_similarity(tfidf_matrix)
         np.clip(subset_sim, 0.0, 1.0, out=subset_sim)
         np.fill_diagonal(subset_sim, 1.0)
         if len(non_empty_indices) == n:
