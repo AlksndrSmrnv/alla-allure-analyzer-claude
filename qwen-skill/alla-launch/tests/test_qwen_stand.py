@@ -573,16 +573,34 @@ def test_known_issue_grouped_check(tmp_path: Path) -> None:
     assert check(context(tmp_path / "g", [], "E10"))["status"] == "fail"
 
 
+_GROUP_123 = (
+    "- «Пул» (`{id}`; ошибка в приложении) — проблемы 1, 2, 3 · 6 тестов\n"
+    "**Проблема 2** — 2 теста\n- Известная проблема: {id} — «Пул», вместе с проблемами 1, 3\n"
+)
+# Раздел верный (2, 3), но карточка самой проблемы 1 всё ещё называет запись.
+_OWN_CARD = (
+    "- «Пул» (`{id}`; ошибка в приложении) — проблемы 2, 3 · 4 теста\n"
+    "### Проблема 1 — 2 теста · ошибка в приложении\n"
+    "- Известная проблема: {id} — «Пул», вместе с проблемами 2, 3\n"
+)
+_GROUP_23 = (
+    "- «Пул» (`{id}`; ошибка в приложении) — проблемы 2, 3 · 4 теста\n"
+    "**Проблема 2** — 2 теста\n- Известная проблема: {id} — «Пул», вместе с проблемой 3\n"
+)
+
+
 @pytest.mark.parametrize(("number", "then_next", "saved", "contradictory", "status"), [
-    ("1", True, True, False, "pass"),
-    ("01", True, True, False, "pass"),
-    ("2", True, True, False, "fail"),
-    ("1", False, True, False, "fail"),
-    ("1", True, False, False, "fail"),
-    ("1", True, True, True, "fail"),
+    ("1", True, True, "", "pass"),
+    ("01", True, True, "", "pass"),
+    ("1", True, True, _GROUP_23, "pass"),
+    ("2", True, True, "", "fail"),
+    ("1", False, True, "", "fail"),
+    ("1", True, False, "", "fail"),
+    ("1", True, True, _GROUP_123, "fail"),
+    ("1", True, True, _OWN_CARD, "fail"),
 ])
 def test_kb_rejected_check(tmp_path: Path, number: str, then_next: bool, saved: bool,
-                           contradictory: bool, status: str) -> None:
+                           contradictory: str, status: str) -> None:
     record = KNOWLEDGE["payments_pool"][0]
     run_dir = _known_run(tmp_path, {"01": record["id"], "02": record["id"]}, report=(
         f"- Разбор опирался на запись базы знаний {record['id']} («…»), но пользователь "
@@ -591,12 +609,10 @@ def test_kb_rejected_check(tmp_path: Path, number: str, then_next: bool, saved: 
     (tmp_path / "p" / "alla-kb" / f"{record['id']}.json").write_text(json.dumps(
         {**record, "rejected_signatures": ["v6:01"] if saved else []}), encoding="utf-8")
     if contradictory:
-        # Отчёт и помечает отказ, и держит проблему 1 в группе — противоречие.
+        # Отчёт помечает отказ и показывает группу: проблема 1 не должна в ней остаться.
         (run_dir / "report.md").write_text(
             (run_dir / "report.md").read_text(encoding="utf-8")
-            + f"- «Пул» (`{record['id']}`; ошибка в приложении) — проблемы 1, 2, 3 · 6 тестов\n"
-            + f"- Известная проблема: {record['id']} — «Пул», вместе с проблемами 1, 3\n",
-            encoding="utf-8")
+            + contradictory.format(id=record["id"]), encoding="utf-8")
     calls = [("run_shell_command", {"command": f"python3 {SKILL} reject {number} {record['id']} "
                                                f"--run {run_dir}"}, "Запись указана…")]
     if then_next:
@@ -614,7 +630,7 @@ def test_group_lines_follow_the_real_report_format(tmp_path: Path) -> None:
     record = _record()
     run, analyses, paths = _setup(tmp_path, [3, 2, 1], [_kb(APP)] * 3, records=[record])
     _, before = _render(run, analyses, paths, _known(run, analyses, paths))
-    assert len(_group_lines_with(before, ENTRY, 1)) == 5  # раздел и карточки 2, 3 (дважды)
+    assert len(_group_lines_with(before, ENTRY, 1)) == 7  # раздел и карточки 1, 2, 3 (дважды)
     record.reject("v6:sig1")
     ProjectKB(Path(run["kb_dir"])).save(record)
     _, after = _render(run, analyses, paths, _known(run, analyses, paths))
