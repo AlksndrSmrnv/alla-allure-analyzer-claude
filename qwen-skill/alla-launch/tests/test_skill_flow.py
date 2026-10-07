@@ -498,9 +498,10 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     assert next(e for e in run3["clusters"] if e["file_id"] == order)["kb"] == []
 
 
-def test_reject_withdraws_a_fix_built_on_the_rejected_record(
-    project: Path, testops: FakeTestOps, monkeypatch, capsys
-) -> None:
+def _test_analysis_on_a_known_record(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> tuple[Path, str, str, str]:
+    """Второй прогон: разбор «автотест» опирается на запись базы знаний, ждёт правку (propose)."""
     run_dir, run, _ = _prepare(project, capsys)
     order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
     _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
@@ -508,13 +509,49 @@ def test_reject_withdraws_a_fix_built_on_the_rejected_record(
     assert _run(["remember", "1", "--run", str(run_dir)], capsys)[1].startswith("STATUS: saved")
     entry_id = next((project / "alla-kb").glob("*.json")).stem
 
-    # Следующий прогон: разбор «автотест» опирается на запись и получает правку.
     FakeTestOps(default_launch(778)).install(monkeypatch)
     run_dir2, _, _ = _prepare(project, capsys, launch_id=778)
     (run_dir2 / "analyses" / f"{order}.md").write_text(
         TEST_ANALYSIS + f"БАЗА ЗНАНИЙ: {entry_id}\n", encoding="utf-8"
     )
     assert _next(run_dir2, capsys).startswith("STATUS: propose")
+    return run_dir2, order, login, entry_id
+
+
+def test_reject_before_the_proposal_skips_it(project: Path, testops: FakeTestOps, monkeypatch, capsys) -> None:
+    run_dir2, order, login, entry_id = _test_analysis_on_a_known_record(project, monkeypatch, capsys)
+    # Пользователь отверг запись, пока агент ещё не написал правку: её больше не просят.
+    assert _run(["reject", "1", entry_id, "--run", str(run_dir2)], capsys)[1].startswith("STATUS: saved")
+    (run_dir2 / "analyses" / f"{login}.md").write_text(MARKDOWN_ANALYSIS, encoding="utf-8")
+    out = _next(run_dir2, capsys)
+    assert out.startswith("STATUS: summary"), out
+    assert not (run_dir2 / "proposals" / f"{order}.md").exists()
+
+
+def test_repeat_does_not_reapply_a_fix_after_reject(project: Path, testops: FakeTestOps, monkeypatch, capsys) -> None:
+    run_dir2, order, login, entry_id = _test_analysis_on_a_known_record(project, monkeypatch, capsys)
+    (run_dir2 / "proposals" / f"{order}.md").write_text(PROPOSAL, encoding="utf-8")
+    _finish(run_dir2, capsys, {login: MARKDOWN_ANALYSIS})
+    test_file = project / "src/test/java/ru/company/orders/OrderTest.java"
+    original = test_file.read_text(encoding="utf-8")
+    _, diff = _run(["apply", "1", "--run", str(run_dir2)], capsys)
+    digest = next(line for line in diff.splitlines() if "--yes --diff" in line).split("--diff ")[1].split()[0]
+    assert _run(["apply", "1", "--run", str(run_dir2), "--yes", "--diff", digest], capsys)[1].startswith(
+        "STATUS: applied"
+    )
+    assert _run(["reject", "1", entry_id, "--run", str(run_dir2)], capsys)[1].startswith("STATUS: saved")
+
+    # Правку вернули вручную и заодно поменяли файл: состояние «неизвестно».
+    test_file.write_text(original + "// другая правка\n", encoding="utf-8")
+    code, out = _run(["apply", "1", "--run", str(run_dir2), "--repeat"], capsys)
+    assert code == 1 and out.startswith("STATUS: error") and f"запись базы знаний {entry_id}" in out
+    assert test_file.read_text(encoding="utf-8") == original + "// другая правка\n"
+
+
+def test_reject_withdraws_a_fix_built_on_the_rejected_record(
+    project: Path, testops: FakeTestOps, monkeypatch, capsys
+) -> None:
+    run_dir2, order, login, entry_id = _test_analysis_on_a_known_record(project, monkeypatch, capsys)
     (run_dir2 / "proposals" / f"{order}.md").write_text(PROPOSAL, encoding="utf-8")
     out = _finish(run_dir2, capsys, {login: MARKDOWN_ANALYSIS})
     assert "ждёт вашего «да»" in out and "apply 01 --run" in out

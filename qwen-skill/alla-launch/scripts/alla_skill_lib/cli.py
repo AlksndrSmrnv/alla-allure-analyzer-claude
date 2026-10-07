@@ -751,6 +751,11 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
                 # Одна общая правка для неоднородной группы не предлагается.
                 not_proposed[file_id] = MIXED_GROUP_NOT_PROPOSED
                 continue
+            if _withdrawn_fix(paths, run, entry, analysis, project_root):
+                # Разбор опирался на отвергнутую запись: правку не просим и не предлагаем,
+                # пока причина не подтверждена. Уже применённая остаётся — её можно откатить.
+                not_proposed[file_id] = REJECTED_NOT_PROPOSED
+                continue
             candidates += 1
             if candidates > MAX_PROPOSALS:
                 not_proposed[file_id] = (
@@ -778,15 +783,6 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
 
     known = known_issues(run, analyses, flagged, paths)
     notes += known.notes
-    for file_id in known.rejected:
-        # Правка лечит причину из отвергнутой записи: не предлагаем её, пока причина не
-        # подтверждена. Уже применённую оставляем в отчёте — её можно откатить.
-        proposal = proposals.get(file_id)
-        if proposal is not None and proposal.is_fix and applied_state(
-            proposal, project_root, _proposal_files(paths, file_id)
-        ) == "not_applied":
-            del proposals[file_id]
-            not_proposed[file_id] = REJECTED_NOT_PROPOSED
     summary_data = build_summary_data(run, analyses, flagged, known)
     summary_hash = hashlib.sha256(summary_data.encode("utf-8")).hexdigest()
     previous_hash = state.get("summary_data_hash")
@@ -1267,7 +1263,9 @@ def _apply(
     project_root = Path(run["project_root"])
     files = _proposal_files(paths, file_id)
     rejected = _rejected_record(paths, run, entry)
-    if rejected is not None and applied_state(proposal, project_root, files) == "not_applied":
+    # Отказ раньше любого применения, и повторного (--repeat при состоянии unknown) тоже:
+    # причина правки не подтверждена. Уже стоящую правку apply и так не пишет заново.
+    if rejected is not None and applied_state(proposal, project_root, files) != "applied":
         return "error", (
             f"Правка для проблемы №{int(file_id)} снята: разбор опирался на запись базы знаний "
             f"{rejected.id}, которую пользователь отверг для этой проблемы. Правку не применяй; "
@@ -1293,15 +1291,40 @@ def _apply(
 
 
 def _rejected_record(
-    paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    entry: dict[str, Any],
+    analysis: ClusterAnalysis | None = None,
 ) -> KnownRecord | None:
     """Запись базы знаний, на которую опирался разбор и которую потом отвергли (``reject``)."""
-    path = paths.analysis(entry["file_id"])
-    if not path.is_file():
+    if analysis is None:
+        path = paths.analysis(entry["file_id"])
+        if not path.is_file():
+            return None
+        analysis = parse_analysis(ws.read_text(path))
+    if not analysis.kb_ref:
         return None
-    analysis = parse_analysis(ws.read_text(path))
     known = known_issues({**run, "clusters": [entry]}, {entry["file_id"]: analysis}, set(), paths)
     return known.rejected.get(entry["file_id"])
+
+
+def _withdrawn_fix(
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    entry: dict[str, Any],
+    analysis: ClusterAnalysis,
+    project_root: Path,
+) -> bool:
+    """Правку не просить и не предлагать: разбор опирался на отвергнутую запись, а правка
+    (если она есть) ещё не стоит в файле."""
+    if _rejected_record(paths, run, entry, analysis) is None:
+        return False
+    path = paths.proposal(entry["file_id"])
+    if not path.is_file():
+        return True
+    proposal = parse_proposal(ws.read_text(path))
+    files = _proposal_files(paths, entry["file_id"])
+    return not proposal.is_fix or applied_state(proposal, project_root, files) == "not_applied"
 
 
 def _apply_hint(paths: ws.RunPaths, file_id: str, result: ApplyResult, repeat: bool = False) -> str:

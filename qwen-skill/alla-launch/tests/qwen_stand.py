@@ -932,17 +932,35 @@ def check_kb_rejected(ctx: Context) -> dict[str, Any]:
     return ok(at(later[0], command_of(later[0])))
 
 
+_CARD_RE = re.compile(r"^(?:\*\*Проблема (\d+)\*\*|### Проблема (\d+)\b)")
+
+
 def _group_lines_with(report: str, entry_id: str, number: int) -> list[str]:
-    """Строки report.md о группе записи ``entry_id``, в которых есть проблема ``number``:
-    строка раздела «Известные проблемы из базы знаний» и «вместе с проблемами …» у карточек."""
+    """Строки report.md, по которым проблема ``number`` — в группе записи ``entry_id``:
+    строка раздела «Известные проблемы из базы знаний» с её номером, «Известная проблема: id»
+    в её собственной карточке и «вместе с проблемами …» с её номером в чужой."""
     found = []
+    card: int | None = None  # чья карточка сейчас идёт
     for line in report.splitlines():
-        if f"`{entry_id}`" not in line and f"Известная проблема: {entry_id}" not in line:
+        header = _CARD_RE.match(line)
+        if header:
+            card = int(header.group(1) or header.group(2))
             continue
-        for numbers in re.findall(r"проблем(?:ы|ой|ами)\s+(\d+(?:,\s*\d+)*)", line):
-            if number in {int(item) for item in numbers.split(",")}:
-                found.append(line)
-                break
+        if line.startswith("#"):
+            card = None
+        in_section = f"`{entry_id}`" in line
+        in_card = f"Известная проблема: {entry_id}" in line
+        if not (in_section or in_card):
+            continue
+        members = {
+            int(item)
+            for numbers in re.findall(r"проблем(?:ы|ой|ами)\s+(\d+(?:,\s*\d+)*)", line)
+            for item in numbers.split(",")
+        }
+        if in_card and card is not None:
+            members.add(card)
+        if number in members:
+            found.append(line)
     return found
 
 
