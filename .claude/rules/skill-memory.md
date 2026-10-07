@@ -49,8 +49,9 @@ paths:
     `log_events.ERROR_LEVELS`; слова error/fatal/severe/critical/failed — всё со смыслом).
     Уровень читает разбор событий `iter_events`, как при извлечении лога: по позиции, в
     любом регистре (`[alert]`, `[err]`, `level=crit`); «alert» в тексте INFO — не уровень.
-    Лог из одних обычных строк (INFO) не добавляется. Иначе `expected: <200> but was: <500>` у пула БД и у
-    NPE давал одну сигнатуру, и запись базы знаний предлагалась чужой проблеме точно;
+    Лог из одних обычных строк (INFO) не добавляется. Иначе `expected: <200> but was: <500>`
+    у пула БД и у NPE давал одну сигнатуру, и запись базы знаний предлагалась чужой проблеме
+    точно;
   - трейса нет — сообщение и якорь лога (без ошибок — первые обычные строки).
 - Общий ассерт — `is_generic_assertion`: признаки в одной константе `GENERIC_ASSERTION_RE`
   (`java.lang.`/`kotlin.AssertionError`, Python `AssertionError`, `AssertionFailedError`
