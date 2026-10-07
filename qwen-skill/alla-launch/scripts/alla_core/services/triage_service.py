@@ -28,7 +28,7 @@ MAX_ATTEMPTS_PER_TEST = 5
 ATTEMPT_MESSAGE_CHARS = 300
 
 
-def _diagnostic_text(value) -> str | None:
+def _diagnostic_text(value: object) -> str | None:
     """Unvalidated statusDetails values must not bypass model field types."""
     return value if isinstance(value, str) and value.strip() else None
 

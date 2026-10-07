@@ -10,12 +10,19 @@
 создаёт ``.venv`` и ставит зависимости из ``requirements.txt``.
 """
 
+# Аннотации — строками (PEP 563): Python 3.8 их не вычисляет, а mypy проверяет.
+from __future__ import annotations
+
 import hashlib
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPTS_DIR.parent
@@ -29,17 +36,17 @@ PYTHON_CANDIDATES = ("python3.13", "python3.12", "python3.11", "python3", "pytho
 CHILD_MARKER = "ALLA_SKILL_IN_VENV"
 
 
-def venv_python(venv_dir=VENV_DIR):
+def venv_python(venv_dir: Path = VENV_DIR) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
 
 
-def requirements_digest():
+def requirements_digest() -> str:
     return hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest()
 
 
-def setup_complete():
+def setup_complete() -> bool:
     """Окружение создано и зависимости из текущего requirements.txt установлены."""
     try:
         marker = SETUP_MARKER.read_text(encoding="utf-8").strip()
@@ -48,20 +55,20 @@ def setup_complete():
         return False
 
 
-def running_in_venv():
+def running_in_venv() -> bool:
     try:
         return Path(sys.prefix).resolve() == VENV_DIR.resolve()
     except OSError:
         return False
 
 
-def self_command(*args):
+def self_command(*args: str) -> str:
     parts = ["python" if os.name == "nt" else "python3", str(Path(__file__).resolve())]
     parts.extend(args)
     return " ".join('"{}"'.format(p) if " " in p else p for p in parts)
 
 
-def python_version(executable):
+def python_version(executable: str) -> tuple[int, int] | None:
     try:
         result = subprocess.run(
             [executable, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
@@ -79,21 +86,21 @@ def python_version(executable):
         return None
 
 
-def find_base_python(explicit=None):
+def find_base_python(explicit: str | None = None) -> str | None:
     if explicit:
-        candidates = [explicit]
+        candidates: list[str | None] = [explicit]
     else:
-        candidates = [sys.executable] + [shutil.which(name) for name in PYTHON_CANDIDATES]
+        candidates = [sys.executable, *(shutil.which(name) for name in PYTHON_CANDIDATES)]
     for candidate in candidates:
         if candidate and (python_version(candidate) or (0, 0)) >= MIN_VERSION:
             return candidate
     return None
 
 
-def split_setup_args(argv):
+def split_setup_args(argv: Sequence[str]) -> tuple[str | None, list[str]]:
     """``[--python PATH] [-- pip-аргументы]`` → (PATH или None, аргументы pip)."""
     argv = list(argv)
-    pip_args = []
+    pip_args: list[str] = []
     if "--" in argv:
         cut = argv.index("--")
         argv, pip_args = argv[:cut], argv[cut + 1:]
@@ -103,7 +110,7 @@ def split_setup_args(argv):
     return explicit, pip_args
 
 
-def create_env_file():
+def create_env_file() -> Path | None:
     """``.env`` из образца, чтобы пользователю оставалось вписать endpoint и токен."""
     env_file = SKILL_DIR / ".env"
     example = SKILL_DIR / ".env.example"
@@ -115,7 +122,7 @@ def create_env_file():
     return env_file
 
 
-def setup(argv):
+def setup(argv: Sequence[str]) -> int:
     explicit, pip_args = split_setup_args(argv)
     base = find_base_python(explicit)
     if base is None:
@@ -168,7 +175,7 @@ def setup(argv):
     return 0
 
 
-def configure_stdio():
+def configure_stdio() -> None:
     """UTF-8 для вывода: консоль Windows по умолчанию не UTF-8, а сообщения русские."""
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -176,7 +183,7 @@ def configure_stdio():
             reconfigure(encoding="utf-8", errors="replace")
 
 
-def main(argv):
+def main(argv: Sequence[str]) -> int:
     configure_stdio()
     if argv[:1] == ["setup"]:
         return setup(argv[1:])
@@ -197,7 +204,7 @@ def main(argv):
         sys.path.insert(0, str(SCRIPTS_DIR))
         from alla_skill_lib.cli import main as cli_main
 
-        return cli_main(argv)
+        return cli_main(list(argv))
 
     env = dict(os.environ, **{CHILD_MARKER: "1"})
     command = [str(venv_python()), str(Path(__file__).resolve())] + list(argv)

@@ -36,7 +36,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 python3.11 -m venv .venv && .venv/bin/pip install -r qwen-skill/alla-launch/requirements-dev.txt
 .venv/bin/python -m pytest                      # из корня, несколько секунд
 .venv/bin/ruff check qwen-skill/alla-launch
-.venv/bin/mypy qwen-skill/alla-launch/scripts   # strict; пока не чистый — новых ошибок не добавлять
+.venv/bin/mypy qwen-skill/alla-launch/scripts   # strict, без ошибок — так и держать
 .venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case A01 --output /tmp/alla-stand-001
 .venv/bin/python qwen-skill/alla-launch/tests/eval/run_eval.py --details   # эталон, офлайн, ~2 с
 ```
@@ -113,4 +113,4 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
   с чистым контекстом, без этого файла); поведение модели — скилл `skill-evaluation`.
 - Хуки в `.claude/settings.local.json`: ruff после правки `.py`; тесты справочников и
   заданий после правки `SKILL.md`, `references/`, `alla_skill_lib/`; перед `git commit` —
-  ruff, pytest и mypy не больше `.claude/hooks/mypy_baseline` ошибок (уменьшать при чистке).
+  ruff, pytest и mypy (`.claude/hooks/mypy_baseline` — 0: mypy чистый).
