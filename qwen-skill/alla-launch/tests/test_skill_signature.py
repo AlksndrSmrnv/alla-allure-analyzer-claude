@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
 import pytest
 from skill_fixtures import without_libmagic  # noqa: F401
 
-from alla_core.models.testops import AttachmentMeta
+from alla_core.models.testops import AttachmentMeta, FailedTestSummary
 from alla_core.services.attachment_handlers import AttachmentContext, StructuredErrorLogHandler
+from alla_core.services.log_extraction_service import LogExtractionConfig, LogExtractionService
 from alla_skill_lib.signature import (
     SIGNATURE_VERSION,
     cluster_signature,
@@ -93,6 +95,20 @@ def test_every_error_level_of_the_log_extraction_names_the_cause(level: str) -> 
             != _signature(ASSERT_500, ASSERT_TRACE, log("disk full")))
 
 
+@pytest.mark.parametrize("line", [
+    "2026-10-03 10:00:00 [alert] {text}",
+    "2026-10-03 10:00:00 [err] {text}",
+    "2026-10-03 10:00:00 [Alert] {text}",
+    'time=2026-10-03T10:00:00Z level=crit msg="{text}"',
+])
+def test_level_is_read_by_its_position_in_any_case(line: str) -> None:
+    def log(text: str) -> str:
+        return line.format(text=text) + "\n"
+
+    assert (_signature(ASSERT_500, ASSERT_TRACE, log("database unavailable"))
+            != _signature(ASSERT_500, ASSERT_TRACE, log("disk full")))
+
+
 def test_lowercase_level_words_in_info_lines_are_not_errors() -> None:
     noise = "2026-10-03 10:00:00 [INFO] alert sent, err counter reset\n"
 
@@ -128,6 +144,17 @@ def test_journal_record_keeps_its_level_with_its_message() -> None:
     assert "post /payments" not in material
 
 
+@pytest.mark.parametrize("field", ["errorCode", "error_code", "code"])
+def test_journal_error_codes_keep_their_field_name(field: str) -> None:
+    def journal(code: Any) -> str:
+        return _journal({"logLevel": "ERROR", "message": "gateway rejected payment", field: code})
+
+    assert (_signature(ASSERT_500, ASSERT_TRACE, journal(10001))
+            != _signature(ASSERT_500, ASSERT_TRACE, journal(10002)))
+    assert (_signature(ASSERT_500, ASSERT_TRACE, journal("10001"))
+            != _signature(ASSERT_500, ASSERT_TRACE, journal("10002")))
+
+
 def test_journal_of_only_info_records_is_not_added() -> None:
     journal = _journal({"logLevel": "INFO", "message": "POST /payments"},
                        {"level": "debug", "message": "pool stats"})
@@ -143,6 +170,52 @@ def test_cut_journal_still_reads_its_records() -> None:
 
     material = _material(ASSERT_500, ASSERT_TRACE, cut)
     assert material is not None and "[error] connection pool exhausted" in material
+
+
+def test_record_without_its_braces_is_read_by_its_fields() -> None:
+    """Окна отбора без скобок записи: поля соседних записей не смешиваются."""
+    lines = _journal({"logLevel": "INFO", "message": "POST /payments"},
+                     {"logLevel": "ERROR", "message": "connection pool exhausted"},
+                     {"logLevel": "INFO", "message": "retry"}).splitlines()
+    windows = "\n".join(line for line in lines
+                        if line.strip() not in ("{", "},", "}") and "deploymentUnit" not in line)
+
+    material = _material(ASSERT_500, ASSERT_TRACE, windows)
+    assert material is not None and material.endswith("---\n[error] connection pool exhausted")
+
+
+class _Journal:
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+
+    async def get_attachments_for_test_result(self, _test_id: int) -> list[AttachmentMeta]:
+        return [AttachmentMeta(id=100, name="journal.json", type="application/json")]
+
+    async def get_attachment_content(self, _attachment_id: int) -> bytes:
+        return self.content
+
+
+def test_error_record_survives_the_log_selection_of_a_big_journal() -> None:
+    def entry(index: int, level: str, message: str) -> dict[str, Any]:
+        return {"deploymentUnit": "billing-prod", "tenantCode": "t", "logLevel": level,
+                "message": message, "rqUID": f"req-{index}", "details": {"attempt": index}}
+
+    def signature(message: str) -> tuple[str | None, str | None]:
+        items = [entry(i, "INFO", f"heartbeat {i} " + "x" * 80) for i in range(200)]
+        items.insert(120, entry(120, "ERROR", message))
+        summary = FailedTestSummary(test_result_id=1, name="t", status="failed",
+                                    status_message=ASSERT_500, status_trace=ASSERT_TRACE)
+        service = LogExtractionService(_Journal(json.dumps(items).encode()),
+                                       LogExtractionConfig(max_snippet_chars=3000))
+        asyncio.run(service.enrich_with_logs([summary]))
+        assert summary.log_selection_truncated and '"logLevel": "ERROR"' in summary.log_snippet
+        cluster, tests = make_single_test_cluster(ASSERT_500, ASSERT_TRACE)
+        tests[1] = summary
+        return cluster_signature(cluster, tests), signature_material(cluster, tests)
+
+    pool, material = signature("connection pool exhausted")
+    assert material is not None and "[error] connection pool exhausted" in material
+    assert pool != signature("email gateway unreachable")[0]
 
 
 @pytest.mark.parametrize(("message", "trace"), [

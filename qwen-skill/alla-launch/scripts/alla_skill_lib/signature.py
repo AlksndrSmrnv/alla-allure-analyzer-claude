@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
-from alla_core.utils.log_events import ERROR_LEVELS, strip_source_marks
+from alla_core.utils.log_events import ERROR_LEVELS, iter_events, strip_source_marks
 from alla_core.utils.log_focus import strip_log_selection_metadata
 from alla_core.utils.log_utils import parse_log_sections
 from alla_core.utils.text_normalization import (
@@ -67,17 +67,19 @@ _CAUSED_BY_RE = re.compile(r"^\s*Caused by:", re.MULTILINE)
 _EXCEPTION_LINE_RE = re.compile(r"^[\w$]+(?:\.[\w$]+)*(?:Exception|Error|Throwable)\b")
 _CAUSE_HINT_RE = re.compile(
     r"(?:Caused by|Traceback)\b|\b[\w.$]+(?:Exception|Error)\b", re.IGNORECASE)
-# Уровни — те же, что у извлечения лога (``ERR``, ``CRIT``, ``ALERT``…), заглавными, как их
-# пишет лог: строчные «alert»/«err» в тексте — обычные слова.
-_ERROR_HINT_RE = re.compile(
-    r"\b(?:" + "|".join(sorted(ERROR_LEVELS)) + r")\b"
-    r"|(?i:\b(?:error|fatal|severe|critical)\b|\bfailed(?: to)?\b)")
+# Слова ошибки в тексте строки; уровень записи (``[alert]``, ``level=crit``…) читает разбор
+# событий лога (``iter_events``) — по позиции уровня, как при извлечении лога.
+_ERROR_HINT_RE = re.compile(r"\b(?:error|fatal|severe|critical|failed)\b", re.IGNORECASE)
 # Секция-журнал (``StructuredErrorLogHandler``): JSON с отступами, поле на строке.
 _JSON_START_RE = re.compile(r'\s*[\[{]\s*[\[{"]')
 _JSON_PAIR_RE = re.compile(r'^\s*"(?P<key>(?:[^"\\]|\\.)*)"\s*:\s*(?P<value>"(?:[^"\\]|\\.)*"|[-\w.]+)')
 _JSON_LEVEL_KEYS = ("level", "loglevel", "log.level", "levelname", "lvl", "severity")
-_JSON_TEXT_KEYS = ("message", "msg", "errormessage", "error", "exception", "errorcode",
-                   "error_code")
+_JSON_TEXT_KEYS = ("message", "msg", "errormessage", "error", "exception")
+# Поля-коды пишутся с именем (``error_code=10001``): голое число ушло бы в ``<NUM>``, а с
+# именем его сохраняет отпечаток кодов (``numeric_codes``).
+_JSON_CODE_KEYS = {"errorcode": "error_code", "error_code": "error_code", "code": "code",
+                   "statuscode": "status_code", "status_code": "status_code",
+                   "status": "status"}
 _WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_$.:-]*")
 
 
@@ -222,44 +224,53 @@ class _LogAnchor:
 
 
 def _json_records(body: str) -> list[dict[str, str]] | None:
-    """Записи JSON-журнала: строковые поля каждой записи (вложенные — тоже); не JSON — None.
+    """Записи JSON-журнала: строковые и числовые поля каждой записи; не JSON — None.
 
-    Журнал приходит с отступами (поле на строке) и может быть обрезан отбором, поэтому
-    читается по строкам, а не ``json.loads``: уровень и сообщение одной записи остаются вместе.
+    Журнал приходит с отступами (поле на строке), а отбор лога оставляет окна вокруг
+    ошибок и может срезать скобки записи. Поэтому записи разделяются не скобками, а
+    строками полей: поле записи — на наименьшем отступе среди полей; запись кончается
+    строкой короче этого отступа (скобка, пропуск) или повтором уже прочитанного поля.
+    Вложенные поля дополняют запись, но не заменяют её собственные.
     """
     if not _JSON_START_RE.match(body):
         return None
-    record_depth = 1 if body.lstrip().startswith("[") else 0
+    lines = body.splitlines()
+    pairs = [_JSON_PAIR_RE.match(line) for line in lines]
+    indents = [len(line) - len(line.lstrip()) for line in lines]
+    field_indent = min((indent for indent, pair in zip(indents, pairs, strict=True) if pair),
+                       default=0)
     records: list[dict[str, str]] = []
     current: dict[str, str] | None = None
-    depth = 0
-    for line in body.splitlines():
-        stripped = line.strip()
-        if stripped[:1] in ("}", "]"):
-            depth -= 1
-            if depth == record_depth and current is not None:
+    own: set[str] = set()
+    for line, pair, indent in zip(lines, pairs, indents, strict=True):
+        if pair is None:
+            if line.strip() and indent < field_indent and current is not None:
                 records.append(current)
                 current = None
-        pair = _JSON_PAIR_RE.match(line)
-        if pair and current is not None:
-            value = pair.group("value")
-            with contextlib.suppress(ValueError):
-                value = str(json.loads(value)) if value.startswith('"') else value
-            current.setdefault(pair.group("key").casefold(), value)
-        if stripped.endswith(("{", "[")):
-            if depth == record_depth and stripped.endswith("{"):
-                current = {}
-            depth += 1
-    if current:
+            continue
+        key, value = pair.group("key").casefold(), pair.group("value")
+        with contextlib.suppress(ValueError):
+            value = str(json.loads(value)) if value.startswith('"') else value
+        if current is None or (indent == field_indent and key in own):
+            if current is not None:
+                records.append(current)
+            current, own = {}, set()
+        if indent == field_indent:
+            current[key] = value
+            own.add(key)
+        else:
+            current.setdefault(key, value)
+    if current is not None:
         records.append(current)
     return records
 
 
 def _record_line(record: dict[str, str]) -> tuple[str | None, str]:
-    """Уровень записи журнала и её текст: сообщение, ошибка, код."""
+    """Уровень записи журнала и её текст: сообщение, ошибка, коды с именами полей."""
     level = next((record[key].upper() for key in _JSON_LEVEL_KEYS if record.get(key)), None)
-    text = " ".join(dict.fromkeys(record[key] for key in _JSON_TEXT_KEYS if record.get(key)))
-    return level, text
+    parts = [record[key] for key in _JSON_TEXT_KEYS if record.get(key)]
+    parts += [f"{name}={record[key]}" for key, name in _JSON_CODE_KEYS.items() if record.get(key)]
+    return level, " ".join(dict.fromkeys(parts))
 
 
 def _log_anchor(log: str) -> _LogAnchor:
@@ -274,13 +285,15 @@ def _log_anchor(log: str) -> _LogAnchor:
                     line = f"[{level}] {text}" if level else text
                     (errors if level in ERROR_LEVELS else plain).append(line)
             continue
-        for line in _error_lines(body):
-            if _CAUSE_HINT_RE.search(line):
-                causes.append(line)
-            elif _ERROR_HINT_RE.search(line) and _has_signal_words(line):
-                errors.append(line)
-            else:
-                plain.append(line)
+        for event in iter_events(body):
+            for index, line in enumerate(_error_lines(event.text)):
+                level_line = index == 0 and event.level in ERROR_LEVELS
+                if _CAUSE_HINT_RE.search(line):
+                    causes.append(line)
+                elif (level_line or _ERROR_HINT_RE.search(line)) and _has_signal_words(line):
+                    errors.append(line)
+                else:
+                    plain.append(line)
     return _LogAnchor(_unique(causes), _unique(errors), _unique(plain))
 
 
