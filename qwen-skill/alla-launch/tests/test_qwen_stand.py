@@ -537,7 +537,7 @@ def _known_run(tmp_path: Path, refs: dict[str, str | None], *, offered: tuple[st
     (run_dir / "analyses").mkdir(parents=True)
     clusters = []
     for file_id, ref in refs.items():
-        clusters.append({"file_id": file_id, "signature": f"v6:{file_id}",
+        clusters.append({"file_id": file_id, "signature": f"v7:{file_id}",
                          "kb": [{"id": record_id}] if file_id in offered else []})
         if ref is not None:
             (run_dir / "analyses" / f"{file_id}.md").write_text(
@@ -607,7 +607,7 @@ def test_kb_rejected_check(tmp_path: Path, number: str, then_next: bool, saved: 
         "отверг её для этой проблемы\n"))
     (tmp_path / "p" / "alla-kb").mkdir()
     (tmp_path / "p" / "alla-kb" / f"{record['id']}.json").write_text(json.dumps(
-        {**record, "rejected_signatures": ["v6:01"] if saved else []}), encoding="utf-8")
+        {**record, "rejected_signatures": ["v7:01"] if saved else []}), encoding="utf-8")
     if contradictory:
         # Отчёт помечает отказ и показывает группу: проблема 1 не должна в ней остаться.
         (run_dir / "report.md").write_text(
@@ -631,7 +631,7 @@ def test_group_lines_follow_the_real_report_format(tmp_path: Path) -> None:
     run, analyses, paths = _setup(tmp_path, [3, 2, 1], [_kb(APP)] * 3, records=[record])
     _, before = _render(run, analyses, paths, _known(run, analyses, paths))
     assert len(_group_lines_with(before, ENTRY, 1)) == 7  # раздел и карточки 1, 2, 3 (дважды)
-    record.reject("v6:sig1")
+    record.reject("v7:sig1")
     ProjectKB(Path(run["kb_dir"])).save(record)
     _, after = _render(run, analyses, paths, _known(run, analyses, paths))
     assert _group_lines_with(after, ENTRY, 1) == []

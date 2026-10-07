@@ -4,9 +4,10 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/modules.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/feedback.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/history.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/knowledge/**"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/signature.py"
   - "qwen-skill/alla-launch/references/feedback.md"
   - "qwen-skill/alla-launch/tests/test_skill_memory.py"
+  - "qwen-skill/alla-launch/tests/test_skill_signature.py"
   - "qwen-skill/alla-launch/tests/test_skill_modules.py"
   - "qwen-skill/alla-launch/tests/test_history_versions.py"
   - "qwen-skill/alla-launch/tests/test_log_signature_persistence.py"
@@ -33,26 +34,46 @@ paths:
 
 ### Сигнатура
 
-- `alla_core/knowledge/feedback_signature.py`, версия `v6`. Golden-тест фиксирует хэш: смена
-  версии должна быть осознанной. Версия не повышается без причины, миграции всей базы нет.
-- v6 (извлечение событий лога): повторы ошибки свёрнуты в логе, а строки якоря лога
-  упорядочены и уникальны по своему виду в сигнатуре (`_unique_anchor_lines`): строки,
-  различающиеся только ID или временем, занимают одно место и не вытесняют другие.
-  Сигнатура не зависит от числа повторов. У лога с повтором, вытеснявшим в v5 другие
-  строки якоря, материал изменился, поэтому версия поднята. Лог участвует в сигнатуре,
-  только когда у кластера нет трейса.
-- Записи с `v5:` в `confirmed_signatures`/`rejected_signatures` остаются и читаются, но
-  точно уже не совпадают: такие кластеры узнаются по `error_example`, повторы в истории по
-  старым `v5:` не считаются. Запись, отвергнутая только по `v5:`, снова может предлагаться
-  по `error_example` — пользователь отвергнет её повторно (`reject` запишет `v6:`).
-- Числовой отпечаток сигнатуры (`code=…`, `ORA-…`) — `text_normalization.numeric_codes`,
-  общий со свёрткой повторов лога; имена потоков кодами не считаются.
-- Строки якоря, сообщение и текст аудита нормализуются с заменой имён потоков на `<THREAD>`
-  (`replace_thread_names`: `http-nio-8080-exec-7`, `pool-3-thread-1`,
-  `ForkJoinPool.commonPool-worker-5`, `ForkJoinPool-1-worker-7`, `Thread-42`): одна ошибка на разных потоках даёт одну
-  сигнатуру. Это часть v6.
+- `alla_skill_lib/signature.py`, версия `v7` (`SIGNATURE_VERSION`). Golden-тест
+  (`test_signature_is_stable_across_runs_and_pinned`) фиксирует хэш: материал меняется только
+  осознанно и с новой версией — префикс не даёт старому хэшу совпасть с новым. Чтения и учёта
+  старых версий нет: записи и история с другим префиксом просто не совпадают точно, узнавание
+  по `error_example` остаётся.
+- Материал — то, что называет причину (`signature_material`: основа `message+trace+log`… и
+  нормализованные части):
+  - трейс есть, ошибка называет причину (исключение не-ассерт или `Caused by`) — сообщение и
+    якорь трейса (первая строка ошибки и строки причин, без кадров), лог не входит: точное
+    узнавание не должно зависеть от шума лога;
+  - трейс есть, ошибка — **общий ассерт** без `Caused by` — ещё и строки-ошибки лога
+    (исключения, `Caused by`, `Traceback`; ERROR/FATAL/FAILED со смыслом). Лог из одних
+    обычных строк (INFO) не добавляется. Иначе `expected: <200> but was: <500>` у пула БД и у
+    NPE давал одну сигнатуру, и запись базы знаний предлагалась чужой проблеме точно;
+  - трейса нет — сообщение и якорь лога (без ошибок — первые обычные строки).
+- Общий ассерт — `is_generic_assertion`: признаки в одной константе `GENERIC_ASSERTION_RE`
+  (`java.lang.`/`kotlin.AssertionError`, Python `AssertionError`, `AssertionFailedError`
+  opentest4j/junit3, `ComparisonFailure`, `org.assertj.…`, pytest `assert …`, Hamcrest
+  `Expected: …`/`but: was`, `expected … but was|found`) по строкам сообщения и трейса без
+  кадров и префикса pytest `E `; строка с классом исключения не из списка признак отменяет.
+  Решает класс, а не текст: `AssertionError: Order not found` — тоже общий (текст проверки
+  описывает симптом). Список расширяется, только если эталон это показывает
+  (`kb_offers_wrong` падает, `kb_offers_found` нет). Голый `SocketTimeoutException` у разных
+  причин тоже даёт одну сигнатуру (`timeouts_two_causes`, группы склеены кластеризацией), но
+  метрика этого не видит — в список не входит.
+- Лог — представителя; нет его лога — самый содержательный у участников (с причинами, с
+  ошибками). Строки якоря уникальны и упорядочены по своему виду в сигнатуре (`_unique`):
+  повторы, различающиеся ID или временем, не вытесняют другие строки, число повторов на
+  сигнатуру не влияет. До 6 строк-ошибок, до 3 обычных.
+- Нормализация: строки трейса и лога и длинное сообщение — мягкая (`normalize_text`: время,
+  UUID, IP, длинные числа), коды ошибок — отдельным отпечатком; короткое сообщение (до 10
+  слов и 120 символов) — строгая, числа остаются. Везде имена потоков заменяются на
+  `<THREAD>` (`replace_thread_names`: `http-nio-8080-exec-7`, `pool-3-thread-1`,
+  `ForkJoinPool.commonPool-worker-5`, `ForkJoinPool-1-worker-7`, `Thread-42`): одна ошибка на
+  разных потоках даёт одну сигнатуру.
+- Числовой отпечаток (`code=…`, `ORA-…`) — `text_normalization.numeric_codes`, общий со
+  свёрткой повторов лога; имена потоков кодами не считаются.
 - Пометки строк источника (`[строки a–b]`) в материал не входят: `_log_evidence` их
-  вырезает (`strip_source_marks`), поэтому их нет и в `evidence/NN.txt`.
+  вырезает (`strip_source_marks`), поэтому их нет и в `evidence/NN.txt` (`cluster_sources` —
+  сообщение, трейс и лог представителя для признака базы знаний, через `kb.cluster_evidence`).
 - Считается в `prepare` на enriched моделях и сохраняется в `entry.signature`;
   `remember`/`reject` используют её.
 - Реальный `run.json` исключает `log_snippet`, `status_trace`, `execution_steps` и transient

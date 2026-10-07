@@ -6,7 +6,7 @@
 
 Проблема узнаётся двумя способами:
 
-* **точно** — стабильная сигнатура кластера (``feedback_signature``) уже
+* **точно** — стабильная сигнатура кластера (:mod:`alla_skill_lib.signature`) уже
   подтверждалась для записи;
 * **по признаку** — каждая строка короткого признака ошибки (1–3 строки из
   сообщения/трейса/лога) есть в данных кластера. Сравнение без учёта чисел,
@@ -26,15 +26,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from alla_core.knowledge.feedback_signature import (
-    build_feedback_cluster_context,
-    get_cluster_feedback_sources,
-)
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_core.utils.text_normalization import canonicalize_kb_error_example, normalize_text
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.code_hints import SKIP_DIRS
+from alla_skill_lib.signature import cluster_signature as cluster_signature
+from alla_skill_lib.signature import cluster_sources
 
 KB_DIRNAME = "alla-kb"
 MAX_MATCHES = 3
@@ -108,24 +106,12 @@ README = """\
 # ---------------------------------------------------------------------------
 
 
-def cluster_signature(
-    cluster: FailureCluster,
-    tests_by_id: dict[int, FailedTestSummary],
-) -> str | None:
-    """Стабильная сигнатура кластера ``v<версия>:<hash>`` (или None без данных)."""
-    context = build_feedback_cluster_context(cluster, tests_by_id)
-    if context is None:
-        return None
-    signature = context.base_issue_signature
-    return f"v{signature.version}:{signature.signature_hash}"
-
-
 def cluster_evidence(
     cluster: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],
 ) -> tuple[str, str, str]:
     """Сообщение, трейс и лог представителя — источник признаков."""
-    return get_cluster_feedback_sources(cluster, tests_by_id)
+    return cluster_sources(cluster, tests_by_id)
 
 
 def normalize_fp(text: str) -> str:
@@ -216,7 +202,7 @@ def _cut(line: str) -> str:
 
 @dataclass
 class KBRecord:
-    """Запись базы знаний; поля совместимы с ``KBEntry`` ядра."""
+    """Запись базы знаний ``alla-kb/<id>.json``."""
 
     id: str
     title: str

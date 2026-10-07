@@ -13,13 +13,13 @@ from alla_skill_lib import history
 def _row(run: str = "777-first", file_id: str = "01", **updates) -> dict:
     return {
         "run": run, "file_id": file_id, "launch_id": 777, "date": "2026-09-20",
-        "signature": "v6:issue", "module": "", "category": "приложение",
+        "signature": "v7:issue", "module": "", "category": "приложение",
         "cause": "Прежняя причина", "kb_entry": "known_1", **updates,
     }
 
 
 def test_latest_physical_version_replaces_old_record_but_keeps_legacy(tmp_path: Path) -> None:
-    legacy = {"launch_id": 12, "date": "2026-09-01", "signature": "v6:legacy"}
+    legacy = {"launch_id": 12, "date": "2026-09-01", "signature": "v7:legacy"}
     before = _row(date="2026-09-25")
     latest = _row(date="2026-09-20", cause="Уточнённая причина", kb_entry=None)
     other = _row(file_id="02")
@@ -74,7 +74,7 @@ def test_latest_versions_preserve_unique_launch_counts_and_original_dates(tmp_pa
     history.append_run(tmp_path, [first, second_run_same_launch, another_launch, corrected])
 
     rows = history.load_history(tmp_path)
-    assert history.recurrence(rows, launch_id=999, signature="v6:issue", kb_ids=set()) == {
+    assert history.recurrence(rows, launch_id=999, signature="v7:issue", kb_ids=set()) == {
         "launches": 2, "first_date": "2026-09-20", "last_date": "2026-09-22",
     }
     assert len(rows) == 3

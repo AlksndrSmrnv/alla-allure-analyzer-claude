@@ -53,7 +53,7 @@ def _setup(
     records: list[KBRecord] | None = None,
     kb_dirs: list[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], RunPaths]:
-    """Прогон с базой знаний проекта: у кластера i сигнатура «v6:sig<i>» и evidence/NN.txt."""
+    """Прогон с базой знаний проекта: у кластера i сигнатура «v7:sig<i>» и evidence/NN.txt."""
     run = _run(sizes)
     project = tmp_path / "project"
     kb_dir = project / "alla-kb"
@@ -61,7 +61,7 @@ def _setup(
     run["kb_dir"] = str(kb_dir)
     paths = RunPaths(tmp_path / "run")
     for index, entry in enumerate(run["clusters"]):
-        entry["signature"] = f"v6:sig{index + 1}"
+        entry["signature"] = f"v7:sig{index + 1}"
         entry["kb_dir"] = str(project / kb_dirs[index] / "alla-kb") if kb_dirs and kb_dirs[index] else str(kb_dir)
         entry["module"] = kb_dirs[index] if kb_dirs else ""
         entry["task_format"] = 2
@@ -108,13 +108,13 @@ def test_problems_with_one_confirmed_record_form_one_group(tmp_path: Path) -> No
 def test_reject_removes_a_problem_from_the_group_and_its_tag(tmp_path: Path) -> None:
     record = _record()
     run, analyses, paths = _setup(tmp_path, [3, 2, 1], [_kb(APP)] * 3, records=[record])
-    record.reject("v6:sig2")
+    record.reject("v7:sig2")
     ProjectKB(Path(run["kb_dir"])).save(record)
     known = _known(run, analyses, paths)
     assert _numbers(known) == [[1, 3]]
     assert "02" not in known.refs
 
-    record.reject("v6:sig3")
+    record.reject("v7:sig3")
     ProjectKB(Path(run["kb_dir"])).save(record)
     known = _known(run, analyses, paths)
     assert known.groups == [] and set(known.refs) == {"01"}
@@ -125,7 +125,7 @@ def test_reject_removes_a_problem_from_the_group_and_its_tag(tmp_path: Path) -> 
 
 
 def test_exact_signature_confirms_without_the_fingerprint_in_evidence(tmp_path: Path) -> None:
-    record = _record(confirmed_signatures=["v6:sig1", "v6:sig2"])
+    record = _record(confirmed_signatures=["v7:sig1", "v7:sig2"])
     run, analyses, paths = _setup(
         tmp_path, [2, 2], [_kb(APP), _kb(APP)], evidence=["other error", "other error"], records=[record],
     )
@@ -354,11 +354,11 @@ def test_summary_data_names_known_issues_and_changes_after_reject(tmp_path: Path
     before = _hash(run, analyses, known)
 
     other = _record("unused_entry_11112222", title="Чужая запись")
-    other.reject("v6:sig1")
+    other.reject("v7:sig1")
     ProjectKB(Path(run["kb_dir"])).save(other)  # запись, на которую разборы не ссылаются
     assert _hash(run, analyses, _known(run, analyses, paths)) == before
 
-    record.reject("v6:sig2")
+    record.reject("v7:sig2")
     ProjectKB(Path(run["kb_dir"])).save(record)
     known = _known(run, analyses, paths)
     assert _hash(run, analyses, known) != before
@@ -413,7 +413,7 @@ def test_reject_beyond_listed_problems_changes_the_summary(tmp_path: Path) -> No
     texts = [APP] * (count - 1) + [_kb(APP)]
     run, analyses, paths = _setup(tmp_path, [10] * (count - 1) + [1], texts, records=[record])
     before = _hash(run, analyses, _known(run, analyses, paths))
-    record.reject(f"v6:sig{count}")
+    record.reject(f"v7:sig{count}")
     ProjectKB(Path(run["kb_dir"])).save(record)
     known = _known(run, analyses, paths)
     assert set(known.rejected) == {str(count)}
@@ -425,7 +425,7 @@ def test_reject_beyond_listed_problems_changes_the_summary(tmp_path: Path) -> No
 def test_rejected_record_marks_the_analysis_as_unconfirmed(tmp_path: Path) -> None:
     record = _record()
     run, analyses, paths = _setup(tmp_path, [3, 2, 1], [_kb(APP)] * 3, records=[record])
-    record.reject("v6:sig3")
+    record.reject("v7:sig3")
     ProjectKB(Path(run["kb_dir"])).save(record)
     known = _known(run, analyses, paths)
     assert set(known.rejected) == {"03"} and "03" not in known.refs
@@ -446,7 +446,7 @@ def test_rejected_record_marks_the_analysis_as_unconfirmed(tmp_path: Path) -> No
 def test_history_keeps_only_confirmed_references(tmp_path: Path) -> None:
     record = _record()
     run, analyses, paths = _setup(tmp_path, [2, 2], [_kb(APP), _kb(APP)], records=[record])
-    record.reject("v6:sig2")
+    record.reject("v7:sig2")
     ProjectKB(Path(run["kb_dir"])).save(record)
     known = _known(run, analyses, paths)
     refs = {file_id: ref.id for file_id, ref in known.refs.items()}
