@@ -65,6 +65,8 @@ MAX_SUMMARY_LISTED = 40
 MAX_SUMMARY_GROUPS = 10
 # Свёрнутая известная проблема в кратком разборе: номера проблем, дальше «и ещё N».
 MAX_BRIEF_GROUP_NUMBERS = 5
+# Другие проблемы той же известной проблемы в карточке проблемы report.md, дальше «и ещё N».
+MAX_REPORT_GROUP_NUMBERS = 10
 # Номера проблем одной известной проблемы в данных сводки, дальше «и ещё N».
 MAX_SUMMARY_GROUP_NUMBERS = 20
 SUMMARY_SHORT_CAUSE_CHARS = 160
@@ -1016,8 +1018,16 @@ REJECTED_SUMMARY_NOTE = (
 def _known_lines(problem: _Problem) -> list[str]:
     """Известная проблема у проблемы в report.md: запись, группа или расхождение с записью."""
     if problem.group is not None and problem.known is not None:
+        # У каждой проблемы — не больше MAX_REPORT_GROUP_NUMBERS номеров: иначе отчёт рос бы
+        # квадратично с группой. Полный список — в разделе известных проблем.
         others = [str(int(file_id)) for file_id in problem.group.file_ids if int(file_id) != problem.number]
-        together = ("с проблемой " if len(others) == 1 else "с проблемами ") + ", ".join(others)
+        shown = others[:MAX_REPORT_GROUP_NUMBERS]
+        together = ("с проблемой " if len(others) == 1 else "с проблемами ") + ", ".join(shown)
+        if len(others) > len(shown):
+            together += (
+                f" и ещё {len(others) - len(shown)} (все — в разделе «Известные проблемы "
+                "из базы знаний»)"
+            )
         return [(
             f"- Известная проблема: {problem.known.id} — «{_one_line(problem.known.title)}», "
             f"вместе {together}"

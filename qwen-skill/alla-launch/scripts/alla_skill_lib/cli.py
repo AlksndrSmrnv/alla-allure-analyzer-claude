@@ -55,6 +55,7 @@ from alla_skill_lib.analysis_format import (
     EXPECTED_FORMAT,
     TASK_FORMAT,
     ClusterAnalysis,
+    parse_analysis,
     parse_summary,
 )
 from alla_skill_lib.batch_task import BATCH_AGENT, install_batch_agent, render_batch_task
@@ -71,7 +72,7 @@ from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
 from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
 from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, reject
 from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
-from alla_skill_lib.known_issues import known_issues
+from alla_skill_lib.known_issues import KnownRecord, known_issues
 from alla_skill_lib.kb import (
     KBRecord,
     ProjectKB,
@@ -777,6 +778,15 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
 
     known = known_issues(run, analyses, flagged, paths)
     notes += known.notes
+    for file_id in known.rejected:
+        # Правка лечит причину из отвергнутой записи: не предлагаем её, пока причина не
+        # подтверждена. Уже применённую оставляем в отчёте — её можно откатить.
+        proposal = proposals.get(file_id)
+        if proposal is not None and proposal.is_fix and applied_state(
+            proposal, project_root, _proposal_files(paths, file_id)
+        ) == "not_applied":
+            del proposals[file_id]
+            not_proposed[file_id] = REJECTED_NOT_PROPOSED
     summary_data = build_summary_data(run, analyses, flagged, known)
     summary_hash = hashlib.sha256(summary_data.encode("utf-8")).hexdigest()
     previous_hash = state.get("summary_data_hash")
@@ -815,6 +825,10 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     return "done", _done_body(console, paths, offered, feedback=True)
 
 
+REJECTED_NOT_PROPOSED = (
+    "разбор опирался на запись базы знаний, которую пользователь отверг для этой проблемы, — "
+    "правка снята, пока причина не подтверждена"
+)
 MIXED_GROUP_NOT_PROPOSED = (
     "в группе, похоже, несколько проблем — одна правка на все тесты не предлагается"
 )
@@ -1249,12 +1263,22 @@ def _apply(
     path = paths.proposal(file_id)
     if not path.is_file():
         return "error", f"Для проблемы №{int(file_id)} нет предложения правки."
+    proposal = parse_proposal(ws.read_text(path))
+    project_root = Path(run["project_root"])
+    files = _proposal_files(paths, file_id)
+    rejected = _rejected_record(paths, run, entry)
+    if rejected is not None and applied_state(proposal, project_root, files) == "not_applied":
+        return "error", (
+            f"Правка для проблемы №{int(file_id)} снята: разбор опирался на запись базы знаний "
+            f"{rejected.id}, которую пользователь отверг для этой проблемы. Правку не применяй; "
+            "если пользователь назовёт настоящую причину — сохрани её в базу знаний."
+        )
     result = apply_proposal(
-        parse_proposal(ws.read_text(path)),
-        Path(run["project_root"]),
+        proposal,
+        project_root,
         confirm=confirm,
         diff_hash=diff_hash,
-        files=_proposal_files(paths, file_id),
+        files=files,
         repeat=repeat,
     )
     if result.status == "diff":
@@ -1266,6 +1290,18 @@ def _apply(
             + "\nТесты не запускай: предложи пользователю запустить исправленный тест."
         )
     return result.status, result.text
+
+
+def _rejected_record(
+    paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]
+) -> KnownRecord | None:
+    """Запись базы знаний, на которую опирался разбор и которую потом отвергли (``reject``)."""
+    path = paths.analysis(entry["file_id"])
+    if not path.is_file():
+        return None
+    analysis = parse_analysis(ws.read_text(path))
+    known = known_issues({**run, "clusters": [entry]}, {entry["file_id"]: analysis}, set(), paths)
+    return known.rejected.get(entry["file_id"])
 
 
 def _apply_hint(paths: ws.RunPaths, file_id: str, result: ApplyResult, repeat: bool = False) -> str:

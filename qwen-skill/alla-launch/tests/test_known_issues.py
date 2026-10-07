@@ -14,6 +14,7 @@ from alla_skill_lib.kb import KBRecord, ProjectKB
 from alla_skill_lib.known_issues import KnownIssues, known_issues
 from alla_skill_lib.report import (
     MAX_BRIEF_ITEMS,
+    MAX_REPORT_GROUP_NUMBERS,
     MAX_SUMMARY_GROUP_NUMBERS,
     MAX_SUMMARY_LISTED,
     _brief_units,
@@ -387,6 +388,22 @@ def test_summary_data_bounds_one_large_known_issue(tmp_path: Path) -> None:
 
     small, large = size(100), size(1000)
     assert large - small < 300  # только числа в строках, без номеров каждой проблемы
+
+
+def test_report_cards_name_a_bounded_part_of_a_large_group(tmp_path: Path) -> None:
+    count = 60
+    run, analyses, paths = _setup(tmp_path, [1] * count, [_kb(APP)] * count)
+    _, full = _render(run, analyses, paths, _known(run, analyses, paths))
+    section = next(line for line in full.splitlines() if line.startswith("- «Пул"))
+    assert section.endswith(f"— проблемы {', '.join(str(n) for n in range(1, count + 1))} · {count} тестов")
+    cards = [line for line in full.splitlines() if line.startswith(f"- Известная проблема: {ENTRY}")]
+    assert len(cards) == 2 * count  # карточка и подробности
+    rest = count - 1 - MAX_REPORT_GROUP_NUMBERS
+    assert cards[0].endswith(
+        "вместе с проблемами 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 и ещё "
+        f"{rest} (все — в разделе «Известные проблемы из базы знаний»)"
+    )
+    assert max(len(line) for line in cards) < 250
 
 
 def test_reject_beyond_listed_problems_changes_the_summary(tmp_path: Path) -> None:
