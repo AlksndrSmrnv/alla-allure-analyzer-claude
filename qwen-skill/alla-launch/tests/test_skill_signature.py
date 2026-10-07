@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 import pytest
 from skill_fixtures import without_libmagic  # noqa: F401
 
+from alla_core.models.testops import AttachmentMeta
+from alla_core.services.attachment_handlers import AttachmentContext, StructuredErrorLogHandler
 from alla_skill_lib.signature import (
     SIGNATURE_VERSION,
     cluster_signature,
@@ -77,6 +82,67 @@ def test_generic_assertion_ignores_a_log_of_only_info_lines() -> None:
 
     assert _signature(ASSERT_500, ASSERT_TRACE, INFO_LOG) == without_log
     assert _signature(ASSERT_500, ASSERT_TRACE, INFO_LOG.replace("POST", "GET")) == without_log
+
+
+@pytest.mark.parametrize("level", ["ALERT", "ERR", "CRIT", "EMERG", "ERROR"])
+def test_every_error_level_of_the_log_extraction_names_the_cause(level: str) -> None:
+    def log(text: str) -> str:
+        return f"2026-10-03 10:00:00 [{level}] {text}\n"
+
+    assert (_signature(ASSERT_500, ASSERT_TRACE, log("database unavailable"))
+            != _signature(ASSERT_500, ASSERT_TRACE, log("disk full")))
+
+
+def test_lowercase_level_words_in_info_lines_are_not_errors() -> None:
+    noise = "2026-10-03 10:00:00 [INFO] alert sent, err counter reset\n"
+
+    assert _signature(ASSERT_500, ASSERT_TRACE, noise) == _signature(ASSERT_500, ASSERT_TRACE, "")
+
+
+def _journal(*records: dict[str, Any]) -> str:
+    """Секция журнала, как её строит извлечение лога (JSON с отступами)."""
+    entries = [{"deploymentUnit": "billing-prod", "tenantCode": "tenant-42", **record}
+               for record in records]
+    content = json.dumps(entries).encode()
+    result = StructuredErrorLogHandler().handle(AttachmentContext(
+        att=AttachmentMeta(id=1, name="journal.json", type="application/json"),
+        content=content, detected_type="json", decoded_text=content.decode()))
+    assert result is not None
+    return f"--- [{result.label}: journal.json] ---\n{result.section}"
+
+
+def test_journal_record_keeps_its_level_with_its_message() -> None:
+    def journal(message: str, request: str) -> str:
+        return _journal(
+            {"logLevel": "INFO", "message": "POST /payments", "rqUID": request},
+            {"logLevel": "ERROR", "message": message, "rqUID": request,
+             "stackTrace": "com.example.Billing.charge(Billing.java:42)"},
+        )
+
+    pool = _signature(ASSERT_500, ASSERT_TRACE, journal("connection pool exhausted", "req-1"))
+
+    assert pool != _signature(ASSERT_500, ASSERT_TRACE, journal("email gateway unreachable", "req-1"))
+    assert pool == _signature(ASSERT_500, ASSERT_TRACE, journal("connection pool exhausted", "req-2"))
+    material = _material(ASSERT_500, ASSERT_TRACE, journal("connection pool exhausted", "req-1"))
+    assert material is not None and "[error] connection pool exhausted" in material
+    assert "post /payments" not in material
+
+
+def test_journal_of_only_info_records_is_not_added() -> None:
+    journal = _journal({"logLevel": "INFO", "message": "POST /payments"},
+                       {"level": "debug", "message": "pool stats"})
+
+    assert _signature(ASSERT_500, ASSERT_TRACE, journal) == _signature(ASSERT_500, ASSERT_TRACE, "")
+
+
+def test_cut_journal_still_reads_its_records() -> None:
+    journal = _journal({"logLevel": "ERROR", "message": "connection pool exhausted",
+                        "details": {"pool": "HikariPool-2"}},
+                       {"logLevel": "INFO", "message": "retry"})
+    cut = journal[:journal.index('"retry"')]
+
+    material = _material(ASSERT_500, ASSERT_TRACE, cut)
+    assert material is not None and "[error] connection pool exhausted" in material
 
 
 @pytest.mark.parametrize(("message", "trace"), [
