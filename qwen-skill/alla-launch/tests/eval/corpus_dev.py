@@ -723,6 +723,78 @@ def log_noise_one_problem() -> Case:
     return builder.build("log_noise_one_problem")
 
 
+REDIS_HEALTH_LOG = (
+    "2026-10-03 10:04:05 [ERROR] [scheduler-1] HealthIndicator: Redis health check failed\n"
+    "io.lettuce.core.RedisConnectionException: Unable to connect to redis-sessions:6379\n"
+    "\tat io.lettuce.core.RedisClient.connect(RedisClient.java:216)\n"
+)
+KAFKA_REBALANCE_LOG = (
+    "2026-10-03 10:04:06 [ERROR] [kafka-listener-2] ShipmentListener: consumer poll failed "
+    "for topic shipments.events\n"
+    "org.apache.kafka.common.errors.RebalanceInProgressException: rebalance in progress\n"
+    "\tat org.apache.kafka.clients.consumer.KafkaConsumer.poll(KafkaConsumer.java:1250)\n"
+)
+BASKET_POOL_LOG = (
+    "2026-10-03 10:04:00 [ERROR] [http-nio-8080-exec-2] BasketRepository: could not save basket\n"
+    "java.sql.SQLTransientConnectionException: HikariPool-3 - Connection is not available, "
+    "request timed out after 30000ms.\n"
+    "\tat ru.company.basket.BasketRepository.save(BasketRepository.java:61)\n"
+)
+BASKET_NPE_LOG = (
+    "2026-10-03 10:04:00 [ERROR] [http-nio-8080-exec-4] BasketService: failed to merge baskets\n"
+    "java.lang.NullPointerException: Cannot invoke \"Basket.items()\" because \"guest\" is null\n"
+    "\tat ru.company.basket.BasketService.merge(BasketService.java:44)\n"
+)
+WISHLIST_LOG = (
+    "2026-10-03 10:04:00 [ERROR] [http-nio-8080-exec-6] WishlistService: wishlist sync failed\n"
+    "java.lang.IllegalArgumentException: Unknown wishlist visibility PRIVATE_LINK\n"
+    "\tat ru.company.wishlist.WishlistService.sync(WishlistService.java:73)\n"
+)
+
+
+def background_log_errors() -> Case:
+    """Фоновые ошибки (health check, Kafka) в логах рядом с настоящей ошибкой.
+
+    Одинаковая фоновая ошибка не делает пул БД и NPE одной проблемой, а разный фон не
+    дробит одну NPE. Фон — ошибка, которая есть и у падений с другим симптомом (wishlist).
+    """
+    builder = LaunchBuilder(5117, "Basket regression")
+    message = "Basket merge expected status 200 but was 500"
+    test_class = "ru.company.basket.BasketApiTest"
+    tests = [
+        ("basket-500-db", "basket-db-pool", BASKET_POOL_LOG + REDIS_HEALTH_LOG,
+         "HikariPool-3 - Connection is not available", "mergeGuestBasket"),
+        ("basket-500-db", "basket-db-pool", BASKET_POOL_LOG + KAFKA_REBALANCE_LOG,
+         "HikariPool-3 - Connection is not available", "mergeUserBasket"),
+        ("basket-500-npe", "basket-guest-null", BASKET_NPE_LOG + REDIS_HEALTH_LOG,
+         "because \"guest\" is null", "mergeEmptyBasket"),
+        ("basket-500-npe", "basket-guest-null", BASKET_NPE_LOG + KAFKA_REBALANCE_LOG,
+         "because \"guest\" is null", "mergeSharedBasket"),
+        ("basket-500-npe", "basket-guest-null", BASKET_NPE_LOG, "because \"guest\" is null",
+         "mergeAfterLogin"),
+    ]
+    for index, (group, cause, log, evidence, method) in enumerate(tests):
+        builder.add_failure(
+            group, cause=cause, category="приложение", name=method,
+            full_name=f"{test_class}.{method}", message=message,
+            trace=_assert_trace(message, test_class, method, 30 + index * 8),
+            step="Объединить корзины", log=log, log_name="basket.log", evidence=[evidence],
+        )
+    wishlist = "Wishlist sync expected 3 items but was 0"
+    for index, method in enumerate(("syncWishlist", "syncSharedWishlist")):
+        builder.add_failure(
+            "wishlist-visibility", cause="wishlist-visibility-unknown", category="данные",
+            name=method, full_name=f"ru.company.wishlist.WishlistTest.{method}",
+            message=wishlist,
+            trace=_assert_trace(wishlist, "ru.company.wishlist.WishlistTest", method,
+                                12 + index * 5),
+            step="Синхронизировать избранное",
+            log=WISHLIST_LOG + REDIS_HEALTH_LOG + KAFKA_REBALANCE_LOG, log_name="wishlist.log",
+            evidence=["Unknown wishlist visibility PRIVATE_LINK"],
+        )
+    return builder.build("background_log_errors")
+
+
 # ---------------------------------------------------------------------------
 # Хосты и локаторы в сообщении
 # ---------------------------------------------------------------------------
@@ -905,6 +977,7 @@ CASES: dict[str, Callable[[], Case]] = {
     "retries": retries,
     "same_assertion_two_npes": same_assertion_two_npes,
     "log_noise_one_problem": log_noise_one_problem,
+    "background_log_errors": background_log_errors,
     "resources_split": resources_split,
     "resources_one_problem": resources_one_problem,
     "big_launch": big_launch,

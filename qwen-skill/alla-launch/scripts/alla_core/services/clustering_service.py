@@ -360,10 +360,14 @@ def _compact_blocks(
 class _LogErrorGate:
     """Gate по логу: ошибки в логах двух падений явно разные.
 
-    Блоки, одинаковые в обоих логах (фоновая ошибка health-check или та же ошибка
-    дословно), сокращаются: о различии судят только «свои» блоки каждого лога. Нет своих
-    блоков хотя бы у одного — его ошибки есть и у другого, разделять нечем. Иначе пара
-    разная, если у своих блоков нет общего ключа и их TF-IDF похожесть ниже порога.
+    Общий блок двух логов — либо фон (health-check, Kafka), либо сама ошибка падения; по
+    паре это не различить. Фоном считается блок, который есть и в логе падения с явно
+    другим симптомом (сообщения похожи меньше порога): с этим падением он не связан. Такие
+    общие блоки сокращаются, о различии судят «свои» блоки; остальные общие остаются и
+    держат пару вместе (общий ключ, похожесть). Нет своих блоков хотя бы у одного — его
+    ошибки есть и у другого, разделять нечем. Иначе пара разная, если у своих блоков нет
+    общего ключа и их TF-IDF похожесть ниже порога. В прогоне без падений с другим
+    симптомом фон не опознать — общая фоновая ошибка склеивает (осторожная сторона).
     TF-IDF — по блокам, без обрезки словаря: у одинаковых документов, все слова которых
     выпали бы из ``max_features``, cosine был бы 0, и gate разделил бы их.
     """
@@ -373,6 +377,10 @@ class _LogErrorGate:
         blocks: list[tuple[_ErrorBlock, ...]],
         threshold: float,
         ngram_range: tuple[int, int],
+        *,
+        message_sim: np.ndarray,
+        has_message: list[bool],
+        message_threshold: float,
     ) -> None:
         self._threshold = threshold
         index: dict[_ErrorBlock, int] = {}
@@ -382,6 +390,7 @@ class _LogErrorGate:
         self._sets = [frozenset(index[block] for block in test_blocks)
                       for test_blocks in blocks]
         self._keys = [block.keys for block in index]
+        self._background = self._find_background(message_sim, has_message, message_threshold)
         self._counts: sparse.csr_matrix | None = None
         self._full: np.ndarray | None = None
         if not index:
@@ -403,6 +412,21 @@ class _LogErrorGate:
         vectors = normalize(sparse.csr_matrix(per_test.multiply(self._idf)))
         self._full = np.asarray((vectors @ vectors.T).todense())
 
+    def _find_background(
+        self, message_sim: np.ndarray, has_message: list[bool], message_threshold: float,
+    ) -> frozenset[int]:
+        """Блоки, которые есть у падений с явно разными сообщениями: фон прогона."""
+        tests: dict[int, list[int]] = {}
+        for test, members in enumerate(self._sets):
+            if has_message[test]:
+                for block in members:
+                    tests.setdefault(block, []).append(test)
+        return frozenset(
+            block for block, owners in tests.items()
+            if len(owners) > 1
+            and float(message_sim[np.ix_(owners, owners)].min()) < message_threshold
+        )
+
     def _vector(self, members: frozenset[int]) -> np.ndarray:
         assert self._counts is not None
         vector = np.asarray(self._counts[sorted(members)].sum(axis=0)).ravel() * self._idf
@@ -413,7 +437,7 @@ class _LogErrorGate:
         if self._full is None:
             return False
         first, second = self._sets[i], self._sets[j]
-        common = first & second
+        common = first & second & self._background
         own_first, own_second = first - common, second - common
         if not own_first or not own_second:
             return False
@@ -625,8 +649,12 @@ class ClusteringService:
         log_gate: _LogErrorGate | None = None
         if (log_errors is not None and log_sim is not None
                 and self._config.log_split_threshold > 0):
-            log_gate = _LogErrorGate(log_errors, self._config.log_split_threshold,
-                                     self._config.tfidf_ngram_range)
+            log_gate = _LogErrorGate(
+                log_errors, self._config.log_split_threshold, self._config.tfidf_ngram_range,
+                message_sim=message_sim,
+                has_message=[bool(doc.strip()) for doc in message_documents],
+                message_threshold=self._config.similarity_threshold,
+            )
         step_sim: np.ndarray | None = None
         if step_documents:
             step_sim = self._pairwise_similarity(step_documents)

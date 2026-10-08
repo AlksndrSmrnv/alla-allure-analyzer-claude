@@ -27,6 +27,18 @@
       "recall": 1.0,
       "tests": 6
     },
+    "background_log_errors": {
+      "clusters": 3,
+      "evidence_loss": 0.0,
+      "evidence_lost": 0,
+      "evidence_total": 3,
+      "groups": 3,
+      "hidden_groups": 0,
+      "max_task_chars": 9694,
+      "precision": 1.0,
+      "recall": 1.0,
+      "tests": 7
+    },
     "big_launch": {
       "clusters": 40,
       "evidence_loss": 0.0,

@@ -1062,16 +1062,54 @@ def test_log_gate_shared_root_class_outweighs_unrelated_errors() -> None:
     assert _groups(_orders(_log(POOL_LOG), _log(NPE_LOG)), strict) == [[1], [2]]
 
 
-def test_log_gate_cancels_errors_present_in_both_logs() -> None:
-    """Одинаковая фоновая ошибка в обоих логах не делает пул БД и NPE одной ошибкой: о
-    различии судят свои ошибки каждого лога."""
-    background = (
-        "2026-10-03 10:00:05 [ERROR] [scheduler-1] HealthIndicator: Redis health check failed\n"
-        "io.lettuce.core.RedisConnectionException: Unable to connect to redis-cache:6379\n"
-        "\tat io.lettuce.core.RedisClient.connect(RedisClient.java:216)\n")
-    failures = _orders(_log(POOL_LOG) + background, _log(NPE_LOG) + background,
-                       _log(NPE_LOG, order=77) + background)
-    assert _groups(failures) == [[1], [2, 3]]
+REDIS_BACKGROUND_LOG = (
+    "2026-10-03 10:00:05 [ERROR] [scheduler-1] HealthIndicator: Redis health check failed\n"
+    "io.lettuce.core.RedisConnectionException: Unable to connect to redis-cache:6379\n"
+    "\tat io.lettuce.core.RedisClient.connect(RedisClient.java:216)\n")
+KAFKA_BACKGROUND_LOG = (
+    "2026-10-03 10:00:06 [ERROR] [kafka-listener-1] OrderListener: consumer poll failed "
+    "for topic orders.events\n"
+    "org.apache.kafka.common.errors.RebalanceInProgressException: rebalance in progress\n"
+    "\tat org.apache.kafka.clients.consumer.KafkaConsumer.poll(KafkaConsumer.java:1250)\n")
+
+
+def _other_symptom(test_id: int, log: str) -> FailedTestSummary:
+    """Падение с явно другим симптомом: его ошибки в логе — свидетельство фона."""
+    return make_failed_test_summary(
+        test_result_id=test_id, status_message="Wishlist sync expected 3 items but was 0",
+        failed_step_path="Отправить запрос POST /orders",
+        log_snippet=make_error_log(
+            "2026-10-03 10:00:00 [ERROR] WishlistService: unknown visibility PRIVATE_LINK\n"
+            + log))
+
+
+def test_log_gate_cancels_background_shared_by_both_logs() -> None:
+    """Ошибка Redis есть и у падения с другим симптомом — это фон: пул БД и NPE рядом с
+    ней остаются разными проблемами."""
+    failures = _orders(_log(POOL_LOG) + REDIS_BACKGROUND_LOG,
+                       _log(NPE_LOG) + REDIS_BACKGROUND_LOG,
+                       _log(NPE_LOG, order=77) + REDIS_BACKGROUND_LOG)
+    failures.append(_other_symptom(9, REDIS_BACKGROUND_LOG))
+    assert _groups(failures) == [[1], [2, 3], [9]]
+
+
+@pytest.mark.parametrize("with_background_evidence", [False, True])
+def test_log_gate_keeps_one_error_with_different_background(
+    with_background_evidence: bool,
+) -> None:
+    """Одна NPE в обоих логах, вокруг разный фон: общая ошибка падения не сокращается, даже
+    когда Redis и Kafka опознаны фоном прогона."""
+    failures = _orders(_log(NPE_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG) + KAFKA_BACKGROUND_LOG)
+    if with_background_evidence:
+        failures.append(_other_symptom(9, REDIS_BACKGROUND_LOG + KAFKA_BACKGROUND_LOG))
+    assert [1, 2] in _groups(failures)
+
+
+def test_log_gate_without_other_symptoms_keeps_a_shared_error() -> None:
+    """Других симптомов в прогоне нет — общую ошибку не отличить от фона, и пара остаётся
+    вместе (осторожная сторона: решает модель по примерам)."""
+    failures = _orders(_log(POOL_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG) + REDIS_BACKGROUND_LOG)
+    assert _groups(failures) == [[1, 2]]
 
 
 def test_log_gate_keeps_a_log_whose_errors_are_all_in_the_other() -> None:
