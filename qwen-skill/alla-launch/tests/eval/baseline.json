@@ -179,7 +179,7 @@
       "evidence_total": 3,
       "groups": 3,
       "hidden_groups": 0,
-      "max_task_chars": 6801,
+      "max_task_chars": 7114,
       "precision": 1.0,
       "recall": 1.0,
       "tests": 6
@@ -191,7 +191,7 @@
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 0,
-      "max_task_chars": 8113,
+      "max_task_chars": 8802,
       "precision": 0.52,
       "recall": 1.0,
       "tests": 5
@@ -215,7 +215,7 @@
       "evidence_total": 4,
       "groups": 4,
       "hidden_groups": 0,
-      "max_task_chars": 7257,
+      "max_task_chars": 8163,
       "precision": 0.5238,
       "recall": 1.0,
       "tests": 7
