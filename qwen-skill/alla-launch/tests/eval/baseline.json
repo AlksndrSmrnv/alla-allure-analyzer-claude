@@ -697,6 +697,10 @@
       "max_task_chars": 7114,
       "precision": 1.0,
       "recall": 1.0,
+      "signature_log_clusters": 0,
+      "signature_log_unstable": 0,
+      "signature_shared": 0,
+      "signature_shared_wrong": 0,
       "tests": 6
     },
     "same_conflict_two_causes": {
@@ -729,6 +733,10 @@
       "max_task_chars": 7251,
       "precision": 1.0,
       "recall": 1.0,
+      "signature_log_clusters": 0,
+      "signature_log_unstable": 0,
+      "signature_shared": 0,
+      "signature_shared_wrong": 0,
       "tests": 5
     },
     "silent_and_step_only": {
@@ -761,6 +769,10 @@
       "max_task_chars": 0,
       "precision": 1.0,
       "recall": 1.0,
+      "signature_log_clusters": 0,
+      "signature_log_unstable": 0,
+      "signature_shared": 0,
+      "signature_shared_wrong": 0,
       "tests": 4
     },
     "ui_and_network": {
@@ -793,6 +805,10 @@
       "max_task_chars": 8045,
       "precision": 0.8095,
       "recall": 1.0,
+      "signature_log_clusters": 0,
+      "signature_log_unstable": 0,
+      "signature_shared": 0,
+      "signature_shared_wrong": 0,
       "tests": 7
     }
   }
