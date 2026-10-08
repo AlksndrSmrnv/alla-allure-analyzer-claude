@@ -271,8 +271,10 @@ def _resources_part(message: str) -> list[str]:
 
 
 def _trace_part(trace: str) -> list[str]:
-    """Первая строка ошибки и строки причин (``Caused by``) — без кадров стека."""
-    lines = _error_lines(trace)
+    """Первая строка ошибки и строки причин (``Caused by``) основной цепочки — без кадров
+    стека и веток ``Suppressed`` (:func:`_main_chain`): ошибка закрытия ресурса — не причина
+    и не должна менять сигнатуру или вытеснять причины из якоря."""
+    lines = _main_chain(trace)
     if not lines:
         return []
     head, rest = _soft(lines[0]), [line for line in lines[1:] if _CAUSE_HINT_RE.search(line)]

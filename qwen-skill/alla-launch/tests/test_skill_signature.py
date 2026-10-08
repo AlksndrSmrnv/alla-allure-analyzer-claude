@@ -320,6 +320,31 @@ def test_suppressed_branch_is_not_the_root(trace: str, root_is_symptom: bool) ->
     assert (pool != _signature(TIMEOUT, trace, CATALOG_NPE_LOG)) is root_is_symptom
 
 
+def _suppressed(error: str, cause: str) -> str:
+    return (f"\tSuppressed: {error}\n\t\tat ru.company.reports.ReportClient.close(ReportClient.java:44)\n"
+            f"\tCaused by: {cause}\n\t\t... 4 more\n")
+
+
+def test_suppressed_branches_stay_out_of_the_trace_anchor() -> None:
+    """Ошибка закрытия ресурса — не причина: при той же основной цепочке сигнатура одна, а
+    строки подавленных причин не вытесняют основную причину из якоря (до 4 строк)."""
+    head = ("com.example.export.ExportException: Export job 9 failed\n\tat a.B.c(B.java:1)\n")
+    main_cause = "Caused by: java.lang.IllegalStateException: export disk is read-only\n\t... 3 more\n"
+    closing = "".join(_suppressed(f"java.lang.IllegalStateException: close {name} failed",
+                                  f"java.io.IOException: {name} broken")
+                      for name in ("a-stream", "a-socket"))
+    other = _suppressed("java.lang.IllegalStateException: close channel failed",
+                        "java.io.IOException: Connection reset by peer")
+    message = "Export job 9 failed"
+
+    plain = _signature(message, head + main_cause, PAYMENT_POOL_LOG)
+    assert _signature(message, head + closing + main_cause, PAYMENT_POOL_LOG) == plain
+    assert _signature(message, head + other + main_cause, PAYMENT_POOL_LOG) == plain
+    material = _material(message, head + closing + main_cause, "")
+    assert material is not None
+    assert "export disk is read-only" in material and "broken" not in material
+
+
 def test_suppressed_cause_does_not_cancel_a_generic_assertion() -> None:
     trace = ASSERT_TRACE.rstrip("\n") + "\n" + SUPPRESSED
 
