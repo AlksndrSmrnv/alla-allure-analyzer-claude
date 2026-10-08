@@ -284,27 +284,32 @@ def test_match_cluster_orders_exact_first_and_drops_rejected() -> None:
 # --- история ---------------------------------------------------------------------
 
 
+def _history_row(date: str, launch_id: int, signature: str, file_id: str = "01",
+                 kb_entry: str | None = None, **fields: object) -> dict[str, object]:
+    """Строка истории в формате ``run_records``."""
+    return {"date": date, "launch_id": launch_id, "run": f"{launch_id}-{date}",
+            "file_id": file_id, "signature": signature, "module": "", "kb_entry": kb_entry,
+            **fields}
+
+
 def test_history_recurrence(tmp_path: Path) -> None:
     append_run(tmp_path, [
-        {"date": "2026-09-20", "launch_id": 1, "signature": "v7:a",
-         "category": "приложение", "cause": "старая причина", "kb_entry": None},
-        {"date": "2026-09-25", "launch_id": 2, "signature": "v7:other",
-         "category": "окружение", "cause": "другая ошибка", "kb_entry": None},
-        {"date": "2026-09-26", "launch_id": 2, "signature": "v7:a",
-         "category": "окружение", "cause": "дубль прогона 2", "kb_entry": None},
-        {"date": "2026-09-27", "launch_id": 9, "signature": "v7:a",
-         "category": "тест", "cause": "тот же прогон", "kb_entry": None},
-        {"date": "2026-09-28", "launch_id": 3, "signature": "v7:z",
-         "category": "данные", "cause": "по записи", "kb_entry": "kb_1"},
+        _history_row("2026-09-20", 1, "v7:a", category="приложение", cause="старая причина"),
+        _history_row("2026-09-25", 2, "v7:other", category="окружение", cause="другая ошибка"),
+        _history_row("2026-09-26", 2, "v7:a", file_id="02", category="окружение",
+                     cause="дубль прогона 2"),
+        _history_row("2026-09-27", 9, "v7:a", category="тест", cause="тот же прогон"),
+        _history_row("2026-09-28", 3, "v7:z", kb_entry="kb_1", category="данные",
+                     cause="по записи"),
+        {"date": "2026-09-28", "launch_id": 5, "signature": "v7:a"},  # строка прежней версии
     ])
     with (tmp_path / "history.jsonl").open("a", encoding="utf-8") as stream:
         stream.write("{broken")  # оборванная строка без перевода строки
 
-    append_run(tmp_path, [
-        {"date": "2026-09-29", "launch_id": 4, "signature": "v7:tail", "kb_entry": None},
-    ])  # не должна склеиться с оборванной строкой
+    append_run(tmp_path, [_history_row("2026-09-29", 4, "v7:tail")])  # не склеится с оборванной
     history = load_history(tmp_path)
     assert len(history) == 6 and history[-1]["launch_id"] == 4
+    assert all(row["launch_id"] != 5 for row in history)  # прежний формат пропущен
 
     info = recurrence(history, launch_id=9, signature="v7:a", kb_ids=set())
     assert info == {"launches": 2, "first_date": "2026-09-20", "last_date": "2026-09-26"}
@@ -724,7 +729,7 @@ def test_revert_refuses_a_corrupted_or_replaced_backup(java_project: Path, tmp_p
     assert target.read_bytes() == original and not files.record.exists()
 
 
-def test_revert_refuses_a_record_without_backup_hash(java_project: Path, tmp_path: Path) -> None:
+def test_revert_refuses_a_damaged_record(java_project: Path, tmp_path: Path) -> None:
     target = java_project / "src" / "OrderTest.java"
     files = _files(tmp_path)
     proposal = parse_proposal(_proposal('        page.click("#submit-old");', '        page.click("#submit");'))
@@ -735,7 +740,7 @@ def test_revert_refuses_a_record_without_backup_hash(java_project: Path, tmp_pat
     files.record.write_text(json.dumps(data), encoding="utf-8")
 
     refused = revert_proposal(java_project, files)
-    assert refused.status == "error" and "нет хэша резервной копии" in refused.text
+    assert refused.status == "error" and "повреждена" in refused.text
     assert target.read_bytes() == applied and files.record.exists()
 
 
@@ -973,7 +978,7 @@ def test_applied_place_nearer_to_the_line_wins_over_a_neighbouring_before(tmp_pa
     assert target.read_text(encoding="utf-8") == before
 
 
-def test_applied_mark_survives_unrelated_edits_and_old_records(tmp_path: Path) -> None:
+def test_applied_mark_survives_unrelated_edits(tmp_path: Path) -> None:
     target = tmp_path / "T.java"
     target.write_text(THREE_CLICKS, encoding="utf-8")
     files = _files(tmp_path)
@@ -995,17 +1000,6 @@ def test_applied_mark_survives_unrelated_edits_and_old_records(tmp_path: Path) -
     target.write_bytes(backup)
     assert applied_state(proposal, tmp_path, files) == "not_applied"
 
-    # Отметка старого формата (только proposal/file/line) учитывается по СТАЛО у записанной строки.
-    _apply(proposal, tmp_path, files)
-    files.record.write_text(json.dumps({
-        "proposal": json.loads(files.record.read_text(encoding="utf-8"))["proposal"],
-        "file": "T.java", "line": 3,
-    }), encoding="utf-8")
-    target.write_text(target.read_text(encoding="utf-8") + "// ещё правка\n", encoding="utf-8")
-    assert is_applied(proposal, tmp_path, files)
-    assert apply_proposal(proposal, tmp_path, confirm=True, files=files).status == "applied"
-    assert target.read_text(encoding="utf-8").count("page.click();") == 2
-
 
 def test_revert_uses_the_file_from_the_apply_record(tmp_path: Path) -> None:
     """Предложение переписали (другой ФАЙЛ) — откат всё равно возвращает файл, который правил apply."""
@@ -1021,11 +1015,6 @@ def test_revert_uses_the_file_from_the_apply_record(tmp_path: Path) -> None:
     assert reverted.status == "reverted" and "A.java" in reverted.text
     assert (tmp_path / "A.java").read_text(encoding="utf-8") == "a();\nb();\n"
     assert (tmp_path / "B.java").read_text(encoding="utf-8") == "a();\nc();\n"
-
-    # Отметка старого формата: откатить нечем, файл не трогается.
-    files.record.write_text(json.dumps({"proposal": "x", "file": "A.java", "line": 2}), encoding="utf-8")
-    old = revert_proposal(tmp_path, files)
-    assert old.status == "error" and "старого формата" in old.text
 
 
 TWO_METHODS = (

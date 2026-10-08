@@ -25,7 +25,7 @@ SOURCES = {"S1": {"kind": "message", "text": "expected: <200> but was: <500>"}}
 
 def _errors(consistency: str, examples: int = 2) -> list[str]:
     text = HEAD + consistency + TAIL
-    return validate_analysis(parse_analysis(text), Path("."), task_format=2, sources=SOURCES,
+    return validate_analysis(parse_analysis(text), Path("."), observed=True, sources=SOURCES,
                              examples=examples)
 
 
@@ -58,8 +58,8 @@ def test_consistency_errors(line: str, message: str) -> None:
 
 def test_consistency_is_needed_only_with_several_examples() -> None:
     assert _errors("", examples=1) == []
-    legacy = validate_analysis(parse_analysis(HEAD + TAIL), Path("."), examples=3)
-    assert legacy == []  # формат 1: правил наблюдений и согласованности нет
+    written_by_code = validate_analysis(parse_analysis(HEAD + TAIL), Path("."), examples=3)
+    assert written_by_code == []  # разбор auto-кластера: без наблюдений и согласованности
 
 
 def test_task_asks_for_consistency_only_with_several_examples() -> None:

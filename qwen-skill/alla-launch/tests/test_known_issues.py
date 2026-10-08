@@ -64,7 +64,6 @@ def _setup(
         entry["signature"] = f"v7:sig{index + 1}"
         entry["kb_dir"] = str(project / kb_dirs[index] / "alla-kb") if kb_dirs and kb_dirs[index] else str(kb_dir)
         entry["module"] = kb_dirs[index] if kb_dirs else ""
-        entry["task_format"] = 2
         text = (evidence or [f"error {index + 1}\n{POOL}"] * len(sizes))[index]
         paths.evidence(entry["file_id"]).parent.mkdir(parents=True, exist_ok=True)
         paths.evidence(entry["file_id"]).write_text(text, encoding="utf-8")
@@ -316,7 +315,7 @@ def test_brief_size_does_not_grow_with_many_groups(tmp_path: Path) -> None:
     assert abs(sizes[0] - sizes[1]) < 300
 
 
-def test_legacy_render_without_known_shows_the_analysis_reference(tmp_path: Path) -> None:
+def test_render_without_known_shows_the_analysis_reference(tmp_path: Path) -> None:
     run, analyses, paths = _setup(tmp_path, [2, 2], [_kb(APP), _kb(APP)])
     console, full = render_report(run, analyses, set(), "Итог.", paths)
     assert console.count("[известная проблема: payment_db_pool_1a2b3c4d]") == 2

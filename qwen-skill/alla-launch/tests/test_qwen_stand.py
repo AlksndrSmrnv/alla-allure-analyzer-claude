@@ -411,8 +411,8 @@ def _scant_run(tmp_path: Path, analysis: str | None, attempts: int = 0, *,
                skipped: bool = False, written_by_model: bool = True) -> Context:
     run_dir = tmp_path / "p" / "alla-reports" / "781-20261004-100000"
     (run_dir / "analyses").mkdir(parents=True)
-    (run_dir / "run.json").write_text(json.dumps({"clusters": [
-        {"file_id": "01", "auto": False, "task_format": 2}]}), encoding="utf-8")
+    (run_dir / "run.json").write_text(json.dumps({"schema": 3, "clusters": [
+        {"file_id": "01", "auto": False}]}), encoding="utf-8")
     state: dict[str, Any] = {"attempts": {"01": {"count": attempts}} if attempts else {}}
     if skipped:
         state["skipped"] = ["01"]
@@ -473,7 +473,7 @@ def test_mixed_group_found_check(tmp_path: Path, consistency: str, status: str) 
     run_dir = tmp_path / "p" / "alla-reports" / "5103-20261004-100000"
     (run_dir / "analyses").mkdir(parents=True)
     (run_dir / "run.json").write_text(json.dumps({"clusters": [
-        {"file_id": "01", "auto": False, "task_format": 2, "example_blocks": 2}]}),
+        {"file_id": "01", "auto": False, "example_blocks": 2}]}),
         encoding="utf-8")
     (run_dir / "analyses" / "01.md").write_text(
         "ЧТО СЛОМАЛОСЬ: 500.\nПРИЧИНА: приложение — сбой.\n" + consistency, encoding="utf-8")

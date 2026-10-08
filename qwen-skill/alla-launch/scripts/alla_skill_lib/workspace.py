@@ -23,7 +23,9 @@ from typing import Any
 REPORTS_DIRNAME = "alla-reports"
 LAST_RUN_FILE = ".last_run"
 RESUME_WINDOW_HOURS = 24  # неоконченный разбор того же прогона продолжается, а не дублируется
-RUN_SCHEMA = 2  # 2: сигнатуры, база знаний, история, предложения правок
+# Версия папки разбора. Папку другой версии не продолжить: поддерживается только текущий
+# формат (3: наблюдения с реестром источников, примеры, повторы, сигнатура v7).
+RUN_SCHEMA = 3
 
 logger = logging.getLogger(__name__)
 
@@ -225,15 +227,24 @@ def read_run(paths: RunPaths) -> dict[str, Any]:
     except (OSError, ValueError) as exc:  # JSONDecodeError и UnicodeDecodeError — ValueError
         reason = "пуст" if _is_empty(paths.run_json) else f"не читается ({type(exc).__name__}: {exc})"
     else:
-        if isinstance(run, dict) and isinstance(run.get("clusters"), list):
+        if not isinstance(run, dict) or not isinstance(run.get("clusters"), list):
+            reason = "не похож на разбор alla-launch"
+        elif run.get("schema") != RUN_SCHEMA:
+            raise RunNotFoundError(
+                f"Разбор {paths.root} создан прежней версией скилла — продолжить его нельзя. "
+                f"Выполни: {skill_command('prepare', _launch_of(paths), '--fresh')}"
+            )
+        else:
             return run
-        reason = "не похож на разбор alla-launch"
-    prefix = paths.root.name.partition("-")[0]
-    launch = prefix if prefix.isdigit() else "<launch_id>"
     raise RunNotFoundError(
         f"run.json в {paths.root} {reason} — этот разбор не продолжить (скорее всего, запись "
-        f"прервалась). Выполни: {skill_command('prepare', launch, '--fresh')}"
+        f"прервалась). Выполни: {skill_command('prepare', _launch_of(paths), '--fresh')}"
     )
+
+
+def _launch_of(paths: RunPaths) -> str:
+    prefix = paths.root.name.partition("-")[0]
+    return prefix if prefix.isdigit() else "<launch_id>"
 
 
 def _is_empty(path: Path) -> bool:

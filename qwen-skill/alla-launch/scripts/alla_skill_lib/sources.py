@@ -17,9 +17,6 @@ from alla_core.services.prompt_builder_service import PromptSource
 
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.analysis_format import (
-    EXPECTED_FORMAT,
-    LEGACY_EXPECTED_FORMAT,
-    TASK_FORMAT,
     ClusterAnalysis,
     parse_analysis,
     validate_analysis,
@@ -89,19 +86,14 @@ def describe(record: dict[str, Any]) -> str:
     return what
 
 
-def task_format(entry: dict[str, Any]) -> int:
-    """Формат задания кластера; записи старых папок без поля — формат 1."""
-    return int(entry.get("task_format") or 1)
+def observed(entry: dict[str, Any]) -> bool:
+    """Разбор кластера — с наблюдениями по реестру источников (у ``auto`` разбор пишет код)."""
+    return not entry.get("auto")
 
 
 def example_blocks(entry: dict[str, Any]) -> int:
-    """Сколько примеров было в задании отдельными блоками (старые записи — один)."""
+    """Сколько примеров было в задании отдельными блоками (у ``auto`` задания нет — один)."""
     return int(entry.get("example_blocks") or 1)
-
-
-def expected_format(entry: dict[str, Any]) -> str:
-    """Шаблон разбора, по которому проверяется этот кластер."""
-    return EXPECTED_FORMAT if task_format(entry) >= TASK_FORMAT else LEGACY_EXPECTED_FORMAT
 
 
 def check_entry_analysis(
@@ -118,9 +110,9 @@ def check_entry_analysis(
     """
     analysis = parse_analysis(text)
     offered = frozenset(match["id"] for match in entry.get("kb", []))
-    version = task_format(entry)
-    sources = load_registry(paths.sources(entry["file_id"])) if version >= TASK_FORMAT else None
+    with_sources = observed(entry)
+    sources = load_registry(paths.sources(entry["file_id"])) if with_sources else None
     analysis.sources = sources
-    errors = validate_analysis(analysis, project_root, offered, task_format=version,
+    errors = validate_analysis(analysis, project_root, offered, observed=with_sources,
                                sources=sources, examples=example_blocks(entry))
     return analysis, errors

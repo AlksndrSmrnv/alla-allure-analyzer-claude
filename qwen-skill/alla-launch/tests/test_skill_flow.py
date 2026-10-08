@@ -209,6 +209,7 @@ def test_fix_loop_counts_distinct_attempts(project: Path, testops: FakeTestOps, 
         path = run_dir / "analyses" / f"{entry['file_id']}.md"
         if not path.exists():
             path.write_text(MARKDOWN_ANALYSIS, encoding="utf-8")
+    assert _next(run_dir, capsys).startswith("STATUS: summary")
     (run_dir / "summary.md").write_text("Итог.", encoding="utf-8")
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: done")
@@ -749,23 +750,6 @@ def test_unknown_module_takes_the_run_module_or_the_root(
     _, run, _ = _prepare(multimodule_project, capsys, launch_id=779)
     silent = next(entry for entry in run["clusters"] if entry["auto"])
     assert silent["module"] == "" and silent["kb_dir"] == str(multimodule_project / "alla-kb")
-
-
-def test_old_run_without_module_info_uses_the_common_knowledge_base(
-    multimodule_project: Path, testops: FakeTestOps, capsys
-) -> None:
-    run_dir, run, _ = _prepare(multimodule_project, capsys)
-    orders = _entry_by_module(run, "orders")
-    for entry in run["clusters"]:  # разбор, подготовленный версией скилла без модулей
-        entry.pop("module"), entry.pop("kb_dir")
-    (run_dir / "run.json").write_text(json.dumps(run, ensure_ascii=False), encoding="utf-8")
-    (run_dir / "feedback" / f"{orders['file_id']}.md").write_text(FEEDBACK, encoding="utf-8")
-
-    code, out = _run(["remember", orders["file_id"], "--run", str(run_dir)], capsys)
-
-    assert code == 0 and out.startswith("STATUS: saved"), out
-    assert len(list((multimodule_project / "alla-kb").glob("*.json"))) == 1
-    assert not (multimodule_project / "orders" / "alla-kb").exists()
 
 
 def test_check_lists_every_knowledge_base(

@@ -660,13 +660,13 @@ def revert_proposal(project_root: Path, files: ProposalFiles) -> ApplyResult:
     переписать (другой ``ФАЙЛ:``), и откат ушёл бы не в тот файл.
     """
     data = _load_record(files.record)
+    if data is None and files.record.is_file():
+        return ApplyResult("error", (
+            f"Отметка применения {files.record} повреждена — откат невозможен, верни файл "
+            "вручную (git)."
+        ))
     if data is None:
         return ApplyResult("error", "Эта правка не применялась командой apply — откатывать нечего.")
-    if not data.get("sha_after") or not data.get("file"):
-        return ApplyResult("error", (
-            "Отметка применения старого формата (без хэша файла и резервной копии) — откат "
-            "невозможен, верни файл вручную (git)."
-        ))
     errors: list[str] = []
     target = _resolve_file(str(data["file"]), project_root, errors)
     if target is None:
@@ -684,13 +684,7 @@ def revert_proposal(project_root: Path, files: ProposalFiles) -> ApplyResult:
         return ApplyResult("error", f"Резервная копия {files.backup} не читается ({exc}) — откат невозможен.")
     # Копию сверяем с хэшем файла до apply: повреждённая или подменённая NN.orig иначе
     # затёрла бы исправный файл и стёрла отметку применения. Пишем ровно проверенные байты.
-    expected = data.get("sha_before")
-    if not expected:
-        return ApplyResult("error", (
-            "В отметке применения нет хэша резервной копии — проверить её нельзя, откат "
-            f"не выполнен. Файл {data['file']} не тронут; верни его вручную (git)."
-        ))
-    if hashlib.sha256(original).hexdigest() != expected:
+    if hashlib.sha256(original).hexdigest() != data["sha_before"]:
         return ApplyResult("error", (
             f"Резервная копия {files.backup} не совпадает с версией файла до правки (повреждена "
             f"или заменена) — откат не выполнен. Файл {data['file']} не тронут; верни его "
@@ -756,12 +750,18 @@ def _proposal_hash(proposal: Proposal) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+_RECORD_KEYS = ("proposal", "file", "line", "sha_before", "sha_after", "backup")
+
+
 def _load_record(record: Path) -> dict[str, object] | None:
+    """Отметка применения (:func:`apply_proposal`); нет, битая или неполная — None."""
     try:
         data = json.loads(record.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict) or any(not data.get(key) for key in _RECORD_KEYS):
+        return None
+    return data
 
 
 def _record_state(proposal: Proposal, target: Path, files: ProposalFiles) -> str | None:
@@ -791,9 +791,9 @@ def _record_state(proposal: Proposal, target: Path, files: ProposalFiles) -> str
         current = hashlib.sha256(target.read_bytes()).hexdigest()
     except OSError:
         return "unknown"
-    if current == data.get("sha_after"):
+    if current == data["sha_after"]:
         return "applied"
-    if current == data.get("sha_before"):
+    if current == data["sha_before"]:
         return "not_applied"
     try:
         current_lines = _normalize(_read_source(target)).split("\n")
@@ -802,7 +802,7 @@ def _record_state(proposal: Proposal, target: Path, files: ProposalFiles) -> str
         return "unknown"
     versions = _known_versions(proposal, data, files, start)
     if versions is None:
-        # Отметка старого формата (нет хэшей и копии): верим только СТАЛО ровно на записанной строке.
+        # Надёжной копии нет (удалена, повреждена): верим только СТАЛО ровно на записанной строке.
         return "applied" if start in find_block(current_lines, proposal.after) else "unknown"
     original_lines, applied_lines = versions
     end = start + len(proposal.after)
@@ -820,7 +820,7 @@ def _known_versions(
     start: int,
 ) -> tuple[list[str], list[str]] | None:
     """(файл до apply, файл сразу после apply) построчно; None — восстановить нельзя."""
-    if not data.get("sha_after") or not files.backup.is_file():
+    if not files.backup.is_file():
         return None
     original = files.backup.read_bytes()
     try:

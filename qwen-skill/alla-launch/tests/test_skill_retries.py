@@ -13,7 +13,6 @@ from skill_fake_testops import FakeTestOps
 from alla_skill_lib.report import render_green_report
 from alla_skill_lib.retries import (
     MAX_REPORT_PASSED,
-    passed_after_retry,
     render_task_section,
     report_line,
     retry_facts,
@@ -165,16 +164,6 @@ def test_report_shows_retries_and_tests_passed_after_retry(tmp_path: Path) -> No
             "всего по группе): "
             "у 1 теста все попытки упали с той же ошибкой; у 1 теста есть попытка с другой "
             "ошибкой: «ConnectException: refused».") in full
-
-
-def test_report_without_retries_has_no_retry_lines(tmp_path: Path) -> None:
-    run = _run([2])
-    del run["triage"]["retries"]  # папка разбора до шага 5
-
-    console, full = _render(tmp_path, run, [APP])
-
-    assert "повтор" not in console.lower() and "Повторы" not in full
-    assert passed_after_retry(run) == []
 
 
 def test_green_report_lists_tests_passed_after_retry(tmp_path: Path) -> None:

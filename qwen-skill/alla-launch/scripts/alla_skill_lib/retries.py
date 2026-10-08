@@ -155,9 +155,8 @@ def report_line(facts: RetryFacts) -> str | None:
 
 
 def passed_after_retry(run: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Прошедшие после повтора из run.json; у старых папок разбора — пусто."""
-    retries = (run.get("triage") or {}).get("retries") or {}
-    return list(retries.get("passed_after_retry") or [])
+    """Прошедшие после повтора из run.json."""
+    return list(run["triage"]["retries"]["passed_after_retry"])
 
 
 def _tests(count: int) -> str:

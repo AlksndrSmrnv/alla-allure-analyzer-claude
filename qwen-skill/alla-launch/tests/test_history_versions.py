@@ -18,14 +18,14 @@ def _row(run: str = "777-first", file_id: str = "01", **updates) -> dict:
     }
 
 
-def test_latest_physical_version_replaces_old_record_but_keeps_legacy(tmp_path: Path) -> None:
-    legacy = {"launch_id": 12, "date": "2026-09-01", "signature": "v7:legacy"}
+def test_latest_physical_version_replaces_old_record_and_skips_old_format(tmp_path: Path) -> None:
+    old_format = {"launch_id": 12, "date": "2026-09-01", "signature": "v7:legacy"}  # без run и module
     before = _row(date="2026-09-25")
     latest = _row(date="2026-09-20", cause="Уточнённая причина", kb_entry=None)
     other = _row(file_id="02")
-    history.append_run(tmp_path, [legacy, before, other, latest, latest])
+    history.append_run(tmp_path, [old_format, before, other, latest, latest])
 
-    assert history.load_history(tmp_path) == [legacy, other, latest]
+    assert history.load_history(tmp_path) == [other, latest]
     assert history.recurrence(history.load_history(tmp_path), launch_id=999,
                               signature=None, kb_ids={"known_1"})["launches"] == 1
     only_updated = [row for row in history.load_history(tmp_path) if row.get("file_id") == "01"]

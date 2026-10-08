@@ -12,7 +12,6 @@ from test_skill_flow import MARKDOWN_ANALYSIS, VALID_ANALYSIS, _next, _prepare, 
 
 from alla_skill_lib.analysis_format import (
     EXPECTED_FORMAT,
-    LEGACY_EXPECTED_FORMAT,
     parse_analysis,
     quote_found,
     validate_analysis,
@@ -32,7 +31,7 @@ TAIL = "КАК ИСПРАВИТЬ:\n1. Добавить проверку custome
 
 def _errors(observations: str, *, head: str = HEAD, missing: str = "") -> list[str]:
     text = head + "НАБЛЮДЕНИЯ:\n" + observations + missing + TAIL
-    return validate_analysis(parse_analysis(text), Path("."), task_format=2, sources=SOURCES)
+    return validate_analysis(parse_analysis(text), Path("."), observed=True, sources=SOURCES)
 
 
 @pytest.mark.parametrize("line", [
@@ -63,24 +62,19 @@ def test_rejected_observations_name_the_quote(line: str, message: str) -> None:
 def test_observations_are_required_unless_the_cause_is_unknown() -> None:
     text = HEAD + TAIL
     assert any("нет раздела «НАБЛЮДЕНИЯ:»" in error for error in validate_analysis(
-        parse_analysis(text), Path("."), task_format=2, sources=SOURCES))
+        parse_analysis(text), Path("."), observed=True, sources=SOURCES))
 
     unknown = "ЧТО СЛОМАЛОСЬ: Тест получил 500.\nПРИЧИНА: неизвестно — данных мало.\n"
     errors = validate_analysis(parse_analysis(unknown + "НЕ ХВАТАЕТ: нет\n" + TAIL), Path("."),
-                               task_format=2, sources=SOURCES)
+                               observed=True, sources=SOURCES)
     assert any("при категории «неизвестно» в «НЕ ХВАТАЕТ:»" in error for error in errors)
     ok = unknown + "НЕ ХВАТАЕТ: лога сервиса заказов за время теста.\n" + TAIL
-    assert validate_analysis(parse_analysis(ok), Path("."), task_format=2, sources=SOURCES) == []
-
-
-def test_legacy_format_needs_no_observations() -> None:
-    assert validate_analysis(parse_analysis(HEAD + TAIL), Path("."), task_format=1) == []
-    assert "НАБЛЮДЕНИЯ" in EXPECTED_FORMAT and "НАБЛЮДЕНИЯ" not in LEGACY_EXPECTED_FORMAT
+    assert validate_analysis(parse_analysis(ok), Path("."), observed=True, sources=SOURCES) == []
 
 
 def test_missing_registry_rejects_observations_of_the_new_format() -> None:
     analysis = parse_analysis(HEAD + "НАБЛЮДЕНИЯ:\n- [S999] «anything at all here»\n" + TAIL)
-    errors = validate_analysis(analysis, Path("."), task_format=2, sources=None)
+    errors = validate_analysis(analysis, Path("."), observed=True, sources=None)
     assert any("реестр источников этого кластера" in error and "Проблемы скилла" in error
                for error in errors)
 
@@ -118,8 +112,7 @@ def test_next_and_verify_reject_a_quote_from_another_source(
 ) -> None:
     run_dir, run, _ = _prepare(project, capsys)
     order = run["clusters"][0]["file_id"]
-    assert run["clusters"][0]["task_format"] == 2
-    assert all("task_format" not in entry for entry in run["clusters"] if entry["auto"])
+    assert run["schema"] == 3 and not run["clusters"][0]["auto"]
     wrong = VALID_ANALYSIS.replace("- [S3] «java.lang.NullPointerException",
                                    "- [S1] «java.lang.NullPointerException")
     (run_dir / "analyses" / f"{order}.md").write_text(wrong, encoding="utf-8")
@@ -206,23 +199,6 @@ def test_report_separates_observations_from_the_presumed_cause(
     assert "Наблюдения" not in brief and "«java.lang.NullPointerException" not in brief
 
 
-def test_legacy_run_report_has_no_observations(
-    project: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from alla_skill_lib import workspace
-    from eval.legacy import restore_legacy_run
-
-    run_dir = restore_legacy_run(project, workspace.SKILL_DIR, workspace.ENTRYPOINT)
-    (run_dir / "analyses" / "03.md").write_text(MARKDOWN_ANALYSIS, encoding="utf-8")
-    assert _next(run_dir, capsys).startswith("STATUS: summary")
-    (run_dir / "summary.md").write_text("Итог.", encoding="utf-8")
-    assert _next(run_dir, capsys).startswith("STATUS: done")
-    report = (run_dir / "report.md").read_text(encoding="utf-8")
-
-    # Старый разбор: реестра нет — ни подписей источников, ни пометки о логе.
-    assert "Наблюдения" not in report and "не подтверждена логом" not in report
-
-
 # --- регрессии по чтению инструкций глазами исполнителя ---------------------------
 
 
@@ -256,7 +232,7 @@ def test_unknown_cause_with_no_observations_written_as_none(written: str) -> Non
             + "НЕ ХВАТАЕТ: лога сервиса за время теста.\n" + TAIL)
     analysis = parse_analysis(text)
     assert analysis.observations == [] and analysis.bad_observations == []
-    assert validate_analysis(analysis, Path("."), task_format=2, sources=SOURCES) == []
+    assert validate_analysis(analysis, Path("."), observed=True, sources=SOURCES) == []
 
 
 def test_verify_names_the_cluster_task_and_remember_lists_the_reasons(

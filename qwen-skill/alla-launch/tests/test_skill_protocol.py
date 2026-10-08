@@ -185,6 +185,23 @@ def test_commands_explain_a_broken_run_json(project: Path, testops: FakeTestOps,
         assert "Внутренняя ошибка" not in out
 
 
+def test_run_of_another_version_is_not_resumed(
+    project: Path, testops: FakeTestOps, capsys
+) -> None:
+    """Поддерживается только текущий формат папки: прежнюю не продолжить, prepare начнёт новую."""
+    run_dir, run, _ = _prepare(project, capsys)
+    ws.write_json(run_dir / "run.json", {**run, "schema": ws.RUN_SCHEMA - 1})
+
+    for argv in (["next", str(run_dir)], ["verify", "1", "--run", str(run_dir)]):
+        code, out = _run([*argv, "--project-root", str(project)], capsys)
+        assert code == 1 and out.startswith("STATUS: error"), (argv, out)
+        assert "прежней версией скилла" in out and "prepare 777 --fresh" in out, (argv, out)
+
+    code, out = _run(["prepare", "777", "--project-root", str(project)], capsys)
+    assert code == 0 and "Продолжаю неоконченный разбор" not in out, out
+    assert len(list((project / "alla-reports").glob("777-*"))) == 2
+
+
 @pytest.mark.parametrize("content", ["", "{", "[]"])
 def test_next_survives_unreadable_state_json(
     project: Path, testops: FakeTestOps, capsys, content: str

@@ -207,7 +207,7 @@ def _example_blocks(name: str | None) -> int:
 
 
 def _validate_example(text: str, project: Path, data: str | None = None) -> list[str]:
-    return validate_analysis(parse_analysis(text), project, frozenset(), task_format=2,
+    return validate_analysis(parse_analysis(text), project, frozenset(), observed=True,
                              sources=_example_sources(data), examples=_example_blocks(data))
 
 

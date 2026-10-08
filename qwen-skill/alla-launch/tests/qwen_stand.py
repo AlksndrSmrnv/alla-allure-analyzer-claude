@@ -800,16 +800,18 @@ def check_unknown_by_model(ctx: Context) -> dict[str, Any]:
     project = canonical(ctx.project)
     written = {target for call in ctx.trace.calls if call.name in WRITE_TOOLS
                for target in ctx.tool_targets(project, path_of(call))}
+    from alla_skill_lib.workspace import RUN_SCHEMA
+
     found: list[str] = []
     for run_dir in ctx.run_dirs():
         run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
         state_path = run_dir / "state.json"
         state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
+        if run.get("schema") != RUN_SCHEMA:
+            return bad(f"{run_dir.name}: разбор не текущего формата (schema {run.get('schema')})")
         for entry in run["clusters"]:
             if entry.get("auto"):
                 continue
-            if entry.get("task_format") != 2:
-                return bad(f"кластер {entry['file_id']}: задание не нового формата")
             path = run_dir / "analyses" / f"{entry['file_id']}.md"
             text = path.read_text(encoding="utf-8") if path.is_file() else ""
             missing = next((line.split(":", 1)[1].strip() for line in text.splitlines()

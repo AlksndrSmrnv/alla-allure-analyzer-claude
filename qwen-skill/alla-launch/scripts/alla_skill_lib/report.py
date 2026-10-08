@@ -920,7 +920,7 @@ def _consistency_lines(analysis: ClusterAnalysis, prefix: str, *, bold: bool = F
 def _evidence_lines(analysis: ClusterAnalysis, title: str, missing_title: str) -> list[str]:
     """Цитаты с понятным источником и чего не хватает — отдельно от предположения о причине."""
     lines: list[str] = []
-    # Без реестра (папка до наблюдений) источник не назвать — цитаты не показываем.
+    # Без реестра (разбор auto-кластера) источник не назвать — цитаты не показываем.
     if analysis.observations and analysis.sources is not None:
         lines.append(title)
         for item in analysis.observations:

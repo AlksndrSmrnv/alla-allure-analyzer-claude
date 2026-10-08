@@ -21,7 +21,6 @@ from alla_skill_lib.kb import (
     MAX_FINGERPRINT_LINES,
     KBRecord,
     ProjectKB,
-    find_kb_dir,
     fingerprint_lines,
     kb_label,
     make_entry_id,
@@ -50,9 +49,9 @@ def find_entry(run: dict[str, Any], cluster: str) -> dict[str, Any] | None:
 
 
 def project_kb(run: dict[str, Any], entry: dict[str, Any]) -> ProjectKB:
-    """База знаний модуля кластера; разбор старой версии без ``kb_dir`` в записи — общая."""
+    """База знаний модуля кластера (``kb_dir`` записи кластера)."""
     project_root = Path(run["project_root"])
-    directory = Path(entry.get("kb_dir") or run.get("kb_dir") or find_kb_dir(project_root))
+    directory = Path(entry["kb_dir"])
     return ProjectKB(directory, kb_label(project_root, directory))
 
 
@@ -255,7 +254,7 @@ def _report_refresh(
     """
     numbers: list[str] = []
     for item in run["clusters"]:
-        directory = Path(item.get("kb_dir") or run.get("kb_dir") or "")
+        directory = Path(item["kb_dir"])
         analysis_path = paths.analysis(item["file_id"])
         if directory != kb.directory or not analysis_path.is_file():
             continue
@@ -275,7 +274,8 @@ def _blocked(paths: ws.RunPaths, entry: dict[str, Any]) -> str | None:
     if entry.get("auto") or not entry.get("signature"):
         return "У этого кластера нет данных об ошибке (сообщения, трейса, лога) — запоминать нечего."
     if not paths.evidence(entry["file_id"]).is_file():
-        return "Разбор создан старой версией скилла — выполни prepare заново, затем повтори."
+        return (f"Нет {paths.evidence(entry['file_id']).name} — папка разбора повреждена: "
+                "выполни prepare заново с --fresh, затем повтори.")
     return None
 
 
