@@ -233,14 +233,14 @@
       "tests": 6
     },
     "same_conflict_two_causes": {
-      "clusters": 1,
+      "clusters": 2,
       "evidence_loss": 0.0,
       "evidence_lost": 0,
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 0,
-      "max_task_chars": 8802,
-      "precision": 0.52,
+      "max_task_chars": 7251,
+      "precision": 1.0,
       "recall": 1.0,
       "tests": 5
     },
@@ -257,14 +257,14 @@
       "tests": 4
     },
     "ui_and_network": {
-      "clusters": 2,
+      "clusters": 3,
       "evidence_loss": 0.0,
       "evidence_lost": 0,
       "evidence_total": 4,
       "groups": 4,
       "hidden_groups": 0,
-      "max_task_chars": 8253,
-      "precision": 0.5238,
+      "max_task_chars": 8045,
+      "precision": 0.8095,
       "recall": 1.0,
       "tests": 7
     }
