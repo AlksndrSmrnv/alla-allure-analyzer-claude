@@ -1292,3 +1292,136 @@ def test_cluster_without_error_text_is_labelled_by_test_name() -> None:
     report = ClusteringService(ClusteringConfig()).cluster_failures(
         launch_id=1, failures=[_failure(301)])
     assert [cluster.label for cluster in report.clusters] == ["Тест: test-301"]
+
+
+# ---------------------------------------------------------------------------
+# Счётчики gates (ClusteringGateStats)
+# ---------------------------------------------------------------------------
+
+
+def _gates(failures: list[FailedTestSummary], config: ClusteringConfig | None = None,
+           ) -> dict[str, int]:
+    report = ClusteringService(config or ClusteringConfig(log_similarity_weight=0.15)
+                               ).cluster_failures(launch_id=1, failures=failures)
+    return report.gates.model_dump()
+
+
+def _nonzero(gates: dict[str, int]) -> dict[str, int]:
+    return {key: value for key, value in gates.items() if value}
+
+
+def test_gates_count_assertion_split() -> None:
+    failures = [_failure(1, status_message="Status ==> expected: <0> but was: <33>"),
+                _failure(2, status_message="Status ==> expected: <0> but was: <1>")]
+    assert _nonzero(_gates(failures)) == {"pairs": 1, "assertion_split": 1}
+
+
+def test_gates_count_step_split_before_log_override() -> None:
+    """Пару разрезал шаг — log override и gate по логу её уже не видят."""
+    failures = _orders(_log(NPE_LOG), _log(NPE_LOG))
+    failures[1] = failures[1].model_copy(update={"failed_step_path": "Отменить заказ"})
+    assert _nonzero(_gates(failures)) == {"pairs": 1, "step_split": 1}
+
+
+def test_gates_count_log_split_and_problem_pairs() -> None:
+    failures = _orders(_log(POOL_LOG), _log(POOL_LOG, order=77), _log(NPE_LOG), _log(NPE_LOG))
+    assert _nonzero(_gates(failures)) == {
+        "pairs": 6, "pairs_in_one_problem": 2, "log_pairs": 6, "log_split": 4}
+
+
+def test_gates_count_pair_held_by_shared_root_class() -> None:
+    """Два разных NPE за одним ассертом: общих блоков нет, логи непохожи, держит ключ."""
+    other_npe = (
+        "2026-10-03 10:00:00 [ERROR] [{thread}] PriceCalculator: cart total unavailable\n"
+        "java.lang.NullPointerException: Cannot read field \"amount\" because \"tax\" is null\n"
+        "\tat ru.company.orders.PriceCalculator.total(PriceCalculator.java:{line})\n")
+    gates = _gates(_orders(_log(NPE_LOG), _log(other_npe)))
+    assert _nonzero(gates) == {"pairs": 1, "pairs_in_one_problem": 1, "log_pairs": 1,
+                               "log_held_by_key": 1, "log_held_merged": 1}
+
+
+def test_gates_count_pair_held_by_shared_background() -> None:
+    """Общий Redis поднимает похожесть пула и NPE выше порога (0.52): по похожести пару не
+    отличить от одной ошибки — без общего блока gate разделил бы её."""
+    failures = _orders(_log(POOL_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG) + REDIS_BACKGROUND_LOG)
+    assert _nonzero(_gates(failures)) == {"pairs": 1, "pairs_in_one_problem": 1, "log_pairs": 1,
+                                          "log_held_by_block": 1, "log_held_merged": 1}
+
+
+def test_gates_count_one_error_with_different_background_as_held_by_block() -> None:
+    """Обратный случай неотличим по паре: общая NPE, разный фон — тоже «держит общий блок»."""
+    failures = _orders(_log(NPE_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG) + KAFKA_BACKGROUND_LOG)
+    assert _gates(failures)["log_held_by_block"] == 1
+
+
+@pytest.mark.parametrize("logs", [
+    (NPE_LOG, NPE_LOG),  # одинаковые блоки — разделять нечем
+    (NPE_LOG, NPE_LOG + UNRELATED_ERRORS_LOG),  # ошибки одного лога целиком в другом
+])
+def test_gates_do_not_count_pairs_without_own_errors_on_both_sides(logs: tuple[str, str]) -> None:
+    gates = _gates(_orders(*(_log(log) for log in logs)))
+    assert (gates["log_pairs"], gates["log_held_by_block"], gates["log_held_by_key"]) == (1, 0, 0)
+
+
+def test_gates_count_message_split() -> None:
+    failures = _calls("java.net.ConnectException: Connection refused",
+                      "java.lang.IllegalStateException: order is already closed")
+    assert _nonzero(_gates(failures)) == {"pairs": 1, "message_split": 1}
+
+
+def test_gates_count_resource_split() -> None:
+    failures = _calls(_connect("inventory.svc"), _connect("loyalty.svc"))
+    assert _nonzero(_gates(failures)) == {"pairs": 1, "resource_split": 1}
+
+
+def test_gates_count_log_override() -> None:
+    console = ("2026-10-03 10:03:01 [SEVERE] http://shop.test/static/catalog.js 1:20451 "
+               "Uncaught TypeError: Cannot read properties of undefined (reading 'items')\n")
+    failures = _calls("Element not found {.product-card}\nExpected: visible",
+                      "Element not found {.filters-panel}\nExpected: visible",
+                      logs=(console, console))
+    assert _nonzero(_gates(failures)) == {
+        "pairs": 1, "pairs_in_one_problem": 1, "log_pairs": 1, "log_override": 1,
+        "log_override_resources": 1, "log_override_merged": 1}
+
+
+@pytest.mark.parametrize("config", [
+    ClusteringConfig(log_similarity_weight=0.15, log_split_threshold=0.0),
+    ClusteringConfig(log_similarity_weight=0.0),
+])
+def test_gates_log_counters_are_zero_when_log_gate_is_off(config: ClusteringConfig) -> None:
+    failures = _orders(_log(POOL_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG) + REDIS_BACKGROUND_LOG,
+                       _log(POOL_LOG), _log(NPE_LOG))
+    gates = _gates(failures, config)
+    assert gates["pairs"] == 6
+    assert not any(gates[key] for key in ("log_pairs", "log_split", "log_held_by_key",
+                                          "log_held_by_block", "log_held_merged"))
+
+
+def test_gates_are_zero_without_pairs() -> None:
+    assert not any(_gates([]).values())
+    assert _nonzero(_gates(_orders(_log(NPE_LOG)))) == {}
+
+
+def test_gate_pairs_carry_test_ids_but_stay_out_of_the_dump() -> None:
+    failures = _orders(_log(POOL_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG) + REDIS_BACKGROUND_LOG,
+                       first_id=40)
+    report = ClusteringService(ClusteringConfig(log_similarity_weight=0.15)
+                               ).cluster_failures(launch_id=1, failures=failures)
+    assert report.gates.held_test_pairs == [(40, 41)]
+    assert "held_test_pairs" not in report.model_dump()["gates"]
+    assert "override_test_pairs" not in report.model_dump(mode="json")["gates"]
+
+
+def test_gates_split_counters_never_exceed_pairs() -> None:
+    failures = [
+        *_orders(_log(POOL_LOG), _log(NPE_LOG) + REDIS_BACKGROUND_LOG, None),
+        *_calls(_connect("inventory.svc"), _connect("loyalty.svc"), "Status: but was: <1>"),
+    ]
+    failures = [f.model_copy(update={"test_result_id": index}) for index, f in enumerate(failures)]
+    gates = _gates(failures)
+    decided = (gates["assertion_split"] + gates["step_split"] + gates["log_split"]
+               + gates["log_held_by_key"] + gates["log_held_by_block"] + gates["message_split"]
+               + gates["resource_split"] + gates["log_override"])
+    assert 0 < decided <= gates["pairs"] == 15
+    assert gates["log_pairs"] <= gates["pairs"]
