@@ -90,7 +90,10 @@ def test_stand_project_has_the_code_of_the_corpus_traces(tmp_path: Path, spec: s
               if (path := sources / f"{qualified.replace('.', '/')}.java").is_file()]
     assert frames
     for path, method, line in frames:
-        declaration = path.read_text(encoding="utf-8").splitlines()[line - 2]
+        source = path.read_text(encoding="utf-8").splitlines()
+        assert source[line - 1].startswith("        "), (path.name, method, line)  # тело метода
+        declaration = next(text for text in reversed(source[:line - 1])
+                           if text.startswith("    ") and not text.startswith("        "))
         assert f" {method}(" in declaration, (path.name, method, line)
 
 

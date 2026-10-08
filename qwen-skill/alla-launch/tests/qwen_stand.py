@@ -53,20 +53,25 @@ COPY_IGNORE = shutil.ignore_patterns(
 # строке из кадра стека, иначе модель честно пишет «код расходится с трейсом» и КОД указать
 # нечем. Классы приложения из логов (OrderRepository, DiscountService…) в проекте автотестов
 # не живут и здесь не нужны.
-Member = tuple[str, int | None, str]  # объявление, строка вызова (None — следом), вызов
+# Объявление, строка вызова (None — следом), тело: подготовка и последней строкой вызов.
+Member = tuple[str, int | None, str]
 
 
-def java_source(package: str, name: str, members: list[Member]) -> str:
-    """Исходник класса: у члена с номером строки вызов стоит ровно на ней (как в кадре стека)."""
-    lines = [f"package {package};", "", f"public class {name} {{"]
-    for declaration, line, call in members:
+def java_source(package: str, name: str, members: list[Member], fields: tuple[str, ...] = ()) -> str:
+    """Исходник класса: у члена с номером строки вызов (последняя строка тела) стоит ровно на
+    ней, как в кадре стека. Подготовка нужна, чтобы код совпадал с разметкой корпуса: без неё
+    модель по коду называла причиной сам тест (E09, cartTotal без товаров в корзине)."""
+    lines = [f"package {package};", "", f"public class {name} {{",
+             *(f"    {field}" for field in fields)]
+    for declaration, line, body in members:
+        body_lines = body.split("\n")
         if line is None:
             lines.append("")
-        elif len(lines) > line - 2:
+        elif len(lines) > line - 1 - len(body_lines):
             raise ValueError(f"{name}: строка {line} уже занята")
         else:
-            lines += [""] * (line - 2 - len(lines))
-        lines += [f"    {declaration} {{", f"        {call}", "    }"]
+            lines += [""] * (line - 1 - len(body_lines) - len(lines))
+        lines += [f"    {declaration} {{", *(f"        {part}" for part in body_lines), "    }"]
     return "\n".join([*lines, "}"]) + "\n"
 
 
@@ -89,13 +94,18 @@ STAND_SOURCES: dict[str, str] = {
     )),
     # E09 (retries)
     "cart/CartTest.java": java_source("ru.company.cart", "CartTest", _tests(
-        ("addItem", None, "assertEquals(3, cart.add(\"SKU-1\").size());"),
-        ("cartTotal", 33, "assertEquals(\"300.00\", cart.total());"),
-        ("removeItem", 48, "assertFalse(cart.remove(\"SKU-9\").contains(\"SKU-9\"));"),
-        ("applyCoupon", 61, "assertEquals(10, cart.applyCoupon(\"SPRING\").discountPercent());"),
-        ("checkout", 75, "assertEquals(200, cart.checkout().statusCode());"),
-        ("updateQty", 90, "assertEquals(2, cart.update(\"SKU-3\", 2).quantity(\"SKU-3\"));"),
-    )),
+        ("addItem", None, "cart.clear();\nassertEquals(3, cart.add(\"SKU-1\", 3).size());"),
+        ("cartTotal", 33, "cart.clear();\ncart.add(\"SKU-1\", 3); // 3 x 100.00\n"
+                          "assertEquals(\"300.00\", cart.total());"),
+        ("removeItem", 48, "cart.clear();\ncart.add(\"SKU-9\", 1);\n"
+                           "assertFalse(cart.remove(\"SKU-9\").contains(\"SKU-9\"));"),
+        ("applyCoupon", 61, "cart.clear();\ncart.add(\"SKU-1\", 1);\n"
+                            "assertEquals(10, cart.applyCoupon(\"SPRING\").discountPercent());"),
+        ("checkout", 75, "cart.clear();\ncart.add(\"SKU-1\", 1);\n"
+                         "assertEquals(200, cart.checkout().statusCode());"),
+        ("updateQty", 90, "cart.clear();\ncart.add(\"SKU-3\", 1);\n"
+                          "assertEquals(2, cart.update(\"SKU-3\", 2).quantity(\"SKU-3\"));"),
+    ), fields=("private final CartClient cart = new CartClient();",)),
     "cart/CartClient.java": java_source("ru.company.cart", "CartClient", [
         ("public Response update(String sku, int quantity)", 40,
          "return http.put(\"/cart/items/\" + sku, Map.of(\"quantity\", quantity));"),
