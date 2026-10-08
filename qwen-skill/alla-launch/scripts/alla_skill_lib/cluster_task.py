@@ -218,14 +218,15 @@ def project_frames(trace: str | None, limit: int = MAX_FRAME_LINES) -> list[str]
     return deduped
 
 
-def short_trace(trace: str | None) -> str | None:
+def short_trace(trace: str | None, budget: int | None = None) -> str | None:
     """Трейс без кадров JDK, фреймворков и библиотек: исключение, ``Caused by``, кадры проекта.
 
     Для примера, чей трейс не влезает в свою долю лимита: обрезка с начала оставляла
     строку исключения и кадры JUnit, а кадр теста терялся. Сообщение исключения
     сохраняется целиком — все строки до первого кадра (expected/actual у AssertJ бывают на
-    следующих строках, а другого сообщения у теста может не быть); не влезут кадры — их
-    отрежет лимит. У Python-трейса сообщение в конце, после кадров.
+    следующих строках, а другого сообщения у теста может не быть). У Python-трейса сообщение
+    в конце, после кадров. ``budget`` — доля лимита примера: кадров берётся столько, сколько
+    влезает рядом с сообщением, иначе обрезка с начала до доли отрезала бы сообщение Python.
     """
     lines = [line.rstrip() for line in (trace or "").strip().splitlines() if line.strip()]
     if not lines:
@@ -244,7 +245,14 @@ def short_trace(trace: str | None) -> str | None:
     shown = {line.strip() for line in head}
     frames = [line if _CAUSED_BY_RE.match(line) else f"\t{line}"
               for line in project_frames(trace) if line.strip() not in shown]
-    return "\n".join([*head, *frames, *tail])
+    used = len("\n".join([*head, *tail]))
+    kept: list[str] = []
+    for frame in frames:
+        if budget is not None and used + 1 + len(frame) > budget:
+            break
+        kept.append(frame)
+        used += 1 + len(frame)
+    return "\n".join([*head, *kept, *tail])
 
 
 # Файловая позиция кадра: «(OrderTest.java:6)», «(/app/orders.ts:12:3)» или
@@ -427,9 +435,10 @@ def _examples_task(
     """Задание по нескольким примерам: у каждого свой блок данных и своя доля лимитов."""
     prompt_examples: list[PromptExample] = []
     for number, (role, test) in enumerate(examples, start=1):
+        share = example_shares(len(examples), number)
         log = test.log_snippet if test.log_snippet and test.log_snippet.strip() else None
         if log:
-            budget = int(settings.llm_prompt_log_max_chars * example_shares(len(examples), number))
+            budget = int(settings.llm_prompt_log_max_chars * share)
             error = (test.log_selection_error if test.log_selection_error is not None
                      else selection_error_text(test.status_message, test.status_trace,
                                                test.correlation_hint))
@@ -437,7 +446,9 @@ def _examples_task(
         prompt_examples.append(PromptExample(
             role=EXAMPLE_ROLES.get(role, role), test_result_id=test.test_result_id,
             test_name=test.name, step=test.failed_step_path, message=test.status_message,
-            trace=test.status_trace, log=log, short_trace=short_trace(test.status_trace),
+            trace=test.status_trace, log=log,
+            short_trace=short_trace(test.status_trace,
+                                    max(1, int(settings.llm_prompt_trace_max_chars * share))),
         ))
     prompt = build_cluster_examples_prompt(
         cluster, prompt_examples,

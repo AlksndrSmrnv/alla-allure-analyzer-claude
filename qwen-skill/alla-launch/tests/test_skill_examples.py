@@ -153,6 +153,36 @@ def test_short_trace_keeps_the_exception_and_project_frames(trace: str, expected
     assert short_trace(trace) == expected
 
 
+@pytest.mark.parametrize("trace", [
+    # Python: сообщение после кадров — обрезка до доли не должна его отрезать (ревью Codex).
+    "Traceback (most recent call last):\n" + "".join(
+        f'  File "/ci/tests/cart/test_cart_{n}.py", line {n}, in step_{n}\n    helper_{n}()\n'
+        for n in range(1, 30)) + "AssertionError: Cart total expected 300.00 but was 0.00\n",
+    # Java: многострочное сообщение AssertJ перед кадрами.
+    "org.opentest4j.AssertionFailedError: \nexpected: 300.00\n but was: 0.00\n" + "".join(
+        f"\tat ru.company.cart.CartSteps.step{n}(CartSteps.java:{n})\n" for n in range(1, 30)),
+])
+def test_example_trace_keeps_the_message_within_its_share(trace: str) -> None:
+    tests = {i: FailedTestSummary(test_result_id=i, name=f"t{i}", status="failed",
+                                  status_trace=trace if i == 2 else f"java.lang.AssertionError: {i}")
+             for i in (1, 2)}
+    cluster = FailureCluster(
+        cluster_id="c", label="x", signature=ClusterSignature(), member_test_ids=[1, 2],
+        member_count=2, representative_test_id=1,
+        examples=[ClusterExample(role="typical", test_result_id=1),
+                  ClusterExample(role="different", test_result_id=2)])
+    settings = Settings()
+    task = build_cluster_task_with_sources(
+        cluster=cluster, position=1, total=1, launch_id=1, answer_path="/a.md",
+        next_command="next", tests_by_id=tests, log_snippet=None, full_trace=None, frames=[],
+        hints=[], settings=settings)
+    shown, = [source.text for source in task.sources
+              if source.kind == "trace" and source.test_result_id == 2]
+    assert len(shown) <= settings.llm_prompt_trace_max_chars // 2
+    assert "but was: 0.00" in shown or "but was 0.00" in shown
+    assert "step1(" in shown or "step_1" in shown  # первый кадр проекта влез рядом
+
+
 def test_words_of_another_option_are_named_in_the_error() -> None:
     errors = _errors("СОГЛАСОВАННОСТЬ: разные проблемы — у createOrder одна причина (пул БД), "
                      "у createPromoOrder другая\n")
