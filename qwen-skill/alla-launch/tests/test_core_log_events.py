@@ -9,7 +9,7 @@ import skill_fixtures  # noqa: F401  # scripts/ в sys.path
 
 from alla_core.services.log_extraction_service import _detect_content_type, _extract_error_blocks
 from alla_core.utils.log_events import error_events, parse_events
-from eval import corpus_dev, corpus_holdout
+from eval import corpus_dev
 
 FORMAT_LOGS = {
     "spring-boot": (corpus_dev.SPRING_BOOT_LOG, "merchant terminal T-77 is blocked"),
@@ -23,9 +23,9 @@ FORMAT_LOGS = {
     "nginx": (corpus_dev.NGINX_LOG, "connect() failed (111: Connection refused)"),
     "current": (corpus_dev.CURRENT_FORMAT_LOG, "customer is null"),
     "bare-exception": (corpus_dev.BARE_EXCEPTION_LOG, "No space left on device"),
-    "celery": (corpus_holdout.CELERY_LOG, "KeyError: 'zone_id'"),
-    "syslog": (corpus_holdout.SYSLOG_LOG, "redis connection lost"),
-    "pipe-level": (corpus_holdout.PIPE_LEVEL_LOG, "has no rate for tier PLATINUM"),
+    "celery": (corpus_dev.CELERY_LOG, "KeyError: 'zone_id'"),
+    "syslog": (corpus_dev.SYSLOG_LOG, "redis connection lost"),
+    "pipe-level": (corpus_dev.PIPE_LEVEL_LOG, "has no rate for tier PLATINUM"),
 }
 
 
