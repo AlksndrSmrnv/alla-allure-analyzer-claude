@@ -18,13 +18,15 @@ class ClusterView:
 
     ``members`` — все тесты кластера; ``visible`` — тесты, чьи данные попали в задание
     (представитель и источник лога); ``task_text`` — текст ``clusters/NN.md`` (у
-    кластера без задания — пусто).
+    кластера без задания — пусто); ``signature`` — сигнатура из ``run.json`` (модели не
+    показывается, по ней база знаний узнаёт запись точно).
     """
 
     file_id: str
     members: tuple[int, ...]
     visible: tuple[int, ...]
     task_text: str
+    signature: str | None = None
 
 
 def normalize_space(text: str) -> str:
@@ -236,6 +238,47 @@ def evaluate_retries(expected: dict[str, Any], triage: dict[str, Any]) -> dict[s
     problems += [f"лишний прошедший после повтора {item}"
                  for item in sorted(got_passed - wanted_passed)]
     return {**totals, "retry_problems": problems}
+
+
+SIGNATURE_KEYS = (
+    "signature_shared", "signature_shared_wrong", "signature_log_clusters",
+    "signature_log_unstable",
+)
+
+
+def evaluate_signatures(
+    labels: dict[str, Any] | None,
+    clusters: Iterable[ClusterView],
+) -> dict[str, Any]:
+    """Пары кластеров одного прогона с одной сигнатурой.
+
+    * ``signature_shared`` — такие пары (разметка не нужна): запись базы знаний,
+      подтверждённая для одного кластера, точно предлагается и другому;
+    * ``signature_shared_wrong`` — только с разметкой: из них пары, где ни один тест одного
+      кластера не та же проблема, что тест другого (ложное точное совпадение, как
+      ``kb_offers_wrong``).
+    """
+    by_signature: dict[str, list[ClusterView]] = defaultdict(list)
+    for cluster in clusters:
+        if cluster.signature:
+            by_signature[cluster.signature].append(cluster)
+    pairs = [(first, second) for same in by_signature.values()
+             for index, first in enumerate(same) for second in same[index + 1:]]
+    result: dict[str, Any] = {"signature_shared": len(pairs)}
+    if labels is None:
+        return result
+    groups = {group["id"]: group for group in labels["groups"]}
+    group_of = {test: group["id"] for group in labels["groups"] for test in group["tests"]}
+    wrong = 0
+    problems: list[str] = []
+    for first, second in pairs:
+        same = any(_same_problem(groups, group_of, a, b)
+                   for a in first.members if a in group_of
+                   for b in second.members if b in group_of)
+        wrong += not same
+        problems.append(f"кластеры {first.file_id} и {second.file_id}: одна сигнатура"
+                        + ("" if same else " у разных проблем"))
+    return {**result, "signature_shared_wrong": wrong, "signature_problems": problems}
 
 
 KB_OFFER_KEYS = ("kb_offers", "kb_offers_found", "kb_offers_wrong")

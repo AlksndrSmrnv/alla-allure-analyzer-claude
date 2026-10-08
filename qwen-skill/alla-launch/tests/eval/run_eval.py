@@ -43,6 +43,7 @@ from eval.corpus import Case, validate_labels  # noqa: E402
 from eval.metrics import (  # noqa: E402
     KB_OFFER_KEYS,
     RETRY_KEYS,
+    SIGNATURE_KEYS,
     ClusterView,
     combine,
     coverage,
@@ -50,6 +51,7 @@ from eval.metrics import (  # noqa: E402
     evaluate_gate_pairs,
     evaluate_kb_offers,
     evaluate_retries,
+    evaluate_signatures,
     kb_offer_records,
     summary,
 )
@@ -63,13 +65,15 @@ SETS: dict[str, dict[str, Callable[[], Case]]] = {
 
 @dataclass
 class PreparedRun:
-    """Что ``prepare`` показал модели: кластеры, задания, размер и время; gates кластеризации."""
+    """Что ``prepare`` показал модели: кластеры, задания, размер и время; gates кластеризации
+    и стабильность сигнатуры (:func:`signature_log_stability`)."""
 
     run_dir: Path
     clusters: list[ClusterView]
     seconds: float
     triage: dict[str, Any]
     gates: ClusteringGateStats
+    signature_log: dict[str, int]
 
     @property
     def max_task_chars(self) -> int:
@@ -123,6 +127,7 @@ def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
     by_id = {cluster.cluster_id: cluster for cluster in
              (data.clustering.clusters if data.clustering else [])}
     views: list[ClusterView] = []
+    stability = dict.fromkeys(("signature_log_clusters", "signature_log_unstable"), 0)
     for entry in run["clusters"]:
         cluster = by_id[entry["cluster_id"]]
         if entry.get("examples"):  # чьи данные видела модель (шаг 4: примеры кластера)
@@ -143,9 +148,34 @@ def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
             members=tuple(cluster.member_test_ids),
             visible=tuple(sorted(visible)),
             task_text=text,
+            signature=entry.get("signature"),
         ))
+        if entry.get("signature"):
+            logs, signatures = signature_log_stability(cluster, tests_by_id)
+            stability["signature_log_clusters"] += logs > 1
+            stability["signature_log_unstable"] += signatures > 1
     gates = data.clustering.gates if data.clustering else ClusteringGateStats()
-    return PreparedRun(run_dir, views, seconds, run["triage"], gates)
+    return PreparedRun(run_dir, views, seconds, run["triage"], gates, stability)
+
+
+def signature_log_stability(cluster: Any, tests_by_id: dict[int, Any]) -> tuple[int, int]:
+    """Сколько разных логов у участников кластера и сколько разных сигнатур он получил бы,
+    будь представителем лог каждого из них: так между прогонами меняется лог одной проблемы.
+    """
+    from alla_skill_lib.signature import cluster_signature
+
+    representative = tests_by_id.get(cluster.representative_test_id)
+    if representative is None:
+        return 0, 0
+    logs = {(test.log_snippet, test.log_selection_truncated): None
+            for test in (tests_by_id.get(test_id) for test_id in cluster.member_test_ids)
+            if test is not None and test.log_snippet}
+    signatures = set()
+    for snippet, truncated in logs:
+        tests = {**tests_by_id, representative.test_result_id: representative.model_copy(
+            update={"log_snippet": snippet, "log_selection_truncated": truncated})}
+        signatures.add(cluster_signature(cluster, tests))
+    return len(logs), len(signatures)
 
 
 def evaluate_fixture(fixture: LaunchFixture, labels: dict[str, Any] | None) -> dict[str, Any]:
@@ -155,11 +185,14 @@ def evaluate_fixture(fixture: LaunchFixture, labels: dict[str, Any] | None) -> d
             prepared = run_prepare(fixture, Path(tmp))
         return {"tests": sum(len(cluster.members) for cluster in prepared.clusters),
                 "clusters": len(prepared.clusters), "gates": prepared.gates.model_dump(),
+                **evaluate_signatures(None, prepared.clusters), **prepared.signature_log,
                 "max_task_chars": prepared.max_task_chars, "seconds": round(prepared.seconds, 2)}
     validate_labels(fixture, labels)
     with tempfile.TemporaryDirectory(prefix="alla-eval-") as tmp:
         prepared = run_prepare(fixture, Path(tmp))
         result = evaluate(labels, prepared.clusters)
+        result.update(evaluate_signatures(labels, prepared.clusters))
+        result.update(prepared.signature_log)
         result["gates"] = {**prepared.gates.model_dump(), **evaluate_gate_pairs(
             labels, prepared.gates.held_test_pairs, prepared.gates.override_test_pairs)}
         if labels.get("retries"):
@@ -238,7 +271,13 @@ def evaluate_cases(
 def baseline_entry(result: dict[str, Any]) -> dict[str, Any]:
     """Метрики для базовой линии: без времени (оно зависит от машины)."""
     return {**summary(result), **retry_summary(result), **kb_offer_summary(result),
-            "gates": result["gates"], "max_task_chars": result["max_task_chars"]}
+            **signature_summary(result), "gates": result["gates"],
+            "max_task_chars": result["max_task_chars"]}
+
+
+def signature_summary(result: dict[str, Any]) -> dict[str, int]:
+    """Числа сигнатур; ``signature_shared_wrong`` — только с разметкой."""
+    return {key: result[key] for key in SIGNATURE_KEYS if key in result}
 
 
 def kb_offer_summary(result: dict[str, Any]) -> dict[str, int]:
@@ -288,6 +327,12 @@ def print_table(results: dict[str, dict[str, dict[str, Any]]]) -> None:
                 print(f"записи базы знаний {case_name}: предложены своей причине "
                       f"{result['kb_offers_found']}/{result['kb_offers']}, чужой "
                       f"{result['kb_offers_wrong']}")
+        for case_name, result in cases.items():
+            if result["signature_shared"] or result["signature_log_unstable"]:
+                print(f"сигнатуры {case_name}: одна на два кластера {result['signature_shared']} "
+                      f"(у разных проблем {result['signature_shared_wrong']}); меняется с "
+                      f"логом участника {result['signature_log_unstable']} из "
+                      f"{result['signature_log_clusters']}")
 
 
 def _retry_cells(result: dict[str, Any]) -> str:
@@ -312,6 +357,7 @@ def print_details(results: dict[str, dict[str, dict[str, Any]]]) -> None:
                       for item in result["lost"]]
             lines += [f"  повторы: {problem}" for problem in result.get("retry_problems", [])]
             lines += [f"  база знаний: {problem}" for problem in result.get("kb_offer_problems", [])]
+            lines += [f"  сигнатура: {problem}" for problem in result.get("signature_problems", [])]
             decided = {key: value for key, value in result["gates"].items() if value}
             if set(decided) - {"pairs", "pairs_in_one_problem"}:
                 lines.append("  gates: " + ", ".join(f"{key} {value}"
@@ -392,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         print(json.dumps({**summary(result), **retry_summary(result), **coverage(result),
-                          "gates": result["gates"], "max_task_chars": result["max_task_chars"],
+                          **signature_summary(result), "gates": result["gates"], "max_task_chars": result["max_task_chars"],
                           "seconds": result["seconds"]}, ensure_ascii=False, indent=2))
         if result["unclustered"] or result["unlabeled"]:
             print("Внимание: разметка не совпадает с активными падениями прогона — "
