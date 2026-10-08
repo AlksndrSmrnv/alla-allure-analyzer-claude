@@ -47,10 +47,14 @@ FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
 
 
 def _mixed_launch() -> LaunchFixture:
-    """Склеенная группа: одинаковый assertion, в логах пул БД и NPE (корпус эталона, E08)."""
-    from eval.corpus_dev import same_assertion_db_vs_npe
+    """Склеенная группа: одинаковый assertion, в логах два разных NPE (корпус эталона, E08).
 
-    return same_assertion_db_vs_npe().fixture
+    Пул БД и NPE (``same_assertion_db_vs_npe``) кластеризация уже разделяет по логу; общий
+    класс исключения — нет, такую группу различает модель.
+    """
+    from eval.corpus_dev import same_assertion_two_npes
+
+    return same_assertion_two_npes().fixture
 
 
 def _retries_launch() -> LaunchFixture:

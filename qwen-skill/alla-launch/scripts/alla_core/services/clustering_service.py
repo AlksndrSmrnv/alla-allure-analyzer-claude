@@ -16,11 +16,19 @@
      сливается. Применяется ДО message/log, поэтому log override его не
      обходит. Если разделение оказалось ошибочным, пользователь сводит
      кластера через merge rules (`rule_kind="step"`).
+   - log gate: у обоих в логе (секции «файл») есть ошибки, общей ошибки нет
+     (ни одинакового блока, ни корневого класса исключения, ни кода) и TF-IDF
+     похожесть (без кадров, времени, ID, потоков и цифр) ниже
+     `log_split_threshold` — пара не сливается. Одинаковый симптом с разными
+     ошибками сервиса (пул БД и NPE за одним 500) — разные проблемы.
 5. Итоговая similarity для пары:
    - если message есть у обоих и message similarity ниже порога:
      * если у обоих есть лог и log similarity ≥ порога — log override:
        лог становится доминирующим каналом (0.6 log + 0.2 msg + 0.2 trace)
      * иначе пара не может быть склеена (message gate)
+   - gate по ресурсам: хосты сетевой ошибки или локаторы UI одного вида у двух
+     сообщений не пересекаются (`message_resources`) — сообщения считаются
+     разными, как ниже порога; log override при этом работает
    - иначе взвешенная комбинация message/trace/log
    - если message у одного/обоих пустой, fallback на trace (+log)
    - если лога нет у одного/обоих тестов, его вес перераспределяется на message
@@ -36,9 +44,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
+from scipy import sparse
 from scipy.cluster.hierarchy import fcluster, linkage
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.preprocessing import normalize
 
 from alla_core.models.clustering import (
     ClusterExample,
@@ -50,8 +60,13 @@ from alla_core.models.testops import FailedTestSummary
 from alla_core.utils.log_events import SOURCE_MARK_RE, strip_source_marks
 from alla_core.utils.log_focus import strip_log_selection_metadata
 from alla_core.utils.log_utils import extract_correlation_from_log
+from alla_core.utils.message_resources import MessageResources, message_resources
 from alla_core.utils.step_paths import normalize_step_path
-from alla_core.utils.text_normalization import normalize_text, numeric_codes
+from alla_core.utils.text_normalization import (
+    normalize_text,
+    numeric_codes,
+    replace_thread_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +101,16 @@ class ClusteringConfig:
     # gates и НЕ обходится log override. Значение 0.0 фактически отключает
     # gate (sim < 0.0 невозможно), 1.0 — любое отличие шага режет пару.
     step_path_strict_threshold: float = 0.95
+    # Gate по логу (_LogErrorGate): у логов пары нет общей ошибки (блока, корневого класса,
+    # кода) и они похожи меньше порога — пара не сливается. 0.30 —
+    # половина порога «логи одинаковые» (log override, 0.60): ниже лог разделяет, от 0.60
+    # объединяет, между ними решают веса. Разные ошибки корпуса — не выше 0.16, одна ошибка
+    # с шумом (потоки, строки, ID, посторонние ошибки) — от 0.46. 0.0 отключает gate.
+    log_split_threshold: float = 0.30
+    # Gate по ресурсам: хосты или локаторы одного вида в сообщениях не пересекаются —
+    # сообщения считаются разными (message gate), но одинаковый лог их ещё склеивает
+    # (log override). Выключатель ALLURE_CLUSTERING_RESOURCE_GATE.
+    resource_gate: bool = True
 
     @property
     def distance_threshold(self) -> float:
@@ -246,6 +271,152 @@ def _build_log_document(
     return normalize_text(compacted) if compacted else ""
 
 
+# Кадры стека Java и Python: у одной ошибки различаются путём вызова, у разных — совпадают
+# пакетами, поэтому в документ ошибок лога не входят.
+_STACK_FRAME_RE = re.compile(r"^\s*(?:at\s+\S|\.\.\.\s+\d+\s+more\b|File \".+\", line \d+)")
+_EXCEPTION_CLASS_RE = re.compile(
+    r"\b(?:[A-Za-z_$][\w$]*\.)*([A-Z][\w$]*(?:Exception|Error|Throwable))\b")
+# Как token_pattern TfidfVectorizer: документ без таких слов дал бы нулевой вектор.
+_TOKEN_RE = re.compile(r"(?u)\b\w\w+\b")
+
+
+def _file_sections(snippet: str) -> list[str]:
+    """Тела секций ``--- [файл: …] ---``; лог без заголовков — одна такая секция.
+
+    В них ``ErrorBlocksHandler`` оставил только события-ошибки. Секции ``HTTP`` и
+    ``журнал`` (весь JSON-массив, с INFO) в документ ошибок не входят.
+    """
+    headers = list(_LOG_SECTION_HEADER_RE.finditer(snippet))
+    if not headers:
+        return [snippet]
+    return [
+        snippet[match.end():headers[idx + 1].start() if idx + 1 < len(headers) else len(snippet)]
+        for idx, match in enumerate(headers)
+        if match.group("section_type") == "файл"
+    ]
+
+
+@dataclass(frozen=True)
+class _ErrorBlock:
+    """Блок события-ошибки лога в сравнимом виде.
+
+    ``text`` — строки без кадров стека, времени, ID, имён потоков и цифр: номера строк,
+    потоков и заказов — не другая ошибка. ``keys`` — корневой класс исключения (последний в
+    блоке, то есть самый глубокий ``Caused by``; обёртки не считаются) и коды ошибок
+    (``numeric_codes``).
+    """
+
+    text: str
+    keys: frozenset[str]
+    lines: int
+
+
+def _log_error_blocks(
+    failure: FailedTestSummary,
+    *,
+    head_lines: int,
+    tail_lines: int,
+) -> tuple[_ErrorBlock, ...]:
+    """Блоки ошибок лога для gate по логу; длинный лог — блоки начала и конца."""
+    if not failure.log_snippet:
+        return ()
+    snippet = strip_source_marks(failure.log_snippet)
+    if failure.log_selection_truncated:
+        snippet = strip_log_selection_metadata(snippet)
+    blocks: list[_ErrorBlock] = []
+    for body in _file_sections(snippet):
+        # Блоки событий разделены пустыми строками (render_error_blocks).
+        for raw in re.split(r"\n[ \t]*\n", body):
+            lines = [line for line in raw.splitlines()
+                     if line.strip() and not _STACK_FRAME_RE.match(line)]
+            source = "\n".join(lines)
+            text = _DIGITS_RE.sub("#", normalize_text(replace_thread_names(source)))
+            if not _TOKEN_RE.search(text):
+                continue
+            classes = _EXCEPTION_CLASS_RE.findall(source)
+            keys = frozenset(classes[-1:]) | frozenset(numeric_codes(source))
+            blocks.append(_ErrorBlock(text, keys, len(lines)))
+    return _compact_blocks(list(dict.fromkeys(blocks)), head_lines, tail_lines)
+
+
+def _compact_blocks(
+    blocks: list[_ErrorBlock], head_lines: int, tail_lines: int,
+) -> tuple[_ErrorBlock, ...]:
+    """Как ``_compact_trace``, но целыми блоками: начало и конец до заданного числа строк."""
+    if sum(block.lines for block in blocks) <= head_lines + tail_lines:
+        return tuple(blocks)
+    kept: set[int] = set()
+    for order, budget in ((range(len(blocks)), head_lines),
+                          (range(len(blocks) - 1, -1, -1), tail_lines)):
+        used = 0
+        for index in order:
+            if used >= budget:
+                break
+            kept.add(index)
+            used += blocks[index].lines
+    return tuple(blocks[index] for index in sorted(kept))
+
+
+class _LogErrorGate:
+    """Gate по логу: ошибки в логах двух падений явно разные.
+
+    Пара разная, только если у логов нет ни одного общего блока ошибки, ни общего ключа
+    (корневой класс, код), а TF-IDF похожесть их блоков ниже порога. Любая общая ошибка
+    держит пару вместе: общий фон (health-check, Kafka) и общая ошибка падения по паре
+    неотличимы, а «фоном» по прогону оказывается и причина с несколькими симптомами —
+    удаление общей ошибки дробило бы настоящую проблему. Цена: одинаковая фоновая ошибка
+    в обоих логах выключает gate для пары (различает модель по примерам).
+    TF-IDF — по блокам (вектор лога — сумма счётчиков его блоков, idf по логам прогона), без
+    обрезки словаря: у одинаковых документов, все слова которых выпали бы из
+    ``max_features``, cosine был бы 0, и gate разделил бы их.
+    """
+
+    def __init__(
+        self,
+        blocks: list[tuple[_ErrorBlock, ...]],
+        threshold: float,
+        ngram_range: tuple[int, int],
+    ) -> None:
+        self._threshold = threshold
+        index: dict[_ErrorBlock, int] = {}
+        for test_blocks in blocks:
+            for block in test_blocks:
+                index.setdefault(block, len(index))
+        self._sets = [frozenset(index[block] for block in test_blocks)
+                      for test_blocks in blocks]
+        self._keys = [frozenset().union(*(block.keys for block in test_blocks))
+                      for test_blocks in blocks]
+        self._similarity: np.ndarray | None = None
+        if not index:
+            return
+        vectorizer = CountVectorizer(token_pattern=_TOKEN_RE.pattern, ngram_range=ngram_range,
+                                     lowercase=True)
+        try:
+            counts = sparse.csr_matrix(vectorizer.fit_transform([b.text for b in index]))
+        except ValueError:
+            return
+        rows = [row for row, members in enumerate(self._sets) for _ in members]
+        columns = [column for members in self._sets for column in members]
+        membership = sparse.csr_matrix(
+            (np.ones(len(rows)), (rows, columns)), shape=(len(blocks), len(index)))
+        per_test = membership @ counts
+        documents = sum(1 for members in self._sets if members)
+        frequency = np.asarray((per_test > 0).sum(axis=0)).ravel()
+        idf = np.log((1 + documents) / (1 + frequency)) + 1.0
+        vectors = normalize(sparse.csr_matrix(per_test.multiply(idf)))
+        self._similarity = np.asarray((vectors @ vectors.T).todense())
+
+    def differ(self, i: int, j: int) -> bool:
+        first, second = self._sets[i], self._sets[j]
+        return (
+            self._similarity is not None
+            and bool(first) and bool(second)
+            and not first & second
+            and not self._keys[i] & self._keys[j]
+            and float(self._similarity[i, j]) < self._threshold
+        )
+
+
 def _get_failure_correlation(failure: FailedTestSummary) -> str | None:
     """Вернуть одну опорную correlation-строку для конкретного падения."""
     if failure.correlation_hint:
@@ -327,6 +498,14 @@ class ClusteringService:
             )
             for f in failures
         ]
+        log_errors = [
+            _log_error_blocks(
+                f,
+                head_lines=self._config.log_compact_head_lines,
+                tail_lines=self._config.log_compact_tail_lines,
+            )
+            for f in failures
+        ]
         step_documents: list[str] = [_build_step_document(f) for f in failures]
         assertion_actuals: list[str | None] = [
             _extract_assertion_actual(f.status_message or "") for f in failures
@@ -360,9 +539,14 @@ class ClusteringService:
             log_docs = [log_documents[i] for i in has_text_indices]
             step_docs = [step_documents[i] for i in has_text_indices]
             actuals = [assertion_actuals[i] for i in has_text_indices]
+            errors = [log_errors[i] for i in has_text_indices]
+            resources = (
+                [message_resources(failures[i].status_message) for i in has_text_indices]
+                if self._config.resource_gate else None
+            )
             labels = self._cluster_texts(
                 message_docs, trace_docs, log_docs if log_weight_positive else None, step_docs,
-                assertion_actuals=actuals,
+                assertion_actuals=actuals, log_errors=errors, resources=resources,
             )
 
             for idx, label in zip(has_text_indices, labels):
@@ -415,6 +599,8 @@ class ClusteringService:
         step_documents: list[str] | None = None,
         *,
         assertion_actuals: list[str | None] | None = None,
+        log_errors: list[tuple[_ErrorBlock, ...]] | None = None,
+        resources: list[MessageResources] | None = None,
     ) -> list[int]:
         """Message-first TF-IDF + агломеративная кластеризация.
 
@@ -427,6 +613,11 @@ class ClusteringService:
         log_sim: np.ndarray | None = None
         if log_documents and self._config.log_similarity_weight > 0:
             log_sim = self._pairwise_similarity(log_documents)
+        log_gate: _LogErrorGate | None = None
+        if (log_errors is not None and log_sim is not None
+                and self._config.log_split_threshold > 0):
+            log_gate = _LogErrorGate(log_errors, self._config.log_split_threshold,
+                                     self._config.tfidf_ngram_range)
         step_sim: np.ndarray | None = None
         if step_documents:
             step_sim = self._pairwise_similarity(step_documents)
@@ -497,6 +688,14 @@ class ClusteringService:
                         final_min = 0.0
                     continue
 
+                # Gate по логу: общей ошибки в логах нет и они почти не похожи — разные
+                # ошибки сервиса за одинаковым симптомом (пул БД и NPE за одним 500). Явный отказ от лога (ALLURE_LOGS_CLUSTERING_WEIGHT=0)
+                # выключает и его.
+                if log_gate is not None and log_gate.differ(i, j):
+                    if collect_stats:
+                        final_min = 0.0
+                    continue
+
                 if has_message[i] and has_message[j]:
                     # Override по log: если лог-кластеризация включена (weight > 0),
                     # оба теста имеют лог и лог-similarity выше порога —
@@ -511,14 +710,20 @@ class ClusteringService:
                         and has_log[j]
                         and log_sim[i, j] >= self._config.similarity_threshold
                     )
-                    if (
+                    # Gate по ресурсам: разные хосты или локаторы — сообщения о разном,
+                    # сколько бы ни совпадало остальное слово в слово.
+                    resources_differ = (
+                        resources is not None and resources[i].differ(resources[j])
+                    )
+                    messages_differ = (
                         message_sim[i, j] < self._config.similarity_threshold
-                        and not log_overrides_gate
-                    ):
+                        or resources_differ
+                    )
+                    if messages_differ and not log_overrides_gate:
                         # Gate по message: если сообщения различаются ниже порога
                         # и лог не override'ит — пара не может быть склеена.
-                        pair_sim = message_sim[i, j]
-                    elif log_overrides_gate and message_sim[i, j] < self._config.similarity_threshold:
+                        pair_sim = 0.0 if resources_differ else message_sim[i, j]
+                    elif log_overrides_gate and messages_differ:
                         # Override по log: message различаются, но лог одинаковый.
                         # Лог становится доминирующим каналом (0.6 log + 0.2 msg + 0.2 trace).
                         assert log_sim is not None

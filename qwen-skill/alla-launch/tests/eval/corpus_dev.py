@@ -254,18 +254,23 @@ DISCOUNT_NPE_LOG = (
 )
 
 
-def same_assertion_db_vs_npe() -> Case:
-    """Одинаковый assertion и шаг, разные серверные ошибки в логе — две проблемы."""
-    builder = LaunchBuilder(5103, "Orders regression")
+CUSTOMER_NPE_LOG = (
+    "2026-10-03 10:00:00 [INFO] OrderController: POST /orders\n"
+    "2026-10-03 10:00:00 [ERROR] OrderService: failed to create order\n"
+    "java.lang.NullPointerException: Cannot invoke \"Customer.id()\" because "
+    "\"customer\" is null\n"
+    "\tat ru.company.orders.OrderService.create(OrderService.java:52)\n"
+    "2026-10-03 10:00:00 [INFO] OrderController: POST /orders -> 500\n"
+)
+DISCOUNT_EVIDENCE = "Cannot invoke \"Discount.percent()\" because \"discount\" is null"
+DISCOUNT_METHODS = ("createDiscountOrder", "createPromoOrder", "createCouponOrder")
+FIRST_METHODS = ("createOrder", "createBigOrder", "createGiftOrder")
+
+
+def _orders_500(builder: LaunchBuilder,
+                groups: list[tuple[str, str, str, str, tuple[str, ...]]]) -> None:
+    """Падения ``OrderApiTest`` с одним assertion и шагом; различаются только логи."""
     test_class = "ru.company.orders.OrderApiTest"
-    groups = [
-        ("orders-500-db", "orders-db-pool", HIKARI_LOG,
-         "HikariPool-1 - Connection is not available, request timed out after 30000ms.",
-         ("createOrder", "createBigOrder", "createGiftOrder")),
-        ("orders-500-npe", "orders-discount-null", DISCOUNT_NPE_LOG,
-         "Cannot invoke \"Discount.percent()\" because \"discount\" is null",
-         ("createDiscountOrder", "createPromoOrder", "createCouponOrder")),
-    ]
     # Строки кадров у методов одного класса разные: проект стенда (E08) повторяет их.
     for group_index, (group, cause, log, evidence, methods) in enumerate(groups):
         for index, method in enumerate(methods):
@@ -276,7 +281,36 @@ def same_assertion_db_vs_npe() -> Case:
                 trace=_assert_trace(ASSERT_500, test_class, method, line),
                 step="Отправить запрос POST /orders", log=log, evidence=[evidence],
             )
+
+
+def same_assertion_db_vs_npe() -> Case:
+    """Одинаковый assertion и шаг, разные серверные ошибки в логе — две проблемы."""
+    builder = LaunchBuilder(5103, "Orders regression")
+    _orders_500(builder, [
+        ("orders-500-db", "orders-db-pool", HIKARI_LOG,
+         "HikariPool-1 - Connection is not available, request timed out after 30000ms.",
+         FIRST_METHODS),
+        ("orders-500-npe", "orders-discount-null", DISCOUNT_NPE_LOG, DISCOUNT_EVIDENCE,
+         DISCOUNT_METHODS),
+    ])
     return builder.build("same_assertion_db_vs_npe")
+
+
+def same_assertion_two_npes() -> Case:
+    """Одинаковый assertion и шаг, в логах два разных NPE — две проблемы.
+
+    Кластеризация их склеивает намеренно: общий корневой класс исключения не даёт логу
+    разделить пару (иначе шум лога дробил бы одну проблему). Различает их модель по
+    примерам («СОГЛАСОВАННОСТЬ»); сценарий — данные стенда E08 и тестов примеров.
+    """
+    builder = LaunchBuilder(5113, "Orders regression")
+    _orders_500(builder, [
+        ("orders-500-customer", "orders-customer-null", CUSTOMER_NPE_LOG,
+         "Cannot invoke \"Customer.id()\" because \"customer\" is null", FIRST_METHODS),
+        ("orders-500-discount", "orders-discount-null", DISCOUNT_NPE_LOG, DISCOUNT_EVIDENCE,
+         DISCOUNT_METHODS),
+    ])
+    return builder.build("same_assertion_two_npes")
 
 
 def auth_401_403() -> Case:
@@ -612,6 +646,294 @@ def retries() -> Case:
 
 
 # ---------------------------------------------------------------------------
+# Шум в логах одной проблемы
+# ---------------------------------------------------------------------------
+
+HEALTH_ERRORS_LOG = (
+    "2026-10-03 10:01:05 [ERROR] [scheduler-1] HealthIndicator: Redis health check failed: "
+    "Unable to connect to redis-cache:6379\n"
+    "io.lettuce.core.RedisConnectionException: Unable to connect to redis-cache:6379\n"
+    "\tat io.lettuce.core.RedisClient.connect(RedisClient.java:216)\n"
+    "2026-10-03 10:01:06 [ERROR] [scheduler-1] KafkaListener: consumer group rebalance failed "
+    "for topic inventory.events\n"
+)
+
+
+def _reservation_log(thread: str, line: int, reservation: str, request: str) -> str:
+    return (
+        f"2026-10-03 10:01:00 [INFO] [{thread}] ReservationController: "
+        f"POST /reservations/{reservation}/confirm request_id={request}\n"
+        f"2026-10-03 10:01:01 [ERROR] [{thread}] ReservationService: confirm failed for "
+        f"reservation {reservation} request_id={request}\n"
+        f"java.lang.IllegalStateException: Reservation {reservation} expired before "
+        "confirmation\n"
+        f"\tat ru.company.inventory.ReservationService.confirm(ReservationService.java:{line})\n"
+        "\tat ru.company.inventory.ReservationController.confirm"
+        f"(ReservationController.java:{line + 31})\n"
+    )
+
+
+def _delivery_log(connection: int, client: int, path: str) -> str:
+    return (
+        f"2026/10/03 10:02:00 [error] 31#0: *{connection} upstream timed out (110: Connection "
+        f"timed out) while reading response header from upstream, client: 10.1.0.{client}, "
+        f'server: delivery, request: "POST {path} HTTP/1.1", upstream: '
+        f'"http://10.1.0.40:9090{path}"\n'
+    )
+
+
+def log_noise_one_problem() -> Case:
+    """Логи одной проблемы различаются потоками, строками, id и посторонними ошибками.
+
+    Такие различия — не другая проблема: группа не должна дробиться. Тест без лога — часть
+    группы.
+    """
+    builder = LaunchBuilder(5116, "Inventory and delivery")
+    reservation = "Reservation confirmation expected CONFIRMED but was EXPIRED"
+    test_class = "ru.company.inventory.ReservationTest"
+    logs: list[str | None] = [
+        _reservation_log("http-nio-8080-exec-1", 88, "RSV-5521", "a1b2c3d4"),
+        _reservation_log("http-nio-8080-exec-7", 88, "RSV-90817", "ffe9017a"),
+        _reservation_log("nio-8080-exec-3", 93, "RSV-12", "zz-9") + HEALTH_ERRORS_LOG,
+        _reservation_log("pool-3-thread-2", 101, "RSV-77310", "c0ffee11"),
+        None,
+    ]
+    methods = ("confirmOne", "confirmBulk", "confirmGift", "confirmPreorder", "confirmAgain")
+    for index, (method, log) in enumerate(zip(methods, logs)):
+        builder.add_failure(
+            "inv-reservation-expired", cause="reservation-ttl-too-short", category="приложение",
+            name=method, full_name=f"{test_class}.{method}", message=reservation,
+            trace=_assert_trace(reservation, test_class, method, 20 + index * 9),
+            step="Подтвердить резерв", log=log, log_name="inventory.log",
+            evidence=["expired before confirmation"] if log else [],
+        )
+    quote = "Delivery quote request failed with HTTP 504 Gateway Timeout"
+    test_class = "ru.company.delivery.QuoteTest"
+    for index, (method, path) in enumerate((
+        ("quoteCourier", "/api/quotes/courier"), ("quotePickup", "/api/quotes/pickup-points"),
+        ("quotePost", "/api/quotes/post"),
+    )):
+        builder.add_failure(
+            "delivery-gateway-timeout", cause="delivery-quotes-slow", category="окружение",
+            name=method, full_name=f"{test_class}.{method}", message=quote,
+            trace=_assert_trace(quote, test_class, method, 30 + index * 6),
+            step="Рассчитать доставку", log=_delivery_log(index * 13 + 4, index * 7 + 5, path),
+            log_name="nginx-error.log", evidence=["upstream timed out (110: Connection timed out)"],
+        )
+    return builder.build("log_noise_one_problem")
+
+
+REDIS_HEALTH_LOG = (
+    "2026-10-03 10:04:05 [ERROR] [scheduler-1] HealthIndicator: Redis health check failed\n"
+    "io.lettuce.core.RedisConnectionException: Unable to connect to redis-sessions:6379\n"
+    "\tat io.lettuce.core.RedisClient.connect(RedisClient.java:216)\n"
+)
+KAFKA_REBALANCE_LOG = (
+    "2026-10-03 10:04:06 [ERROR] [kafka-listener-2] ShipmentListener: consumer poll failed "
+    "for topic shipments.events\n"
+    "org.apache.kafka.common.errors.RebalanceInProgressException: rebalance in progress\n"
+    "\tat org.apache.kafka.clients.consumer.KafkaConsumer.poll(KafkaConsumer.java:1250)\n"
+)
+BASKET_POOL_LOG = (
+    "2026-10-03 10:04:00 [ERROR] [http-nio-8080-exec-2] BasketRepository: could not save basket\n"
+    "java.sql.SQLTransientConnectionException: HikariPool-3 - Connection is not available, "
+    "request timed out after 30000ms.\n"
+    "\tat ru.company.basket.BasketRepository.save(BasketRepository.java:61)\n"
+)
+BASKET_NPE_LOG = (
+    "2026-10-03 10:04:00 [ERROR] [http-nio-8080-exec-4] BasketService: failed to merge baskets\n"
+    "java.lang.NullPointerException: Cannot invoke \"Basket.items()\" because \"guest\" is null\n"
+    "\tat ru.company.basket.BasketService.merge(BasketService.java:44)\n"
+)
+WISHLIST_LOG = (
+    "2026-10-03 10:04:00 [ERROR] [http-nio-8080-exec-6] WishlistService: wishlist sync failed\n"
+    "java.lang.IllegalArgumentException: Unknown wishlist visibility PRIVATE_LINK\n"
+    "\tat ru.company.wishlist.WishlistService.sync(WishlistService.java:73)\n"
+)
+
+
+def background_log_errors() -> Case:
+    """Фоновые ошибки (health check, Kafka) в логах рядом с настоящей ошибкой.
+
+    Разный фон не дробит одну NPE — и когда та же NPE есть у падения с другим симптомом
+    (``basket-npe-direct``). Одинаковый фон у пула БД и NPE их склеивает: по паре общую
+    фоновую ошибку не отличить от общей ошибки падения, и gate выбирает не дробить
+    (различает модель по примерам).
+    """
+    builder = LaunchBuilder(5117, "Basket regression")
+    message = "Basket merge expected status 200 but was 500"
+    test_class = "ru.company.basket.BasketApiTest"
+    tests = [
+        ("basket-500-db", "basket-db-pool", BASKET_POOL_LOG + REDIS_HEALTH_LOG,
+         "HikariPool-3 - Connection is not available", "mergeGuestBasket"),
+        ("basket-500-db", "basket-db-pool", BASKET_POOL_LOG + KAFKA_REBALANCE_LOG,
+         "HikariPool-3 - Connection is not available", "mergeUserBasket"),
+        ("basket-500-npe", "basket-guest-null", BASKET_NPE_LOG + REDIS_HEALTH_LOG,
+         "because \"guest\" is null", "mergeEmptyBasket"),
+        ("basket-500-npe", "basket-guest-null", BASKET_NPE_LOG + KAFKA_REBALANCE_LOG,
+         "because \"guest\" is null", "mergeSharedBasket"),
+        ("basket-500-npe", "basket-guest-null", BASKET_NPE_LOG, "because \"guest\" is null",
+         "mergeAfterLogin"),
+    ]
+    for index, (group, cause, log, evidence, method) in enumerate(tests):
+        builder.add_failure(
+            group, cause=cause, category="приложение", name=method,
+            full_name=f"{test_class}.{method}", message=message,
+            trace=_assert_trace(message, test_class, method, 30 + index * 8),
+            step="Объединить корзины", log=log, log_name="basket.log", evidence=[evidence],
+        )
+    # Та же NPE за другим симптомом: клиент бросил исключение вместо ответа 500.
+    direct = ('org.springframework.web.client.HttpServerErrorException$InternalServerError: '
+              '500 Internal Server Error: "guest basket merge failed"')
+    builder.add_failure(
+        "basket-npe-direct", cause="basket-guest-null", category="приложение",
+        name="mergeViaClient", full_name=f"{test_class}.mergeViaClient", message=direct,
+        trace=java_trace(direct, [
+            "org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:915)",
+            f"{test_class}.mergeViaClient(BasketApiTest.java:88)"]),
+        step="Объединить корзины", log=BASKET_NPE_LOG + KAFKA_REBALANCE_LOG,
+        log_name="basket.log", evidence=["because \"guest\" is null"], status="broken",
+    )
+    wishlist = "Wishlist sync expected 3 items but was 0"
+    for index, method in enumerate(("syncWishlist", "syncSharedWishlist")):
+        builder.add_failure(
+            "wishlist-visibility", cause="wishlist-visibility-unknown", category="данные",
+            name=method, full_name=f"ru.company.wishlist.WishlistTest.{method}",
+            message=wishlist,
+            trace=_assert_trace(wishlist, "ru.company.wishlist.WishlistTest", method,
+                                12 + index * 5),
+            step="Синхронизировать избранное",
+            log=WISHLIST_LOG + REDIS_HEALTH_LOG + KAFKA_REBALANCE_LOG, log_name="wishlist.log",
+            evidence=["Unknown wishlist visibility PRIVATE_LINK"],
+        )
+    return builder.build("background_log_errors")
+
+
+# ---------------------------------------------------------------------------
+# Хосты и локаторы в сообщении
+# ---------------------------------------------------------------------------
+
+def _connect_failure(host: str, address: str) -> tuple[str, str]:
+    message = f"java.net.ConnectException: Failed to connect to {host}/{address}"
+    return message, java_trace(message, [
+        "okhttp3.internal.connection.RealConnection.connectSocket(RealConnection.kt:297)",
+        "ru.company.platform.HttpGateway.call(HttpGateway.java:64)",
+    ])
+
+
+def _selenium_failure(selector: str) -> tuple[str, str]:
+    message = (
+        "org.openqa.selenium.NoSuchElementException: no such element: Unable to locate "
+        f'element: {{"method":"css selector","selector":"{selector}"}}\n'
+        "  (Session info: chrome=129.0.6668.58)\n"
+        "For documentation on this error, please visit: https://www.selenium.dev/documentation/"
+        "webdriver/troubleshooting/errors#no-such-element-exception"
+    )
+    return message, java_trace(message.split("\n", 1)[0], [
+        "org.openqa.selenium.remote.RemoteWebDriver.findElement(RemoteWebDriver.java:350)",
+        "ru.company.ui.UiActions.click(UiActions.java:41)",
+    ])
+
+
+def _playwright_failure(locator: str) -> tuple[str, str]:
+    message = (f"TimeoutError: locator.fill: Timeout 15000ms exceeded.\nCall log:\n"
+               f"  - waiting for {locator}")
+    return message, (f"{message}\n    at CheckoutPage.fillField "
+                     "(/e2e/pages/checkout.page.ts:41:22)\n")
+
+
+def resources_split() -> Case:
+    """Один шаг и общий helper в трейсе; отличаются хост или локатор — разные проблемы."""
+    builder = LaunchBuilder(5114, "Platform and checkout")
+    groups: list[tuple[str, str, str, str, str, tuple[str, str], str, tuple[str, ...]]] = [
+        ("conn-inventory", "inventory-service-down", "окружение", "Вызвать внутренний сервис",
+         "ru.company.platform.PlatformTest", _connect_failure("inventory.svc", "10.2.0.7:8080"),
+         "Failed to connect to inventory.svc", ("stockLevels", "stockReserve")),
+        ("conn-loyalty", "loyalty-service-down", "окружение", "Вызвать внутренний сервис",
+         "ru.company.platform.PlatformTest", _connect_failure("loyalty.svc", "10.2.0.9:8080"),
+         "Failed to connect to loyalty.svc", ("loyaltyBalance", "loyaltyAccrue")),
+        ("ui-promo-banner", "promo-banner-removed", "тест", "Оформить заказ",
+         "ru.company.ui.CheckoutUiTest", _selenium_failure("#promo-banner"),
+         '"selector":"#promo-banner"', ("promoHome", "promoCart")),
+        ("ui-gift-wrap", "gift-wrap-flag-off", "данные", "Оформить заказ",
+         "ru.company.ui.CheckoutUiTest", _selenium_failure("#gift-wrap-toggle"),
+         '"selector":"#gift-wrap-toggle"', ("giftWrapCheckout", "giftWrapProfile")),
+        ("pw-coupon", "coupon-field-hidden", "тест", "Заполнить форму оформления",
+         "storefront.checkout.CheckoutSpec", _playwright_failure("getByTestId('coupon-input')"),
+         "waiting for getByTestId('coupon-input')", ("applyCoupon", "applyCouponTwice")),
+        ("pw-email", "email-label-renamed", "тест", "Заполнить форму оформления",
+         "storefront.checkout.CheckoutSpec", _playwright_failure("getByLabel('Email')"),
+         "waiting for getByLabel('Email')", ("guestEmail", "guestEmailRetry")),
+    ]
+    for group, cause, category, step, test_class, (message, trace), evidence, methods in groups:
+        for method in methods:
+            builder.add_failure(
+                group, cause=cause, category=category, name=method,
+                full_name=f"{test_class}.{method}", message=message, trace=trace, step=step,
+                evidence=[evidence], status="broken",
+            )
+    return builder.build("resources_split")
+
+
+CATALOG_CONSOLE_LOG = (
+    "2026-10-03 10:03:00 [INFO] http://shop.test/catalog - navigation started\n"
+    "2026-10-03 10:03:01 [SEVERE] http://shop.test/static/catalog.js 1:20451 Uncaught "
+    "TypeError: Cannot read properties of undefined (reading 'items')\n"
+)
+
+
+def resources_one_problem() -> Case:
+    """Разные хосты, селекторы или значения в сообщении — но одна проблема (контроли).
+
+    Реплики одного сервиса, разные элементы страницы, не загрузившейся из-за одной ошибки
+    скрипта (общий консольный лог), заблокированные тестовые пользователи, сбой DNS стенда.
+    """
+    builder = LaunchBuilder(5115, "Stage smoke")
+    for index, method in enumerate(("ordersList", "ordersCreate", "ordersCancel"), 1):
+        message, trace = _connect_failure(f"orders-{index}.svc", f"10.3.0.{index}:8080")
+        builder.add_failure(
+            "orders-replicas-down", cause="orders-deploy-failed", category="окружение",
+            name=method, full_name=f"ru.company.platform.OrdersTest.{method}", message=message,
+            trace=trace, step="Вызвать сервис заказов", evidence=["Failed to connect to orders-"],
+            status="broken",
+        )
+    for selector, method in ((".product-card", "catalogCards"), (".filters-panel", "catalogFilters"),
+                             ("#sort-select", "catalogSort")):
+        message, trace = _selenide(selector, "CatalogPage", method)
+        builder.add_failure(
+            "catalog-js-error", cause="catalog-bundle-broken", category="приложение",
+            name=method, full_name=f"ru.company.ui.CatalogPageTest.{method}", message=message,
+            trace=trace, step="Открыть каталог", log=CATALOG_CONSOLE_LOG,
+            log_name="browser-console.log",
+            evidence=["Uncaught TypeError: Cannot read properties of undefined (reading 'items')"],
+            status="broken",
+        )
+    for index, (user, method) in enumerate((("ivanov", "loginBuyer"), ("petrova", "loginSeller"),
+                                            ("sidorenko", "loginAdmin"))):
+        message = f"Login failed: user '{user}' is locked after 3 failed attempts"
+        builder.add_failure(
+            "users-locked", cause="test-users-locked", category="данные", name=method,
+            full_name=f"ru.company.auth.LoginTest.{method}", message=message,
+            trace=java_trace(f"ru.company.auth.LoginException: {message}",
+                             [f"ru.company.auth.LoginTest.{method}(LoginTest.java:{18 + index})"]),
+            step="Войти в систему", evidence=["is locked after 3 failed attempts"],
+        )
+    for host, method in (("payments.stage.local", "stagePayments"), ("cdn.stage.local", "stageCdn"),
+                         ("auth.stage.local", "stageAuth")):
+        message = f"java.net.UnknownHostException: {host}: Temporary failure in name resolution"
+        builder.add_failure(
+            "stage-dns-down", cause="stage-dns-down", category="окружение", name=method,
+            full_name=f"ru.company.platform.StageTest.{method}", message=message,
+            trace=java_trace(message, [
+                "java.base/java.net.InetAddress$CachedLookup.get(InetAddress.java:988)",
+                "ru.company.platform.HttpGateway.call(HttpGateway.java:64)"]),
+            step="Вызвать сервис стенда", evidence=["Temporary failure in name resolution"],
+            status="broken",
+        )
+    return builder.build("resources_one_problem")
+
+
+# ---------------------------------------------------------------------------
 # Большой прогон
 # ---------------------------------------------------------------------------
 
@@ -667,5 +989,10 @@ CASES: dict[str, Callable[[], Case]] = {
     "auth_down_symptoms": auth_down_symptoms,
     "known_issue_symptoms": known_issue_symptoms,
     "retries": retries,
+    "same_assertion_two_npes": same_assertion_two_npes,
+    "log_noise_one_problem": log_noise_one_problem,
+    "background_log_errors": background_log_errors,
+    "resources_split": resources_split,
+    "resources_one_problem": resources_one_problem,
     "big_launch": big_launch,
 }

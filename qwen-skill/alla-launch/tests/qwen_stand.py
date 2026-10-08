@@ -80,7 +80,7 @@ def _tests(*members: tuple[str, int | None, str]) -> list[Member]:
 
 
 STAND_SOURCES: dict[str, str] = {
-    # E08 (same_assertion_db_vs_npe)
+    # E08 (same_assertion_two_npes)
     "orders/OrderApiTest.java": java_source("ru.company.orders", "OrderApiTest", _tests(
         ("createOrder", 40, "assertEquals(200, orders.create(order()).statusCode());"),
         ("createBigOrder", 47, "assertEquals(200, orders.create(order(500)).statusCode());"),
@@ -191,9 +191,9 @@ SCENARIOS: dict[str, Scenario] = {
         review=("Evidence: «НЕ ХВАТАЕТ» называет недостающие данные и проверку; версии "
                 "причины не выдаются за установленные",)),
     "E08": Scenario(
-        "Склеенная группа: одинаковый assertion, разные ошибки в логах", "mixed",
-        ("/alla-launch 5103",), (*FULL_RUN, "prepare_launch", "mixed_group_found"),
-        launch_id=5103,
+        "Склеенная группа: одинаковый assertion, два разных NPE в логах", "mixed",
+        ("/alla-launch 5113",), (*FULL_RUN, "prepare_launch", "mixed_group_found"),
+        launch_id=5113,
         review=("Evidence: отличия примеров названы по их логам; причина не выдана за общую "
                 "для всей группы",)),
     "E09": Scenario(

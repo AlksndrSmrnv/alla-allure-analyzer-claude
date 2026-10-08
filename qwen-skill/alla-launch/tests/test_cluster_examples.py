@@ -37,20 +37,21 @@ def test_same_assertion_with_different_server_errors_gets_both_shown() -> None:
     from alla_core.config import Settings
     from alla_skill_lib.pipeline import collect_launch
     from eval.cassette import replay
-    from eval.corpus_dev import same_assertion_db_vs_npe
+    from eval.corpus_dev import same_assertion_two_npes
 
-    case = same_assertion_db_vs_npe()
+    case = same_assertion_two_npes()
     group = {test: g["id"] for g in case.labels["groups"] for test in g["tests"]}
     settings = Settings.load(environ={"ALLURE_ENDPOINT": "https://testops.example",
                                       "ALLURE_TOKEN": "token"})
     with replay(case.fixture):
         data = asyncio.run(collect_launch(case.fixture.launch["id"], settings))
     assert data.clustering is not None
-    cluster, = data.clustering.clusters  # нынешний алгоритм склеивает обе группы
+    # Общий корневой класс (NPE) не даёт логу разделить группы — отличие показывают примеры.
+    cluster, = data.clustering.clusters
 
     assert [example.role for example in cluster.examples] == ["typical", "different"]
     assert {group[example.test_result_id] for example in cluster.examples} == {
-        "orders-500-db", "orders-500-npe"}
+        "orders-500-customer", "orders-500-discount"}
 
 
 def test_identical_failures_give_one_example() -> None:

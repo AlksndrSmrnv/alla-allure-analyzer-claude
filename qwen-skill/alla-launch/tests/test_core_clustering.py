@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import pytest
+
 from skill_fixtures import without_libmagic  # noqa: F401
+from skill_factories import make_error_log, make_failed_test_summary
 from alla_core.models.common import TestStatus as Status
 from alla_core.models.testops import FailedTestSummary
 from alla_core.services.clustering_service import (
     ClusteringConfig,
     ClusteringService,
+    _log_error_blocks,
     _extract_assertion_actual,
     _strip_correlation_only_http_sections,
 )
+from alla_core.utils.message_resources import message_resources
 from alla_core.utils.text_normalization import normalize_text
 
 
@@ -967,6 +972,319 @@ def test_step_path_gate_max_threshold_splits_any_difference() -> None:
     report = service.cluster_failures(launch_id=1, failures=failures)
 
     assert report.cluster_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Gate по ошибкам лога
+# ---------------------------------------------------------------------------
+
+ASSERT_500 = "expected: <200> but was: <500>"
+POOL_LOG = (
+    "2026-10-03 10:00:30 [ERROR] [{thread}] OrderRepository: could not save order {order}\n"
+    "java.sql.SQLTransientConnectionException: HikariPool-1 - Connection is not available, "
+    "request timed out after 30000ms.\n"
+    "\tat ru.company.orders.OrderRepository.save(OrderRepository.java:{line})\n"
+)
+NPE_LOG = (
+    "2026-10-03 10:00:00 [ERROR] [{thread}] DiscountService: failed to apply discount {order}\n"
+    "java.lang.NullPointerException: Cannot invoke \"Discount.percent()\" because "
+    "\"discount\" is null\n"
+    "\tat ru.company.orders.DiscountService.apply(DiscountService.java:{line})\n"
+)
+UNRELATED_ERRORS_LOG = (
+    "2026-10-03 10:00:05 [ERROR] [scheduler-1] HealthIndicator: Redis health check failed\n"
+    "io.lettuce.core.RedisConnectionException: Unable to connect to redis-cache:6379\n"
+    "\tat io.lettuce.core.RedisClient.connect(RedisClient.java:216)\n"
+    "2026-10-03 10:00:06 [ERROR] [scheduler-1] KafkaListener: consumer group rebalance failed "
+    "for topic orders.events\n"
+    "2026-10-03 10:00:07 [ERROR] [scheduler-1] MetricsExporter: push to prometheus-gateway "
+    "rejected: payload too large\n"
+    "2026-10-03 10:00:08 [ERROR] [scheduler-1] AuditSink: audit queue overflow, dropping events\n"
+)
+
+
+def _log(template: str, thread: str = "http-nio-8080-exec-1", order: int = 5512,
+         line: int = 40) -> str:
+    return template.format(thread=thread, order=order, line=line)
+
+
+def _orders(*logs: str | None, first_id: int = 1) -> list[FailedTestSummary]:
+    return [
+        make_failed_test_summary(
+            test_result_id=first_id + index, status_message=ASSERT_500,
+            failed_step_path="Отправить запрос POST /orders",
+            log_snippet=make_error_log(log) if log else None,
+        )
+        for index, log in enumerate(logs)
+    ]
+
+
+def _groups(failures: list[FailedTestSummary], config: ClusteringConfig | None = None,
+            ) -> list[list[int]]:
+    report = ClusteringService(config or ClusteringConfig(log_similarity_weight=0.15)
+                               ).cluster_failures(launch_id=1, failures=failures)
+    return sorted(sorted(cluster.member_test_ids) for cluster in report.clusters)
+
+
+def test_log_gate_splits_same_message_with_different_log_errors() -> None:
+    """Одинаковые assertion и шаг, в логах пул БД и NPE — разные проблемы."""
+    failures = _orders(_log(POOL_LOG), _log(POOL_LOG, order=77), _log(NPE_LOG), _log(NPE_LOG))
+    assert _groups(failures) == [[1, 2], [3, 4]]
+
+
+def test_log_gate_splits_errors_without_exception_classes() -> None:
+    """У ошибки nginx класса нет: решает непохожесть документов ошибок."""
+    nginx = ('2026/10/03 10:00:00 [error] 77#0: *9 upstream timed out (110: Connection timed '
+             'out) while reading response header from upstream, client: 10.0.0.5\n')
+    query = ("2026-10-03 10:00:29 [ERROR] ReportRepository: query failed\n"
+             "java.sql.SQLTimeoutException: maximum statement execution time exceeded\n"
+             "\tat ru.company.reports.ReportRepository.sales(ReportRepository.java:88)\n")
+    assert _groups(_orders(nginx, nginx, query)) == [[1, 2], [3]]
+
+
+def test_log_gate_keeps_one_error_logged_with_noise() -> None:
+    """Потоки, номера строк кадров, номера заказов — не другая ошибка."""
+    failures = _orders(
+        _log(NPE_LOG),
+        _log(NPE_LOG, thread="http-nio-8080-exec-7", order=90817, line=41),
+        _log(NPE_LOG, thread="pool-3-thread-2", order=12, line=57),
+    )
+    assert _groups(failures) == [[1, 2, 3]]
+
+
+def test_log_gate_shared_root_class_outweighs_unrelated_errors() -> None:
+    """Посторонние ошибки у одного теста снижают похожесть, но общий корневой класс (NPE)
+    говорит, что ошибка та же. Строгий порог показывает: решает ключ, а не похожесть."""
+    strict = ClusteringConfig(log_similarity_weight=0.15, log_split_threshold=0.9)
+    failures = _orders(_log(NPE_LOG), _log(NPE_LOG, order=77, line=57) + UNRELATED_ERRORS_LOG)
+    assert _groups(failures, strict) == [[1, 2]]
+    # Без общего ключа такой порог разделяет пару.
+    assert _groups(_orders(_log(POOL_LOG), _log(NPE_LOG)), strict) == [[1], [2]]
+
+
+REDIS_BACKGROUND_LOG = (
+    "2026-10-03 10:00:05 [ERROR] [scheduler-1] HealthIndicator: Redis health check failed\n"
+    "io.lettuce.core.RedisConnectionException: Unable to connect to redis-cache:6379\n"
+    "\tat io.lettuce.core.RedisClient.connect(RedisClient.java:216)\n")
+KAFKA_BACKGROUND_LOG = (
+    "2026-10-03 10:00:06 [ERROR] [kafka-listener-1] OrderListener: consumer poll failed "
+    "for topic orders.events\n"
+    "org.apache.kafka.common.errors.RebalanceInProgressException: rebalance in progress\n"
+    "\tat org.apache.kafka.clients.consumer.KafkaConsumer.poll(KafkaConsumer.java:1250)\n")
+
+
+def _other_symptom(test_id: int, log: str) -> FailedTestSummary:
+    """Та же ошибка сервиса за другим симптомом: клиент бросил исключение вместо 500."""
+    return make_failed_test_summary(
+        test_result_id=test_id,
+        status_message='HttpServerErrorException: 500 Internal Server Error: "merge failed"',
+        failed_step_path="Отправить запрос POST /orders", log_snippet=make_error_log(log))
+
+
+@pytest.mark.parametrize("third", [None, "same error, other symptom"])
+def test_log_gate_keeps_one_error_with_different_background(third: str | None) -> None:
+    """Одна NPE в обоих логах, вокруг разный фон: общая ошибка держит пару — и когда та же
+    NPE есть у падения с другим симптомом (причина с несколькими симптомами — не фон)."""
+    failures = _orders(_log(NPE_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG) + KAFKA_BACKGROUND_LOG)
+    if third:
+        failures.append(_other_symptom(9, _log(NPE_LOG)))
+    assert [1, 2] in _groups(failures)
+
+
+def test_log_gate_shared_background_keeps_the_pair() -> None:
+    """Одинаковая фоновая ошибка в обоих логах неотличима от общей ошибки падения: пару не
+    делим (осторожная сторона, различает модель по примерам)."""
+    failures = _orders(_log(POOL_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG) + REDIS_BACKGROUND_LOG)
+    failures.append(_other_symptom(9, REDIS_BACKGROUND_LOG))
+    assert [1, 2] in _groups(failures)
+
+
+def test_log_gate_clean_log_separates_groups_despite_shared_background() -> None:
+    """Достаточно одной пары без общей ошибки: complete linkage не сводит пул БД с NPE,
+    у которой фона нет."""
+    failures = _orders(_log(POOL_LOG) + REDIS_BACKGROUND_LOG,
+                       _log(NPE_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG, order=77))
+    assert _groups(failures) == [[1], [2, 3]]
+
+
+def test_log_gate_keeps_a_log_whose_errors_are_all_in_the_other() -> None:
+    """Свои ошибки только у одного лога — у второго разделять нечем, даже при строгом пороге."""
+    strict = ClusteringConfig(log_similarity_weight=0.15, log_split_threshold=0.9)
+    failures = _orders(_log(NPE_LOG), _log(NPE_LOG) + UNRELATED_ERRORS_LOG)
+    assert _groups(failures, strict) == [[1, 2]]
+
+
+def test_log_gate_ignores_wrapper_exceptions() -> None:
+    """Общая обёртка — не общая ошибка: ключ — корневой класс (последний ``Caused by``)."""
+    def wrapped(cause: str) -> str:
+        return ("2026-10-03 10:00:00 [ERROR] DispatcherServlet: Request processing failed\n"
+                "jakarta.servlet.ServletException: Request processing failed\n"
+                "\tat org.springframework.web.servlet.FrameworkServlet.processRequest"
+                "(FrameworkServlet.java:1022)\n"
+                f"Caused by: {cause}\n"
+                "\t... 42 more\n")
+    pool = wrapped("java.sql.SQLTransientConnectionException: HikariPool-1 - Connection is "
+                   "not available, request timed out after 30000ms.")
+    npe = wrapped("java.lang.NullPointerException: Cannot invoke \"Discount.percent()\" "
+                  "because \"discount\" is null")
+    keys = [[block.keys for block in _log_error_blocks(f, head_lines=50, tail_lines=50)]
+            for f in _orders(pool, npe)]
+    assert keys == [[frozenset({"SQLTransientConnectionException"})],
+                    [frozenset({"NullPointerException"})]]
+
+
+def test_log_gate_needs_errors_in_both_logs() -> None:
+    """Нет лога, только HTTP-секция или журнал — gate не применяется."""
+    http = ("--- [HTTP: response.json] ---\nHTTP статус: 500\n"
+            "errorMessage: discount is null")
+    failures = _orders(_log(POOL_LOG), None)
+    failures.append(make_failed_test_summary(
+        test_result_id=3, status_message=ASSERT_500,
+        failed_step_path="Отправить запрос POST /orders", log_snippet=http))
+    assert _groups(failures) == [[1, 2, 3]]
+
+
+def test_log_gate_does_not_merge_two_errors_through_a_test_without_log() -> None:
+    """Тест без лога похож на оба, но complete linkage не сводит пул БД и NPE."""
+    groups = _groups(_orders(_log(POOL_LOG), None, _log(NPE_LOG)))
+    assert not any({1, 3} <= set(group) for group in groups)
+
+
+@pytest.mark.parametrize("config", [
+    ClusteringConfig(log_similarity_weight=0.15, log_split_threshold=0.0),
+    ClusteringConfig(log_similarity_weight=0.0),
+])
+def test_log_gate_is_off_with_zero_threshold_or_zero_log_weight(
+    config: ClusteringConfig,
+) -> None:
+    failures = _orders(_log(POOL_LOG), _log(NPE_LOG))
+    assert _groups(failures, config) == [[1, 2]]
+
+
+# ---------------------------------------------------------------------------
+# Gate по ресурсам сообщения (хосты, локаторы)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("message", "hosts", "locators"), [
+    ("java.net.ConnectException: Connection refused: auth-service:8080",
+     {"auth-service:8080"}, set()),
+    ("java.net.ConnectException: Failed to connect to inventory.svc/10.2.0.7:8080",
+     {"inventory.svc:8080"}, set()),
+    ("java.net.ConnectException: Failed to connect to localhost/127.0.0.1:5432",
+     {"localhost:5432"}, set()),
+    ("Connection refused: Auth-Service:8080", {"auth-service:8080"}, set()),
+    ("Connect to billing:8443 [billing/10.0.0.3] failed: Connection refused",
+     {"billing:8443"}, set()),
+    ("connect ECONNREFUSED 10.1.2.3:5432", {"<ip>:5432"}, set()),
+    ('I/O error on GET request for "http://pricing-2.internal/api/prices": Read timed out',
+     {"pricing-#.internal"}, set()),
+    ("java.net.UnknownHostException: geo.internal: Name or service not known", set(), set()),
+    ("getaddrinfo ENOTFOUND api.stage.local", set(), set()),
+    ("Element not found {#checkout-button}\nExpected: visible", set(), {"#checkout-button"}),
+    ("Element not found {#Login}", set(), {"#Login"}),
+    ("Element should be visible {.cart li:nth-child(2)}", set(), {".cart li:nth-child(#)"}),
+    ('no such element: Unable to locate element: {"method":"css selector","selector":"#promo"}',
+     set(), {'{"method":"css selector","selector":"#promo"}'}),
+    ("waiting for visibility of element located by By.cssSelector: #login-form",
+     set(), {"#login-form"}),
+    ("TimeoutError: locator.click: Timeout 30000ms exceeded.\n"
+     "  - waiting for getByRole('button', { name: 'Apply' })",
+     set(), {"getByRole('button', { name: 'Apply' })"}),
+    ("Timed out retrying: Expected to find element: `[data-cy=submit]`, but never found it.",
+     set(), {"[data-cy=submit]"}),
+    ('Waiting for selector "#app .ready" failed: timeout 30000ms exceeded', set(),
+     {"#app .ready"}),
+    ("Waiting for selector `[data-test=\"submit\"]` failed", set(), {'[data-test="submit"]'}),
+    ("waiting for selector '[data-test=\"cancel\"]' failed", set(), {'[data-test="cancel"]'}),
+    # Не ресурсы: имена классов и файлов, тестовые данные в кавычках.
+    ("java.lang.IllegalStateException at ru.company.orders.OrderService (OrderService.java:40)",
+     set(), set()),
+    ("Login failed: user 'ivanov' is locked after 3 failed attempts", set(), set()),
+])
+def test_message_resources(message: str, hosts: set[str], locators: set[str]) -> None:
+    resources = message_resources(message)
+    assert (resources.hosts, resources.locators) == (hosts, locators)
+
+
+def _calls(*messages: str, step: str = "Вызвать сервис", logs: tuple[str | None, ...] = (),
+           ) -> list[FailedTestSummary]:
+    trace = ("java.net.ConnectException: connect failed\n"
+             "\tat ru.company.platform.HttpGateway.call(HttpGateway.java:64)\n")
+    padded = (*logs, *(None,) * (len(messages) - len(logs)))
+    return [
+        make_failed_test_summary(
+            test_result_id=index + 1, status_message=message, status_trace=trace,
+            failed_step_path=step, log_snippet=make_error_log(log) if log else None,
+        )
+        for index, (message, log) in enumerate(zip(messages, padded))
+    ]
+
+
+def _connect(host: str) -> str:
+    return f"java.net.ConnectException: Failed to connect to {host}/10.2.0.7:8080"
+
+
+def test_resource_gate_splits_different_hosts_of_one_message() -> None:
+    failures = _calls(_connect("inventory.svc"), _connect("inventory.svc"),
+                      _connect("loyalty.svc"))
+    assert _groups(failures) == [[1, 2], [3]]
+
+
+@pytest.mark.parametrize("pair", [
+    # Порт после «/IP»: в TF-IDF сообщения четырёхзначные порты сливаются в <NUM>.
+    ("java.net.ConnectException: Failed to connect to localhost/127.0.0.1:8080",
+     "java.net.ConnectException: Failed to connect to localhost/127.0.0.1:5432"),
+    # DOM id чувствителен к регистру, а TF-IDF — нет.
+    ("Element not found {#Login}\nExpected: visible",
+     "Element not found {#login}\nExpected: visible"),
+    # Кавычки внутри локатора Puppeteer.
+    ("Waiting for selector '[data-test=\"submit\"]' failed: timeout 30000ms exceeded",
+     "Waiting for selector '[data-test=\"cancel\"]' failed: timeout 30000ms exceeded"),
+])
+def test_resource_gate_splits_resources_that_text_similarity_misses(
+    pair: tuple[str, str],
+) -> None:
+    assert _groups(_calls(*pair)) == [[1], [2]]
+
+
+def test_resource_gate_splits_different_locators_at_the_message_threshold() -> None:
+    """Сообщения Playwright различаются только локатором: сходство ровно на пороге."""
+    def timeout(locator: str) -> str:
+        return (f"TimeoutError: locator.click: Timeout 30000ms exceeded.\n"
+                f"waiting for locator('{locator}')")
+    failures = _calls(timeout("[data-test=price-filter]"), timeout("iframe#payment-frame"))
+    assert _groups(failures) == [[1], [2]]
+
+
+@pytest.mark.parametrize("messages", [
+    # Реплики одного сервиса.
+    (_connect("orders-1.svc"), _connect("orders-2.svc")),
+    # Значения в кавычках — тестовые данные, а не ресурс.
+    ("Login failed: user 'ivanov' is locked after 3 failed attempts",
+     "Login failed: user 'petrova' is locked after 3 failed attempts"),
+    # Сбой DNS бьёт по всем хостам: ошибка разрешения имени хостов не даёт.
+    ("java.net.UnknownHostException: cdn.stage.local: Temporary failure in name resolution",
+     "java.net.UnknownHostException: auth.stage.local: Temporary failure in name resolution"),
+])
+def test_resource_gate_keeps_one_problem(messages: tuple[str, str]) -> None:
+    assert _groups(_calls(*messages)) == [[1, 2]]
+
+
+def test_same_log_still_merges_different_locators() -> None:
+    """Страница не загрузилась: элементы разные, ошибка скрипта в логе одна — log override."""
+    console = ("2026-10-03 10:03:01 [SEVERE] http://shop.test/static/catalog.js 1:20451 "
+               "Uncaught TypeError: Cannot read properties of undefined (reading 'items')\n")
+    failures = _calls("Element not found {.product-card}\nExpected: visible",
+                      "Element not found {.filters-panel}\nExpected: visible",
+                      logs=(console, console))
+    assert _groups(failures) == [[1, 2]]
+    assert _groups(_calls(*(f.status_message or "" for f in failures))) == [[1], [2]]
+
+
+def test_resource_gate_can_be_turned_off() -> None:
+    failures = _calls(_connect("inventory.svc"), _connect("loyalty.svc"))
+    assert _groups(failures, ClusteringConfig(resource_gate=False)) == [[1, 2]]
 
 
 def test_cluster_without_error_text_is_labelled_by_test_name() -> None:
