@@ -83,8 +83,11 @@ def test_symptom_only_task_says_no_log_in_data_and_does_not_invent_it() -> None:
     assert "содержимое лога не выдумывай" in task
     assert "с учётом «Шага теста»" in task
     assert "первый шаг" not in task  # про лог в шагах говорить нечего
-    # Только код 5xx без лога: причина «приложение», а лог сервиса — в «НЕ ХВАТАЕТ».
-    assert "Код 5xx от сервера без лога приложения — «приложение»" in task
+    # Только код 5xx без лога: 500 — «приложение», а 502/503/504 отдаёт прокси или
+    # балансировщик — «окружение» (стенд E09: 503 без лога, эталон «окружение»).
+    text = " ".join(task.split())
+    assert "500 и другие 5xx — «приложение», а 502, 503 и 504 — «окружение»" in text
+    assert "и лог балансировщика" in text
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
