@@ -64,6 +64,7 @@ class LaunchBuilder:
         step: str | None = None,
         log: str | None = None,
         log_name: str = "app.log",
+        logs: Iterable[tuple[str, str, str]] = (),
         evidence: Iterable[str] = (),
         status: str = "failed",
         extra: dict[str, Any] | None = None,
@@ -78,7 +79,7 @@ class LaunchBuilder:
             raise ValueError(f"группа {group}: другая причина или категория")
         result_id = self.add_result(
             name=name, status=status, full_name=full_name, message=message, trace=trace,
-            step=step, log=log, log_name=log_name, extra=extra,
+            step=step, log=log, log_name=log_name, logs=logs, extra=extra,
         )
         known.tests.append(result_id)
         for line in evidence:
@@ -97,11 +98,16 @@ class LaunchBuilder:
         step: str | None = None,
         log: str | None = None,
         log_name: str = "app.log",
+        logs: Iterable[tuple[str, str, str]] = (),
         hidden: bool = False,
         muted: bool = False,
         extra: dict[str, Any] | None = None,
     ) -> int:
-        """Любой результат прогона; активные падения добавляйте через :meth:`add_failure`."""
+        """Любой результат прогона; активные падения добавляйте через :meth:`add_failure`.
+
+        ``log`` — одно текстовое вложение ``log_name``; ``logs`` — ещё вложения
+        ``(имя, текст, тип)``, например ``("events.json", "…", "application/json")``.
+        """
         result_id = self._result_id()
         result: dict[str, Any] = {"id": result_id, "name": name, "status": status}
         if full_name:
@@ -120,12 +126,13 @@ class LaunchBuilder:
             if details:
                 step_data["statusDetails"] = dict(details)
             self._fixture.executions[result_id] = [step_data]
-        if log is not None:
+        attachments = [(log_name, log, "text/plain")] if log is not None else []
+        attachments += list(logs)
+        for attachment_name, text, content_type in attachments:
             self._next_attachment += 1
-            self._fixture.attachments[result_id] = [
-                {"id": self._next_attachment, "name": log_name, "type": "text/plain"}
-            ]
-            self._fixture.contents[self._next_attachment] = log.encode("utf-8")
+            self._fixture.attachments.setdefault(result_id, []).append(
+                {"id": self._next_attachment, "name": attachment_name, "type": content_type})
+            self._fixture.contents[self._next_attachment] = text.encode("utf-8")
         return result_id
 
     def add_detail(self, result_id: int, *, message: str | None = None,

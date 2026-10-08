@@ -325,3 +325,36 @@ def test_retry_metrics_count_found_wrong_and_same_error() -> None:
         "не найден прошедший после повтора 30",
         "лишний прошедший после повтора 40",
     ]
+
+
+def test_write_baseline_replaces_only_the_requested_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Базовая линия holdout меняется только своей командой (README, «Правило работы с
+    holdout»): запись dev её не трогает, пустой набор раздела не получает."""
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps({"dev": {"old": {}}, "holdout": {"kept": {"x": 1}}}),
+                    encoding="utf-8")
+    monkeypatch.setattr(run_eval, "BASELINE", path)
+    monkeypatch.setattr(run_eval, "baseline_entry", lambda result: {"n": result["n"]})
+
+    run_eval.write_baseline({"dev": {"new": {"n": 1}}}, ["dev"])
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "dev": {"new": {"n": 1}}, "holdout": {"kept": {"x": 1}}}
+
+    run_eval.write_baseline({}, ["holdout"])
+    assert json.loads(path.read_text(encoding="utf-8")) == {"dev": {"new": {"n": 1}}}
+
+
+def test_run_eval_defaults_to_dev(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[str, ...]] = []
+
+    def fake(names: Any, sets: Any, heavy: bool = False) -> dict[str, Any]:
+        seen.append(tuple(sets))
+        return {}
+
+    monkeypatch.setattr(run_eval, "evaluate_cases", fake)
+    run_eval.main([])
+    run_eval.main(["--set", "all"])
+
+    assert seen == [("dev",), ("dev", "holdout")]

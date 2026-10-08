@@ -1,9 +1,10 @@
 """Оценка ``prepare`` на синтетическом корпусе или на кассете команды — офлайн.
 
-    python tests/eval/run_eval.py                       # dev и holdout, таблица
-    python tests/eval/run_eval.py --set dev --details   # со списками склеек, потерь…
+    python tests/eval/run_eval.py                       # dev, таблица
+    python tests/eval/run_eval.py --details             # со списками склеек, потерь…
     python tests/eval/run_eval.py --heavy               # плюс большой прогон
-    python tests/eval/run_eval.py --write-baseline      # обновить tests/eval/baseline.json
+    python tests/eval/run_eval.py --write-baseline      # обновить dev в tests/eval/baseline.json
+    python tests/eval/run_eval.py --set holdout         # holdout: это просмотр, см. README
     python tests/eval/run_eval.py --cassette DIR --labels FILE   # только сводка
     python tests/eval/run_eval.py --cassette DIR                 # gates и размеры, без разметки
     python tests/eval/run_eval.py --analyses RUN_DIR [--labels FILE]  # чек-лист разборов
@@ -410,14 +411,16 @@ def analyses_checklist(run_dir: Path, labels: dict[str, Any] | None) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--set", choices=("dev", "holdout", "all"), default="all")
+    parser.add_argument("--set", choices=("dev", "holdout", "all"), default="dev",
+                        help="набор сценариев; holdout и all — просмотр holdout (README)")
     parser.add_argument("--case", action="append", help="только этот сценарий (можно повторять)")
     parser.add_argument("--heavy", action="store_true", help="включить большой прогон")
     parser.add_argument("--details", action="store_true",
                         help="списки склеенных, раздробленных, скрытых групп и потерянных строк")
     parser.add_argument("--json", type=Path, help="записать полный результат в JSON")
     parser.add_argument("--write-baseline", action="store_true",
-                        help=f"записать базовую линию {BASELINE.name} (dev и holdout, с большим прогоном)")
+                        help=f"записать в {BASELINE.name} наборы из --set (с большим прогоном), "
+                             "остальные оставить как есть")
     parser.add_argument("--cassette", type=Path,
                         help="кассета команды: только сводка из чисел (без --labels — gates и размеры)")
     parser.add_argument("--labels", type=Path, help="labels.json к кассете или разбору")
@@ -455,17 +458,23 @@ def main(argv: list[str] | None = None) -> int:
         args.json.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n",
                              encoding="utf-8")
     if args.write_baseline:
-        if args.case or args.set != "all":
-            parser.error("--write-baseline считается по всем сценариям dev и holdout")
-        write_baseline(results)
+        if args.case:
+            parser.error("--write-baseline считается по всем сценариям набора")
+        write_baseline(results, sets)
         print(f"\nБазовая линия записана: {BASELINE}")
     return 0
 
 
-def write_baseline(results: dict[str, dict[str, dict[str, Any]]]) -> None:
-    baseline = {set_name: {case_name: baseline_entry(result)
-                           for case_name, result in cases.items()}
-                for set_name, cases in results.items()}
+def write_baseline(results: dict[str, dict[str, dict[str, Any]]], sets: Iterable[str]) -> None:
+    """Переписать в базовой линии наборы ``sets``; остальные остаются как были — так
+    базовая линия holdout меняется только отдельной командой (и отдельным коммитом)."""
+    baseline: dict[str, Any] = (json.loads(BASELINE.read_text(encoding="utf-8"))
+                                if BASELINE.is_file() else {})
+    for set_name in sets:
+        baseline.pop(set_name, None)
+        if results.get(set_name):  # пустой набор (holdout между ротациями) — без раздела
+            baseline[set_name] = {case_name: baseline_entry(result)
+                                  for case_name, result in results[set_name].items()}
     BASELINE.write_text(json.dumps(baseline, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
                         encoding="utf-8")
 
