@@ -11,7 +11,7 @@ from alla_core.models.testops import FailedTestSummary
 from alla_core.services.clustering_service import (
     ClusteringConfig,
     ClusteringService,
-    _build_log_error_document,
+    _log_error_blocks,
     _extract_assertion_actual,
     _strip_correlation_only_http_sections,
 )
@@ -1056,15 +1056,29 @@ def test_log_gate_shared_root_class_outweighs_unrelated_errors() -> None:
     """Посторонние ошибки у одного теста снижают похожесть, но общий корневой класс (NPE)
     говорит, что ошибка та же. Строгий порог показывает: решает ключ, а не похожесть."""
     strict = ClusteringConfig(log_similarity_weight=0.15, log_split_threshold=0.9)
-    failures = _orders(_log(NPE_LOG), _log(NPE_LOG) + UNRELATED_ERRORS_LOG)
-    first, second = (
-        _build_log_error_document(f, head_lines=50, tail_lines=50) for f in failures)
-    similarity = ClusteringService()._pairwise_similarity([first[0], second[0]], capped=False)
-    assert 0.3 < similarity[0, 1] < 0.9
-    assert "NullPointerException" in first[1] & second[1]
+    failures = _orders(_log(NPE_LOG), _log(NPE_LOG, order=77, line=57) + UNRELATED_ERRORS_LOG)
     assert _groups(failures, strict) == [[1, 2]]
-    # Без общего ключа та же похожесть ниже порога разделяет пару.
+    # Без общего ключа такой порог разделяет пару.
     assert _groups(_orders(_log(POOL_LOG), _log(NPE_LOG)), strict) == [[1], [2]]
+
+
+def test_log_gate_cancels_errors_present_in_both_logs() -> None:
+    """Одинаковая фоновая ошибка в обоих логах не делает пул БД и NPE одной ошибкой: о
+    различии судят свои ошибки каждого лога."""
+    background = (
+        "2026-10-03 10:00:05 [ERROR] [scheduler-1] HealthIndicator: Redis health check failed\n"
+        "io.lettuce.core.RedisConnectionException: Unable to connect to redis-cache:6379\n"
+        "\tat io.lettuce.core.RedisClient.connect(RedisClient.java:216)\n")
+    failures = _orders(_log(POOL_LOG) + background, _log(NPE_LOG) + background,
+                       _log(NPE_LOG, order=77) + background)
+    assert _groups(failures) == [[1], [2, 3]]
+
+
+def test_log_gate_keeps_a_log_whose_errors_are_all_in_the_other() -> None:
+    """Свои ошибки только у одного лога — у второго разделять нечем, даже при строгом пороге."""
+    strict = ClusteringConfig(log_similarity_weight=0.15, log_split_threshold=0.9)
+    failures = _orders(_log(NPE_LOG), _log(NPE_LOG) + UNRELATED_ERRORS_LOG)
+    assert _groups(failures, strict) == [[1, 2]]
 
 
 def test_log_gate_ignores_wrapper_exceptions() -> None:
@@ -1080,10 +1094,10 @@ def test_log_gate_ignores_wrapper_exceptions() -> None:
                    "not available, request timed out after 30000ms.")
     npe = wrapped("java.lang.NullPointerException: Cannot invoke \"Discount.percent()\" "
                   "because \"discount\" is null")
-    keys = [_build_log_error_document(f, head_lines=50, tail_lines=50)[1]
+    keys = [[block.keys for block in _log_error_blocks(f, head_lines=50, tail_lines=50)]
             for f in _orders(pool, npe)]
-    assert keys == [frozenset({"SQLTransientConnectionException"}),
-                    frozenset({"NullPointerException"})]
+    assert keys == [[frozenset({"SQLTransientConnectionException"})],
+                    [frozenset({"NullPointerException"})]]
 
 
 def test_log_gate_needs_errors_in_both_logs() -> None:
@@ -1123,7 +1137,10 @@ def test_log_gate_is_off_with_zero_threshold_or_zero_log_weight(
     ("java.net.ConnectException: Connection refused: auth-service:8080",
      {"auth-service:8080"}, set()),
     ("java.net.ConnectException: Failed to connect to inventory.svc/10.2.0.7:8080",
-     {"inventory.svc"}, set()),
+     {"inventory.svc:8080"}, set()),
+    ("java.net.ConnectException: Failed to connect to localhost/127.0.0.1:5432",
+     {"localhost:5432"}, set()),
+    ("Connection refused: Auth-Service:8080", {"auth-service:8080"}, set()),
     ("Connect to billing:8443 [billing/10.0.0.3] failed: Connection refused",
      {"billing:8443"}, set()),
     ("connect ECONNREFUSED 10.1.2.3:5432", {"<ip>:5432"}, set()),
@@ -1132,6 +1149,7 @@ def test_log_gate_is_off_with_zero_threshold_or_zero_log_weight(
     ("java.net.UnknownHostException: geo.internal: Name or service not known", set(), set()),
     ("getaddrinfo ENOTFOUND api.stage.local", set(), set()),
     ("Element not found {#checkout-button}\nExpected: visible", set(), {"#checkout-button"}),
+    ("Element not found {#Login}", set(), {"#Login"}),
     ("Element should be visible {.cart li:nth-child(2)}", set(), {".cart li:nth-child(#)"}),
     ('no such element: Unable to locate element: {"method":"css selector","selector":"#promo"}',
      set(), {'{"method":"css selector","selector":"#promo"}'}),
@@ -1139,11 +1157,13 @@ def test_log_gate_is_off_with_zero_threshold_or_zero_log_weight(
      set(), {"#login-form"}),
     ("TimeoutError: locator.click: Timeout 30000ms exceeded.\n"
      "  - waiting for getByRole('button', { name: 'Apply' })",
-     set(), {"getbyrole('button', { name: 'apply' })"}),
+     set(), {"getByRole('button', { name: 'Apply' })"}),
     ("Timed out retrying: Expected to find element: `[data-cy=submit]`, but never found it.",
      set(), {"[data-cy=submit]"}),
     ('Waiting for selector "#app .ready" failed: timeout 30000ms exceeded', set(),
      {"#app .ready"}),
+    ("Waiting for selector `[data-test=\"submit\"]` failed", set(), {'[data-test="submit"]'}),
+    ("waiting for selector '[data-test=\"cancel\"]' failed", set(), {'[data-test="cancel"]'}),
     # Не ресурсы: имена классов и файлов, тестовые данные в кавычках.
     ("java.lang.IllegalStateException at ru.company.orders.OrderService (OrderService.java:40)",
      set(), set()),
@@ -1176,6 +1196,23 @@ def test_resource_gate_splits_different_hosts_of_one_message() -> None:
     failures = _calls(_connect("inventory.svc"), _connect("inventory.svc"),
                       _connect("loyalty.svc"))
     assert _groups(failures) == [[1, 2], [3]]
+
+
+@pytest.mark.parametrize("pair", [
+    # Порт после «/IP»: в TF-IDF сообщения четырёхзначные порты сливаются в <NUM>.
+    ("java.net.ConnectException: Failed to connect to localhost/127.0.0.1:8080",
+     "java.net.ConnectException: Failed to connect to localhost/127.0.0.1:5432"),
+    # DOM id чувствителен к регистру, а TF-IDF — нет.
+    ("Element not found {#Login}\nExpected: visible",
+     "Element not found {#login}\nExpected: visible"),
+    # Кавычки внутри локатора Puppeteer.
+    ("Waiting for selector '[data-test=\"submit\"]' failed: timeout 30000ms exceeded",
+     "Waiting for selector '[data-test=\"cancel\"]' failed: timeout 30000ms exceeded"),
+])
+def test_resource_gate_splits_resources_that_text_similarity_misses(
+    pair: tuple[str, str],
+) -> None:
+    assert _groups(_calls(*pair)) == [[1], [2]]
 
 
 def test_resource_gate_splits_different_locators_at_the_message_threshold() -> None:

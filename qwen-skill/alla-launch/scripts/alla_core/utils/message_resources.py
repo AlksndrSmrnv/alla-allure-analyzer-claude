@@ -13,14 +13,18 @@
 * Хост — у отказа соединения (``Connection refused: h:p``, ``connect to h``,
   ``ECONNREFUSED h:p``, ``No route to host: h``) и в URL ``http(s)://h``. IP — ``<ip>``,
   цифры имени — ``#`` (``orders-1`` и ``orders-2`` — реплики одного сервиса), порт
-  сохраняется (``localhost:8080`` и ``localhost:5432`` — разные сервисы).
+  сохраняется и в виде ``host/IP:port`` (``localhost:8080`` и ``localhost:5432`` — разные
+  сервисы; в TF-IDF сообщения четырёхзначные порты сливаются в ``<NUM>``). Регистр имени
+  хоста не важен (DNS).
 * Ошибка разрешения имени (``UnknownHostException``, ``Could not resolve host``,
   ``ENOTFOUND``…) хостов не даёт: отказывает обычно общий резолвер, а не сервис хоста, и
   сбой DNS бьёт по всем хостам сразу.
 * Локатор — Selenide ``Element not found {…}``, Selenium ``Unable to locate element: {…}`` и
   ``By.xxx: …``, Playwright ``waiting for locator(…)``/``getByXxx(…)``, Cypress
-  ``Expected to find element: `…` ``, Puppeteer ``waiting for selector "…"``. Пробелы
-  схлопнуты, цифры — ``#`` (``:nth-child(2)`` и ``(3)`` — один список).
+  ``Expected to find element: `…` ``, Puppeteer ``waiting for selector "…"`` (закрывает
+  та же кавычка, что открыла: внутри бывают другие — ``'[data-test="submit"]'``). Пробелы
+  схлопнуты, цифры — ``#`` (``:nth-child(2)`` и ``(3)`` — один список); регистр сохраняется:
+  ``#Login`` и ``#login`` — разные id.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ import re
 from dataclasses import dataclass
 
 _HOST = (r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9-]+)*)"
-         r"(?::(?P<port>\d{1,5}))?")
+         r"(?:/\d{1,3}(?:\.\d{1,3}){3})?(?::(?P<port>\d{1,5}))?")
 _HOST_RES = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
     r"Connection refused(?: \(Connection refused\))?:\s*" + _HOST,
     r"\bconnect to\s+" + _HOST,
@@ -44,12 +48,12 @@ _NAME_RESOLUTION_RE = re.compile(
     re.IGNORECASE,
 )
 _LOCATOR_RES = tuple(re.compile(pattern, re.MULTILINE) for pattern in (
-    r"waiting for ((?:locator|getBy\w+)\(.*\))\s*$",
-    r"Element (?:not found|should [^{\n]*) \{([^}\n]+)\}",
-    r"Unable to locate element: (\{.*\})",
-    r"\bBy\.\w+: ([^\n]+)",
-    r"Expected to find element: `([^`]+)`",
-    r"(?i:waiting for selector) [`\"'](.+?)[`\"']",
+    r"waiting for (?P<loc>(?:locator|getBy\w+)\(.*\))\s*$",
+    r"Element (?:not found|should [^{\n]*) \{(?P<loc>[^}\n]+)\}",
+    r"Unable to locate element: (?P<loc>\{.*\})",
+    r"\bBy\.\w+: (?P<loc>[^\n]+)",
+    r"Expected to find element: `(?P<loc>[^`]+)`",
+    r"(?i:waiting for selector) (?P<quote>[`\"'])(?P<loc>.+?)(?P=quote)",
 ))
 _IP_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 _DIGITS_RE = re.compile(r"\d+")
@@ -85,7 +89,7 @@ def message_resources(message: str | None) -> MessageResources:
     if not _NAME_RESOLUTION_RE.search(message):
         hosts = {_host(match) for pattern in _HOST_RES for match in pattern.finditer(message)}
     locators = {
-        _DIGITS_RE.sub("#", " ".join(match.group(1).split()).casefold())
+        _DIGITS_RE.sub("#", " ".join(match.group("loc").split()))
         for pattern in _LOCATOR_RES for match in pattern.finditer(message)
     }
     return MessageResources(frozenset(hosts), frozenset(locators))
