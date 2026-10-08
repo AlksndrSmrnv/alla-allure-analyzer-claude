@@ -175,6 +175,27 @@ def test_search_inside_the_run_folder_is_not_code_search(tmp_path: Path) -> None
     assert CHECKS["no_code_search"](ctx)["status"] == "pass"
 
 
+@pytest.mark.parametrize(("path", "status"), [
+    ("src/test/java/ru/company/orders/OrderTest.java", "pass"),  # из подсказки задания
+    ("src/test/java/ru/company/orders/OrderService.java", "fail"),  # посторонний код
+    ("src/test/java/ru/company/reports/ReportTest.java", "fail"),  # угаданный путь (E07)
+    ("alla-reports/run-1/clusters/01.md", "pass"),  # свои файлы разбора
+])
+def test_only_listed_code_files_are_opened(tmp_path: Path, path: str, status: str) -> None:
+    ctx = context(tmp_path, events(("read_file", {"file_path": path}, "")))
+    run = ctx.project / "alla-reports" / "run-1"
+    (run / "clusters").mkdir(parents=True)
+    (run / "run.json").write_text("{}")
+    (run / "clusters" / "01.md").write_text(
+        "--- Где искать код автотеста (пути от корня проекта) ---\n"
+        "- src/test/java/ru/company/orders/OrderTest.java:5 — код теста (по full_name)\n\n"
+        "## Задание\n- src/other/Ignored.java:1 — не из раздела\n")
+    for name in (path, "src/test/java/ru/company/orders/OrderService.java"):
+        (ctx.project / name).parent.mkdir(parents=True, exist_ok=True)
+        (ctx.project / name).write_text("x")
+    assert CHECKS["listed_code_only"](ctx)["status"] == status
+
+
 def test_read_of_missing_path_is_noted_not_failed(tmp_path: Path) -> None:
     ctx = context(tmp_path, events(("read_file", {"file_path": "/nonexistent/typo.md"}, "")))
     result = CHECKS["allowed_reads"](ctx)
