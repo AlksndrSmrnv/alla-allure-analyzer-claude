@@ -39,6 +39,7 @@ class Settings:
     clustering_threshold: float = 0.60
     logs_clustering_weight: float = 0.15
     clustering_step_strict_threshold: float = 0.95
+    clustering_log_split_threshold: float = 0.30
     llm_prompt_message_max_chars: int = 2000
     llm_prompt_trace_max_chars: int = 400
     llm_prompt_log_max_chars: int = 8000
@@ -98,6 +99,7 @@ BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "clustering_threshold": (0.0, 1.0),
     "logs_clustering_weight": (0.0, 1.0),
     "clustering_step_strict_threshold": (0.0, 1.0),
+    "clustering_log_split_threshold": (0.0, 1.0),
     "llm_prompt_message_max_chars": (100, None),
     "llm_prompt_trace_max_chars": (50, None),
     "llm_prompt_log_max_chars": (100, None),

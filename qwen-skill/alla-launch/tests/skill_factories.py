@@ -9,6 +9,7 @@ from __future__ import annotations
 from alla_core.models.clustering import ClusterSignature, FailureCluster
 from alla_core.models.common import TestStatus as StatusEnum
 from alla_core.models.testops import ExecutionStep, FailedTestSummary
+from alla_core.utils.log_events import render_error_blocks
 
 
 def make_execution_step(**overrides) -> ExecutionStep:
@@ -44,3 +45,12 @@ def make_single_test_cluster(
         example_message=message or None,
     )
     return cluster, {test_id: test}
+
+
+def make_error_log(*logs: str, name: str = "app.log") -> str:
+    """``log_snippet`` как после извлечения: секция ``файл`` на каждый текст лога.
+
+    Из текста остаются события-ошибки с пометками строк (``render_error_blocks``), как у
+    ``ErrorBlocksHandler``.
+    """
+    return "\n\n".join(f"--- [файл: {name}] ---\n{render_error_blocks(log)}" for log in logs)

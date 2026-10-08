@@ -19,7 +19,7 @@ from alla_skill_lib.cluster_task import (
     short_trace,
 )
 from eval.cassette import replay
-from eval.corpus_dev import same_assertion_db_vs_npe
+from eval.corpus_dev import same_assertion_two_npes
 
 HEAD = ("ЧТО СЛОМАЛОСЬ: Тесты получили 500.\nПРИЧИНА: приложение — сервис падает.\n"
         "НАБЛЮДЕНИЯ:\n- [S1] «expected: <200> but was: <500>»\n")
@@ -83,7 +83,7 @@ def test_task_asks_for_consistency_only_with_several_examples() -> None:
 def test_merged_cluster_shows_both_server_errors_and_needs_consistency(
     project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    case = same_assertion_db_vs_npe()
+    case = same_assertion_two_npes()
     with replay(case.fixture):
         run_dir, run, _ = _prepare(project, capsys, launch_id=case.fixture.launch["id"])
     entry, = run["clusters"]
@@ -94,7 +94,7 @@ def test_merged_cluster_shows_both_server_errors_and_needs_consistency(
     # E08: сводка писала «логи остальных тестов не сохранились» — они просто не в задании.
     assert "Данные остальных тестов группы в задание не вошли (в TestOps они есть)" in task
     assert "### Пример 1 — типичный · тест " in task and "### Пример 2 — наиболее отличающийся" in task
-    assert 'Cannot invoke "Discount.percent()"' in task and "HikariPool-1" in task
+    assert 'Cannot invoke "Discount.percent()"' in task and '"Customer.id()"' in task
     assert "Сообщение об ошибке — такое же, как в примере 1." in task
     sources = json.loads((run_dir / "evidence" / "01.sources.json").read_text("utf-8"))
     tests = {record["test_result_id"] for record in sources.values()}
@@ -118,7 +118,7 @@ def test_merged_cluster_shows_both_server_errors_and_needs_consistency(
     assert out.startswith("STATUS: fix") and "добавь «СОГЛАСОВАННОСТЬ:»" in out
     assert "СОГЛАСОВАННОСТЬ ✗" in out
     analysis.write_text(base.format(
-        consistency="СОГЛАСОВАННОСТЬ: разные проблемы — у одного теста пул БД, у другого NPE.\n"),
+        consistency="СОГЛАСОВАННОСТЬ: разные проблемы — у одного теста NPE клиента, у другого NPE скидки.\n"),
         encoding="utf-8")
     assert _next(run_dir, capsys).startswith("STATUS: summary")
 
@@ -247,7 +247,7 @@ def test_three_big_examples_stay_within_the_old_limits_plus_headers() -> None:
 
 def _mixed_run(project: Path, capsys: pytest.CaptureFixture[str], consistency: str,
                category: str = "тест") -> tuple[Path, str]:
-    case = same_assertion_db_vs_npe()
+    case = same_assertion_two_npes()
     with replay(case.fixture):
         run_dir, _run, _ = _prepare(project, capsys, launch_id=case.fixture.launch["id"])
     sources = json.loads((run_dir / "evidence" / "01.sources.json").read_text("utf-8"))
@@ -267,7 +267,7 @@ def _mixed_run(project: Path, capsys: pytest.CaptureFixture[str], consistency: s
 def test_mixed_group_is_flagged_and_gets_no_common_fix(
     project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    detail = "у одного теста исчерпан пул БД, у другого NPE в DiscountService"
+    detail = "у одного теста нет клиента в OrderService, у другого NPE в DiscountService"
     run_dir, out = _mixed_run(project, capsys, f"разные проблемы — {detail}")
     # Категория «тест» с КОД, но правку для неоднородной группы не предлагают.
     assert out.startswith("STATUS: summary"), out

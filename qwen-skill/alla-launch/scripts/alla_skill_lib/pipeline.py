@@ -98,6 +98,7 @@ def cluster_failures(
             similarity_threshold=settings.clustering_threshold,
             log_similarity_weight=settings.logs_clustering_weight,
             step_path_strict_threshold=settings.clustering_step_strict_threshold,
+            log_split_threshold=settings.clustering_log_split_threshold,
         )
     )
     return service.cluster_failures(launch_id, triage.failed_tests)

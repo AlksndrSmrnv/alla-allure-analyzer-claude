@@ -171,14 +171,14 @@
       "tests": 6
     },
     "same_assertion_db_vs_npe": {
-      "clusters": 1,
+      "clusters": 2,
       "evidence_loss": 0.0,
       "evidence_lost": 0,
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 0,
-      "max_task_chars": 8941,
-      "precision": 0.5,
+      "max_task_chars": 7212,
+      "precision": 1.0,
       "recall": 1.0,
       "tests": 6
     },
@@ -207,14 +207,14 @@
       "tests": 4
     },
     "timeouts_two_causes": {
-      "clusters": 1,
+      "clusters": 2,
       "evidence_loss": 0.0,
       "evidence_lost": 0,
       "evidence_total": 2,
       "groups": 2,
       "hidden_groups": 0,
-      "max_task_chars": 8605,
-      "precision": 0.5,
+      "max_task_chars": 6950,
+      "precision": 1.0,
       "recall": 1.0,
       "tests": 4
     }

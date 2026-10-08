@@ -529,6 +529,11 @@ def test_settings_env_overrides_file(tmp_path: Path) -> None:
             {"ALLURE_ENDPOINT": "https://a", "ALLURE_TOKEN": "t", "ALLURE_CLUSTERING_THRESHOLD": "1.5"},
             "допустимо от 0.0 до 1.0",
         ),
+        (
+            {"ALLURE_ENDPOINT": "https://a", "ALLURE_TOKEN": "t",
+             "ALLURE_CLUSTERING_LOG_SPLIT_THRESHOLD": "-0.1"},
+            "ALLURE_CLUSTERING_LOG_SPLIT_THRESHOLD: допустимо от 0.0 до 1.0",
+        ),
     ],
 )
 def test_settings_errors(environ: dict[str, str], message: str) -> None:
