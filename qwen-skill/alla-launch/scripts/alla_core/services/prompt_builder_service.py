@@ -258,6 +258,9 @@ class PromptExample:
     message: str | None
     trace: str | None
     log: str | None
+    # Трейс без кадров JDK и фреймворков — вместо полного, если тот не влезает в долю
+    # лимита: обрезка с начала оставляла строку исключения и кадры JUnit без кадра теста.
+    short_trace: str | None = None
 
 
 def build_cluster_examples_prompt(
@@ -273,7 +276,8 @@ def build_cluster_examples_prompt(
     Один пример — тот же вид, что у :func:`build_cluster_analysis_prompt`. Несколько —
     лимиты сообщения, трейса и лога делятся: первому (типичному) половина, остальным
     поровну из остатка (:func:`example_shares`). Сообщение и трейс, совпадающие с
-    первым примером, не повторяются. Лог примера ожидается уже отобранным под его долю.
+    первым примером, не повторяются. Лог примера ожидается уже отобранным под его долю;
+    трейс, не влезающий в долю, заменяется ``short_trace`` (если он есть).
     """
     parts: list[str] = [
         DATA_HEADING,
@@ -288,9 +292,10 @@ def build_cluster_examples_prompt(
         parts.append(f"Данные теста: {examples[0].test_name}")
     if multi:
         roles = ", ".join(example.role for example in examples)
+        rest = ("" if cluster.member_count <= len(examples) else
+                ". Данные остальных тестов группы в задание не вошли (в TestOps они есть)")
         parts.append(f"Примеров в данных: {len(examples)} ({roles}) — тесты группы отличаются, "
-                     "сравни их. Данные остальных тестов группы в задание не вошли (в TestOps "
-                     "они есть)")
+                     f"сравни их{rest}")
     sources: list[PromptSource] = []
     chars = {"message": 0, "trace": 0, "log": 0}
 
@@ -322,8 +327,11 @@ def build_cluster_examples_prompt(
         if same_trace:
             parts.append("Стек-трейс — такой же, как в примере 1.")
         elif example.trace:
-            add_source("trace", _truncate_prompt_text(
-                example.trace, max(1, int(trace_max_chars * share))), example)
+            budget = max(1, int(trace_max_chars * share))
+            trace = example.trace
+            if len(trace) > budget and example.short_trace:
+                trace = example.short_trace
+            add_source("trace", _truncate_prompt_text(trace, budget), example)
         if example.log:
             log_text = _truncate_prompt_text(example.log, max(1, int(log_max_chars * share)))
             for piece in log_pieces(log_text):

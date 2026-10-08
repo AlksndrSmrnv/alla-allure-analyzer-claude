@@ -304,9 +304,9 @@ def test_prompt_tiny_fallback_drops_footer_before_meaningful_content(budget):
     ["at ru.company.Job.run(Unknown Source)"],
 ])
 def test_task_without_code_hints_says_code_not_found_and_forbids_searching(frames):
-    # «Правила» велят начинать с раздела «Где искать код автотеста»; без него субагенты
-    # искали код сами через ls/find (стенд Qwen, P04). Кадры стека упоминаются, только если
-    # раздел есть, — иначе модель сообщала о противоречии.
+    # «Правила» велят открывать только файлы из раздела «Где искать код автотеста»; без него
+    # субагенты искали код сами через ls/find (стенд Qwen, P04). Подсказок нет — кадры тоже не
+    # сопоставились: «открой файлы из кадров» вело к glob (E07).
     from alla_core.config import Settings
     from alla_skill_lib import cluster_task
     task = cluster_task.build_cluster_task(
@@ -314,15 +314,14 @@ def test_task_without_code_hints_says_code_not_found_and_forbids_searching(frame
         next_command="next", tests_by_id={1: _summary()}, log_snippet=None,
         full_trace=None, frames=frames, hints=[], settings=Settings())
     section = task.split("--- Где искать код автотеста (пути от корня проекта) ---\n")[1]
-    assert section.startswith("- не найден:") and "Сам код не ищи" in section
+    assert section.startswith("- не найден:") and "код не ищи" in section
+    assert "Открой файлы" not in section and "без строки «КОД:»" in section
     # подсказок нет и при нераспознанном или неоднозначном имени теста — исходник может быть
     assert "не удалось сопоставить" in section and "файлов с этими тестами" not in section
     head = task.split("--- Где искать")[0]
     if cluster_task.has_frame_files(frames):
         assert "Кадры стека из кода проекта" in head
-        assert cluster_task.CODE_NOT_FOUND_WITH_FRAMES in section
     else:
         assert "Кадры стека из кода проекта" not in head
-        assert cluster_task.CODE_NOT_FOUND_NO_FRAMES in section
         for line in frames:  # «Caused by» остаётся в задании как данные о причине
             assert line in head

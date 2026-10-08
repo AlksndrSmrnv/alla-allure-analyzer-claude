@@ -218,6 +218,25 @@ def test_folding_keeps_events_with_different_error_codes() -> None:
     assert "[строка 6 · повторялось 2 раза: 6, 7]" in blocks  # thread-N — не код
 
 
+@pytest.mark.parametrize(("first", "second"), [
+    ("nio-8080-exec-1", "nio-8080-exec-7"),  # Spring Boot обрезает имя потока до 15 символов
+    ("io-8080-exec-10", "io-8080-exec-7"),
+    ("http-nio-8080-exec-1", "http-nio-8080-exec-7"),
+    ("pool-1-thread-3", "pool-4-thread-12"),
+])
+def test_one_error_on_different_threads_is_folded(first: str, second: str) -> None:
+    def event(second_: int, thread: str, code: str = "10001") -> str:
+        return (f"2026-10-03 10:00:0{second_} ERROR 12345 --- [payment] [{thread}] "
+                f"c.e.PaymentService : authorization failed error_code={code}\n")
+
+    folded = render_error_blocks(event(1, first) + event(2, second))
+    assert "[строка 1 · повторялось 2 раза: 1, 2]" in folded
+    assert second not in folded
+
+    different = render_error_blocks(event(1, first) + event(2, second, "10002"))
+    assert "повторялось" not in different and "error_code=10002" in different
+
+
 def test_repeats_with_different_ids_do_not_crowd_out_other_anchor_lines() -> None:
     def log(repeats: int) -> str:
         return "".join(

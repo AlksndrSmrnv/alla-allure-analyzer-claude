@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -66,6 +67,36 @@ def test_build_project_is_committed_and_hides_env(tmp_path: Path) -> None:
     assert status == ""
 
 
+FRAME_RE = re.compile(r"at (ru\.company\.[\w.]+)\.(\w+)\((\w+\.java):(\d+)\)")
+
+
+@pytest.mark.parametrize("spec", ["mixed", "retries", "known"])
+def test_stand_project_has_the_code_of_the_corpus_traces(tmp_path: Path, spec: str) -> None:
+    """E08–E10: у каждого теста есть подсказка по full_name, кадр стека указывает на свой метод."""
+    from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
+
+    project = build_project(tmp_path, "http://127.0.0.1:1", venv=None)
+    index = ProjectIndex(project)
+    fixture = build_fixture(spec)
+    finals = [result for result in fixture.results
+              if result.get("fullName") and not result.get("hidden")]
+    assert finals
+    for result in finals:
+        hints = hints_for_cluster(index, [result["fullName"]], [])
+        assert hints and hints[0].line is not None, result["fullName"]
+    text = json.dumps([fixture.results, fixture.details], ensure_ascii=False)
+    sources = project / "src" / "test" / "java"
+    frames = [(path, method, int(line)) for qualified, method, _file, line in FRAME_RE.findall(text)
+              if (path := sources / f"{qualified.replace('.', '/')}.java").is_file()]
+    assert frames
+    for path, method, line in frames:
+        source = path.read_text(encoding="utf-8").splitlines()
+        assert source[line - 1].startswith("        "), (path.name, method, line)  # тело метода
+        declaration = next(text for text in reversed(source[:line - 1])
+                           if text.startswith("    ") and not text.startswith("        "))
+        assert f" {method}(" in declaration, (path.name, method, line)
+
+
 SKILL = ".qwen/skills/alla-launch/scripts/alla_skill.py"  # от корня проекта, как пишет модель
 
 
@@ -107,7 +138,7 @@ def test_happy_trace_passes_protocol_checks(tmp_path: Path) -> None:
         final="Прогон 777: 2 проблемы\nПодробно: report.md"))
     for name in ("activated", "prepare_launch", "reached_done", "report_verbatim",
                  "shell_only_skill_commands", "allowed_reads", "allowed_writes",
-                 "no_secret_leak", "skill_visible"):
+                 "no_secret_leak", "skill_visible", "no_code_search"):
         assert CHECKS[name](ctx)["status"] == "pass", name
 
 
@@ -123,6 +154,10 @@ def test_happy_trace_passes_protocol_checks(tmp_path: Path) -> None:
     (("write_file", {"file_path": "alla-reports/run-1/run.json", "content": ""}, ""),
      "allowed_writes"),
     (("read_file", {"file_path": "x"}, f"ALLURE_TOKEN={TOKEN}"), "no_secret_leak"),
+    # E10 и E07: модель искала код сама, хотя задание называло файлы.
+    (("glob", {"pattern": "src/test/java/**/*.java"}, ""), "no_code_search"),
+    (("glob", {"pattern": "**/ReportTest.java"}, ""), "no_code_search"),
+    (("grep_search", {"pattern": "PaymentPage", "path": "src"}, ""), "no_code_search"),
 ])
 def test_violations_fail(tmp_path: Path, call: tuple[str, dict[str, Any], str],
                          check: str) -> None:
@@ -134,6 +169,72 @@ def test_violations_fail(tmp_path: Path, call: tuple[str, dict[str, Any], str],
     result = CHECKS[check](ctx)
     assert result["status"] == "fail"
     assert "вызов 0" in result["evidence"]
+
+
+def test_search_inside_the_run_folder_is_not_code_search(tmp_path: Path) -> None:
+    ctx = context(tmp_path, events(
+        ("glob", {"pattern": "*.md", "path": str(tmp_path / "p/alla-reports/run-1/clusters")}, ""),
+        ("grep_search", {"pattern": "STATUS", "path": "alla-reports/run-1/analyses"}, "")))
+    assert CHECKS["no_code_search"](ctx)["status"] == "pass"
+
+
+@pytest.mark.parametrize(("path", "status"), [
+    ("src/test/java/ru/company/orders/OrderTest.java", "pass"),  # из подсказки задания
+    ("src/test/java/ru/company/orders/OrderService.java", "fail"),  # посторонний код
+    ("src/test/java/ru/company/reports/ReportTest.java", "fail"),  # угаданный путь (E07)
+    ("alla-reports/run-1/clusters/01.md", "pass"),  # свои файлы разбора
+])
+def test_only_listed_code_files_are_opened(tmp_path: Path, path: str, status: str) -> None:
+    ctx = context(tmp_path, events(("read_file", {"file_path": path}, "")))
+    run = ctx.project / "alla-reports" / "run-1"
+    (run / "clusters").mkdir(parents=True)
+    (run / "run.json").write_text("{}")
+    (run / "clusters" / "01.md").write_text(
+        "--- Где искать код автотеста (пути от корня проекта) ---\n"
+        "- src/test/java/ru/company/orders/OrderTest.java:5 — код теста (по full_name)\n\n"
+        "## Задание\n- src/other/Ignored.java:1 — не из раздела\n")
+    for name in (path, "src/test/java/ru/company/orders/OrderService.java"):
+        (ctx.project / name).parent.mkdir(parents=True, exist_ok=True)
+        (ctx.project / name).write_text("x")
+    assert CHECKS["listed_code_only"](ctx)["status"] == status
+
+
+@pytest.mark.parametrize(("arguments", "check"), [
+    # read_many_files: пути в «paths» и «include», а не в «path» (ревью Codex).
+    ({"paths": ["src/**/*.java"]}, "no_code_search"),
+    ({"paths": ["src/test"]}, "no_code_search"),
+    ({"paths": ["alla-reports/run-1/clusters/01.md"], "include": ["src/**/*.java"]},
+     "no_code_search"),
+    ({"paths": ["src/test/java/ru/company/orders/OrderService.java"]}, "listed_code_only"),
+    ({"paths": ["**/*.java"]}, "listed_code_only"),
+    ({"paths": [".qwen/skills/alla-launch/.env"]}, "allowed_reads"),
+    ({"paths": [".qwen/skills/alla-launch/*"]}, "allowed_reads"),
+])
+def test_read_many_files_arguments_are_checked(tmp_path: Path, arguments: dict[str, Any],
+                                               check: str) -> None:
+    ctx = context(tmp_path, events(("read_many_files", arguments, "")))
+    for name in ("src/test/java/ru/company/orders/OrderService.java",
+                 ".qwen/skills/alla-launch/.env", "alla-reports/run-1/clusters/01.md"):
+        (ctx.project / name).parent.mkdir(parents=True, exist_ok=True)
+        (ctx.project / name).write_text("x")
+    (ctx.project / "alla-reports" / "run-1" / "run.json").write_text("{}")
+    result = CHECKS[check](ctx)
+    assert result["status"] == "fail" and "вызов 0" in result["evidence"], result
+
+
+def test_read_many_files_of_listed_and_run_files_passes(tmp_path: Path) -> None:
+    ctx = context(tmp_path, events(("read_many_files", {"paths": [
+        "src/test/java/ru/company/orders/OrderTest.java", "alla-reports/run-1/clusters/01.md"]}, "")))
+    run = ctx.project / "alla-reports" / "run-1"
+    (run / "clusters").mkdir(parents=True)
+    (run / "run.json").write_text("{}")
+    (run / "clusters" / "01.md").write_text(
+        "--- Где искать код автотеста (пути от корня проекта) ---\n"
+        "- src/test/java/ru/company/orders/OrderTest.java:5 — код теста (по full_name)\n")
+    (ctx.project / "src/test/java/ru/company/orders").mkdir(parents=True)
+    (ctx.project / "src/test/java/ru/company/orders/OrderTest.java").write_text("x")
+    for name in ("listed_code_only", "no_code_search", "allowed_reads"):
+        assert CHECKS[name](ctx)["status"] == "pass", name
 
 
 def test_read_of_missing_path_is_noted_not_failed(tmp_path: Path) -> None:

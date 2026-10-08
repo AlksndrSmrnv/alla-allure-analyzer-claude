@@ -104,9 +104,9 @@ def check_entry_analysis(
 ) -> tuple[ClusterAnalysis, list[str]]:
     """Разобрать и проверить разбор кластера по правилам его формата.
 
-    Общая проверка для ``next``, ``verify`` и ``remember --from-analysis``. У
-    разбора нового формата к результату прикреплён реестр источников — для
-    подписи цитат в отчёте.
+    Общая проверка для ``next``, ``verify`` и ``remember --from-analysis``. К
+    разбору с наблюдениями (у всех, кроме ``auto``) прикреплён реестр источников —
+    для подписи цитат в отчёте.
     """
     analysis = parse_analysis(text)
     offered = frozenset(match["id"] for match in entry.get("kb", []))

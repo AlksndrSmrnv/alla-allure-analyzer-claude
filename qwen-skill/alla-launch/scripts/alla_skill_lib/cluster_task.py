@@ -54,20 +54,23 @@ RULES = """\
   пуст или без ошибок — прямо скажи об этом и строй вывод по ошибке и трейсу.
   «Шаг теста» — вспомогательный контекст, а не доказательство.
 - Код автотестов читай, чтобы понять, что проверяет тест и чья это проблема —
-  теста или приложения. Начни с раздела «Где искать код автотеста», открывай не
-  больше 3 файлов на кластер. Ничего не изменяй, тесты и сборку не запускай.
-  Код мог измениться после прогона: если он не совпадает со стек-трейсом,
-  напиши, что код расходится с трейсом, — что его поменяли, ты не знаешь."""
+  теста или приложения. Открывай только файлы из раздела «Где искать код
+  автотеста» (read_file по пути оттуда), не больше 3 файлов на кластер. Код
+  сам не ищи — ни glob, ни grep_search, ни командами shell: чего нет в этом
+  разделе, в проекте не нашлось (классы приложения из лога и трейса живут в его
+  репозитории, не здесь). Ничего не изменяй, тесты и сборку не запускай. Код мог измениться после
+  прогона: если в файле нет метода или строки из трейса или код не совпадает со
+  стек-трейсом, напиши, что код расходится с трейсом, — что его поменяли, ты не
+  знаешь, — и разбирай по данным."""
 
+# Подсказок нет — значит, и кадры стека не сопоставились с файлами проекта
+# (hints_for_cluster пробует и их). Отсылка «открой файлы из кадров» вела к поиску: модель
+# угадывала путь и делала glob (стенд Qwen, E07).
 CODE_NOT_FOUND_NOTE = (
     "- не найден: исходник автотеста не удалось сопоставить с файлами проекта (имя теста "
-    "не распознано или подходит к нескольким файлам). Сам код не ищи — ни командами shell, "
-    "ни поиском по файлам. {next_step}"
+    "не распознано или подходит к нескольким файлам), файлы из кадров стека — тоже. "
+    "Открывать нечего, код не ищи: разбирай по данным выше, без строки «КОД:»."
 )
-# Отсылку к кадрам стека даём, только когда раздел есть: иначе модель ищет его в задании
-# и сообщает о противоречии (стенд Qwen, P04).
-CODE_NOT_FOUND_WITH_FRAMES = "Открой файлы из «Кадров стека из кода проекта» выше."
-CODE_NOT_FOUND_NO_FRAMES = "Разбирай по данным выше, без строки «КОД:»."
 
 KB_LINE_NOTE = (
     "БАЗА ЗНАНИЙ: <id записи> | нет   (id записи из раздела «База знаний проекта», "
@@ -110,9 +113,13 @@ _CONSISTENCY_NOTE = (
     "СОГЛАСОВАННОСТЬ — в данных несколько примеров из этой группы тестов: сравни их. "
     "«одна причина» — ошибки в сообщениях и логах всех примеров сводятся к одной; "
     "«разные проблемы — …» — у примеров разные ошибки (например, в логах разные "
-    "исключения): после «—» назови, чем они отличаются, а ПРИЧИНУ пиши по первому "
-    "(типичному) примеру; «недостаточно данных» — сравнить нечем. Наблюдения — из любого "
-    "примера, с id его куска."
+    "исключения; лог есть не у всех примеров — само по себе не отличие): после «—» назови, "
+    "чем они отличаются, не повторяя слов других вариантов. При «разные проблемы» в ПРИЧИНЕ "
+    "одной строкой назови причину каждого примера («у одного теста — …, у другого — …») и "
+    "не выдавай одну из них за причину всей группы; категория — общая, если совпадает, иначе "
+    "по первому (типичному) примеру; в КАК ИСПРАВИТЬ — шаг на каждую причину. «недостаточно "
+    "данных» — сравнить нечем. Наблюдения — из любого примера, с id его куска; «такое же, "
+    "как в примере 1» — цитируй кусок примера 1."
 )
 _LOG_DETAIL = (
     " (первый шаг — с конкретикой из лога: класс, метод, сервис, запрос, "
@@ -209,6 +216,43 @@ def project_frames(trace: str | None, limit: int = MAX_FRAME_LINES) -> list[str]
         if not deduped or deduped[-1] != line:
             deduped.append(line)
     return deduped
+
+
+def short_trace(trace: str | None, budget: int | None = None) -> str | None:
+    """Трейс без кадров JDK, фреймворков и библиотек: исключение, ``Caused by``, кадры проекта.
+
+    Для примера, чей трейс не влезает в свою долю лимита: обрезка с начала оставляла
+    строку исключения и кадры JUnit, а кадр теста терялся. Сообщение исключения
+    сохраняется целиком — все строки до первого кадра (expected/actual у AssertJ бывают на
+    следующих строках, а другого сообщения у теста может не быть). У Python-трейса сообщение
+    в конце, после кадров. ``budget`` — доля лимита примера: кадров берётся столько, сколько
+    влезает рядом с сообщением, иначе обрезка с начала до доли отрезала бы сообщение Python.
+    """
+    lines = [line.rstrip() for line in (trace or "").strip().splitlines() if line.strip()]
+    if not lines:
+        return None
+    if lines[0].startswith("Traceback"):
+        # Сообщение — после последнего «File …» и строки его кода (она с отступом).
+        last = max((index for index, line in enumerate(lines) if _FRAME_RE.match(line)),
+                   default=0)
+        if last and last + 1 < len(lines) and lines[last + 1][:1].isspace():
+            last += 1
+        head, tail = lines[:1], lines[max(last + 1, 1):]
+    else:
+        first_frame = next((index for index, line in enumerate(lines)
+                            if _FRAME_RE.match(line) or _CAUSED_BY_RE.match(line)), len(lines))
+        head, tail = lines[:max(first_frame, 1)], []
+    shown = {line.strip() for line in head}
+    frames = [line if _CAUSED_BY_RE.match(line) else f"\t{line}"
+              for line in project_frames(trace) if line.strip() not in shown]
+    used = len("\n".join([*head, *tail]))
+    kept: list[str] = []
+    for frame in frames:
+        if budget is not None and used + 1 + len(frame) > budget:
+            break
+        kept.append(frame)
+        used += 1 + len(frame)
+    return "\n".join([*head, *kept, *tail])
 
 
 # Файловая позиция кадра: «(OrderTest.java:6)», «(/app/orders.ts:12:3)» или
@@ -391,9 +435,10 @@ def _examples_task(
     """Задание по нескольким примерам: у каждого свой блок данных и своя доля лимитов."""
     prompt_examples: list[PromptExample] = []
     for number, (role, test) in enumerate(examples, start=1):
+        share = example_shares(len(examples), number)
         log = test.log_snippet if test.log_snippet and test.log_snippet.strip() else None
         if log:
-            budget = int(settings.llm_prompt_log_max_chars * example_shares(len(examples), number))
+            budget = int(settings.llm_prompt_log_max_chars * share)
             error = (test.log_selection_error if test.log_selection_error is not None
                      else selection_error_text(test.status_message, test.status_trace,
                                                test.correlation_hint))
@@ -402,6 +447,8 @@ def _examples_task(
             role=EXAMPLE_ROLES.get(role, role), test_result_id=test.test_result_id,
             test_name=test.name, step=test.failed_step_path, message=test.status_message,
             trace=test.status_trace, log=log,
+            short_trace=short_trace(test.status_trace,
+                                    max(1, int(settings.llm_prompt_trace_max_chars * share))),
         ))
     prompt = build_cluster_examples_prompt(
         cluster, prompt_examples,
@@ -469,21 +516,19 @@ def _assemble(
     ))
     if retry_lines:
         sections += ["", *retry_lines]
-    with_files = has_frame_files(frames)
-    if with_files:
+    if has_frame_files(frames):
         sections += ["", "--- Кадры стека из кода проекта ---", *frames]
     elif frames:
         # В длинном трейсе фреймворка поздний «Caused by» может быть единственным указанием
         # на причину (основной трейс в данных обрезан): сохраняем его, но без файлов.
         sections += ["", "--- Строки стек-трейса без файлов (данные о причине) ---", *frames]
-    # Раздел есть всегда: «Правила» велят начинать с него, и без него субагенты искали код
-    # сами — ls/find/git log (стенд Qwen, P04).
+    # Раздел есть всегда: «Правила» разрешают открывать только его файлы, и без него
+    # субагенты искали код сами — ls/find/git log (стенд Qwen, P04).
     sections += ["", "--- Где искать код автотеста (пути от корня проекта) ---"]
     if hints:
         sections += [f"- {hint.render()}" for hint in hints]
     else:
-        sections.append(CODE_NOT_FOUND_NOTE.format(
-            next_step=CODE_NOT_FOUND_WITH_FRAMES if with_files else CODE_NOT_FOUND_NO_FRAMES))
+        sections.append(CODE_NOT_FOUND_NOTE)
     sections += ["", "## Задание", task, "", reference_line(ANALYSIS_FORMAT_REF)]
     return ClusterTask("\n".join(sections) + "\n", prompt.sources, shown, blocks)
 
@@ -536,8 +581,12 @@ def build_task_text(
         )
         how = (
             "Категорию определи по сообщению ошибки и трейсу, при нехватке данных — с "
-            "учётом «Шага теста». Код 5xx от сервера без лога приложения — «приложение», "
-            "а в «НЕ ХВАТАЕТ» — лог сервиса за время теста."
+            "учётом «Шага теста». Код ответа сервера без лога приложения: 500 и другие 5xx — "
+            "«приложение», а 502, 503 и 504 — «окружение»: сервис был недоступен или не "
+            "ответил. Кто отдал этот ответ — сам сервис (перегрузка, обслуживание) или прокси "
+            "и балансировщик, — по коду не видно, не утверждай этого. В «НЕ ХВАТАЕТ» — лог "
+            "сервиса за время теста, при 502/503/504 — и лог балансировщика: по ним видно, "
+            "упал сервис или был недоступен стенд."
         )
     lines = [
         "Ответ — строго в таком формате, без вступления и markdown-заголовков:",

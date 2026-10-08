@@ -13,7 +13,11 @@ from alla_core.config import Settings
 from alla_core.models.clustering import ClusterExample, ClusterSignature, FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib.analysis_format import parse_analysis, validate_analysis
-from alla_skill_lib.cluster_task import build_cluster_task_with_sources, build_task_text
+from alla_skill_lib.cluster_task import (
+    build_cluster_task_with_sources,
+    build_task_text,
+    short_trace,
+)
 from eval.cassette import replay
 from eval.corpus_dev import same_assertion_db_vs_npe
 
@@ -71,7 +75,7 @@ def test_task_asks_for_consistency_only_with_several_examples() -> None:
            "недостаточно данных"
     assert line in several.splitlines()
     text = " ".join(several.split())
-    for phrase in ("сравни их", "ПРИЧИНУ пиши по первому (типичному) примеру",
+    for phrase in ("сравни их", "назови причину каждого примера",
                    "Наблюдения — из любого примера, с id его куска"):
         assert phrase in text
 
@@ -95,6 +99,10 @@ def test_merged_cluster_shows_both_server_errors_and_needs_consistency(
     sources = json.loads((run_dir / "evidence" / "01.sources.json").read_text("utf-8"))
     tests = {record["test_result_id"] for record in sources.values()}
     assert tests == {example["test_result_id"] for example in entry["examples"]}
+    # Трейс не влезает в долю примера (200 символов): кадры JUnit выпали, кадр теста остался.
+    traces = [record["text"] for record in sources.values() if record["kind"] == "trace"]
+    assert traces and all("ru.company.orders.OrderApiTest." in text for text in traces)
+    assert not any("org.junit" in text for text in traces)
 
     log_ids = [key for key, record in sources.items() if record["kind"] == "log"]
     quotes = [sources[key]["text"].splitlines()[1][:60] for key in log_ids]
@@ -113,6 +121,91 @@ def test_merged_cluster_shows_both_server_errors_and_needs_consistency(
         consistency="СОГЛАСОВАННОСТЬ: разные проблемы — у одного теста пул БД, у другого NPE.\n"),
         encoding="utf-8")
     assert _next(run_dir, capsys).startswith("STATUS: summary")
+
+
+@pytest.mark.parametrize(("trace", "expected"), [
+    ("java.lang.AssertionError: expected: <200> but was: <500>\n"
+     "\tat org.junit.Assert.fail(Assert.java:89)\n"
+     "\tat ru.company.orders.OrderApiTest.createOrder(OrderApiTest.java:40)\n"
+     "Caused by: java.io.IOException: closed\n"
+     "\tat java.base/java.io.FileInputStream.read(FileInputStream.java:10)\n",
+     "java.lang.AssertionError: expected: <200> but was: <500>\n"
+     "\tat ru.company.orders.OrderApiTest.createOrder(OrderApiTest.java:40)\n"
+     "Caused by: java.io.IOException: closed"),
+    ('Traceback (most recent call last):\n  File "/ci/tests/test_orders.py", line 12, in test_x\n'
+     '  File "/usr/lib/python3.11/site-packages/requests/api.py", line 5, in get\n'
+     "AssertionError: 500 != 200\n",
+     'Traceback (most recent call last):\n\tFile "/ci/tests/test_orders.py", line 12, in test_x\n'
+     "AssertionError: 500 != 200"),
+    # AssertJ: expected/actual — на строках после исключения, до кадров (ревью Codex).
+    ("org.opentest4j.AssertionFailedError: \nexpected: 300.00\n but was: 0.00\n"
+     "\tat org.assertj.core.api.Assertions.assertThat(Assertions.java:10)\n"
+     "\tat ru.company.cart.CartTest.cartTotal(CartTest.java:33)\n",
+     "org.opentest4j.AssertionFailedError:\nexpected: 300.00\n but was: 0.00\n"
+     "\tat ru.company.cart.CartTest.cartTotal(CartTest.java:33)"),
+    ('Traceback (most recent call last):\n  File "/ci/tests/test_cart.py", line 3, in test_total\n'
+     "    assert total == 300\nAssertionError: assert 0 == 300\n +  where 0 = total()\n",
+     'Traceback (most recent call last):\n\tFile "/ci/tests/test_cart.py", line 3, in test_total\n'
+     "AssertionError: assert 0 == 300\n +  where 0 = total()"),
+    ("", None),
+])
+def test_short_trace_keeps_the_exception_and_project_frames(trace: str, expected: str | None) -> None:
+    assert short_trace(trace) == expected
+
+
+@pytest.mark.parametrize("trace", [
+    # Python: сообщение после кадров — обрезка до доли не должна его отрезать (ревью Codex).
+    "Traceback (most recent call last):\n" + "".join(
+        f'  File "/ci/tests/cart/test_cart_{n}.py", line {n}, in step_{n}\n    helper_{n}()\n'
+        for n in range(1, 30)) + "AssertionError: Cart total expected 300.00 but was 0.00\n",
+    # Java: многострочное сообщение AssertJ перед кадрами.
+    "org.opentest4j.AssertionFailedError: \nexpected: 300.00\n but was: 0.00\n" + "".join(
+        f"\tat ru.company.cart.CartSteps.step{n}(CartSteps.java:{n})\n" for n in range(1, 30)),
+])
+def test_example_trace_keeps_the_message_within_its_share(trace: str) -> None:
+    tests = {i: FailedTestSummary(test_result_id=i, name=f"t{i}", status="failed",
+                                  status_trace=trace if i == 2 else f"java.lang.AssertionError: {i}")
+             for i in (1, 2)}
+    cluster = FailureCluster(
+        cluster_id="c", label="x", signature=ClusterSignature(), member_test_ids=[1, 2],
+        member_count=2, representative_test_id=1,
+        examples=[ClusterExample(role="typical", test_result_id=1),
+                  ClusterExample(role="different", test_result_id=2)])
+    settings = Settings()
+    task = build_cluster_task_with_sources(
+        cluster=cluster, position=1, total=1, launch_id=1, answer_path="/a.md",
+        next_command="next", tests_by_id=tests, log_snippet=None, full_trace=None, frames=[],
+        hints=[], settings=settings)
+    shown, = [source.text for source in task.sources
+              if source.kind == "trace" and source.test_result_id == 2]
+    assert len(shown) <= settings.llm_prompt_trace_max_chars // 2
+    assert "but was: 0.00" in shown or "but was 0.00" in shown
+    assert "step1(" in shown or "step_1" in shown  # первый кадр проекта влез рядом
+
+
+def test_words_of_another_option_are_named_in_the_error() -> None:
+    errors = _errors("СОГЛАСОВАННОСТЬ: разные проблемы — у createOrder одна причина (пул БД), "
+                     "у createPromoOrder другая\n")
+    assert any("«одна причина» и «разные проблемы»" in error for error in errors), errors
+
+
+@pytest.mark.parametrize(("members", "rest_shown"), [(2, False), (3, True)])
+def test_rest_of_the_group_is_mentioned_only_when_it_exists(members: int, rest_shown: bool) -> None:
+    tests = {i: FailedTestSummary(test_result_id=i, name=f"t{i}", status="failed",
+                                  status_message=f"expected: <200> but was: <50{i}>")
+             for i in range(1, members + 1)}
+    cluster = FailureCluster(
+        cluster_id="c", label="x", signature=ClusterSignature(),
+        member_test_ids=list(tests), member_count=members, representative_test_id=1,
+        example_message=tests[1].status_message,
+        examples=[ClusterExample(role="typical", test_result_id=1),
+                  ClusterExample(role="different", test_result_id=2)])
+    task = build_cluster_task_with_sources(
+        cluster=cluster, position=1, total=1, launch_id=1, answer_path="/a.md",
+        next_command="next", tests_by_id=tests, log_snippet=None, full_trace=None, frames=[],
+        hints=[], settings=Settings()).text
+    assert "Примеров в данных: 2" in task
+    assert ("Данные остальных тестов группы в задание не вошли" in task) is rest_shown
 
 
 def _big_test(test_id: int, error: str) -> FailedTestSummary:

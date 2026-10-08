@@ -535,8 +535,12 @@ def consistency_errors(analysis: ClusterAnalysis) -> list[str]:
     if not analysis.consistency:
         return [f"в данных несколько примеров — добавь «СОГЛАСОВАННОСТЬ:» {options}"]
     if analysis.consistency_kind is None:
+        text = _one_line(analysis.consistency).lower()
+        found = [f"«{prefix}»" for prefix, _kind in _CONSISTENCY_KINDS if prefix in text]
+        hint = (f" (в строке есть {' и '.join(found)}: слова других вариантов не пиши и в "
+                "пояснении после «—»)" if len(found) > 1 else "")
         return [f"в «СОГЛАСОВАННОСТЬ:» выбери ровно один вариант, без перечисления и шаблонных "
-                f"заполнителей в <…>: {options}"]
+                f"заполнителей в <…>{hint}: {options}"]
     if analysis.consistency_kind == "different" and len(analysis.consistency_detail) < 10:
         return ["в «СОГЛАСОВАННОСТЬ: разные проблемы — …» после «—» назови, чем отличаются примеры"]
     return []

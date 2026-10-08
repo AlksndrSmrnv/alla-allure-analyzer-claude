@@ -83,8 +83,13 @@ def test_symptom_only_task_says_no_log_in_data_and_does_not_invent_it() -> None:
     assert "содержимое лога не выдумывай" in task
     assert "с учётом «Шага теста»" in task
     assert "первый шаг" not in task  # про лог в шагах говорить нечего
-    # Только код 5xx без лога: причина «приложение», а лог сервиса — в «НЕ ХВАТАЕТ».
-    assert "Код 5xx от сервера без лога приложения — «приложение»" in task
+    # Только код 5xx без лога: 500 — «приложение», а 502/503/504 отдаёт прокси или
+    # балансировщик — «окружение» (стенд E09: 503 без лога, эталон «окружение»).
+    text = " ".join(task.split())
+    assert "500 и другие 5xx — «приложение», а 502, 503 и 504 — «окружение»" in text
+    assert "и лог балансировщика" in text
+    # 503 отдаёт и сам сервер (RFC 9110 §15.6.4): источник ответа не утверждать (ревью Codex).
+    assert "не утверждай этого" in text and "их отдаёт прокси" not in text
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
@@ -111,6 +116,9 @@ def test_rules_keep_the_core_directives() -> None:
         "игнорировать нельзя", "важнее текста assertion",
         "Лог пуст или без ошибок", "«Шаг теста» — вспомогательный контекст",
         "Где искать код автотеста", "не больше 3 файлов", "Ничего не изменяй",
+        # Поиск начинался и при готовой подсказке (стенд Qwen: E07, E10 glob, A01 grep).
+        "Открывай только файлы из раздела", "ни glob, ни grep_search, ни командами shell",
+        "классы приложения из лога и трейса живут в его репозитории",
         "тесты и сборку не запускай", "Код мог измениться после прогона",
         "код расходится с трейсом", "что его поменяли, ты не знаешь",
     ):
@@ -157,6 +165,21 @@ def test_summary_task_keeps_unknown_causes_unknown() -> None:
     assert "своих версий причины" in text
     # E07: сводка выдала название шага «Выгрузить месячный отчёт» за результат.
     assert "не больше, чем сказано в разборе" in text and "название шага — не результат" in text
+
+
+def test_mixed_group_is_not_summarised_as_one_cause() -> None:
+    # E08 (стенд Qwen): «СОГЛАСОВАННОСТЬ» называла две ошибки, а ПРИЧИНА — одну (NPE), как
+    # и велело задание («ПРИЧИНУ пиши по первому примеру»); сводка начинала с «одна проблема».
+    from alla_skill_lib.cluster_task import build_task_text
+    from alla_skill_lib.report import SUMMARY_TASK
+    task = " ".join(build_task_text(has_symptom=True, has_log=True, low_evidence=False,
+                                    has_kb=False, examples=2).split())
+    assert "в ПРИЧИНЕ одной строкой назови причину каждого примера" in task
+    assert "не выдавай одну из них за причину всей группы" in task
+    assert "ПРИЧИНУ пиши по первому" not in task
+    summary = " ".join(SUMMARY_TASK.split())
+    assert "«СОГЛАСОВАННОСТЬ: разные проблемы» — не одна проблема" in summary
+    assert "не выдавай одну из них за причину всей проблемы" in summary
 
 
 def test_summary_task_names_a_known_issue_as_one_problem() -> None:
