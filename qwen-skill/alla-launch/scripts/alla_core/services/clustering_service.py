@@ -16,10 +16,10 @@
      сливается. Применяется ДО message/log, поэтому log override его не
      обходит. Если разделение оказалось ошибочным, пользователь сводит
      кластера через merge rules (`rule_kind="step"`).
-   - log gate: у обоих в логе (секции «файл») есть свои ошибки — блоки,
-     одинаковые в обоих логах (фоновые), сокращаются; у своих нет общего ключа
-     (корневой класс исключения, код ошибки) и TF-IDF похожесть (без кадров,
-     времени, ID, потоков и цифр) ниже `log_split_threshold` — пара не сливается. Одинаковый симптом с разными
+   - log gate: у обоих в логе (секции «файл») есть ошибки, общей ошибки нет
+     (ни одинакового блока, ни корневого класса исключения, ни кода) и TF-IDF
+     похожесть (без кадров, времени, ID, потоков и цифр) ниже
+     `log_split_threshold` — пара не сливается. Одинаковый симптом с разными
      ошибками сервиса (пул БД и NPE за одним 500) — разные проблемы.
 5. Итоговая similarity для пары:
    - если message есть у обоих и message similarity ниже порога:
@@ -101,8 +101,8 @@ class ClusteringConfig:
     # gates и НЕ обходится log override. Значение 0.0 фактически отключает
     # gate (sim < 0.0 невозможно), 1.0 — любое отличие шага режет пару.
     step_path_strict_threshold: float = 0.95
-    # Gate по логу (_LogErrorGate): свои ошибки логов пары (без одинаковых в обоих) без
-    # общего ключа (корневой класс, код) и похожи меньше порога — пара не сливается. 0.30 —
+    # Gate по логу (_LogErrorGate): у логов пары нет общей ошибки (блока, корневого класса,
+    # кода) и они похожи меньше порога — пара не сливается. 0.30 —
     # половина порога «логи одинаковые» (log override, 0.60): ниже лог разделяет, от 0.60
     # объединяет, между ними решают веса. Разные ошибки корпуса — не выше 0.16, одна ошибка
     # с шумом (потоки, строки, ID, посторонние ошибки) — от 0.46. 0.0 отключает gate.
@@ -360,16 +360,15 @@ def _compact_blocks(
 class _LogErrorGate:
     """Gate по логу: ошибки в логах двух падений явно разные.
 
-    Общий блок двух логов — либо фон (health-check, Kafka), либо сама ошибка падения; по
-    паре это не различить. Фоном считается блок, который есть и в логе падения с явно
-    другим симптомом (сообщения похожи меньше порога): с этим падением он не связан. Такие
-    общие блоки сокращаются, о различии судят «свои» блоки; остальные общие остаются и
-    держат пару вместе (общий ключ, похожесть). Нет своих блоков хотя бы у одного — его
-    ошибки есть и у другого, разделять нечем. Иначе пара разная, если у своих блоков нет
-    общего ключа и их TF-IDF похожесть ниже порога. В прогоне без падений с другим
-    симптомом фон не опознать — общая фоновая ошибка склеивает (осторожная сторона).
-    TF-IDF — по блокам, без обрезки словаря: у одинаковых документов, все слова которых
-    выпали бы из ``max_features``, cosine был бы 0, и gate разделил бы их.
+    Пара разная, только если у логов нет ни одного общего блока ошибки, ни общего ключа
+    (корневой класс, код), а TF-IDF похожесть их блоков ниже порога. Любая общая ошибка
+    держит пару вместе: общий фон (health-check, Kafka) и общая ошибка падения по паре
+    неотличимы, а «фоном» по прогону оказывается и причина с несколькими симптомами —
+    удаление общей ошибки дробило бы настоящую проблему. Цена: одинаковая фоновая ошибка
+    в обоих логах выключает gate для пары (различает модель по примерам).
+    TF-IDF — по блокам (вектор лога — сумма счётчиков его блоков, idf по логам прогона), без
+    обрезки словаря: у одинаковых документов, все слова которых выпали бы из
+    ``max_features``, cosine был бы 0, и gate разделил бы их.
     """
 
     def __init__(
@@ -377,10 +376,6 @@ class _LogErrorGate:
         blocks: list[tuple[_ErrorBlock, ...]],
         threshold: float,
         ngram_range: tuple[int, int],
-        *,
-        message_sim: np.ndarray,
-        has_message: list[bool],
-        message_threshold: float,
     ) -> None:
         self._threshold = threshold
         index: dict[_ErrorBlock, int] = {}
@@ -389,65 +384,37 @@ class _LogErrorGate:
                 index.setdefault(block, len(index))
         self._sets = [frozenset(index[block] for block in test_blocks)
                       for test_blocks in blocks]
-        self._keys = [block.keys for block in index]
-        self._background = self._find_background(message_sim, has_message, message_threshold)
-        self._counts: sparse.csr_matrix | None = None
-        self._full: np.ndarray | None = None
+        self._keys = [frozenset().union(*(block.keys for block in test_blocks))
+                      for test_blocks in blocks]
+        self._similarity: np.ndarray | None = None
         if not index:
             return
         vectorizer = CountVectorizer(token_pattern=_TOKEN_RE.pattern, ngram_range=ngram_range,
                                      lowercase=True)
         try:
-            self._counts = sparse.csr_matrix(vectorizer.fit_transform([b.text for b in index]))
+            counts = sparse.csr_matrix(vectorizer.fit_transform([b.text for b in index]))
         except ValueError:
             return
         rows = [row for row, members in enumerate(self._sets) for _ in members]
         columns = [column for members in self._sets for column in members]
         membership = sparse.csr_matrix(
             (np.ones(len(rows)), (rows, columns)), shape=(len(blocks), len(index)))
-        per_test = membership @ self._counts
+        per_test = membership @ counts
         documents = sum(1 for members in self._sets if members)
         frequency = np.asarray((per_test > 0).sum(axis=0)).ravel()
-        self._idf = np.log((1 + documents) / (1 + frequency)) + 1.0
-        vectors = normalize(sparse.csr_matrix(per_test.multiply(self._idf)))
-        self._full = np.asarray((vectors @ vectors.T).todense())
-
-    def _find_background(
-        self, message_sim: np.ndarray, has_message: list[bool], message_threshold: float,
-    ) -> frozenset[int]:
-        """Блоки, которые есть у падений с явно разными сообщениями: фон прогона."""
-        tests: dict[int, list[int]] = {}
-        for test, members in enumerate(self._sets):
-            if has_message[test]:
-                for block in members:
-                    tests.setdefault(block, []).append(test)
-        return frozenset(
-            block for block, owners in tests.items()
-            if len(owners) > 1
-            and float(message_sim[np.ix_(owners, owners)].min()) < message_threshold
-        )
-
-    def _vector(self, members: frozenset[int]) -> np.ndarray:
-        assert self._counts is not None
-        vector = np.asarray(self._counts[sorted(members)].sum(axis=0)).ravel() * self._idf
-        norm = float(np.linalg.norm(vector))
-        return vector / norm if norm else vector
+        idf = np.log((1 + documents) / (1 + frequency)) + 1.0
+        vectors = normalize(sparse.csr_matrix(per_test.multiply(idf)))
+        self._similarity = np.asarray((vectors @ vectors.T).todense())
 
     def differ(self, i: int, j: int) -> bool:
-        if self._full is None:
-            return False
         first, second = self._sets[i], self._sets[j]
-        common = first & second & self._background
-        own_first, own_second = first - common, second - common
-        if not own_first or not own_second:
-            return False
-        keys_first = frozenset().union(*(self._keys[block] for block in own_first))
-        keys_second = frozenset().union(*(self._keys[block] for block in own_second))
-        if keys_first & keys_second:
-            return False
-        similarity = (float(self._full[i, j]) if not common
-                      else float(self._vector(own_first) @ self._vector(own_second)))
-        return similarity < self._threshold
+        return (
+            self._similarity is not None
+            and bool(first) and bool(second)
+            and not first & second
+            and not self._keys[i] & self._keys[j]
+            and float(self._similarity[i, j]) < self._threshold
+        )
 
 
 def _get_failure_correlation(failure: FailedTestSummary) -> str | None:
@@ -649,12 +616,8 @@ class ClusteringService:
         log_gate: _LogErrorGate | None = None
         if (log_errors is not None and log_sim is not None
                 and self._config.log_split_threshold > 0):
-            log_gate = _LogErrorGate(
-                log_errors, self._config.log_split_threshold, self._config.tfidf_ngram_range,
-                message_sim=message_sim,
-                has_message=[bool(doc.strip()) for doc in message_documents],
-                message_threshold=self._config.similarity_threshold,
-            )
+            log_gate = _LogErrorGate(log_errors, self._config.log_split_threshold,
+                                     self._config.tfidf_ngram_range)
         step_sim: np.ndarray | None = None
         if step_documents:
             step_sim = self._pairwise_similarity(step_documents)
@@ -725,9 +688,8 @@ class ClusteringService:
                         final_min = 0.0
                     continue
 
-                # Gate по логу: свои ошибки логов (без общих для обоих) без общего ключа
-                # и почти не похожи — разные ошибки сервиса за одинаковым симптомом (пул БД
-                # и NPE за одним 500). Явный отказ от лога (ALLURE_LOGS_CLUSTERING_WEIGHT=0)
+                # Gate по логу: общей ошибки в логах нет и они почти не похожи — разные
+                # ошибки сервиса за одинаковым симптомом (пул БД и NPE за одним 500). Явный отказ от лога (ALLURE_LOGS_CLUSTERING_WEIGHT=0)
                 # выключает и его.
                 if log_gate is not None and log_gate.differ(i, j):
                     if collect_stats:

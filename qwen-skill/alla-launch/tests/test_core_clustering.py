@@ -1074,42 +1074,37 @@ KAFKA_BACKGROUND_LOG = (
 
 
 def _other_symptom(test_id: int, log: str) -> FailedTestSummary:
-    """Падение с явно другим симптомом: его ошибки в логе — свидетельство фона."""
+    """Та же ошибка сервиса за другим симптомом: клиент бросил исключение вместо 500."""
     return make_failed_test_summary(
-        test_result_id=test_id, status_message="Wishlist sync expected 3 items but was 0",
-        failed_step_path="Отправить запрос POST /orders",
-        log_snippet=make_error_log(
-            "2026-10-03 10:00:00 [ERROR] WishlistService: unknown visibility PRIVATE_LINK\n"
-            + log))
+        test_result_id=test_id,
+        status_message='HttpServerErrorException: 500 Internal Server Error: "merge failed"',
+        failed_step_path="Отправить запрос POST /orders", log_snippet=make_error_log(log))
 
 
-def test_log_gate_cancels_background_shared_by_both_logs() -> None:
-    """Ошибка Redis есть и у падения с другим симптомом — это фон: пул БД и NPE рядом с
-    ней остаются разными проблемами."""
-    failures = _orders(_log(POOL_LOG) + REDIS_BACKGROUND_LOG,
-                       _log(NPE_LOG) + REDIS_BACKGROUND_LOG,
-                       _log(NPE_LOG, order=77) + REDIS_BACKGROUND_LOG)
-    failures.append(_other_symptom(9, REDIS_BACKGROUND_LOG))
-    assert _groups(failures) == [[1], [2, 3], [9]]
-
-
-@pytest.mark.parametrize("with_background_evidence", [False, True])
-def test_log_gate_keeps_one_error_with_different_background(
-    with_background_evidence: bool,
-) -> None:
-    """Одна NPE в обоих логах, вокруг разный фон: общая ошибка падения не сокращается, даже
-    когда Redis и Kafka опознаны фоном прогона."""
+@pytest.mark.parametrize("third", [None, "same error, other symptom"])
+def test_log_gate_keeps_one_error_with_different_background(third: str | None) -> None:
+    """Одна NPE в обоих логах, вокруг разный фон: общая ошибка держит пару — и когда та же
+    NPE есть у падения с другим симптомом (причина с несколькими симптомами — не фон)."""
     failures = _orders(_log(NPE_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG) + KAFKA_BACKGROUND_LOG)
-    if with_background_evidence:
-        failures.append(_other_symptom(9, REDIS_BACKGROUND_LOG + KAFKA_BACKGROUND_LOG))
+    if third:
+        failures.append(_other_symptom(9, _log(NPE_LOG)))
     assert [1, 2] in _groups(failures)
 
 
-def test_log_gate_without_other_symptoms_keeps_a_shared_error() -> None:
-    """Других симптомов в прогоне нет — общую ошибку не отличить от фона, и пара остаётся
-    вместе (осторожная сторона: решает модель по примерам)."""
+def test_log_gate_shared_background_keeps_the_pair() -> None:
+    """Одинаковая фоновая ошибка в обоих логах неотличима от общей ошибки падения: пару не
+    делим (осторожная сторона, различает модель по примерам)."""
     failures = _orders(_log(POOL_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG) + REDIS_BACKGROUND_LOG)
-    assert _groups(failures) == [[1, 2]]
+    failures.append(_other_symptom(9, REDIS_BACKGROUND_LOG))
+    assert [1, 2] in _groups(failures)
+
+
+def test_log_gate_clean_log_separates_groups_despite_shared_background() -> None:
+    """Достаточно одной пары без общей ошибки: complete linkage не сводит пул БД с NPE,
+    у которой фона нет."""
+    failures = _orders(_log(POOL_LOG) + REDIS_BACKGROUND_LOG,
+                       _log(NPE_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG, order=77))
+    assert _groups(failures) == [[1], [2, 3]]
 
 
 def test_log_gate_keeps_a_log_whose_errors_are_all_in_the_other() -> None:

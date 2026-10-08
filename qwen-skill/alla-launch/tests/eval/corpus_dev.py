@@ -755,8 +755,10 @@ WISHLIST_LOG = (
 def background_log_errors() -> Case:
     """Фоновые ошибки (health check, Kafka) в логах рядом с настоящей ошибкой.
 
-    Одинаковая фоновая ошибка не делает пул БД и NPE одной проблемой, а разный фон не
-    дробит одну NPE. Фон — ошибка, которая есть и у падений с другим симптомом (wishlist).
+    Разный фон не дробит одну NPE — и когда та же NPE есть у падения с другим симптомом
+    (``basket-npe-direct``). Одинаковый фон у пула БД и NPE их склеивает: по паре общую
+    фоновую ошибку не отличить от общей ошибки падения, и gate выбирает не дробить
+    (различает модель по примерам).
     """
     builder = LaunchBuilder(5117, "Basket regression")
     message = "Basket merge expected status 200 but was 500"
@@ -780,6 +782,18 @@ def background_log_errors() -> Case:
             trace=_assert_trace(message, test_class, method, 30 + index * 8),
             step="Объединить корзины", log=log, log_name="basket.log", evidence=[evidence],
         )
+    # Та же NPE за другим симптомом: клиент бросил исключение вместо ответа 500.
+    direct = ('org.springframework.web.client.HttpServerErrorException$InternalServerError: '
+              '500 Internal Server Error: "guest basket merge failed"')
+    builder.add_failure(
+        "basket-npe-direct", cause="basket-guest-null", category="приложение",
+        name="mergeViaClient", full_name=f"{test_class}.mergeViaClient", message=direct,
+        trace=java_trace(direct, [
+            "org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:915)",
+            f"{test_class}.mergeViaClient(BasketApiTest.java:88)"]),
+        step="Объединить корзины", log=BASKET_NPE_LOG + KAFKA_REBALANCE_LOG,
+        log_name="basket.log", evidence=["because \"guest\" is null"], status="broken",
+    )
     wishlist = "Wishlist sync expected 3 items but was 0"
     for index, method in enumerate(("syncWishlist", "syncSharedWishlist")):
         builder.add_failure(
