@@ -137,6 +137,16 @@ def test_merged_cluster_shows_both_server_errors_and_needs_consistency(
      "AssertionError: 500 != 200\n",
      'Traceback (most recent call last):\n\tFile "/ci/tests/test_orders.py", line 12, in test_x\n'
      "AssertionError: 500 != 200"),
+    # AssertJ: expected/actual — на строках после исключения, до кадров (ревью Codex).
+    ("org.opentest4j.AssertionFailedError: \nexpected: 300.00\n but was: 0.00\n"
+     "\tat org.assertj.core.api.Assertions.assertThat(Assertions.java:10)\n"
+     "\tat ru.company.cart.CartTest.cartTotal(CartTest.java:33)\n",
+     "org.opentest4j.AssertionFailedError:\nexpected: 300.00\n but was: 0.00\n"
+     "\tat ru.company.cart.CartTest.cartTotal(CartTest.java:33)"),
+    ('Traceback (most recent call last):\n  File "/ci/tests/test_cart.py", line 3, in test_total\n'
+     "    assert total == 300\nAssertionError: assert 0 == 300\n +  where 0 = total()\n",
+     'Traceback (most recent call last):\n\tFile "/ci/tests/test_cart.py", line 3, in test_total\n'
+     "AssertionError: assert 0 == 300\n +  where 0 = total()"),
     ("", None),
 ])
 def test_short_trace_keeps_the_exception_and_project_frames(trace: str, expected: str | None) -> None:

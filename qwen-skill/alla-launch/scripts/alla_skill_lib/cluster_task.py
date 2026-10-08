@@ -222,17 +222,29 @@ def short_trace(trace: str | None) -> str | None:
     """Трейс без кадров JDK, фреймворков и библиотек: исключение, ``Caused by``, кадры проекта.
 
     Для примера, чей трейс не влезает в свою долю лимита: обрезка с начала оставляла
-    строку исключения и кадры JUnit, а кадр теста терялся. У Python-трейса строка
-    исключения последняя — она идёт в конце.
+    строку исключения и кадры JUnit, а кадр теста терялся. Сообщение исключения
+    сохраняется целиком — все строки до первого кадра (expected/actual у AssertJ бывают на
+    следующих строках, а другого сообщения у теста может не быть); не влезут кадры — их
+    отрежет лимит. У Python-трейса сообщение в конце, после кадров.
     """
     lines = [line.rstrip() for line in (trace or "").strip().splitlines() if line.strip()]
     if not lines:
         return None
-    frames = [line if _CAUSED_BY_RE.match(line) else f"\t{line}" for line in project_frames(trace)]
-    if frames and frames[0].strip() == lines[0].strip():
-        frames = frames[1:]
-    tail = [lines[-1]] if lines[0].startswith("Traceback") and len(lines) > 1 else []
-    return "\n".join([lines[0], *frames, *tail])
+    if lines[0].startswith("Traceback"):
+        # Сообщение — после последнего «File …» и строки его кода (она с отступом).
+        last = max((index for index, line in enumerate(lines) if _FRAME_RE.match(line)),
+                   default=0)
+        if last and last + 1 < len(lines) and lines[last + 1][:1].isspace():
+            last += 1
+        head, tail = lines[:1], lines[max(last + 1, 1):]
+    else:
+        first_frame = next((index for index, line in enumerate(lines)
+                            if _FRAME_RE.match(line) or _CAUSED_BY_RE.match(line)), len(lines))
+        head, tail = lines[:max(first_frame, 1)], []
+    shown = {line.strip() for line in head}
+    frames = [line if _CAUSED_BY_RE.match(line) else f"\t{line}"
+              for line in project_frames(trace) if line.strip() not in shown]
+    return "\n".join([*head, *frames, *tail])
 
 
 # Файловая позиция кадра: «(OrderTest.java:6)», «(/app/orders.ts:12:3)» или
