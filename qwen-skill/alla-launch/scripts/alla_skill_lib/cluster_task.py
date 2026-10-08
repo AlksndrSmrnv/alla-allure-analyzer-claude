@@ -211,6 +211,23 @@ def project_frames(trace: str | None, limit: int = MAX_FRAME_LINES) -> list[str]
     return deduped
 
 
+def short_trace(trace: str | None) -> str | None:
+    """Трейс без кадров JDK, фреймворков и библиотек: исключение, ``Caused by``, кадры проекта.
+
+    Для примера, чей трейс не влезает в свою долю лимита: обрезка с начала оставляла
+    строку исключения и кадры JUnit, а кадр теста терялся. У Python-трейса строка
+    исключения последняя — она идёт в конце.
+    """
+    lines = [line.rstrip() for line in (trace or "").strip().splitlines() if line.strip()]
+    if not lines:
+        return None
+    frames = [line if _CAUSED_BY_RE.match(line) else f"\t{line}" for line in project_frames(trace)]
+    if frames and frames[0].strip() == lines[0].strip():
+        frames = frames[1:]
+    tail = [lines[-1]] if lines[0].startswith("Traceback") and len(lines) > 1 else []
+    return "\n".join([lines[0], *frames, *tail])
+
+
 # Файловая позиция кадра: «(OrderTest.java:6)», «(/app/orders.ts:12:3)» или
 # «File "x.py", line 12». «(Unknown Source)» и «(Native Method)» — без файла.
 # В пути могут быть пробелы: «(/ci/tests/My Orders.spec.ts:12:3)»; кадр JS без имени
@@ -401,7 +418,7 @@ def _examples_task(
         prompt_examples.append(PromptExample(
             role=EXAMPLE_ROLES.get(role, role), test_result_id=test.test_result_id,
             test_name=test.name, step=test.failed_step_path, message=test.status_message,
-            trace=test.status_trace, log=log,
+            trace=test.status_trace, log=log, short_trace=short_trace(test.status_trace),
         ))
     prompt = build_cluster_examples_prompt(
         cluster, prompt_examples,

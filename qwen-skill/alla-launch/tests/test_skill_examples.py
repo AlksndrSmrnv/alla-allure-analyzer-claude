@@ -13,7 +13,11 @@ from alla_core.config import Settings
 from alla_core.models.clustering import ClusterExample, ClusterSignature, FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib.analysis_format import parse_analysis, validate_analysis
-from alla_skill_lib.cluster_task import build_cluster_task_with_sources, build_task_text
+from alla_skill_lib.cluster_task import (
+    build_cluster_task_with_sources,
+    build_task_text,
+    short_trace,
+)
 from eval.cassette import replay
 from eval.corpus_dev import same_assertion_db_vs_npe
 
@@ -95,6 +99,10 @@ def test_merged_cluster_shows_both_server_errors_and_needs_consistency(
     sources = json.loads((run_dir / "evidence" / "01.sources.json").read_text("utf-8"))
     tests = {record["test_result_id"] for record in sources.values()}
     assert tests == {example["test_result_id"] for example in entry["examples"]}
+    # Трейс не влезает в долю примера (200 символов): кадры JUnit выпали, кадр теста остался.
+    traces = [record["text"] for record in sources.values() if record["kind"] == "trace"]
+    assert traces and all("ru.company.orders.OrderApiTest." in text for text in traces)
+    assert not any("org.junit" in text for text in traces)
 
     log_ids = [key for key, record in sources.items() if record["kind"] == "log"]
     quotes = [sources[key]["text"].splitlines()[1][:60] for key in log_ids]
@@ -113,6 +121,26 @@ def test_merged_cluster_shows_both_server_errors_and_needs_consistency(
         consistency="СОГЛАСОВАННОСТЬ: разные проблемы — у одного теста пул БД, у другого NPE.\n"),
         encoding="utf-8")
     assert _next(run_dir, capsys).startswith("STATUS: summary")
+
+
+@pytest.mark.parametrize(("trace", "expected"), [
+    ("java.lang.AssertionError: expected: <200> but was: <500>\n"
+     "\tat org.junit.Assert.fail(Assert.java:89)\n"
+     "\tat ru.company.orders.OrderApiTest.createOrder(OrderApiTest.java:40)\n"
+     "Caused by: java.io.IOException: closed\n"
+     "\tat java.base/java.io.FileInputStream.read(FileInputStream.java:10)\n",
+     "java.lang.AssertionError: expected: <200> but was: <500>\n"
+     "\tat ru.company.orders.OrderApiTest.createOrder(OrderApiTest.java:40)\n"
+     "Caused by: java.io.IOException: closed"),
+    ('Traceback (most recent call last):\n  File "/ci/tests/test_orders.py", line 12, in test_x\n'
+     '  File "/usr/lib/python3.11/site-packages/requests/api.py", line 5, in get\n'
+     "AssertionError: 500 != 200\n",
+     'Traceback (most recent call last):\n\tFile "/ci/tests/test_orders.py", line 12, in test_x\n'
+     "AssertionError: 500 != 200"),
+    ("", None),
+])
+def test_short_trace_keeps_the_exception_and_project_frames(trace: str, expected: str | None) -> None:
+    assert short_trace(trace) == expected
 
 
 def _big_test(test_id: int, error: str) -> FailedTestSummary:
