@@ -12,10 +12,13 @@ from skill_fixtures import without_libmagic  # noqa: F401
 from alla_core.models.testops import AttachmentMeta, FailedTestSummary
 from alla_core.services.attachment_handlers import AttachmentContext, StructuredErrorLogHandler
 from alla_core.services.log_extraction_service import LogExtractionConfig, LogExtractionService
+from alla_core.utils.message_resources import message_resources
 from alla_skill_lib.signature import (
     SIGNATURE_VERSION,
     cluster_signature,
     is_generic_assertion,
+    is_symptom_exception,
+    log_names_cause,
     signature_material,
 )
 from eval.corpus_dev import ASSERT_500, CATALOG_NPE_LOG, PAYMENT_POOL_LOG, _assert_trace
@@ -56,7 +59,7 @@ def _pool_log(time: str, thread: str, request: str, order: int) -> str:
 
 def test_signature_has_the_current_version() -> None:
     assert str(_signature(ASSERT_500, ASSERT_TRACE, "")).startswith(f"v{SIGNATURE_VERSION}:")
-    assert SIGNATURE_VERSION == 7
+    assert SIGNATURE_VERSION == 8
 
 
 def test_same_generic_assertion_with_different_log_errors_differs() -> None:
@@ -230,16 +233,107 @@ def test_error_record_survives_the_log_selection_of_a_big_journal() -> None:
     assert pool != signature("email gateway unreachable")[0]
 
 
-@pytest.mark.parametrize(("message", "trace"), [
+NAMES_THE_CAUSE = [
     (ASSERT_500, CAUSED_TRACE),
+    ("missing order", "java.lang.IllegalStateException: missing order\n\tat a.B.c(B.java:1)"),
+    ("customer is null",
+     "java.lang.NullPointerException: customer is null\n\tat ru.company.OrderTest.create(OrderTest.java:7)"),
+    ("Connection refused: billing-service:8443",
+     "java.net.ConnectException: Connection refused: billing-service:8443\n"
+     "\tat java.base/sun.nio.ch.Net.connect0(Native Method)"),
+    # Ожидание в UI — не симптом: его различает локатор.
+    ("Expected condition failed: waiting for visibility of element located by By.id: pay",
+     "org.openqa.selenium.TimeoutException: Expected condition failed: waiting for visibility "
+     "of element located by By.id: pay\n\tat ru.company.ui.PayPage.open(PayPage.java:12)"),
+    # Корень решает: таймаут, обёрнутый причиной, которая называет себя.
+    ("Export job 9 failed",
+     "com.example.export.ExportException: Export job 9 failed\n\tat a.B.c(B.java:1)\n"
+     "Caused by: java.net.SocketTimeoutException: Read timed out\n\tat a.B.d(B.java:2)\n"
+     "Caused by: java.io.IOException: No space left on device\n\t... 3 more"),
+]
+SYMPTOMS = [
     (TIMEOUT, TIMEOUT_TRACE),
-])
+    ("I/O error on GET request for \"http://reports/api\": Read timed out",
+     "org.springframework.web.client.ResourceAccessException: I/O error on GET request for "
+     "\"http://reports/api\": Read timed out\n\tat a.B.c(B.java:1)\n"
+     "Caused by: java.net.SocketTimeoutException: Read timed out\n\t... 12 more"),
+    ("java.net.SocketException: Connection reset",
+     "java.net.SocketException: Connection reset\n\tat java.base/sun.nio.ch.NioSocketImpl.implRead"
+     "(NioSocketImpl.java:323)"),
+    ("", "java.net.http.HttpTimeoutException: request timed out\n\tat a.B.c(B.java:1)"),
+    ("", 'Traceback (most recent call last):\n  File "t.py", line 3, in test\n'
+         "    resp = client.get('/reports')\nrequests.exceptions.ReadTimeout: "
+         "HTTPConnectionPool(host='reports', port=80): Read timed out. (read timeout=5)"),
+    ("", "    def test_report(client):\n>       client.get('/reports')\n"
+         "E       socket.timeout: timed out\n\ntests/test_report.py:4: timeout"),
+    ("", 'Traceback (most recent call last):\n  File "t.py", line 3, in test\n'
+         "    sock.recv(1024)\nConnectionResetError: [Errno 104] Connection reset by peer"),
+]
+
+
+@pytest.mark.parametrize(("message", "trace"), NAMES_THE_CAUSE)
 def test_error_that_names_the_cause_keeps_the_log_out(message: str, trace: str) -> None:
     pool = _signature(message, trace, PAYMENT_POOL_LOG)
 
     assert pool == _signature(message, trace, CATALOG_NPE_LOG) == _signature(message, trace, "")
     material = _material(message, trace, PAYMENT_POOL_LOG)
-    assert material is not None and material.startswith("message+trace\n")
+    assert material is not None and "+log\n" not in material
+    assert not log_names_cause(message, trace)
+
+
+@pytest.mark.parametrize(("message", "trace"), SYMPTOMS)
+def test_symptom_exception_takes_the_log_errors(message: str, trace: str) -> None:
+    """Голый таймаут или обрыв причину не называет: у nginx и у медленного запроса один и
+    тот же ``SocketTimeoutException`` (эталон ``timeouts_two_causes``)."""
+    assert is_symptom_exception(trace) and log_names_cause(message, trace)
+    pool = _signature(message, trace, PAYMENT_POOL_LOG)
+
+    assert pool != _signature(message, trace, CATALOG_NPE_LOG)
+    assert _signature(message, trace, INFO_LOG) == _signature(message, trace, "")
+    material = _material(message, trace, PAYMENT_POOL_LOG)
+    assert material is not None and material.splitlines()[0].endswith("+log")
+
+
+def test_shared_background_does_not_make_different_errors_one_signature() -> None:
+    background = ("2026-10-03 10:00:00 [ERROR] HealthCheck: redis ping failed\n"
+                  "redis.clients.jedis.exceptions.JedisConnectionException: Read timed out\n")
+    for message, trace in ((TIMEOUT, TIMEOUT_TRACE), (ASSERT_500, ASSERT_TRACE)):
+        assert (_signature(message, trace, background + PAYMENT_POOL_LOG)
+                != _signature(message, trace, background + CATALOG_NPE_LOG))
+
+
+LONG_CONNECT = ("I/O error on POST request for the orders service: Failed to connect to "
+                "localhost/127.0.0.1:{port} after three retries")
+SELENIDE = "Element not found {{{locator}}}\nExpected: visible\nTimeout: 4 s."
+RESOURCE_PAIRS = [
+    (LONG_CONNECT.format(port=8080), LONG_CONNECT.format(port=5432)),
+    (SELENIDE.format(locator="#Login"), SELENIDE.format(locator="#login")),
+    ("Connection refused: auth-service:8080", "Connection refused: billing-service:8443"),
+    ("Connection refused: 10.0.0.5:8080", "Connection refused: 10.0.0.6:8080"),
+    ("TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n"
+     "  - waiting for locator('#promo-banner')",
+     "TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n"
+     "  - waiting for locator('#gift-wrap-toggle')"),
+]
+
+
+@pytest.mark.parametrize(("first", "second"), RESOURCE_PAIRS)
+def test_resources_that_split_clusters_split_signatures(first: str, second: str) -> None:
+    """Что разделяет gate по ресурсам, разделяет и сигнатура: порт длинного сообщения
+    нормализация сводит к ``<NUM>``, регистр локатора — к нижнему. Разный IP gate не делит."""
+    def signature(message: str) -> str | None:
+        trace = f"java.lang.RuntimeException: {message.splitlines()[0]}\n\tat a.B.c(B.java:1)"
+        return _signature(message, trace, "")
+
+    differ = message_resources(first).differ(message_resources(second))
+    assert differ == (signature(first) != signature(second))
+
+
+def test_resources_are_a_part_of_the_material() -> None:
+    material = _material(SELENIDE.format(locator="#Login"), "", "")
+
+    assert material is not None and material.splitlines()[0] == "message+resources"
+    assert material.splitlines()[-1] == "locator:#Login"
 
 
 def test_without_trace_the_log_is_the_material() -> None:

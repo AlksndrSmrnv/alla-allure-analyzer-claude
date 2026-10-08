@@ -117,8 +117,9 @@ python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['clus
   `known_issue_symptoms` — строка пула есть у всех трёх симптомов (3/3), «чужой» 0:
   посторонняя проблема с тем же assertion `expected: <200> but was: <500>` (NPE каталога)
   получает другую сигнатуру — у общего ассерта в сигнатуру входят строки-ошибки лога
-  (сигнатура v7). До v7 лог при трейсе не входил, и подтверждённая сигнатура совпадала с ней
-  точно («чужой» 1).
+  (с v7). До v7 лог при трейсе не входил, и подтверждённая сигнатура совпадала с ней
+  точно («чужой» 1). Метрика строится только для причин с несколькими группами; две
+  разные причины с одной сигнатурой ловит `signature_shared_wrong` («Сигнатуры»).
 
 - **сигнатуры** — у всех сценариев, см. «Сигнатуры» ниже.
 
@@ -188,10 +189,11 @@ python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['clus
 - `signature_log_unstable / signature_log_clusters` — цена лога в сигнатуре: так между
   прогонами одной проблемы меняется лог (фон, посторонние ошибки), и точное узнавание
   пропадает (остаётся `error_example`). Только информирует, направления «хуже» нет.
-- Корпус (`--details`): `timeouts_two_causes` — `signature_shared` 1, у разных проблем 1
-  (голый `SocketTimeoutException`, причины только в логах; сигнатура v7); меняются с логом
-  участника `same_assertion_two_npes` 1 из 1, `log_noise_one_problem` 2 из 2,
-  `background_log_errors` 2 из 2 (общий ассерт: лог в сигнатуре), `big_launch` 0 из 40.
+- Корпус (`--details`): `signature_shared` 0 везде. В v7 у `timeouts_two_causes` был 1, у
+  разных проблем 1: голый `SocketTimeoutException`, причины только в логах. С v8 лог входит
+  и при исключении-симптоме. Меняются с логом участника `same_assertion_two_npes` 1 из 1,
+  `log_noise_one_problem` 2 из 2, `background_log_errors` 2 из 2 (общий ассерт: лог в
+  сигнатуре), `big_launch` 0 из 40.
 
 ## Корпус: dev и holdout
 

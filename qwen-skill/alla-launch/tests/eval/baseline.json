@@ -661,8 +661,8 @@
       "recall": 1.0,
       "signature_log_clusters": 0,
       "signature_log_unstable": 0,
-      "signature_shared": 1,
-      "signature_shared_wrong": 1,
+      "signature_shared": 0,
+      "signature_shared_wrong": 0,
       "tests": 4
     }
   },
