@@ -645,6 +645,55 @@ def retries() -> Case:
     return builder.build("retries")
 
 
+def retries_by_context() -> Case:
+    """Повторы без ``historyId``/``historyKey``: ключ — ``testCaseId`` + параметры + окружение.
+
+    У попытки ``renewOnStage2`` отличается только окружение — это не повтор финального
+    результата (в ``retries`` при смене стенда меняется и ``historyId``, поэтому окружение
+    там не проверяется).
+    """
+    builder = LaunchBuilder(5118, "Subscriptions")
+    test_class = "ru.company.subscriptions.SubscriptionTest"
+
+    def extra(case_id: int, plan: str = "monthly", stand: str = "stage-1") -> dict[str, object]:
+        return {"testCaseId": case_id, "parameters": [{"name": "plan", "value": plan}],
+                "environment": [{"name": "stand", "value": stand}]}
+
+    def failure(group: str, cause: str, name: str, message: str, step: str,
+                fields: dict[str, object]) -> int:
+        method = name.split("[", 1)[0]
+        return builder.add_failure(
+            group, cause=cause, category="приложение", name=name,
+            full_name=f"{test_class}.{method}", message=message,
+            trace=_assert_trace(message, test_class, method, 40), step=step,
+            evidence=[message], extra=fields,
+        )
+
+    # тот же контекст: попытка связана, ошибка та же
+    renew = "Subscription renewal expected ACTIVE but was GRACE"
+    attempt = builder.add_result(name="renewMonthly", status="failed", message=renew,
+                                 hidden=True, extra=extra(701))
+    final = failure("ctx-same", "renewal-grace-period", "renewMonthly", renew,
+                    "Продлить подписку", extra(701))
+    builder.expect_attempts(final, [(attempt, True)])
+    # отличается только окружение: попытка другого стенда — не повтор
+    invoice = "Invoice for subscription expected 1 line but was 2"
+    builder.add_result(name="renewOnStage2", status="failed", message=invoice, hidden=True,
+                       extra=extra(702, stand="stage-1"))
+    final = failure("ctx-env", "invoice-duplicate-line", "renewOnStage2", invoice,
+                    "Выставить счёт", extra(702, stand="stage-2"))
+    builder.expect_attempts(final, [])
+    # один testCaseId, разные параметры: у каждого финального — своя попытка
+    downgrade = "Downgrade price expected 299.00 but was 0.00"
+    for plan in ("monthly", "yearly"):
+        attempt = builder.add_result(name=f"downgrade[{plan}]", status="failed",
+                                     message=downgrade, hidden=True, extra=extra(703, plan))
+        final = failure("ctx-param", "downgrade-price-zero", f"downgrade[{plan}]", downgrade,
+                        "Понизить тариф", extra(703, plan))
+        builder.expect_attempts(final, [(attempt, True)])
+    return builder.build("retries_by_context")
+
+
 # ---------------------------------------------------------------------------
 # Шум в логах одной проблемы
 # ---------------------------------------------------------------------------
@@ -1144,6 +1193,7 @@ CASES: dict[str, Callable[[], Case]] = {
     "auth_down_symptoms": auth_down_symptoms,
     "known_issue_symptoms": known_issue_symptoms,
     "retries": retries,
+    "retries_by_context": retries_by_context,
     "same_assertion_two_npes": same_assertion_two_npes,
     "log_noise_one_problem": log_noise_one_problem,
     "background_log_errors": background_log_errors,
