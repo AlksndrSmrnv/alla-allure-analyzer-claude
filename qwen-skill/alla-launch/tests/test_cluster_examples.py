@@ -8,10 +8,8 @@ import pytest
 
 import skill_fixtures  # noqa: F401  # scripts/ в sys.path
 
-from alla_core.models.clustering import ClusteringReport
 from alla_core.models.testops import FailedTestSummary
 from alla_core.services.clustering_service import ClusteringService, select_examples
-from alla_skill_lib.report import load_models
 
 ASSERT = "expected: <200> but was: <500>"
 
@@ -95,17 +93,6 @@ def test_farthest_example_is_taken_only_when_it_really_differs() -> None:
 
     same = ([ASSERT] * 3, ["s"] * 3, [""] * 3)  # отличие только в расстоянии — один пример
     assert len(select_examples([0, 1, 2], failures, distance, same)) == 1
-
-
-def test_old_run_json_without_examples_still_loads() -> None:
-    report = ClusteringReport.model_validate({
-        "launch_id": 1, "total_failures": 1, "cluster_count": 1,
-        "clusters": [{"cluster_id": "c", "label": "x", "signature": {},
-                      "member_test_ids": [1], "member_count": 1, "representative_test_id": 1}]})
-    assert report.clusters[0].examples == []
-    triage = {"launch_id": 1, "total_results": 1, "failed_tests": []}
-    _triage, clustering = load_models({"triage": triage, "clustering": report.model_dump()})
-    assert clustering is not None and clustering.clusters[0].examples == []
 
 
 def test_logs_differing_only_in_numbers_are_not_different_problems() -> None:

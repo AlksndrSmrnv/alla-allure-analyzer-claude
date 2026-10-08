@@ -1102,7 +1102,8 @@ def test_identical_methods_are_confirmed_only_at_the_recorded_line(tmp_path: Pat
     assert not is_applied(proposal, tmp_path, files)
 
 
-def test_old_format_mark_confirms_only_the_exact_recorded_line(tmp_path: Path) -> None:
+def test_incomplete_mark_is_ignored_and_state_comes_from_the_file(tmp_path: Path) -> None:
+    """Отметка без хэшей и копии — не отметка (``_load_record``): состояние по СТАЛО у строки."""
     target = tmp_path / "T.java"
     target.write_text(TWO_METHODS, encoding="utf-8")
     files = _files(tmp_path)
