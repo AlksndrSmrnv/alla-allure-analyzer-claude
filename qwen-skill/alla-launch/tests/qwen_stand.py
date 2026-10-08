@@ -660,6 +660,36 @@ def path_of(call: ToolCall) -> str:
     return ""
 
 
+GLOB_CHARS = frozenset("*?[{")
+
+
+def read_args(call: ToolCall) -> tuple[list[str], list[str]]:
+    """(пути, шаблоны) чтения. У ``read_many_files`` путей нет в ``path``: они в ``paths``
+    и ``include`` (пути и glob-шаблоны от корня проекта), их ``path_of`` не видит."""
+    if call.name != "read_many_files":
+        raw = path_of(call)
+        return ([raw] if raw else []), []
+    values: list[str] = []
+    for key in ("paths", "include"):
+        given = call.input.get(key) or []
+        for value in [given] if isinstance(given, str) else given:
+            value = _QWEN_UNESCAPE_RE.sub(r"\1", js_trim(str(value)))
+            if value:
+                values.append(value)
+    return ([v for v in values if not GLOB_CHARS & set(v)],
+            [v for v in values if GLOB_CHARS & set(v)])
+
+
+def glob_base(pattern: str) -> str:
+    """Каталог, с которого начинается glob-шаблон: «src/**/*.java» → «src»."""
+    parts = []
+    for part in pattern.split("/"):
+        if GLOB_CHARS & set(part):
+            break
+        parts.append(part)
+    return "/".join(parts) or "."
+
+
 def node_normalize(value: str) -> str:
     """path.posix.normalize из Node: «..» сокращаются лексически, до симлинков."""
     if not value:
@@ -1113,7 +1143,7 @@ def check_shell_only_skill_commands(ctx: Context) -> dict[str, Any]:
 SEARCHABLE_RUN_DIRS = {"clusters", "analyses", "proposals", "feedback", "batches"}
 
 
-def search_scope_problem(call: ToolCall, ctx: Context) -> str | None:
+def search_scope_problem(call: ToolCall, ctx: Context, raw: str | None = None) -> str | None:
     """Почему область ``grep_search`` недопустима, или None.
 
     Судим по области, а не по совпадениям: в trace у поиска только счётчик, а повтор
@@ -1123,7 +1153,7 @@ def search_scope_problem(call: ToolCall, ctx: Context) -> str | None:
     """
     project = canonical(ctx.project)
     reports = project / "alla-reports"
-    for base in ctx.tool_targets(project, path_of(call) or str(project)):
+    for base in ctx.tool_targets(project, raw or path_of(call) or str(project)):
         if not base.is_relative_to(project):
             return f"поиск вне проекта: {base}"
         for protected in (project / SKILL_IN_PROJECT / ".env", reports):
@@ -1147,16 +1177,25 @@ def check_allowed_reads(ctx: Context) -> dict[str, Any]:
             if problem:
                 return bad(at(call, problem))
             continue
-        if call.name not in READ_TOOLS or not path_of(call):
+        if call.name not in READ_TOOLS:
             continue
-        for path in ctx.tool_targets(project, path_of(call)):
-            if not path.exists():
-                missing.append(at(call, f"нет такого пути: {path}"))
-                continue
-            if not path.is_relative_to(project):
-                return bad(at(call, f"вне проекта: {path}"))
-            if FORBIDDEN_READ_RE.search(path.as_posix()):
-                return bad(at(call, f"запрещённый файл: {path}"))
+        paths, patterns = read_args(call)
+        for raw in [*patterns, *(path for path in paths
+                                 if call.name == "read_many_files"
+                                 and any(t.is_dir() for t in ctx.tool_targets(project, path)))]:
+            # read_many_files по шаблону или каталогу — поиск: судим по области.
+            problem = search_scope_problem(call, ctx, glob_base(raw))
+            if problem:
+                return bad(at(call, problem))
+        for raw in paths:
+            for path in ctx.tool_targets(project, raw):
+                if not path.exists():
+                    missing.append(at(call, f"нет такого пути: {path}"))
+                    continue
+                if not path.is_relative_to(project):
+                    return bad(at(call, f"вне проекта: {path}"))
+                if FORBIDDEN_READ_RE.search(path.as_posix()):
+                    return bad(at(call, f"запрещённый файл: {path}"))
     return ok("; ".join(missing))
 
 
@@ -1172,12 +1211,20 @@ def check_no_code_search(ctx: Context) -> dict[str, Any]:
     project = canonical(ctx.project)
     reports = project / "alla-reports"
     for call in ctx.trace.calls:
-        if call.name not in SEARCH_TOOLS:
+        if call.name in SEARCH_TOOLS:
+            scopes = [(path_of(call) or str(project), str(call.input.get("pattern", "")))]
+        elif call.name == "read_many_files":
+            # read_many_files по шаблону («src/**/*.java») или каталогу — тот же поиск.
+            paths, patterns = read_args(call)
+            scopes = [(glob_base(raw), raw) for raw in patterns] + [
+                (raw, raw) for raw in paths
+                if any(t.is_dir() for t in ctx.tool_targets(project, raw))]
+        else:
             continue
-        for base in ctx.tool_targets(project, path_of(call) or str(project)):
-            if not base.is_relative_to(reports):
-                pattern = call.input.get("pattern", "")
-                return bad(at(call, f"поиск {call.name} «{pattern}» в {base}"))
+        for raw, pattern in scopes:
+            for base in ctx.tool_targets(project, raw):
+                if not base.is_relative_to(reports):
+                    return bad(at(call, f"поиск {call.name} «{pattern}» в {base}"))
     return ok()
 
 
@@ -1207,9 +1254,13 @@ def check_listed_code_only(ctx: Context) -> dict[str, Any]:
     listed = listed_code(ctx)
     opened = []
     for call in ctx.trace.calls:
-        if call.name not in {"read_file", "read_many_files"} or not path_of(call):
+        if call.name not in {"read_file", "read_many_files"}:
             continue
-        for path in ctx.tool_targets(project, path_of(call)):
+        paths, patterns = read_args(call)
+        # Шаблон не перечислен в задании никогда; судим по каталогу, с которого он начинается.
+        targets = [target for raw in [*paths, *(glob_base(raw) for raw in patterns)]
+                   for target in ctx.tool_targets(project, raw)]
+        for path in targets:
             if not path.is_relative_to(project):
                 continue  # вне проекта — дело allowed_reads
             if path.relative_to(project).parts[:1] in {(name,) for name in NOT_PROJECT_CODE}:

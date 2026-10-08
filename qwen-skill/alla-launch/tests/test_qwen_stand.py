@@ -196,6 +196,44 @@ def test_only_listed_code_files_are_opened(tmp_path: Path, path: str, status: st
     assert CHECKS["listed_code_only"](ctx)["status"] == status
 
 
+@pytest.mark.parametrize(("arguments", "check"), [
+    # read_many_files: пути в «paths» и «include», а не в «path» (ревью Codex).
+    ({"paths": ["src/**/*.java"]}, "no_code_search"),
+    ({"paths": ["src/test"]}, "no_code_search"),
+    ({"paths": ["alla-reports/run-1/clusters/01.md"], "include": ["src/**/*.java"]},
+     "no_code_search"),
+    ({"paths": ["src/test/java/ru/company/orders/OrderService.java"]}, "listed_code_only"),
+    ({"paths": ["**/*.java"]}, "listed_code_only"),
+    ({"paths": [".qwen/skills/alla-launch/.env"]}, "allowed_reads"),
+    ({"paths": [".qwen/skills/alla-launch/*"]}, "allowed_reads"),
+])
+def test_read_many_files_arguments_are_checked(tmp_path: Path, arguments: dict[str, Any],
+                                               check: str) -> None:
+    ctx = context(tmp_path, events(("read_many_files", arguments, "")))
+    for name in ("src/test/java/ru/company/orders/OrderService.java",
+                 ".qwen/skills/alla-launch/.env", "alla-reports/run-1/clusters/01.md"):
+        (ctx.project / name).parent.mkdir(parents=True, exist_ok=True)
+        (ctx.project / name).write_text("x")
+    (ctx.project / "alla-reports" / "run-1" / "run.json").write_text("{}")
+    result = CHECKS[check](ctx)
+    assert result["status"] == "fail" and "вызов 0" in result["evidence"], result
+
+
+def test_read_many_files_of_listed_and_run_files_passes(tmp_path: Path) -> None:
+    ctx = context(tmp_path, events(("read_many_files", {"paths": [
+        "src/test/java/ru/company/orders/OrderTest.java", "alla-reports/run-1/clusters/01.md"]}, "")))
+    run = ctx.project / "alla-reports" / "run-1"
+    (run / "clusters").mkdir(parents=True)
+    (run / "run.json").write_text("{}")
+    (run / "clusters" / "01.md").write_text(
+        "--- Где искать код автотеста (пути от корня проекта) ---\n"
+        "- src/test/java/ru/company/orders/OrderTest.java:5 — код теста (по full_name)\n")
+    (ctx.project / "src/test/java/ru/company/orders").mkdir(parents=True)
+    (ctx.project / "src/test/java/ru/company/orders/OrderTest.java").write_text("x")
+    for name in ("listed_code_only", "no_code_search", "allowed_reads"):
+        assert CHECKS[name](ctx)["status"] == "pass", name
+
+
 def test_read_of_missing_path_is_noted_not_failed(tmp_path: Path) -> None:
     ctx = context(tmp_path, events(("read_file", {"file_path": "/nonexistent/typo.md"}, "")))
     result = CHECKS["allowed_reads"](ctx)
