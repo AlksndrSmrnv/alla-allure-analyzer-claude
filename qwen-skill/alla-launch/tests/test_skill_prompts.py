@@ -88,6 +88,8 @@ def test_symptom_only_task_says_no_log_in_data_and_does_not_invent_it() -> None:
     text = " ".join(task.split())
     assert "500 и другие 5xx — «приложение», а 502, 503 и 504 — «окружение»" in text
     assert "и лог балансировщика" in text
+    # 503 отдаёт и сам сервер (RFC 9110 §15.6.4): источник ответа не утверждать (ревью Codex).
+    assert "не утверждай этого" in text and "их отдаёт прокси" not in text
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
