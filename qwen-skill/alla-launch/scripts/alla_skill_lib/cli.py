@@ -53,7 +53,6 @@ from alla_skill_lib.agent_rules import (
 )
 from alla_skill_lib.analysis_format import (
     EXPECTED_FORMAT,
-    TASK_FORMAT,
     ClusterAnalysis,
     parse_analysis,
     parse_summary,
@@ -107,9 +106,8 @@ from alla_skill_lib.report import (
 from alla_skill_lib.sources import (
     check_entry_analysis,
     example_blocks,
-    expected_format,
+    observed,
     registry,
-    task_format,
     write_registry,
 )
 
@@ -533,8 +531,6 @@ def _write_run(
             "kb": [],
             "history": None,
         }
-        if not auto:
-            entry["task_format"] = TASK_FORMAT  # наблюдения с цитатами из реестра источников
         entries.append(entry)
         if auto:
             ws.write_text(paths.analysis(file_id), no_evidence_analysis())
@@ -591,7 +587,6 @@ def _write_run(
             entry.update(
                 auto=True, signature=None, fingerprint="", kb=[], history=None
             )
-            entry.pop("task_format", None)
             paths.evidence(file_id).unlink(missing_ok=True)
             paths.sources(file_id).unlink(missing_ok=True)
             paths.cluster_task(file_id).unlink(missing_ok=True)
@@ -787,7 +782,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     summary_hash = hashlib.sha256(summary_data.encode("utf-8")).hexdigest()
     previous_hash = state.get("summary_data_hash")
     summary = ws.read_text(paths.summary) if paths.summary.is_file() else ""
-    if previous_hash is not None and previous_hash != summary_hash:
+    if previous_hash != summary_hash:  # сводка не к этим данным (или без отметки) — заново
         paths.summary.unlink(missing_ok=True)
         summary = ""
     if not summary.strip():
@@ -799,9 +794,6 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
         ws.write_json(paths.state_json, state)
         return "summary", _summary_body(paths, total)
 
-    if previous_hash is None:  # сводка старой версии принимается без повторного написания
-        state["summary_data_hash"] = summary_hash
-        ws.write_json(paths.state_json, state)
     known_refs = {file_id: ref.id for file_id, ref in known.refs.items()}
     append_changed_run(
         paths.reports_dir, run_records(run, analyses, flagged, paths.root.name, known_refs)
@@ -1080,13 +1072,13 @@ def _fix_body(
         f"{_cluster_caption(entry, position, total)} — разбор не прошёл проверку "
         f"(попытка {attempt} из {MAX_FIX_ATTEMPTS}):",
         *(f"- {error}" for error in errors),
-        parse_summary(analysis, task_format(entry), example_blocks(entry)),
+        parse_summary(analysis, observed(entry), example_blocks(entry)),
         *([UNCHANGED_NOTE] if unchanged >= 2 else []),
         *([LAST_ATTEMPT_ANALYSIS] if attempt == MAX_FIX_ATTEMPTS - 1 else []),
         f"Исправь файл: {paths.analysis(entry['file_id'])}",
         f"Задание кластера: {paths.cluster_task(entry['file_id'])}",
         "Ожидаемый формат:",
-        expected_format(entry),
+        EXPECTED_FORMAT,
         reference_line(ANALYSIS_FORMAT_REF),
         FORMAT_MISMATCH_NOTE,
         f"Затем выполни: {paths.next_command()}",
@@ -1188,7 +1180,6 @@ def cmd_verify(run_dir: str | None, clusters: list[str], reports_dir: Path) -> i
         return 1
     project_root = Path(run["project_root"])
     lines: list[str] = []
-    formats: set[str] = set()
     failed = 0
     for entry in entries:
         assert entry is not None
@@ -1205,18 +1196,17 @@ def cmd_verify(run_dir: str | None, clusters: list[str], reports_dir: Path) -> i
             lines += [
                 f"Кластер {file_id}: разбор не прошёл проверку:",
                 *(f"- {error}" for error in errors),
-                parse_summary(analysis, task_format(entry), example_blocks(entry)),
+                parse_summary(analysis, observed(entry), example_blocks(entry)),
                 f"Исправь файл: {path}",
                 f"Задание кластера (данные и куски S…): {paths.cluster_task(file_id)}",
             ]
-            formats.add(expected_format(entry))
         else:
             lines.append(f"Кластер {file_id}: принят.")
     print("STATUS: fix" if failed else "STATUS: ok")
     print("\n".join(lines))
     if failed:
         print("Ожидаемый формат:")
-        print("\n\n".join(sorted(formats, key=len, reverse=True)) or EXPECTED_FORMAT)
+        print(EXPECTED_FORMAT)
         print("После исправления повтори ту же команду проверки.")
     return 0
 

@@ -54,6 +54,7 @@ def test_next_accepts_now_denied_application_only_with_matching_record(
         "file": "build.gradle.kts", "line": 1,
         "sha_before": hashlib.sha256(b"a();\n").hexdigest(),
         "sha_after": hashlib.sha256(b"b();\n").hexdigest(),
+        "backup": paths.proposal_backup("01").name,
     })
     entry = {"file_id": "01", "label": "Тест", "member_count": 1}
     outcome = cli._proposal_step(paths, {"attempts": {}}, entry, 1, 1, tmp_path)

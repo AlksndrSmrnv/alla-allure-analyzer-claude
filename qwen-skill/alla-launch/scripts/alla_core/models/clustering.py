@@ -40,7 +40,7 @@ class FailureCluster(BaseModel):
     example_correlation: str | None = None
     example_correlation_test_id: int | None = None
     # Примеры для задания (первый — типичный). Сигнатура и база знаний держатся на
-    # representative_test_id; старые run.json без поля читаются как пустой список.
+    # representative_test_id.
     examples: list[ClusterExample] = Field(default_factory=list)
 
 

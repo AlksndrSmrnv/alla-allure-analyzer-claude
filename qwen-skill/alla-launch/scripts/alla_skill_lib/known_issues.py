@@ -97,7 +97,7 @@ def known_issues(
         analysis = analyses.get(file_id)
         if analysis is None or file_id in flagged or not analysis.kb_ref:
             continue
-        kb_dir = str(entry.get("kb_dir") or run.get("kb_dir") or "")
+        kb_dir = str(entry.get("kb_dir") or "")
         if not kb_dir:
             continue
         directory = Path(kb_dir)
@@ -176,7 +176,7 @@ def _load(
 def _matches(record: KBRecord, entry: dict[str, Any], paths: ws.RunPaths) -> bool:
     """Запись подходит кластеру сейчас: не отвергнута и узнаётся точно или по признаку."""
     evidence = paths.evidence(entry["file_id"])
-    # Папка без доказательств (старая версия) — только точное совпадение сигнатуры.
+    # Без доказательств (кластер auto) — только точное совпадение сигнатуры.
     text = ws.read_text(evidence) if evidence.is_file() else ""
     return record_matches(record, entry.get("signature"), normalize_fp(text)) is not None
 

@@ -228,7 +228,7 @@ def test_history_recurrence_is_per_module() -> None:
     history = [
         {"date": "2026-09-20", "launch_id": 1, "signature": "v7:a", "module": "orders"},
         {"date": "2026-09-21", "launch_id": 2, "signature": "v7:a", "module": "auth"},
-        {"date": "2026-09-22", "launch_id": 3, "signature": "v7:a"},  # запись без модуля — корень
+        {"date": "2026-09-22", "launch_id": 3, "signature": "v7:a", "module": ""},  # корень
         {"date": "2026-09-23", "launch_id": 4, "kb_entry": "kb_1", "module": "orders"},
     ]
 
@@ -246,7 +246,7 @@ def test_history_records_carry_the_module() -> None:
         "launch_id": 5, "created_at": "2026-09-30T10:00:00",
         "clusters": [
             {"file_id": "01", "signature": "v7:a", "label": "x", "member_count": 1, "module": "orders"},
-            {"file_id": "02", "signature": "v7:b", "label": "y", "member_count": 1},  # старый разбор
+            {"file_id": "02", "signature": "v7:b", "label": "y", "member_count": 1, "module": ""},
         ],
     }
 

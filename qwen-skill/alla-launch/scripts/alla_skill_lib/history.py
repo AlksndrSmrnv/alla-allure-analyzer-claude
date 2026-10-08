@@ -23,7 +23,7 @@ HISTORY_FILE = "history.jsonl"
 MAX_CAUSE_CHARS = 200
 
 def load_history(reports_dir: Path) -> list[dict[str, Any]]:
-    """Последняя версия каждого кластера; битые строки пропускаются, legacy остаётся."""
+    """Последняя версия каждого кластера; битые строки и строки прежних версий пропускаются."""
     path = reports_dir / HISTORY_FILE
     if not path.is_file():
         return []
@@ -33,25 +33,26 @@ def load_history(reports_dir: Path) -> list[dict[str, Any]]:
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(record, dict) and "launch_id" in record:
+        if _is_record(record):
             records.append(record)
     latest: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for record in reversed(records):
-        key = _record_key(record)
-        if key is not None:
-            if key in seen:
-                continue
+        key = (record["run"], record["file_id"])
+        if key not in seen:
             seen.add(key)
-        latest.append(record)
+            latest.append(record)
     return latest[::-1]
 
 
-def _record_key(record: dict[str, Any]) -> tuple[str, str] | None:
-    run, file_id = record.get("run"), record.get("file_id")
-    if isinstance(run, str) and run and isinstance(file_id, str) and file_id:
-        return run, file_id
-    return None
+def _is_record(record: object) -> bool:
+    """Строка истории текущего формата (:func:`run_records`): разбор, кластер, модуль."""
+    return (
+        isinstance(record, dict) and "launch_id" in record
+        and all(isinstance(record.get(key), str) and record[key]
+                for key in ("run", "file_id"))
+        and isinstance(record.get("module"), str)
+    )
 
 
 def recurrence(
@@ -65,12 +66,12 @@ def recurrence(
     """Сводка прошлых разборов той же ошибки в других прогонах (None — не встречалась).
 
     Учитываются только разборы того же модуля: одинаковый текст ошибки в разных
-    модулях — разные проблемы. Записи без поля ``module`` относятся к корню.
+    модулях — разные проблемы.
     """
     matches = [
         record for record in history
         if record.get("launch_id") != launch_id
-        and record.get("module", "") == module
+        and record["module"] == module
         and (
             (signature and record.get("signature") == signature)
             or (record.get("kb_entry") and record.get("kb_entry") in kb_ids)
@@ -112,7 +113,7 @@ def run_records(
             "run": run_name,
             "file_id": entry["file_id"],
             "signature": entry["signature"],
-            "module": entry.get("module", ""),
+            "module": entry["module"],
             "label": str(entry["label"])[:MAX_CAUSE_CHARS],
             "category": analysis.category if trusted and analysis else None,
             "cause": " ".join(analysis.cause_reason.split())[:MAX_CAUSE_CHARS]
@@ -128,17 +129,13 @@ def run_records(
 
 def append_changed_run(reports_dir: Path, records: list[dict[str, Any]]) -> None:
     """Дописать только отсутствующие или изменённые строки завершённого разбора."""
-    latest = {
-        key: record for record in load_history(reports_dir)
-        if (key := _record_key(record)) is not None
-    }
+    latest = {(record["run"], record["file_id"]): record for record in load_history(reports_dir)}
     changed: list[dict[str, Any]] = []
     for record in records:
-        key = _record_key(record)
-        if key is None or latest.get(key) != record:
+        key = (record["run"], record["file_id"])
+        if latest.get(key) != record:
             changed.append(record)
-            if key is not None:
-                latest[key] = record
+            latest[key] = record
     append_run(reports_dir, changed)
 
 

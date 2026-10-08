@@ -1,6 +1,6 @@
 """Разбор и проверка анализа кластера, который написал агент.
 
-Формат задания версии 2 (``task_format: 2`` в записи кластера ``run.json``)::
+Формат разбора::
 
     ЧТО СЛОМАЛОСЬ: ...
     ПРИЧИНА: <тест|приложение|окружение|данные|неизвестно> — ...
@@ -12,9 +12,8 @@
     КОД: path/to/Test.java:42 — ...   (необязательно)
     БАЗА ЗНАНИЙ: <id записи> | нет     (если задание предлагало записи)
 
-Цитаты наблюдений проверяются по реестру источников (``sources.py``). Разборы
-старых папок (записи без ``task_format``) проверяются по прежним правилам:
-без наблюдений и «НЕ ХВАТАЕТ».
+Цитаты наблюдений проверяются по реестру источников (``sources.py``). Готовые
+разборы кода у кластеров без данных (``auto``) — без наблюдений.
 
 Тот же парсер читает обратную связь пользователя (``feedback/NN.md``),
 где ещё бывают ``НАЗВАНИЕ:`` и ``ПРИЗНАК:``.
@@ -35,7 +34,6 @@ from alla_skill_lib.code_hints import SOURCE_EXTENSIONS, ProjectIndex
 
 CATEGORIES = ("тест", "приложение", "окружение", "данные", "неизвестно")
 # Формат, который агент видит в ответах ``fix`` и в заданиях субагентов пакетного разбора.
-TASK_FORMAT = 2  # формат задания и разбора новых папок (записи кластера в run.json)
 EXPECTED_FORMAT = """\
 ЧТО СЛОМАЛОСЬ: <что увидел тест, 1–2 предложения>
 ПРИЧИНА: <тест|приложение|окружение|данные|неизвестно> — <предполагаемая причина>
@@ -47,19 +45,11 @@ EXPECTED_FORMAT = """\
 1. <шаг>
 КОД: <путь от корня проекта>:<строка> — <что там>   (необязательно)
 БАЗА ЗНАНИЙ: <id записи> | нет   (только если задание предлагало записи)"""
-# Разборы папок, созданных до наблюдений (запись кластера без ``task_format``).
-LEGACY_EXPECTED_FORMAT = """\
-ЧТО СЛОМАЛОСЬ: <1–2 предложения>
-ПРИЧИНА: <тест|приложение|окружение|данные|неизвестно> — <обоснование>
-КАК ИСПРАВИТЬ:
-1. <шаг>
-КОД: <путь от корня проекта>:<строка> — <что там>   (необязательно)
-БАЗА ЗНАНИЙ: <id записи> | нет   (только если задание предлагало записи)"""
 # Заполнители шаблонов разбора («<чем отличаются примеры>», «<шаг>»…): строка с ними — не
 # заполненный ответ. Настоящие значения в угловых скобках («<200>», «<Подтверждено>» из
 # JUnit) заполнителями не считаются.
 TEMPLATE_PLACEHOLDERS = frozenset(
-    match.lower() for match in re.findall(r"<[^<>\n]+>", EXPECTED_FORMAT + LEGACY_EXPECTED_FORMAT)
+    match.lower() for match in re.findall(r"<[^<>\n]+>", EXPECTED_FORMAT)
 )
 # Только слова, которые однозначно называют категорию. «сервис», «app», «test»
 # и подобные не берём: «Сервис авторизации недоступен (окружение)» — это не
@@ -406,7 +396,7 @@ def _is_plain_list_item(raw_line: str, match: re.Match[str]) -> bool:
     return not (written.isupper() or emphasised)
 
 
-def parse_summary(analysis: ClusterAnalysis, task_format: int = 1, examples: int = 1) -> str:
+def parse_summary(analysis: ClusterAnalysis, observed: bool = False, examples: int = 1) -> str:
     """Что парсер понял в разборе: подсказка модели, когда формат не принят."""
     parts = []
     for key, title in SECTION_TITLES.items():
@@ -415,7 +405,7 @@ def parse_summary(analysis: ClusterAnalysis, task_format: int = 1, examples: int
         if key == "cause" and value:
             part += f" (категория: {analysis.category or 'не распознана'})"
         parts.append(part)
-        if key == "cause" and task_format >= 2:
+        if key == "cause" and observed:
             parts.append(f"НАБЛЮДЕНИЯ: {len(analysis.observations)}")
             if analysis.category == "неизвестно":  # обязателен только при «неизвестно»
                 parts.append(f"НЕ ХВАТАЕТ {'✓' if analysis.missing_text else '✗'}")
@@ -466,14 +456,14 @@ def validate_analysis(
     project_root: Path,
     offered_kb: frozenset[str] = frozenset(),
     *,
-    task_format: int = 1,
+    observed: bool = False,
     sources: dict[str, dict[str, Any]] | None = None,
     examples: int = 1,
 ) -> list[str]:
     """Список проблем формата (пусто — анализ принят).
 
-    ``task_format`` — формат задания кластера (1 — папки до наблюдений). С 2
-    нужны наблюдения с цитатами, найденными в своём источнике из ``sources``
+    ``observed`` — разбор по заданию с реестром источников (все кластеры, кроме ``auto``,
+    чьи разборы пишет код): нужны наблюдения с цитатами, найденными в своём источнике из ``sources``
     (реестр кластера; ``None`` — реестр не найден или повреждён: наблюдения с ним
     не проверить, это ошибка), а при категории «неизвестно» — содержательный
     «НЕ ХВАТАЕТ».
@@ -491,7 +481,7 @@ def validate_analysis(
         )
     if not analysis.fix:
         errors.append("нет раздела «КАК ИСПРАВИТЬ:» с шагами исправления")
-    if task_format >= 2:
+    if observed:
         errors.extend(observation_errors(analysis, sources))
         if examples > 1:
             errors.extend(consistency_errors(analysis))

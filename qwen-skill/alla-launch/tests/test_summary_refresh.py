@@ -118,42 +118,14 @@ def test_whitespace_changes_preserve_summary_and_history(project: Path, testops,
     assert (directory.parent / "history.jsonl").read_bytes() == history_before
 
 
-@pytest.mark.parametrize("completed", [False, True])
-def test_legacy_summary_binds_without_rewriting(
-    project: Path, testops, capsys, completed: bool
-) -> None:
-    directory, _, _ = _ready(project, capsys)
-    _complete(directory, capsys)
-    state = _state(directory)
-    state.pop("summary_data_hash", None)
-    state["history_written"] = "legacy marker"
-    ws.write_json(directory / "state.json", state)
-    if not completed:
-        (directory / "report.md").unlink()
-    history_before = (directory.parent / "history.jsonl").read_bytes()
-
-    assert _next(directory, capsys).startswith("STATUS: done")
-    assert _state(directory)["summary_data_hash"]
-    assert _state(directory)["history_written"] == "legacy marker"
-    assert (directory / "summary.md").read_text(encoding="utf-8") == "Прежняя сводка."
-    assert (directory.parent / "history.jsonl").read_bytes() == history_before
-
-
-def test_skip_invalidates_legacy_summary_without_resetting_history_flag(
-    project: Path, testops, capsys
-) -> None:
+def test_skip_invalidates_the_summary(project: Path, testops, capsys) -> None:
     directory, _, order = _ready(project, capsys)
     _complete(directory, capsys)
-    state = _state(directory)
-    state.pop("summary_data_hash", None)
-    state["history_written"] = True
-    ws.write_json(directory / "state.json", state)
     history_before = (directory.parent / "history.jsonl").read_text(encoding="utf-8").splitlines()
 
     code, out = _run(["skip", order, "--run", str(directory)], capsys)
     assert code == 0 and out.startswith("STATUS: saved")
     assert not (directory / "summary.md").exists()
-    assert _state(directory)["history_written"] is True
     assert _next(directory, capsys).startswith("STATUS: summary")
     (directory / "summary.md").write_text("Проблема пропущена.", encoding="utf-8")
     assert _next(directory, capsys).startswith("STATUS: done")
@@ -194,30 +166,14 @@ def test_kb_reference_changes_update_history_without_refreshing_summary(
     _complete(directory, capsys)
     state = _state(directory)
     previous_hash = state["summary_data_hash"]
-    state["history_written"] = True
-    ws.write_json(directory / "state.json", state)
     history_before = (directory.parent / "history.jsonl").read_text(encoding="utf-8").splitlines()
 
     analysis.write_text(VALID_ANALYSIS + f"БАЗА ЗНАНИЙ: {new_ref}\n", encoding="utf-8")
     assert _next(directory, capsys).startswith("STATUS: done")
     assert _state(directory)["summary_data_hash"] == previous_hash
-    assert _state(directory)["history_written"] is True
     history_after = (directory.parent / "history.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(history_after) == len(history_before) + 1
     latest = next(row for row in load_history(directory.parent) if row["file_id"] == order)
     assert latest["kb_entry"] == (None if new_ref == "нет" else new_ref)
     assert _next(directory, capsys).startswith("STATUS: done")
     assert (directory.parent / "history.jsonl").read_text(encoding="utf-8").splitlines() == history_after
-
-
-def test_unchanged_history_ignores_a_false_legacy_flag(project: Path, testops, capsys) -> None:
-    directory, _, _ = _ready(project, capsys)
-    _complete(directory, capsys)
-    state = _state(directory)
-    assert "history_written" not in state
-    state["history_written"] = False
-    ws.write_json(directory / "state.json", state)
-    before = (directory.parent / "history.jsonl").read_bytes()
-    assert _next(directory, capsys).startswith("STATUS: done")
-    assert (directory.parent / "history.jsonl").read_bytes() == before
-    assert _state(directory)["history_written"] is False

@@ -1,3 +1,0 @@
-java.net.ConnectException: Connection refused: auth-service:8080
-java.net.ConnectException: Connection refused
-	at ru.company.auth.LoginTest.login(LoginTest.java:4)
