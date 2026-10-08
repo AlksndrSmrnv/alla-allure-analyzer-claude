@@ -83,7 +83,7 @@ def test_signature_is_stable_across_runs_and_pinned() -> None:
     assert first != other_cause  # общий ассерт: причину называет лог
     # Смена хэша значит, что записи alla-kb перестанут узнаваться точно: менять материал
     # только осознанно, с новой версией (SIGNATURE_VERSION).
-    assert first == "v7:66e2e0fe298f96ba5234d4b7f1b0f7e470900182f1403eec341d8f83d3e7ab4f"
+    assert first == "v8:b0f14db1e444c6bdc919e2bd707742e5cc36de34ff53ae67651b41f9ff71af64"
 
 
 def test_fingerprint_matching_is_number_and_id_agnostic() -> None:

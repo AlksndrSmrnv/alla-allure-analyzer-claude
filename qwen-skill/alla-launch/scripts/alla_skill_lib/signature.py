@@ -1,14 +1,19 @@
 """Стабильная сигнатура проблемы ``v<версия>:<hash>``: точное узнавание и повторы.
 
-Сигнатура держится на том, что называет причину падения:
+Сигнатура держится на том, что называет причину падения, и различает то, что различают
+gates кластеризации по логу и по ресурсам:
 
-* трейс есть и ошибка сама называет причину (исключение не-ассерт или ``Caused by``) —
+* трейс есть и ошибка сама называет причину (исключение не-ассерт, ``Caused by``) —
   сообщение и якорь трейса, лог не входит;
-* трейс есть, а ошибка — общий ассерт (:data:`GENERIC_ASSERTION_RE`) без ``Caused by`` —
-  к сообщению и трейсу добавляются строки-ошибки лога: у ``expected: <200> but was: <500>``
-  причину называет только лог. Лог из одних обычных строк (INFO) не добавляется — шум
-  сделал бы сигнатуру разной от прогона к прогону;
-* трейса нет — сообщение и якорь лога (если ошибок нет — первые обычные строки).
+* трейс есть, а ошибка — симптом (:func:`log_names_cause`: общий ассерт
+  :data:`GENERIC_ASSERTION_RE` без ``Caused by`` или корневое исключение из
+  :data:`SYMPTOM_EXCEPTION_RE` — таймаут, обрыв соединения) — к сообщению и трейсу
+  добавляются строки-ошибки лога: у ``expected: <200> but was: <500>`` и у голого
+  ``SocketTimeoutException`` причину называет только лог. Лог из одних обычных строк (INFO)
+  не добавляется — шум сделал бы сигнатуру разной от прогона к прогону;
+* трейса нет — сообщение и якорь лога (если ошибок нет — первые обычные строки);
+* всегда — хосты и локаторы сообщения в виде gate по ресурсам (``message_resources``):
+  порт в длинном сообщении и регистр локатора нормализация сообщения стирает.
 
 Время, UUID, длинные числа и имена потоков в материал не входят, коды ошибок
 (``numeric_codes``) — входят.
@@ -27,6 +32,7 @@ from alla_core.models.testops import FailedTestSummary
 from alla_core.utils.log_events import ERROR_LEVELS, iter_events, strip_source_marks
 from alla_core.utils.log_focus import strip_log_selection_metadata
 from alla_core.utils.log_utils import parse_log_sections
+from alla_core.utils.message_resources import message_resources
 from alla_core.utils.text_normalization import (
     NON_CODE_PREFIXES,
     normalize_text,
@@ -36,7 +42,7 @@ from alla_core.utils.text_normalization import (
 )
 
 # Префикс версии не даёт старому хэшу совпасть с новым при смене материала.
-SIGNATURE_VERSION = 7
+SIGNATURE_VERSION = 8
 
 # Признаки общего ассерта: ошибка проверки, которая не называет причину. Проверяются по
 # строкам сообщения и трейса (без кадров и префикса pytest «E »); Hamcrest — через строку.
@@ -54,6 +60,21 @@ GENERIC_ASSERTION_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# Исключения-симптомы: клиент не дождался ответа или соединение оборвалось — причину
+# называет лог сервиса, а не класс. Решает класс корневого исключения, а не текст; UI-ожидания
+# (Selenium ``TimeoutException``, «Timeout: 4 s.» Selenide) — не симптом: их различает
+# локатор. ``ConnectException`` называет хост — тоже не симптом. Голый ``TimeoutError`` —
+# Python; у Playwright JS то же имя, лог тогда тоже входит, локатор различает и так.
+SYMPTOM_EXCEPTION_RE = re.compile(
+    r"^(?:"
+    r"java\.net\.(?:SocketTimeoutException|SocketException|http\.HttpTimeoutException)"
+    r"|java\.util\.concurrent\.TimeoutException"
+    r"|(?:requests\.exceptions|httpx)\.(?:ReadTimeout|ConnectTimeout|Timeout)"
+    r"|urllib3\.exceptions\.(?:ReadTimeoutError|ConnectTimeoutError)"
+    r"|socket\.timeout|TimeoutError|ConnectionResetError"
+    r")(?![\w$.])",
+)
+
 _MAX_MESSAGE_WORDS = 10
 _MAX_MESSAGE_CHARS = 120
 _MAX_TRACE_LINES = 4
@@ -63,7 +84,8 @@ _MAX_CODES = 4
 
 _STACK_FRAME_RE = re.compile(r"^\s*(?:at\s+\S+\(|\.\.\.\s+\d+\s+more\b|File \".+\", line \d+)")
 _PYTEST_PREFIX_RE = re.compile(r"^E\s+")
-_CAUSED_BY_RE = re.compile(r"^\s*Caused by:", re.MULTILINE)
+_CAUSED_BY_PREFIX_RE = re.compile(r"^Caused by:\s*")
+_SUPPRESSED_RE = re.compile(r"^Suppressed:")
 _EXCEPTION_LINE_RE = re.compile(r"^[\w$]+(?:\.[\w$]+)*(?:Exception|Error|Throwable)\b")
 _CAUSE_HINT_RE = re.compile(
     r"(?:Caused by|Traceback)\b|\b[\w.$]+(?:Exception|Error)\b", re.IGNORECASE)
@@ -137,19 +159,68 @@ def _error_lines(text: str) -> list[str]:
     return [line for line in lines if line and not _STACK_FRAME_RE.match(line)]
 
 
+def _main_chain(trace: str) -> list[str]:
+    """Строки трейса без кадров и без веток ``Suppressed`` — основная цепочка причин.
+
+    JVM печатает подавленное исключение строкой ``Suppressed:`` с отступом, его кадры и
+    ``Caused by`` — внутри ветки (отступ не меньше), а ``Caused by`` основной цепочки —
+    левее. Ветка кончается на такой строке; без отступов ветку не отличить, и всё после
+    ``Suppressed:`` в цепочку не входит.
+    """
+    lines: list[str] = []
+    branch: int | None = None  # отступ строки Suppressed: открытой ветки
+    for raw in trace.splitlines():
+        line = _PYTEST_PREFIX_RE.sub("", raw.strip())
+        if not line or _STACK_FRAME_RE.match(line):
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        if branch is not None:
+            if not (_CAUSED_BY_PREFIX_RE.match(line) and indent < branch):
+                continue
+            branch = None
+        if _SUPPRESSED_RE.match(line):
+            branch = indent
+            continue
+        lines.append(line)
+    return lines
+
+
 def is_generic_assertion(message: str, trace: str) -> bool:
     """Ошибка — общий ассерт без ``Caused by``: причину называет не она, а лог.
 
     Нужен признак из :data:`GENERIC_ASSERTION_RE` и ни одной строки с классом
     исключения не из этого списка (``ConnectionError`` внутри ``assert …`` — не ассерт).
+    ``Caused by`` и исключения веток ``Suppressed`` не в счёт (:func:`_main_chain`).
     """
-    if _CAUSED_BY_RE.search(trace):
+    chain = _main_chain(trace)
+    if any(_CAUSED_BY_PREFIX_RE.match(line) for line in chain):
         return False
-    lines = _error_lines(message) + _error_lines(trace)
+    lines = _error_lines(message) + chain
     if not GENERIC_ASSERTION_RE.search("\n".join(lines)):
         return False
     return not any(_EXCEPTION_LINE_RE.match(line) and not GENERIC_ASSERTION_RE.match(line)
                    for line in lines)
+
+
+def _root_exception(trace: str) -> str | None:
+    """Корневое исключение трейса: последняя строка исключения основной цепочки — самый
+    глубокий ``Caused by`` у Java (ветки ``Suppressed`` не в счёт), последнее исключение у
+    Python."""
+    lines = (_CAUSED_BY_PREFIX_RE.sub("", line) for line in _main_chain(trace))
+    roots = [line for line in lines
+             if _EXCEPTION_LINE_RE.match(line) or SYMPTOM_EXCEPTION_RE.match(line)]
+    return roots[-1] if roots else None
+
+
+def is_symptom_exception(trace: str) -> bool:
+    """Корневое исключение — симптом (:data:`SYMPTOM_EXCEPTION_RE`): таймаут, обрыв."""
+    root = _root_exception(trace)
+    return root is not None and bool(SYMPTOM_EXCEPTION_RE.match(root))
+
+
+def log_names_cause(message: str, trace: str) -> bool:
+    """Причину называет не ошибка, а лог: общий ассерт или исключение-симптом."""
+    return is_generic_assertion(message, trace) or is_symptom_exception(trace)
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +262,19 @@ def _message_part(message: str) -> str:
     return strict if short else _soft(message)
 
 
+def _resources_part(message: str) -> list[str]:
+    """Хосты и локаторы сообщения в виде gate по ресурсам: что разделяет он, разделяет и
+    сигнатура (порт длинного сообщения уходит в ``<NUM>``, регистр локатора — в нижний)."""
+    resources = message_resources(message)
+    return ([f"host:{host}" for host in sorted(resources.hosts)]
+            + [f"locator:{locator}" for locator in sorted(resources.locators)])
+
+
 def _trace_part(trace: str) -> list[str]:
-    """Первая строка ошибки и строки причин (``Caused by``) — без кадров стека."""
-    lines = _error_lines(trace)
+    """Первая строка ошибки и строки причин (``Caused by``) основной цепочки — без кадров
+    стека и веток ``Suppressed`` (:func:`_main_chain`): ошибка закрытия ресурса — не причина
+    и не должна менять сигнатуру или вытеснять причины из якоря."""
+    lines = _main_chain(trace)
     if not lines:
         return []
     head, rest = _soft(lines[0]), [line for line in lines[1:] if _CAUSE_HINT_RE.search(line)]
@@ -326,7 +407,7 @@ def signature_material(
     cluster: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],
 ) -> str | None:
-    """Нормализованный материал сигнатуры: основа (``message+trace+log``…) и части."""
+    """Нормализованный материал сигнатуры: основа (``message+trace+resources+log``…) и части."""
     message, trace, _ = cluster_sources(cluster, tests_by_id)
     parts: dict[str, str] = {}
     if message.strip():
@@ -334,8 +415,12 @@ def signature_material(
     trace_lines = _trace_part(trace)
     if trace_lines:
         parts["trace"] = "\n".join(trace_lines)
+    resources = _resources_part(message)
+    if resources:
+        parts["resources"] = "\n".join(resources)
+    if trace_lines:
         log_lines = (_log_part(cluster, tests_by_id, with_plain=False)
-                     if is_generic_assertion(message, trace) else [])
+                     if log_names_cause(message, trace) else [])
     else:
         log_lines = _log_part(cluster, tests_by_id, with_plain=True)
     if log_lines:

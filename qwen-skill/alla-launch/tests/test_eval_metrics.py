@@ -14,12 +14,14 @@ from skill_fake_testops import LaunchFixture, default_launch
 from eval import corpus_dev, run_eval
 from eval.cassette import save_cassette
 from eval.metrics import (
+    SIGNATURE_KEYS,
     SUMMARY_KEYS,
     ClusterView,
     combine,
     evaluate,
     evaluate_gate_pairs,
     evaluate_retries,
+    evaluate_signatures,
     summary,
 )
 
@@ -137,7 +139,8 @@ def test_run_eval_on_a_cassette_prints_only_numbers(
 
 
 # Ключи сводки по кассете: всё, что может уйти за пределы команды, кроме чисел.
-_CASSETTE_KEYS = {*SUMMARY_KEYS, "unclustered", "unlabeled", "gates", "max_task_chars",
+_CASSETTE_KEYS = {*SUMMARY_KEYS, *SIGNATURE_KEYS, "unclustered", "unlabeled", "gates",
+                  "max_task_chars",
                   "seconds", *ClusteringGateStats().model_dump(), "log_held_same_problem",
                   "log_held_different_problems", "log_override_same_problem",
                   "log_override_different_problems"}
@@ -210,6 +213,47 @@ def test_gate_pairs_are_checked_against_labels() -> None:
                                  overrides=[(7, 8)])
     assert counts == {"log_held_same_problem": 2, "log_held_different_problems": 1,
                       "log_override_same_problem": 0, "log_override_different_problems": 1}
+
+
+def test_clusters_sharing_a_signature_are_counted_and_checked_against_labels() -> None:
+    clusters = [
+        ClusterView("01", (1,), (1,), "", "v8:a"),
+        ClusterView("02", (2,), (2,), "", "v8:a"),  # та же проблема db-pool
+        ClusterView("03", (3, 4), (3,), "", "v8:b"),
+        ClusterView("04", (7,), (7,), "", "v8:b"),  # чужая: NPE и неизвестная причина
+        ClusterView("05", (5,), (5,), "", "v8:c"),
+        ClusterView("06", (8,), (8,), "", None),
+        ClusterView("07", (6,), (6,), "", None),
+    ]
+
+    assert evaluate_signatures(None, clusters) == {"signature_shared": 2}
+    result = evaluate_signatures(LABELS, clusters)
+    assert (result["signature_shared"], result["signature_shared_wrong"]) == (2, 1)
+    assert result["signature_problems"] == [
+        "кластеры 01 и 02: одна сигнатура",
+        "кластеры 03 и 04: одна сигнатура у разных проблем",
+    ]
+
+
+def test_cassette_summary_counts_shared_signatures(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Таймаут с разными причинами в логах: два кластера, у каждого своя сигнатура."""
+    case = corpus_dev.CASES["timeouts_two_causes"]()
+    save_cassette(case.fixture, tmp_path / "cassette")
+    (tmp_path / "labels.json").write_text(json.dumps(case.labels), encoding="utf-8")
+
+    assert run_eval.main(["--cassette", str(tmp_path / "cassette")]) == 0
+    unlabeled = json.loads(capsys.readouterr().out)
+    assert run_eval.main(["--cassette", str(tmp_path / "cassette"),
+                          "--labels", str(tmp_path / "labels.json")]) == 0
+    labeled = json.loads(capsys.readouterr().out)
+
+    assert "signature_shared_wrong" not in unlabeled
+    assert {key: labeled[key] for key in SIGNATURE_KEYS} == {
+        **{key: unlabeled[key] for key in SIGNATURE_KEYS if key in unlabeled},
+        "signature_shared_wrong": labeled["signature_shared"],
+    }
 
 
 def test_analyses_checklist_pairs_labels_with_model_answers(tmp_path: Path) -> None:
