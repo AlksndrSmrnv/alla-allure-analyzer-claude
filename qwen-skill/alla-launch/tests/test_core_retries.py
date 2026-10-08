@@ -253,6 +253,19 @@ async def test_error_codes_make_attempt_errors_different() -> None:
 
 
 @pytest.mark.asyncio
+async def test_thread_name_does_not_make_attempt_errors_different() -> None:
+    client = _Client([
+        _result(1, hidden=True, historyId="h",
+                **_details("[http-nio-8080-exec-1] Cart total expected 300 but was 0")),
+        _result(2, historyId="h", **_details("[http-nio-8080-exec-7] Cart total expected 300 but was 0")),
+    ])
+
+    report = await TriageService(client, _settings()).analyze_launch(9)  # type: ignore[arg-type]
+
+    assert report.failed_tests[0].attempts[0].same_as_final is True
+
+
+@pytest.mark.asyncio
 async def test_errors_are_compared_before_clipping() -> None:
     prefix = "Gateway rejected the request " + "x" * 400
     client = _Client([

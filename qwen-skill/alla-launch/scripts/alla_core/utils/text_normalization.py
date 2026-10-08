@@ -219,9 +219,17 @@ def repeat_key(text: str) -> str:
     """Ключ «та же ошибка»: равны после :func:`normalize_text` и с теми же кодами ошибок.
 
     Так сворачиваются повторы событий лога и сравниваются ошибки попыток теста: время,
-    UUID и длинные числа не различают ошибки, а коды (:func:`numeric_codes`) — различают.
+    UUID, длинные числа и имена потоков не различают ошибки, а коды
+    (:func:`numeric_codes`) — различают.
     """
-    return normalize_text(text) + "\0" + "|".join(numeric_codes(text))
+    unthreaded = _SHORT_EXEC_THREAD_RE.sub("<THREAD>", replace_thread_names(text))
+    return normalize_text(unthreaded) + "\0" + "|".join(numeric_codes(text))
+
+
+# Обрезанные имена потоков веб-сервера: Spring Boot печатает имя потока не длиннее 15
+# символов («[nio-8080-exec-1]», «[io-8080-exec-10]»). Только для свёртки повторов: в
+# сигнатуре (:func:`replace_thread_names`) их нет, и менять её материал нельзя.
+_SHORT_EXEC_THREAD_RE = re.compile(r"\b(?:[A-Za-z][\w.]*-(?:\d+-)?|\d+-)exec-\d+\b")
 
 
 # Имена потоков: «http-nio-8080-exec-7», «https-jsse-nio-8443-exec-1», «catalina-exec-12»,
