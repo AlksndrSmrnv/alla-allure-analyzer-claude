@@ -135,7 +135,7 @@ def test_happy_trace_passes_protocol_checks(tmp_path: Path) -> None:
         final="Прогон 777: 2 проблемы\nПодробно: report.md"))
     for name in ("activated", "prepare_launch", "reached_done", "report_verbatim",
                  "shell_only_skill_commands", "allowed_reads", "allowed_writes",
-                 "no_secret_leak", "skill_visible"):
+                 "no_secret_leak", "skill_visible", "no_code_search"):
         assert CHECKS[name](ctx)["status"] == "pass", name
 
 
@@ -151,6 +151,10 @@ def test_happy_trace_passes_protocol_checks(tmp_path: Path) -> None:
     (("write_file", {"file_path": "alla-reports/run-1/run.json", "content": ""}, ""),
      "allowed_writes"),
     (("read_file", {"file_path": "x"}, f"ALLURE_TOKEN={TOKEN}"), "no_secret_leak"),
+    # E10 и E07: модель искала код сама, хотя задание называло файлы.
+    (("glob", {"pattern": "src/test/java/**/*.java"}, ""), "no_code_search"),
+    (("glob", {"pattern": "**/ReportTest.java"}, ""), "no_code_search"),
+    (("grep_search", {"pattern": "PaymentPage", "path": "src"}, ""), "no_code_search"),
 ])
 def test_violations_fail(tmp_path: Path, call: tuple[str, dict[str, Any], str],
                          check: str) -> None:
@@ -162,6 +166,13 @@ def test_violations_fail(tmp_path: Path, call: tuple[str, dict[str, Any], str],
     result = CHECKS[check](ctx)
     assert result["status"] == "fail"
     assert "вызов 0" in result["evidence"]
+
+
+def test_search_inside_the_run_folder_is_not_code_search(tmp_path: Path) -> None:
+    ctx = context(tmp_path, events(
+        ("glob", {"pattern": "*.md", "path": str(tmp_path / "p/alla-reports/run-1/clusters")}, ""),
+        ("grep_search", {"pattern": "STATUS", "path": "alla-reports/run-1/analyses"}, "")))
+    assert CHECKS["no_code_search"](ctx)["status"] == "pass"
 
 
 def test_read_of_missing_path_is_noted_not_failed(tmp_path: Path) -> None:
