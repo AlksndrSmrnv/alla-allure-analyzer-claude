@@ -510,6 +510,34 @@ def test_settings_env_overrides_file(tmp_path: Path) -> None:
     assert "env-token" not in repr(settings)
 
 
+def test_clustering_gate_settings_reach_the_clustering_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alla_core.models.testops import TriageReport
+    from alla_core.services import clustering_service
+    from alla_skill_lib import pipeline
+    from skill_factories import make_failed_test_summary
+
+    settings = Settings.load(None, environ={
+        "ALLURE_ENDPOINT": "https://a.example", "ALLURE_TOKEN": "t",
+        "ALLURE_CLUSTERING_RESOURCE_GATE": "false",
+        "ALLURE_CLUSTERING_LOG_SPLIT_THRESHOLD": "0.25"})
+    seen: list[clustering_service.ClusteringConfig] = []
+    real = clustering_service.ClusteringService.__init__
+
+    def spy(self: clustering_service.ClusteringService,
+            config: clustering_service.ClusteringConfig | None = None) -> None:
+        assert config is not None
+        seen.append(config)
+        real(self, config)
+
+    monkeypatch.setattr(pipeline.ClusteringService, "__init__", spy)
+    triage = TriageReport(launch_id=1, total_results=1, failed_count=1, broken_count=0,
+                          failed_tests=[make_failed_test_summary(status_message="boom")])
+    pipeline.cluster_failures(1, triage, settings)
+    assert (seen[0].resource_gate, seen[0].log_split_threshold) == (False, 0.25)
+
+
 @pytest.mark.parametrize(
     ("environ", "message"),
     [

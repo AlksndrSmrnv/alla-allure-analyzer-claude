@@ -139,14 +139,14 @@
       "tests": 12
     },
     "resources_split": {
-      "clusters": 3,
+      "clusters": 6,
       "evidence_loss": 0.0,
       "evidence_lost": 0,
       "evidence_total": 6,
       "groups": 6,
       "hidden_groups": 0,
-      "max_task_chars": 8715,
-      "precision": 0.5,
+      "max_task_chars": 6942,
+      "precision": 1.0,
       "recall": 1.0,
       "tests": 12
     },

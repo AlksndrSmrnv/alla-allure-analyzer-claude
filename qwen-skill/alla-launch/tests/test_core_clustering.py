@@ -15,6 +15,7 @@ from alla_core.services.clustering_service import (
     _extract_assertion_actual,
     _strip_correlation_only_http_sections,
 )
+from alla_core.utils.message_resources import message_resources
 from alla_core.utils.text_normalization import normalize_text
 
 
@@ -1111,6 +1112,109 @@ def test_log_gate_is_off_with_zero_threshold_or_zero_log_weight(
 ) -> None:
     failures = _orders(_log(POOL_LOG), _log(NPE_LOG))
     assert _groups(failures, config) == [[1, 2]]
+
+
+# ---------------------------------------------------------------------------
+# Gate по ресурсам сообщения (хосты, локаторы)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("message", "hosts", "locators"), [
+    ("java.net.ConnectException: Connection refused: auth-service:8080",
+     {"auth-service:8080"}, set()),
+    ("java.net.ConnectException: Failed to connect to inventory.svc/10.2.0.7:8080",
+     {"inventory.svc"}, set()),
+    ("Connect to billing:8443 [billing/10.0.0.3] failed: Connection refused",
+     {"billing:8443"}, set()),
+    ("connect ECONNREFUSED 10.1.2.3:5432", {"<ip>:5432"}, set()),
+    ('I/O error on GET request for "http://pricing-2.internal/api/prices": Read timed out',
+     {"pricing-#.internal"}, set()),
+    ("java.net.UnknownHostException: geo.internal: Name or service not known", set(), set()),
+    ("getaddrinfo ENOTFOUND api.stage.local", set(), set()),
+    ("Element not found {#checkout-button}\nExpected: visible", set(), {"#checkout-button"}),
+    ("Element should be visible {.cart li:nth-child(2)}", set(), {".cart li:nth-child(#)"}),
+    ('no such element: Unable to locate element: {"method":"css selector","selector":"#promo"}',
+     set(), {'{"method":"css selector","selector":"#promo"}'}),
+    ("waiting for visibility of element located by By.cssSelector: #login-form",
+     set(), {"#login-form"}),
+    ("TimeoutError: locator.click: Timeout 30000ms exceeded.\n"
+     "  - waiting for getByRole('button', { name: 'Apply' })",
+     set(), {"getbyrole('button', { name: 'apply' })"}),
+    ("Timed out retrying: Expected to find element: `[data-cy=submit]`, but never found it.",
+     set(), {"[data-cy=submit]"}),
+    ('Waiting for selector "#app .ready" failed: timeout 30000ms exceeded', set(),
+     {"#app .ready"}),
+    # Не ресурсы: имена классов и файлов, тестовые данные в кавычках.
+    ("java.lang.IllegalStateException at ru.company.orders.OrderService (OrderService.java:40)",
+     set(), set()),
+    ("Login failed: user 'ivanov' is locked after 3 failed attempts", set(), set()),
+])
+def test_message_resources(message: str, hosts: set[str], locators: set[str]) -> None:
+    resources = message_resources(message)
+    assert (resources.hosts, resources.locators) == (hosts, locators)
+
+
+def _calls(*messages: str, step: str = "Вызвать сервис", logs: tuple[str | None, ...] = (),
+           ) -> list[FailedTestSummary]:
+    trace = ("java.net.ConnectException: connect failed\n"
+             "\tat ru.company.platform.HttpGateway.call(HttpGateway.java:64)\n")
+    padded = (*logs, *(None,) * (len(messages) - len(logs)))
+    return [
+        make_failed_test_summary(
+            test_result_id=index + 1, status_message=message, status_trace=trace,
+            failed_step_path=step, log_snippet=make_error_log(log) if log else None,
+        )
+        for index, (message, log) in enumerate(zip(messages, padded))
+    ]
+
+
+def _connect(host: str) -> str:
+    return f"java.net.ConnectException: Failed to connect to {host}/10.2.0.7:8080"
+
+
+def test_resource_gate_splits_different_hosts_of_one_message() -> None:
+    failures = _calls(_connect("inventory.svc"), _connect("inventory.svc"),
+                      _connect("loyalty.svc"))
+    assert _groups(failures) == [[1, 2], [3]]
+
+
+def test_resource_gate_splits_different_locators_at_the_message_threshold() -> None:
+    """Сообщения Playwright различаются только локатором: сходство ровно на пороге."""
+    def timeout(locator: str) -> str:
+        return (f"TimeoutError: locator.click: Timeout 30000ms exceeded.\n"
+                f"waiting for locator('{locator}')")
+    failures = _calls(timeout("[data-test=price-filter]"), timeout("iframe#payment-frame"))
+    assert _groups(failures) == [[1], [2]]
+
+
+@pytest.mark.parametrize("messages", [
+    # Реплики одного сервиса.
+    (_connect("orders-1.svc"), _connect("orders-2.svc")),
+    # Значения в кавычках — тестовые данные, а не ресурс.
+    ("Login failed: user 'ivanov' is locked after 3 failed attempts",
+     "Login failed: user 'petrova' is locked after 3 failed attempts"),
+    # Сбой DNS бьёт по всем хостам: ошибка разрешения имени хостов не даёт.
+    ("java.net.UnknownHostException: cdn.stage.local: Temporary failure in name resolution",
+     "java.net.UnknownHostException: auth.stage.local: Temporary failure in name resolution"),
+])
+def test_resource_gate_keeps_one_problem(messages: tuple[str, str]) -> None:
+    assert _groups(_calls(*messages)) == [[1, 2]]
+
+
+def test_same_log_still_merges_different_locators() -> None:
+    """Страница не загрузилась: элементы разные, ошибка скрипта в логе одна — log override."""
+    console = ("2026-10-03 10:03:01 [SEVERE] http://shop.test/static/catalog.js 1:20451 "
+               "Uncaught TypeError: Cannot read properties of undefined (reading 'items')\n")
+    failures = _calls("Element not found {.product-card}\nExpected: visible",
+                      "Element not found {.filters-panel}\nExpected: visible",
+                      logs=(console, console))
+    assert _groups(failures) == [[1, 2]]
+    assert _groups(_calls(*(f.status_message or "" for f in failures))) == [[1], [2]]
+
+
+def test_resource_gate_can_be_turned_off() -> None:
+    failures = _calls(_connect("inventory.svc"), _connect("loyalty.svc"))
+    assert _groups(failures, ClusteringConfig(resource_gate=False)) == [[1, 2]]
 
 
 def test_cluster_without_error_text_is_labelled_by_test_name() -> None:

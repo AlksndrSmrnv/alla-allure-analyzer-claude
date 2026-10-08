@@ -26,6 +26,9 @@
      * если у обоих есть лог и log similarity ≥ порога — log override:
        лог становится доминирующим каналом (0.6 log + 0.2 msg + 0.2 trace)
      * иначе пара не может быть склеена (message gate)
+   - gate по ресурсам: хосты сетевой ошибки или локаторы UI одного вида у двух
+     сообщений не пересекаются (`message_resources`) — сообщения считаются
+     разными, как ниже порога; log override при этом работает
    - иначе взвешенная комбинация message/trace/log
    - если message у одного/обоих пустой, fallback на trace (+log)
    - если лога нет у одного/обоих тестов, его вес перераспределяется на message
@@ -55,6 +58,7 @@ from alla_core.models.testops import FailedTestSummary
 from alla_core.utils.log_events import SOURCE_MARK_RE, strip_source_marks
 from alla_core.utils.log_focus import strip_log_selection_metadata
 from alla_core.utils.log_utils import extract_correlation_from_log
+from alla_core.utils.message_resources import MessageResources, message_resources
 from alla_core.utils.step_paths import normalize_step_path
 from alla_core.utils.text_normalization import (
     normalize_text,
@@ -101,6 +105,10 @@ class ClusteringConfig:
     # объединяет, между ними решают веса. Разные ошибки корпуса — не выше 0.17, одна ошибка
     # с шумом (потоки, строки, ID, посторонние ошибки) — от 0.39. 0.0 отключает gate.
     log_split_threshold: float = 0.30
+    # Gate по ресурсам: хосты или локаторы одного вида в сообщениях не пересекаются —
+    # сообщения считаются разными (message gate), но одинаковый лог их ещё склеивает
+    # (log override). Выключатель ALLURE_CLUSTERING_RESOURCE_GATE.
+    resource_gate: bool = True
 
     @property
     def distance_threshold(self) -> float:
@@ -446,9 +454,13 @@ class ClusteringService:
             step_docs = [step_documents[i] for i in has_text_indices]
             actuals = [assertion_actuals[i] for i in has_text_indices]
             errors = [log_errors[i] for i in has_text_indices]
+            resources = (
+                [message_resources(failures[i].status_message) for i in has_text_indices]
+                if self._config.resource_gate else None
+            )
             labels = self._cluster_texts(
                 message_docs, trace_docs, log_docs if log_weight_positive else None, step_docs,
-                assertion_actuals=actuals, log_errors=errors,
+                assertion_actuals=actuals, log_errors=errors, resources=resources,
             )
 
             for idx, label in zip(has_text_indices, labels):
@@ -502,6 +514,7 @@ class ClusteringService:
         *,
         assertion_actuals: list[str | None] | None = None,
         log_errors: list[tuple[str, frozenset[str]]] | None = None,
+        resources: list[MessageResources] | None = None,
     ) -> list[int]:
         """Message-first TF-IDF + агломеративная кластеризация.
 
@@ -624,14 +637,20 @@ class ClusteringService:
                         and has_log[j]
                         and log_sim[i, j] >= self._config.similarity_threshold
                     )
-                    if (
+                    # Gate по ресурсам: разные хосты или локаторы — сообщения о разном,
+                    # сколько бы ни совпадало остальное слово в слово.
+                    resources_differ = (
+                        resources is not None and resources[i].differ(resources[j])
+                    )
+                    messages_differ = (
                         message_sim[i, j] < self._config.similarity_threshold
-                        and not log_overrides_gate
-                    ):
+                        or resources_differ
+                    )
+                    if messages_differ and not log_overrides_gate:
                         # Gate по message: если сообщения различаются ниже порога
                         # и лог не override'ит — пара не может быть склеена.
-                        pair_sim = message_sim[i, j]
-                    elif log_overrides_gate and message_sim[i, j] < self._config.similarity_threshold:
+                        pair_sim = 0.0 if resources_differ else message_sim[i, j]
+                    elif log_overrides_gate and messages_differ:
                         # Override по log: message различаются, но лог одинаковый.
                         # Лог становится доминирующим каналом (0.6 log + 0.2 msg + 0.2 trace).
                         assert log_sim is not None

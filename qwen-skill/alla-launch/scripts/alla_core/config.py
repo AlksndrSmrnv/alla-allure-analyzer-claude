@@ -40,6 +40,7 @@ class Settings:
     logs_clustering_weight: float = 0.15
     clustering_step_strict_threshold: float = 0.95
     clustering_log_split_threshold: float = 0.30
+    clustering_resource_gate: bool = True
     llm_prompt_message_max_chars: int = 2000
     llm_prompt_trace_max_chars: int = 400
     llm_prompt_log_max_chars: int = 8000
