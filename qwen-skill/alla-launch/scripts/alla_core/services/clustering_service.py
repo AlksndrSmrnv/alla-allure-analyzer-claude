@@ -35,11 +35,14 @@
    - мягкий step-path штраф работает только для пар выше strict threshold
      (или при отключённом gate) и даёт незначительную поправку.
 6. Агломеративная кластеризация (complete linkage) по итоговой distance.
+7. Счётчики gates (``ClusteringReport.gates``): сколько пар решил каждый gate и сколько
+   пар gate по логу не разделил из-за общей ошибки — только числа, для эталона команды.
 """
 
 import hashlib
 import logging
 import re
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -52,6 +55,7 @@ from sklearn.preprocessing import normalize
 
 from alla_core.models.clustering import (
     ClusterExample,
+    ClusteringGateStats,
     ClusteringReport,
     ClusterSignature,
     FailureCluster,
@@ -369,7 +373,15 @@ class _LogErrorGate:
     TF-IDF — по блокам (вектор лога — сумма счётчиков его блоков, idf по логам прогона), без
     обрезки словаря: у одинаковых документов, все слова которых выпали бы из
     ``max_features``, cosine был бы 0, и gate разделил бы их.
+
+    ``verdict`` различает и пары, которые держит общая ошибка, — для счётчиков gates
+    (``ClusteringGateStats``); решение gate от этого не меняется.
     """
+
+    # Вердикты пары: gate не применим (ошибок нет у одного из логов), логи похожи, разные
+    # ошибки — разделить, держит общий ключ, есть общий блок и у обоих логов свои ошибки
+    # (держит ли он пару, решает held_by_shared).
+    NOT_APPLICABLE, SIMILAR, SPLIT, HELD_BY_KEY, SHARED = range(5)
 
     def __init__(
         self,
@@ -382,11 +394,13 @@ class _LogErrorGate:
         for test_blocks in blocks:
             for block in test_blocks:
                 index.setdefault(block, len(index))
+        self._block_keys = [block.keys for block in index]
         self._sets = [frozenset(index[block] for block in test_blocks)
                       for test_blocks in blocks]
         self._keys = [frozenset().union(*(block.keys for block in test_blocks))
                       for test_blocks in blocks]
         self._similarity: np.ndarray | None = None
+        self._weighted: sparse.csr_matrix | None = None
         if not index:
             return
         vectorizer = CountVectorizer(token_pattern=_TOKEN_RE.pattern, ngram_range=ngram_range,
@@ -395,26 +409,76 @@ class _LogErrorGate:
             counts = sparse.csr_matrix(vectorizer.fit_transform([b.text for b in index]))
         except ValueError:
             return
-        rows = [row for row, members in enumerate(self._sets) for _ in members]
-        columns = [column for members in self._sets for column in members]
-        membership = sparse.csr_matrix(
-            (np.ones(len(rows)), (rows, columns)), shape=(len(blocks), len(index)))
+        membership = self._membership(self._sets, len(index))
         per_test = membership @ counts
         documents = sum(1 for members in self._sets if members)
         frequency = np.asarray((per_test > 0).sum(axis=0)).ravel()
         idf = np.log((1 + documents) / (1 + frequency)) + 1.0
         vectors = normalize(sparse.csr_matrix(per_test.multiply(idf)))
+        # Взвешенные счётчики блоков: остаток лога без общих блоков — сумма своих строк.
+        self._weighted = sparse.csr_matrix(counts.multiply(idf))
         self._similarity = np.asarray((vectors @ vectors.T).todense())
 
-    def differ(self, i: int, j: int) -> bool:
+    @staticmethod
+    def _membership(sets: list[frozenset[int]], width: int) -> sparse.csr_matrix:
+        rows = [row for row, members in enumerate(sets) for _ in members]
+        columns = [column for members in sets for column in members]
+        return sparse.csr_matrix(
+            (np.ones(len(rows)), (rows, columns)), shape=(len(sets), width))
+
+    def verdict(self, i: int, j: int) -> int:
         first, second = self._sets[i], self._sets[j]
-        return (
-            self._similarity is not None
-            and bool(first) and bool(second)
-            and not first & second
-            and not self._keys[i] & self._keys[j]
-            and float(self._similarity[i, j]) < self._threshold
-        )
+        if self._similarity is None or not first or not second:
+            return self.NOT_APPLICABLE
+        if first & second:
+            # Блоки одного лога целиком в другом — разделять нечем и без общих.
+            if first <= second or second <= first:
+                return self.SIMILAR
+            return self.SHARED
+        if float(self._similarity[i, j]) >= self._threshold:
+            return self.SIMILAR
+        if self._keys[i] & self._keys[j]:
+            return self.HELD_BY_KEY
+        return self.SPLIT
+
+    # Пар остатков на одно поэлементное произведение: память — строки пакета, а не всех пар.
+    PAIR_BATCH = 256
+
+    def held_by_shared(self, pairs: list[tuple[int, int]]) -> list[bool]:
+        """Разделил бы gate пары ``SHARED`` без их общих блоков.
+
+        Остатки (свои блоки каждого лога) не должны делить ключ, а их похожесть — тем же
+        TF-IDF, что у gate, — ниже порога. Одинаковые пары остатков (общий фон, повторы
+        ошибок) считаются один раз, произведения — пакетами по ``PAIR_BATCH``.
+        """
+        if not pairs or self._weighted is None:
+            return [False] * len(pairs)
+        remainders: dict[frozenset[int], int] = {}
+        positions: dict[tuple[int, int], list[int]] = {}
+        for position, (i, j) in enumerate(pairs):
+            first = self._sets[i] - self._sets[j]
+            second = self._sets[j] - self._sets[i]
+            first_keys = frozenset().union(*(self._block_keys[b] for b in first))
+            second_keys = frozenset().union(*(self._block_keys[b] for b in second))
+            if first_keys & second_keys:
+                continue
+            rows = sorted((remainders.setdefault(first, len(remainders)),
+                           remainders.setdefault(second, len(remainders))))
+            positions.setdefault((rows[0], rows[1]), []).append(position)
+        held = [False] * len(pairs)
+        if not positions:
+            return held
+        vectors = normalize(sparse.csr_matrix(
+            self._membership(list(remainders), self._weighted.shape[0]) @ self._weighted))
+        unique = list(positions)
+        for start in range(0, len(unique), self.PAIR_BATCH):
+            batch = unique[start:start + self.PAIR_BATCH]
+            similarity = np.asarray(vectors[[a for a, _ in batch]].multiply(
+                vectors[[b for _, b in batch]]).sum(axis=1)).ravel()
+            for pair, value in zip(batch, similarity):
+                for position in positions[pair]:
+                    held[position] = bool(value < self._threshold)
+        return held
 
 
 def _get_failure_correlation(failure: FailedTestSummary) -> str | None:
@@ -472,6 +536,7 @@ class ClusteringService:
     ) -> ClusteringReport:
         """Кластеризовать список ошибок и вернуть ``ClusteringReport``."""
         self._last_condensed: np.ndarray | None = None
+        self._last_gates = ClusteringGateStats()
         if not failures:
             return ClusteringReport(
                 launch_id=launch_id,
@@ -553,6 +618,14 @@ class ClusteringService:
                 cluster_groups.setdefault(label, []).append(idx)
 
         distance = _Distances(has_text_indices, self._last_condensed)
+        # Пары счётчиков — индексы среди падений с текстом; для сверки с разметкой — id тестов.
+        def test_ids(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+            return [(failures[has_text_indices[i]].test_result_id,
+                     failures[has_text_indices[j]].test_result_id) for i, j in pairs]
+        gates = self._last_gates.model_copy(update={
+            "held_test_pairs": test_ids(self._last_gates.held_test_pairs),
+            "override_test_pairs": test_ids(self._last_gates.override_test_pairs),
+        })
         documents = (message_documents, step_documents, log_documents)
 
         # 4. Конвертация в выходные модели
@@ -587,6 +660,7 @@ class ClusteringService:
             cluster_count=len(result_clusters),
             clusters=result_clusters,
             unclustered_count=unclustered,
+            gates=gates,
         )
 
     # --- Кластеризация ---
@@ -653,6 +727,15 @@ class ClusteringService:
             else [False] * n
         )
 
+        # Счётчики gates (ClusteringGateStats): пару засчитывает первый gate, который её решил.
+        assertion_split = step_split = log_pairs = log_split = 0
+        message_split = resource_split = override_resources = 0
+        held_by_key: list[tuple[int, int]] = []
+        shared: list[tuple[int, int]] = []
+        overrides: list[tuple[int, int]] = []
+        log_not_applicable, log_split_verdict = _LogErrorGate.NOT_APPLICABLE, _LogErrorGate.SPLIT
+        log_held_by_key, log_shared = _LogErrorGate.HELD_BY_KEY, _LogErrorGate.SHARED
+
         idx = -1
         for i in range(n):
             for j in range(i + 1, n):
@@ -665,6 +748,7 @@ class ClusteringService:
                     and assertion_actuals[j] is not None
                     and assertion_actuals[i] != assertion_actuals[j]
                 ):
+                    assertion_split += 1
                     if collect_stats:
                         final_min = 0.0
                     continue
@@ -684,6 +768,7 @@ class ClusteringService:
                     and has_step[j]
                     and float(step_sim[i, j]) < self._config.step_path_strict_threshold
                 ):
+                    step_split += 1
                     if collect_stats:
                         final_min = 0.0
                     continue
@@ -691,10 +776,19 @@ class ClusteringService:
                 # Gate по логу: общей ошибки в логах нет и они почти не похожи — разные
                 # ошибки сервиса за одинаковым симптомом (пул БД и NPE за одним 500). Явный отказ от лога (ALLURE_LOGS_CLUSTERING_WEIGHT=0)
                 # выключает и его.
-                if log_gate is not None and log_gate.differ(i, j):
-                    if collect_stats:
-                        final_min = 0.0
-                    continue
+                if log_gate is not None:
+                    verdict = log_gate.verdict(i, j)
+                    if verdict != log_not_applicable:
+                        log_pairs += 1
+                    if verdict == log_split_verdict:
+                        log_split += 1
+                        if collect_stats:
+                            final_min = 0.0
+                        continue
+                    if verdict == log_held_by_key:
+                        held_by_key.append((i, j))
+                    elif verdict == log_shared:
+                        shared.append((i, j))
 
                 if has_message[i] and has_message[j]:
                     # Override по log: если лог-кластеризация включена (weight > 0),
@@ -722,11 +816,17 @@ class ClusteringService:
                     if messages_differ and not log_overrides_gate:
                         # Gate по message: если сообщения различаются ниже порога
                         # и лог не override'ит — пара не может быть склеена.
+                        if message_sim[i, j] < self._config.similarity_threshold:
+                            message_split += 1
+                        else:
+                            resource_split += 1
                         pair_sim = 0.0 if resources_differ else message_sim[i, j]
                     elif log_overrides_gate and messages_differ:
                         # Override по log: message различаются, но лог одинаковый.
                         # Лог становится доминирующим каналом (0.6 log + 0.2 msg + 0.2 trace).
                         assert log_sim is not None
+                        overrides.append((i, j))
+                        override_resources += resources_differ
                         log_pair_sim = float(log_sim[i, j])
                         pair_sim = 0.6 * log_pair_sim + 0.2 * message_sim[i, j]
                         if has_trace[i] and has_trace[j]:
@@ -789,8 +889,30 @@ class ClusteringService:
             t=self._config.distance_threshold,
             criterion="distance",
         )
+        result = [int(label) for label in labels.tolist()]
 
-        return [int(label) for label in labels.tolist()]
+        held = held_by_key + (
+            [pair for pair, kept in zip(shared, log_gate.held_by_shared(shared)) if kept]
+            if log_gate is not None else [])
+        self._last_gates = ClusteringGateStats(
+            pairs=len(condensed),
+            pairs_in_one_problem=sum(size * (size - 1) // 2 for size in Counter(result).values()),
+            assertion_split=assertion_split,
+            step_split=step_split,
+            log_pairs=log_pairs,
+            log_split=log_split,
+            log_held_by_key=len(held_by_key),
+            log_held_by_block=len(held) - len(held_by_key),
+            log_held_merged=sum(result[i] == result[j] for i, j in held),
+            message_split=message_split,
+            resource_split=resource_split,
+            log_override=len(overrides),
+            log_override_resources=override_resources,
+            log_override_merged=sum(result[i] == result[j] for i, j in overrides),
+            held_test_pairs=held,
+            override_test_pairs=overrides,
+        )
+        return result
 
     def _pairwise_similarity(self, documents: list[str]) -> np.ndarray:
         """Матрица cosine similarity по списку документов.

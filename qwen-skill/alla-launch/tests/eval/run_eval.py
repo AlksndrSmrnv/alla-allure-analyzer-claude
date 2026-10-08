@@ -5,6 +5,7 @@
     python tests/eval/run_eval.py --heavy               # плюс большой прогон
     python tests/eval/run_eval.py --write-baseline      # обновить tests/eval/baseline.json
     python tests/eval/run_eval.py --cassette DIR --labels FILE   # только сводка
+    python tests/eval/run_eval.py --cassette DIR                 # gates и размеры, без разметки
     python tests/eval/run_eval.py --analyses RUN_DIR [--labels FILE]  # чек-лист разборов
 
 Настройки — значения скилла по умолчанию: переменные ``ALLURE_*`` из окружения не
@@ -33,6 +34,7 @@ if __package__ in (None, ""):  # запуск файлом: tests/ и scripts/ �
             sys.path.insert(0, str(_path))
 
 import pytest  # noqa: E402
+from alla_core.models.clustering import ClusteringGateStats  # noqa: E402
 from skill_fake_testops import TOKEN, LaunchFixture  # noqa: E402
 
 from eval import corpus_dev, corpus_holdout  # noqa: E402
@@ -45,6 +47,7 @@ from eval.metrics import (  # noqa: E402
     combine,
     coverage,
     evaluate,
+    evaluate_gate_pairs,
     evaluate_kb_offers,
     evaluate_retries,
     kb_offer_records,
@@ -60,12 +63,13 @@ SETS: dict[str, dict[str, Callable[[], Case]]] = {
 
 @dataclass
 class PreparedRun:
-    """Что ``prepare`` показал модели: кластеры, задания, размер и время."""
+    """Что ``prepare`` показал модели: кластеры, задания, размер и время; gates кластеризации."""
 
     run_dir: Path
     clusters: list[ClusterView]
     seconds: float
     triage: dict[str, Any]
+    gates: ClusteringGateStats
 
     @property
     def max_task_chars(self) -> int:
@@ -140,14 +144,24 @@ def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
             visible=tuple(sorted(visible)),
             task_text=text,
         ))
-    return PreparedRun(run_dir, views, seconds, run["triage"])
+    gates = data.clustering.gates if data.clustering else ClusteringGateStats()
+    return PreparedRun(run_dir, views, seconds, run["triage"], gates)
 
 
-def evaluate_fixture(fixture: LaunchFixture, labels: dict[str, Any]) -> dict[str, Any]:
+def evaluate_fixture(fixture: LaunchFixture, labels: dict[str, Any] | None) -> dict[str, Any]:
+    """Метрики прогона; без разметки — только размеры и gates (им разметка не нужна)."""
+    if labels is None:
+        with tempfile.TemporaryDirectory(prefix="alla-eval-") as tmp:
+            prepared = run_prepare(fixture, Path(tmp))
+        return {"tests": sum(len(cluster.members) for cluster in prepared.clusters),
+                "clusters": len(prepared.clusters), "gates": prepared.gates.model_dump(),
+                "max_task_chars": prepared.max_task_chars, "seconds": round(prepared.seconds, 2)}
     validate_labels(fixture, labels)
     with tempfile.TemporaryDirectory(prefix="alla-eval-") as tmp:
         prepared = run_prepare(fixture, Path(tmp))
         result = evaluate(labels, prepared.clusters)
+        result["gates"] = {**prepared.gates.model_dump(), **evaluate_gate_pairs(
+            labels, prepared.gates.held_test_pairs, prepared.gates.override_test_pairs)}
         if labels.get("retries"):
             result.update(evaluate_retries(labels["retries"], prepared.triage))
         records = kb_offer_records(labels)
@@ -224,7 +238,7 @@ def evaluate_cases(
 def baseline_entry(result: dict[str, Any]) -> dict[str, Any]:
     """Метрики для базовой линии: без времени (оно зависит от машины)."""
     return {**summary(result), **retry_summary(result), **kb_offer_summary(result),
-            "max_task_chars": result["max_task_chars"]}
+            "gates": result["gates"], "max_task_chars": result["max_task_chars"]}
 
 
 def kb_offer_summary(result: dict[str, Any]) -> dict[str, int]:
@@ -298,6 +312,10 @@ def print_details(results: dict[str, dict[str, dict[str, Any]]]) -> None:
                       for item in result["lost"]]
             lines += [f"  повторы: {problem}" for problem in result.get("retry_problems", [])]
             lines += [f"  база знаний: {problem}" for problem in result.get("kb_offer_problems", [])]
+            decided = {key: value for key, value in result["gates"].items() if value}
+            if set(decided) - {"pairs", "pairs_in_one_problem"}:
+                lines.append("  gates: " + ", ".join(f"{key} {value}"
+                                                     for key, value in decided.items()))
             if result["unclustered"] or result["unlabeled"]:
                 lines.append(f"  вне кластеров: {result['unclustered']}, "
                              f"без разметки: {result['unlabeled']}")
@@ -354,7 +372,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", type=Path, help="записать полный результат в JSON")
     parser.add_argument("--write-baseline", action="store_true",
                         help=f"записать базовую линию {BASELINE.name} (dev и holdout, с большим прогоном)")
-    parser.add_argument("--cassette", type=Path, help="кассета команды (только сводка)")
+    parser.add_argument("--cassette", type=Path,
+                        help="кассета команды: только сводка из чисел (без --labels — gates и размеры)")
     parser.add_argument("--labels", type=Path, help="labels.json к кассете или разбору")
     parser.add_argument("--analyses", type=Path, help="папка разбора: чек-лист для сверки")
     args = parser.parse_args(argv)
@@ -364,15 +383,16 @@ def main(argv: list[str] | None = None) -> int:
         print(analyses_checklist(args.analyses, labels))
         return 0
     if args.cassette:
-        if labels is None:
-            parser.error("--cassette требует --labels")
         try:
             result = evaluate_fixture(load_cassette(args.cassette), labels)
         except ValueError as exc:
             print(f"Разметка не подходит к кассете: {exc}", file=sys.stderr)
             return 2
+        if labels is None:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
         print(json.dumps({**summary(result), **retry_summary(result), **coverage(result),
-                          "max_task_chars": result["max_task_chars"],
+                          "gates": result["gates"], "max_task_chars": result["max_task_chars"],
                           "seconds": result["seconds"]}, ensure_ascii=False, indent=2))
         if result["unclustered"] or result["unlabeled"]:
             print("Внимание: разметка не совпадает с активными падениями прогона — "

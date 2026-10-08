@@ -4,14 +4,24 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 import skill_fixtures  # noqa: F401  # scripts/ в sys.path
-from skill_fake_testops import default_launch
+from alla_core.models.clustering import ClusteringGateStats
+from skill_fake_testops import LaunchFixture, default_launch
 
-from eval import run_eval
+from eval import corpus_dev, run_eval
 from eval.cassette import save_cassette
-from eval.metrics import ClusterView, combine, evaluate, evaluate_retries, summary
+from eval.metrics import (
+    SUMMARY_KEYS,
+    ClusterView,
+    combine,
+    evaluate,
+    evaluate_gate_pairs,
+    evaluate_retries,
+    summary,
+)
 
 LABELS = {"groups": [
     {"id": "db", "cause": "db-pool", "tests": [1, 2], "evidence": ["HikariPool-1 - timeout"]},
@@ -123,7 +133,83 @@ def test_run_eval_on_a_cassette_prints_only_numbers(
 
     assert result["precision"] == result["recall"] == 1.0
     assert result["evidence_lost"] == 0
-    assert "customer is null" not in out
+    _assert_only_numbers(out, default_launch())
+
+
+# Ключи сводки по кассете: всё, что может уйти за пределы команды, кроме чисел.
+_CASSETTE_KEYS = {*SUMMARY_KEYS, "unclustered", "unlabeled", "gates", "max_task_chars",
+                  "seconds", *ClusteringGateStats().model_dump(), "log_held_same_problem",
+                  "log_held_different_problems", "log_override_same_problem",
+                  "log_override_different_problems"}
+
+
+def _fixture_strings(fixture: LaunchFixture) -> set[str]:
+    """Строки прогона длиннее служебных слов: сообщения, трейсы, имена, строки логов."""
+    found: set[str] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+        elif isinstance(value, str):
+            found.update(line.strip() for line in value.splitlines())
+
+    walk([fixture.launch, fixture.results, fixture.executions, fixture.details,
+          fixture.attachments])
+    for content in fixture.contents.values():
+        walk(content.decode("utf-8", errors="replace"))
+    return {text for text in found if len(text) >= 8}
+
+
+def _assert_only_numbers(out: str, fixture: LaunchFixture) -> None:
+    """Вывод — один JSON из известных ключей и чисел, без строк прогона."""
+    def leaves(value: Any) -> list[Any]:
+        if isinstance(value, dict):
+            assert set(value) <= _CASSETTE_KEYS, set(value) - _CASSETTE_KEYS
+            return [leaf for item in value.values() for leaf in leaves(item)]
+        return [value]
+
+    values = leaves(json.loads(out))
+    assert all(isinstance(value, (int, float)) and not isinstance(value, bool)
+               for value in values)
+    strings = _fixture_strings(fixture)
+    assert strings and not [text for text in strings if text in out]
+
+
+def test_cassette_summary_counts_gates_without_texts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Общий фон держит пары gate по логу; разметка говорит, сколько из них — разное."""
+    case = corpus_dev.CASES["background_log_errors"]()
+    save_cassette(case.fixture, tmp_path / "cassette")
+    (tmp_path / "labels.json").write_text(json.dumps(case.labels), encoding="utf-8")
+
+    assert run_eval.main(["--cassette", str(tmp_path / "cassette")]) == 0
+    unlabeled = capsys.readouterr().out
+    assert run_eval.main(["--cassette", str(tmp_path / "cassette"),
+                          "--labels", str(tmp_path / "labels.json")]) == 0
+    labeled = capsys.readouterr().out
+
+    for out in (unlabeled, labeled):
+        _assert_only_numbers(out, case.fixture)
+    gates = json.loads(unlabeled)["gates"]
+    assert gates["log_held_by_block"] > 0
+    assert "log_held_different_problems" not in gates
+    labeled_gates = json.loads(labeled)["gates"]
+    assert (labeled_gates["log_held_same_problem"] + labeled_gates["log_held_different_problems"]
+            == gates["log_held_by_block"] + gates["log_held_by_key"])
+    assert labeled_gates["log_held_different_problems"] > 0
+    assert {key: labeled_gates[key] for key in gates} == gates
+
+
+def test_gate_pairs_are_checked_against_labels() -> None:
+    counts = evaluate_gate_pairs(LABELS, held=[(1, 2), (1, 3), (5, 6), (1, 99)],
+                                 overrides=[(7, 8)])
+    assert counts == {"log_held_same_problem": 2, "log_held_different_problems": 1,
+                      "log_override_same_problem": 0, "log_override_different_problems": 1}
 
 
 def test_analyses_checklist_pairs_labels_with_model_answers(tmp_path: Path) -> None:

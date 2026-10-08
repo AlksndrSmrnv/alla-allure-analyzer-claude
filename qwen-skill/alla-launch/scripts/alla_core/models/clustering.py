@@ -44,6 +44,35 @@ class FailureCluster(BaseModel):
     examples: list[ClusterExample] = Field(default_factory=list)
 
 
+class ClusteringGateStats(BaseModel):
+    """Сколько пар падений решил каждый gate кластеризации — только числа.
+
+    Пары — среди падений с текстом. Пару засчитывает первый gate, который её решил, в
+    порядке применения: assertion → шаг → лог → сообщение (ресурсы, log override).
+    ``log_held_by_key`` — общего блока нет, общий ключ (корневой класс, код) держит пару с
+    непохожими логами; ``log_held_by_block`` — без общих блоков логи разделились бы (общий
+    фон или общая ошибка — по паре не отличить). ``*_merged`` — из них в одном кластере.
+    """
+
+    pairs: int = 0
+    pairs_in_one_problem: int = 0
+    assertion_split: int = 0
+    step_split: int = 0
+    log_pairs: int = 0
+    log_split: int = 0
+    log_held_by_key: int = 0
+    log_held_by_block: int = 0
+    log_held_merged: int = 0
+    message_split: int = 0
+    resource_split: int = 0
+    log_override: int = 0
+    log_override_resources: int = 0
+    log_override_merged: int = 0
+    # Пары id тестов для сверки с разметкой эталона; в run.json не пишутся.
+    held_test_pairs: list[tuple[int, int]] = Field(default_factory=list, exclude=True)
+    override_test_pairs: list[tuple[int, int]] = Field(default_factory=list, exclude=True)
+
+
 class ClusteringReport(BaseModel):
     """Результат кластеризации всех падений в рамках одного launch."""
 
@@ -52,3 +81,4 @@ class ClusteringReport(BaseModel):
     cluster_count: int
     clusters: list[FailureCluster] = Field(default_factory=list)
     unclustered_count: int = 0
+    gates: ClusteringGateStats = Field(default_factory=ClusteringGateStats)
