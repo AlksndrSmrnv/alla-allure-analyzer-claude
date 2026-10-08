@@ -11,6 +11,7 @@ from alla_core.models.testops import FailedTestSummary
 from alla_core.services.clustering_service import (
     ClusteringConfig,
     ClusteringService,
+    _LogErrorGate,
     _log_error_blocks,
     _extract_assertion_actual,
     _strip_correlation_only_http_sections,
@@ -1425,3 +1426,16 @@ def test_gates_split_counters_never_exceed_pairs() -> None:
                + gates["resource_split"] + gates["log_override"])
     assert 0 < decided <= gates["pairs"] == 15
     assert gates["log_pairs"] <= gates["pairs"]
+
+
+def test_gates_held_by_block_is_the_same_in_small_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Остатки повторяются (три пула и три NPE за одним фоном — одна пара остатков на девять
+    пар тестов) и считаются пакетами: результат от размера пакета не зависит."""
+    other_pool = POOL_LOG.replace("OrderRepository: could not save", "CartRepository: could not load")
+    failures = _orders(*(_log(POOL_LOG, order=index) + REDIS_BACKGROUND_LOG for index in range(3)),
+                       *(_log(NPE_LOG, order=index) + REDIS_BACKGROUND_LOG for index in range(3)),
+                       _log(other_pool) + KAFKA_BACKGROUND_LOG, _log(NPE_LOG) + KAFKA_BACKGROUND_LOG)
+    default = _gates(failures)
+    monkeypatch.setattr(_LogErrorGate, "PAIR_BATCH", 1)
+    assert _gates(failures) == default
+    assert default["log_held_by_block"] >= 9

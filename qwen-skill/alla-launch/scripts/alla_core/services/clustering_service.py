@@ -441,16 +441,20 @@ class _LogErrorGate:
             return self.HELD_BY_KEY
         return self.SPLIT
 
+    # Пар остатков на одно поэлементное произведение: память — строки пакета, а не всех пар.
+    PAIR_BATCH = 256
+
     def held_by_shared(self, pairs: list[tuple[int, int]]) -> list[bool]:
-        """Разделил бы gate пары ``SHARED`` без их общих блоков — одним пакетом.
+        """Разделил бы gate пары ``SHARED`` без их общих блоков.
 
         Остатки (свои блоки каждого лога) не должны делить ключ, а их похожесть — тем же
-        TF-IDF, что у gate, — ниже порога.
+        TF-IDF, что у gate, — ниже порога. Одинаковые пары остатков (общий фон, повторы
+        ошибок) считаются один раз, произведения — пакетами по ``PAIR_BATCH``.
         """
         if not pairs or self._weighted is None:
             return [False] * len(pairs)
         remainders: dict[frozenset[int], int] = {}
-        candidates: list[tuple[int, int, int]] = []
+        positions: dict[tuple[int, int], list[int]] = {}
         for position, (i, j) in enumerate(pairs):
             first = self._sets[i] - self._sets[j]
             second = self._sets[j] - self._sets[i]
@@ -458,19 +462,22 @@ class _LogErrorGate:
             second_keys = frozenset().union(*(self._block_keys[b] for b in second))
             if first_keys & second_keys:
                 continue
-            candidates.append((position,
-                               remainders.setdefault(first, len(remainders)),
-                               remainders.setdefault(second, len(remainders))))
+            rows = sorted((remainders.setdefault(first, len(remainders)),
+                           remainders.setdefault(second, len(remainders))))
+            positions.setdefault((rows[0], rows[1]), []).append(position)
         held = [False] * len(pairs)
-        if not candidates:
+        if not positions:
             return held
         vectors = normalize(sparse.csr_matrix(
             self._membership(list(remainders), self._weighted.shape[0]) @ self._weighted))
-        positions, first_rows, second_rows = (list(column) for column in zip(*candidates))
-        similarity = np.asarray(
-            vectors[first_rows].multiply(vectors[second_rows]).sum(axis=1)).ravel()
-        for position, value in zip(positions, similarity):
-            held[position] = bool(value < self._threshold)
+        unique = list(positions)
+        for start in range(0, len(unique), self.PAIR_BATCH):
+            batch = unique[start:start + self.PAIR_BATCH]
+            similarity = np.asarray(vectors[[a for a, _ in batch]].multiply(
+                vectors[[b for _, b in batch]]).sum(axis=1)).ravel()
+            for pair, value in zip(batch, similarity):
+                for position in positions[pair]:
+                    held[position] = bool(value < self._threshold)
         return held
 
 
