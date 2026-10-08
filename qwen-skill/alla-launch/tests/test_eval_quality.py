@@ -2,7 +2,9 @@
 
 Ухудшение допустимо только осознанно: обновите базовую линию в том же коммите
 (``run_eval.py --write-baseline``) и объясните изменение цифр в сообщении коммита.
-Базовая линия holdout обновляется отдельным коммитом.
+Базовая линия holdout обновляется отдельным коммитом (``--write-baseline --set holdout``) с
+записью в ``holdout_journal.md``. Зелёный результат по holdout — не просмотр; разбор
+упавшего holdout-сценария — просмотр (README эталона, «Правило работы с holdout»).
 """
 
 from __future__ import annotations
@@ -18,7 +20,8 @@ from eval import run_eval
 TOLERANCE = 0.001
 UPDATE_HINT = (
     "Если изменение осознанное — `.venv/bin/python qwen-skill/alla-launch/tests/eval/"
-    "run_eval.py --write-baseline` и цифры в сообщение коммита (подробности — `--details`)."
+    "run_eval.py --write-baseline [--set holdout]` и цифры в сообщение коммита (подробности — "
+    "`--details`; holdout — отдельным коммитом и с записью в журнале просмотров)."
 )
 
 
