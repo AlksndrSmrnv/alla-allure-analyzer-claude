@@ -93,6 +93,7 @@ def test_jul_header_and_severe_line_are_one_event() -> None:
     assert event.level == "SEVERE"
     assert event.lines[0].startswith("Oct 03, 2026 10:00:01 AM")
     assert event.lines[1].startswith("SEVERE: SMTP server rejected")
+    assert event.level_line == 1
     assert "MessagingException" in event.lines[2]
 
 

@@ -286,11 +286,14 @@ def _log_anchor(log: str) -> _LogAnchor:
                     (errors if level in ERROR_LEVELS else plain).append(line)
             continue
         for event in iter_events(body):
-            for index, line in enumerate(_error_lines(event.text)):
-                level_line = index == 0 and event.level in ERROR_LEVELS
+            # Строки события до строки уровня включительно: у JUL причина — во второй
+            # строке («ALERT: database unavailable»), под заголовком «дата класс метод».
+            heading = (set(_error_lines("\n".join(event.lines[:event.level_line + 1])))
+                       if event.level in ERROR_LEVELS else set())
+            for line in _error_lines(event.text):
                 if _CAUSE_HINT_RE.search(line):
                     causes.append(line)
-                elif (level_line or _ERROR_HINT_RE.search(line)) and _has_signal_words(line):
+                elif (line in heading or _ERROR_HINT_RE.search(line)) and _has_signal_words(line):
                     errors.append(line)
                 else:
                     plain.append(line)

@@ -73,6 +73,7 @@ class LogEvent:
     kind: str  # level | traceback | exception | plain
     lines: list[str] = field(default_factory=list)
     closed: bool = False  # Traceback дошёл до строки исключения
+    level_line: int = 0  # индекс строки уровня в ``lines``: у JUL это вторая строка
 
     @property
     def last_line(self) -> int:
@@ -153,6 +154,7 @@ def iter_events(text: str) -> Iterator[LogEvent]:
                 and _TIMESTAMP_RE.match(current.lines[0])):
             current.lines.append(line)  # JUL: «дата класс метод» + «SEVERE: …»
             current.level = jul.group("level")
+            current.level_line = 1
             continue
         current.lines.append(line)
         if current.kind == "traceback" and line.strip() and not line[0].isspace():

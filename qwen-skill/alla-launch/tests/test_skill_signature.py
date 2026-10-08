@@ -109,6 +109,18 @@ def test_level_is_read_by_its_position_in_any_case(line: str) -> None:
             != _signature(ASSERT_500, ASSERT_TRACE, log("disk full")))
 
 
+@pytest.mark.parametrize("level", ["ALERT", "ERR", "CRIT", "EMERG", "SEVERE"])
+def test_jul_level_line_under_the_heading_names_the_cause(level: str) -> None:
+    def log(text: str) -> str:
+        return (f"Oct 03, 2026 10:00:00 AM ru.company.payments.PaymentRepository find\n"
+                f"{level}: {text}\n")
+
+    assert (_signature(ASSERT_500, ASSERT_TRACE, log("database unavailable"))
+            != _signature(ASSERT_500, ASSERT_TRACE, log("disk full")))
+    material = _material(ASSERT_500, ASSERT_TRACE, log("database unavailable"))
+    assert material is not None and f"{level.lower()}: database unavailable" in material
+
+
 def test_lowercase_level_words_in_info_lines_are_not_errors() -> None:
     noise = "2026-10-03 10:00:00 [INFO] alert sent, err counter reset\n"
 
