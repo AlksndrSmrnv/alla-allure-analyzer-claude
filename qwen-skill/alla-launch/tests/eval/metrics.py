@@ -61,10 +61,7 @@ def evaluate(labels: dict[str, Any], clusters: Iterable[ClusterView]) -> dict[st
             cluster_of[test] = cluster
 
     def same_problem(a: int, b: int) -> bool:
-        if group_of[a] == group_of[b]:
-            return True
-        cause = groups[group_of[a]].get("cause")
-        return cause is not None and cause == groups[group_of[b]].get("cause")
+        return _same_problem(groups, group_of, a, b)
 
     precision_sum = recall_sum = 0.0
     scored = 0
@@ -125,6 +122,34 @@ def evaluate(labels: dict[str, Any], clusters: Iterable[ClusterView]) -> dict[st
         "unclustered": unclustered,
         "unlabeled": unlabeled,
     }
+
+
+def _same_problem(groups: dict[str, dict[str, Any]], group_of: dict[int, str],
+                  a: int, b: int) -> bool:
+    """Одна проблема: одна группа симптомов или у групп одна известная ``cause``."""
+    if group_of[a] == group_of[b]:
+        return True
+    cause = groups[group_of[a]].get("cause")
+    return cause is not None and cause == groups[group_of[b]].get("cause")
+
+
+def evaluate_gate_pairs(
+    labels: dict[str, Any],
+    held: Iterable[tuple[int, int]],
+    overrides: Iterable[tuple[int, int]],
+) -> dict[str, int]:
+    """Пары, которые gate по логу не разделил из-за общей ошибки, и пары log override —
+    одна ли это проблема по разметке (как в ``precision``). Пары с тестом без разметки не
+    считаются. Только числа: ``log_held_different_problems`` — фон склеил бы разное."""
+    groups = {group["id"]: group for group in labels["groups"]}
+    group_of = {test: group["id"] for group in labels["groups"] for test in group["tests"]}
+    counts: dict[str, int] = {}
+    for name, pairs in (("log_held", held), ("log_override", overrides)):
+        labeled = [(a, b) for a, b in pairs if a in group_of and b in group_of]
+        same = sum(_same_problem(groups, group_of, a, b) for a, b in labeled)
+        counts[f"{name}_same_problem"] = same
+        counts[f"{name}_different_problems"] = len(labeled) - same
+    return counts
 
 
 SUMMARY_KEYS = (
