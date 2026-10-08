@@ -75,7 +75,7 @@ def test_task_asks_for_consistency_only_with_several_examples() -> None:
            "недостаточно данных"
     assert line in several.splitlines()
     text = " ".join(several.split())
-    for phrase in ("сравни их", "ПРИЧИНУ пиши по первому (типичному) примеру",
+    for phrase in ("сравни их", "в ПРИЧИНЕ назови причину каждого примера",
                    "Наблюдения — из любого примера, с id его куска"):
         assert phrase in text
 

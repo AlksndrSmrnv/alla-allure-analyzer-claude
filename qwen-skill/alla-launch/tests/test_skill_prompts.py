@@ -165,6 +165,21 @@ def test_summary_task_keeps_unknown_causes_unknown() -> None:
     assert "не больше, чем сказано в разборе" in text and "название шага — не результат" in text
 
 
+def test_mixed_group_is_not_summarised_as_one_cause() -> None:
+    # E08 (стенд Qwen): «СОГЛАСОВАННОСТЬ» называла две ошибки, а ПРИЧИНА — одну (NPE), как
+    # и велело задание («ПРИЧИНУ пиши по первому примеру»); сводка начинала с «одна проблема».
+    from alla_skill_lib.cluster_task import build_task_text
+    from alla_skill_lib.report import SUMMARY_TASK
+    task = " ".join(build_task_text(has_symptom=True, has_log=True, low_evidence=False,
+                                    has_kb=False, examples=2).split())
+    assert "в ПРИЧИНЕ назови причину каждого примера" in task
+    assert "не выдавай одну из них за причину всей группы" in task
+    assert "ПРИЧИНУ пиши по первому" not in task
+    summary = " ".join(SUMMARY_TASK.split())
+    assert "«СОГЛАСОВАННОСТЬ: разные проблемы» — не одна проблема" in summary
+    assert "не выдавай одну из них за причину всей проблемы" in summary
+
+
 def test_summary_task_names_a_known_issue_as_one_problem() -> None:
     # Шаг 6: проблемы одной записи базы знаний — одна причина, а не разные сбои.
     from alla_skill_lib.report import SUMMARY_TASK
