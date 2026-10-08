@@ -266,12 +266,14 @@ def same_assertion_db_vs_npe() -> Case:
          "Cannot invoke \"Discount.percent()\" because \"discount\" is null",
          ("createDiscountOrder", "createPromoOrder", "createCouponOrder")),
     ]
-    for group, cause, log, evidence, methods in groups:
+    # Строки кадров у методов одного класса разные: проект стенда (E08) повторяет их.
+    for group_index, (group, cause, log, evidence, methods) in enumerate(groups):
         for index, method in enumerate(methods):
+            line = 40 + (group_index * len(methods) + index) * 7
             builder.add_failure(
                 group, cause=cause, category="приложение", name=method,
                 full_name=f"{test_class}.{method}", message=ASSERT_500,
-                trace=_assert_trace(ASSERT_500, test_class, method, 40 + index * 7),
+                trace=_assert_trace(ASSERT_500, test_class, method, line),
                 step="Отправить запрос POST /orders", log=log, evidence=[evidence],
             )
     return builder.build("same_assertion_db_vs_npe")
@@ -507,14 +509,16 @@ def known_issue_symptoms() -> Case:
         ("catalog-npe", "catalog-price-null", ASSERT_500, "Открыть каталог", CATALOG_NPE_LOG, None,
          ("catalogPage", "catalogSearch")),
     ]
-    for group, cause, message, step, log, trace, methods in cases:
+    # Строки кадров у методов одного класса разные: проект стенда (E10) повторяет их.
+    for group_index, (group, cause, message, step, log, trace, methods) in enumerate(cases):
         evidence = POOL_EVIDENCE if log is PAYMENT_POOL_LOG else (
             "Cannot invoke \"Price.amount()\" because \"price\" is null")
         for index, method in enumerate(methods):
+            line = 30 + (group_index * len(methods) + index) * 9
             builder.add_failure(
                 group, cause=cause, category="приложение", name=method,
                 full_name=f"{test_class}.{method}", message=message,
-                trace=trace or _assert_trace(message, test_class, method, 30 + index * 9),
+                trace=trace or _assert_trace(message, test_class, method, line),
                 step=step, log=log, evidence=[evidence], status="broken" if trace else "failed",
             )
     return builder.build("known_issue_symptoms")

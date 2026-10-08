@@ -49,10 +49,77 @@ CACHE_DIR = Path.home() / ".cache" / "alla-qwen-stand"
 SKILL_IN_PROJECT = Path(".qwen") / "skills" / "alla-launch"
 COPY_IGNORE = shutil.ignore_patterns(
     ".venv", ".env", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "*.pyc")
-PAYMENT_TEST_JAVA = (
-    "package ru.company.payments;\n\npublic class PaymentTest {\n"
-    "    @Test\n    public void payByCard() {\n        payments.pay(card());\n    }\n}\n"
-)
+# Классы и методы корпусов E08–E10 (tests/eval/corpus_dev.py): вызов в методе стоит ровно на
+# строке из кадра стека, иначе модель честно пишет «код расходится с трейсом» и КОД указать
+# нечем. Классы приложения из логов (OrderRepository, DiscountService…) в проекте автотестов
+# не живут и здесь не нужны.
+Member = tuple[str, int | None, str]  # объявление, строка вызова (None — следом), вызов
+
+
+def java_source(package: str, name: str, members: list[Member]) -> str:
+    """Исходник класса: у члена с номером строки вызов стоит ровно на ней (как в кадре стека)."""
+    lines = [f"package {package};", "", f"public class {name} {{"]
+    for declaration, line, call in members:
+        if line is None:
+            lines.append("")
+        elif len(lines) > line - 2:
+            raise ValueError(f"{name}: строка {line} уже занята")
+        else:
+            lines += [""] * (line - 2 - len(lines))
+        lines += [f"    {declaration} {{", f"        {call}", "    }"]
+    return "\n".join([*lines, "}"]) + "\n"
+
+
+def _tests(*members: tuple[str, int | None, str]) -> list[Member]:
+    return [(f"@Test public void {method}()", line, call) for method, line, call in members]
+
+
+STAND_SOURCES: dict[str, str] = {
+    # E08 (same_assertion_db_vs_npe)
+    "orders/OrderApiTest.java": java_source("ru.company.orders", "OrderApiTest", _tests(
+        ("createOrder", 40, "assertEquals(200, orders.create(order()).statusCode());"),
+        ("createBigOrder", 47, "assertEquals(200, orders.create(order(500)).statusCode());"),
+        ("createGiftOrder", 54, "assertEquals(200, orders.create(giftOrder()).statusCode());"),
+        ("createDiscountOrder", 61,
+         "assertEquals(200, orders.create(order().withDiscount(\"SALE10\")).statusCode());"),
+        ("createPromoOrder", 68,
+         "assertEquals(200, orders.create(order().withPromo(\"PROMO\")).statusCode());"),
+        ("createCouponOrder", 75,
+         "assertEquals(200, orders.create(order().withCoupon(\"SPRING\")).statusCode());"),
+    )),
+    # E09 (retries)
+    "cart/CartTest.java": java_source("ru.company.cart", "CartTest", _tests(
+        ("addItem", None, "assertEquals(3, cart.add(\"SKU-1\").size());"),
+        ("cartTotal", 33, "assertEquals(\"300.00\", cart.total());"),
+        ("removeItem", 48, "assertFalse(cart.remove(\"SKU-9\").contains(\"SKU-9\"));"),
+        ("applyCoupon", 61, "assertEquals(10, cart.applyCoupon(\"SPRING\").discountPercent());"),
+        ("checkout", 75, "assertEquals(200, cart.checkout().statusCode());"),
+        ("updateQty", 90, "assertEquals(2, cart.update(\"SKU-3\", 2).quantity(\"SKU-3\"));"),
+    )),
+    "cart/CartClient.java": java_source("ru.company.cart", "CartClient", [
+        ("public Response update(String sku, int quantity)", 40,
+         "return http.put(\"/cart/items/\" + sku, Map.of(\"quantity\", quantity));"),
+    ]),
+    # E10 (known_issue_symptoms); payByCard нужен и сценарию default (A01)
+    "payments/PaymentTest.java": java_source("ru.company.payments", "PaymentTest", _tests(
+        ("payByCard", 30, "assertEquals(200, payments.pay(card()).statusCode());"),
+        ("payBySbp", 39, "assertEquals(200, payments.pay(sbp()).statusCode());"),
+        ("refundFull", None, "payments.refund(paidOrder(), Refund.FULL);"),
+        ("refundPartial", None, "payments.refund(paidOrder(), Refund.partial(100));"),
+        ("paymentStatusUi", None, "paymentPage.open(paidOrder()).status();"),
+        ("paymentStatusMobile", None, "mobilePaymentPage.open(paidOrder()).status();"),
+        ("catalogPage", 84, "assertEquals(200, catalog.open().statusCode());"),
+        ("catalogSearch", 93, "assertEquals(200, catalog.search(\"phone\").statusCode());"),
+    )),
+    "payments/PaymentClient.java": java_source("ru.company.payments", "PaymentClient", [
+        ("public Response refund(long paymentId, Refund refund)", 19,
+         "return http.post(\"/payments/\" + paymentId + \"/refund\", refund);"),
+    ]),
+    "ui/PaymentPage.java": java_source("ru.company.ui", "PaymentPage", [
+        ("public SelenideElement status()", 22,
+         "return $(\"#payment-status\").shouldBe(visible);"),
+    ]),
+}
 PYTHON_RE = re.compile(r"(?:\S*/)?python(?:3(?:\.\d+)?)?")
 SHELL_OPERATORS = set(";&|<>()")
 WRITABLE_RE = re.compile(
@@ -217,7 +284,8 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
     java = project / "src" / "test" / "java" / "ru" / "company"
     write(java / "orders" / "OrderTest.java", ORDER_TEST_JAVA)
     write(java / "auth" / "LoginTest.java", LOGIN_TEST_JAVA)
-    write(java / "payments" / "PaymentTest.java", PAYMENT_TEST_JAVA)
+    for path, text in STAND_SOURCES.items():
+        write(java / path, text)
     # .qwen/tmp пишет сам Qwen Code (аргументы slash-вызова скилла) — это не правка агента.
     write(project / ".gitignore",
           ".qwen/skills/alla-launch/.env\n.qwen/skills/alla-launch/.venv\n.qwen/tmp/\n"

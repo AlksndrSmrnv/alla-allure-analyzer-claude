@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -64,6 +65,33 @@ def test_build_project_is_committed_and_hides_env(tmp_path: Path) -> None:
     status = subprocess.run(["git", "-C", str(project), "status", "--porcelain"],
                             capture_output=True, text=True, check=True).stdout
     assert status == ""
+
+
+FRAME_RE = re.compile(r"at (ru\.company\.[\w.]+)\.(\w+)\((\w+\.java):(\d+)\)")
+
+
+@pytest.mark.parametrize("spec", ["mixed", "retries", "known"])
+def test_stand_project_has_the_code_of_the_corpus_traces(tmp_path: Path, spec: str) -> None:
+    """E08–E10: у каждого теста есть подсказка по full_name, кадр стека указывает на свой метод."""
+    from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
+
+    project = build_project(tmp_path, "http://127.0.0.1:1", venv=None)
+    index = ProjectIndex(project)
+    fixture = build_fixture(spec)
+    finals = [result for result in fixture.results
+              if result.get("fullName") and not result.get("hidden")]
+    assert finals
+    for result in finals:
+        hints = hints_for_cluster(index, [result["fullName"]], [])
+        assert hints and hints[0].line is not None, result["fullName"]
+    text = json.dumps([fixture.results, fixture.details], ensure_ascii=False)
+    sources = project / "src" / "test" / "java"
+    frames = [(path, method, int(line)) for qualified, method, _file, line in FRAME_RE.findall(text)
+              if (path := sources / f"{qualified.replace('.', '/')}.java").is_file()]
+    assert frames
+    for path, method, line in frames:
+        declaration = path.read_text(encoding="utf-8").splitlines()[line - 2]
+        assert f" {method}(" in declaration, (path.name, method, line)
 
 
 SKILL = ".qwen/skills/alla-launch/scripts/alla_skill.py"  # от корня проекта, как пишет модель
