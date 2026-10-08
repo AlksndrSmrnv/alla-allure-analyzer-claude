@@ -90,6 +90,18 @@
       "recall": 1.0,
       "tests": 22
     },
+    "log_noise_one_problem": {
+      "clusters": 2,
+      "evidence_loss": 0.0,
+      "evidence_lost": 0,
+      "evidence_total": 2,
+      "groups": 2,
+      "hidden_groups": 0,
+      "max_task_chars": 9213,
+      "precision": 1.0,
+      "recall": 1.0,
+      "tests": 8
+    },
     "log_traps": {
       "clusters": 3,
       "evidence_loss": 0.0,
@@ -113,6 +125,30 @@
       "precision": 1.0,
       "recall": 1.0,
       "tests": 3
+    },
+    "resources_one_problem": {
+      "clusters": 4,
+      "evidence_loss": 0.0,
+      "evidence_lost": 0,
+      "evidence_total": 4,
+      "groups": 4,
+      "hidden_groups": 0,
+      "max_task_chars": 8613,
+      "precision": 1.0,
+      "recall": 1.0,
+      "tests": 12
+    },
+    "resources_split": {
+      "clusters": 3,
+      "evidence_loss": 0.0,
+      "evidence_lost": 0,
+      "evidence_total": 6,
+      "groups": 6,
+      "hidden_groups": 0,
+      "max_task_chars": 8715,
+      "precision": 0.5,
+      "recall": 1.0,
+      "tests": 12
     },
     "retries": {
       "clusters": 5,
@@ -142,6 +178,18 @@
       "groups": 2,
       "hidden_groups": 0,
       "max_task_chars": 8941,
+      "precision": 0.5,
+      "recall": 1.0,
+      "tests": 6
+    },
+    "same_assertion_two_npes": {
+      "clusters": 1,
+      "evidence_loss": 0.0,
+      "evidence_lost": 0,
+      "evidence_total": 2,
+      "groups": 2,
+      "hidden_groups": 0,
+      "max_task_chars": 8824,
       "precision": 0.5,
       "recall": 1.0,
       "tests": 6
