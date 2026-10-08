@@ -75,7 +75,7 @@ def test_task_asks_for_consistency_only_with_several_examples() -> None:
            "недостаточно данных"
     assert line in several.splitlines()
     text = " ".join(several.split())
-    for phrase in ("сравни их", "в ПРИЧИНЕ назови причину каждого примера",
+    for phrase in ("сравни их", "назови причину каждого примера",
                    "Наблюдения — из любого примера, с id его куска"):
         assert phrase in text
 
@@ -141,6 +141,31 @@ def test_merged_cluster_shows_both_server_errors_and_needs_consistency(
 ])
 def test_short_trace_keeps_the_exception_and_project_frames(trace: str, expected: str | None) -> None:
     assert short_trace(trace) == expected
+
+
+def test_words_of_another_option_are_named_in_the_error() -> None:
+    errors = _errors("СОГЛАСОВАННОСТЬ: разные проблемы — у createOrder одна причина (пул БД), "
+                     "у createPromoOrder другая\n")
+    assert any("«одна причина» и «разные проблемы»" in error for error in errors), errors
+
+
+@pytest.mark.parametrize(("members", "rest_shown"), [(2, False), (3, True)])
+def test_rest_of_the_group_is_mentioned_only_when_it_exists(members: int, rest_shown: bool) -> None:
+    tests = {i: FailedTestSummary(test_result_id=i, name=f"t{i}", status="failed",
+                                  status_message=f"expected: <200> but was: <50{i}>")
+             for i in range(1, members + 1)}
+    cluster = FailureCluster(
+        cluster_id="c", label="x", signature=ClusterSignature(),
+        member_test_ids=list(tests), member_count=members, representative_test_id=1,
+        example_message=tests[1].status_message,
+        examples=[ClusterExample(role="typical", test_result_id=1),
+                  ClusterExample(role="different", test_result_id=2)])
+    task = build_cluster_task_with_sources(
+        cluster=cluster, position=1, total=1, launch_id=1, answer_path="/a.md",
+        next_command="next", tests_by_id=tests, log_snippet=None, full_trace=None, frames=[],
+        hints=[], settings=Settings()).text
+    assert "Примеров в данных: 2" in task
+    assert ("Данные остальных тестов группы в задание не вошли" in task) is rest_shown
 
 
 def _big_test(test_id: int, error: str) -> FailedTestSummary:

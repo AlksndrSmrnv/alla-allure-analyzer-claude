@@ -172,7 +172,7 @@ def test_mixed_group_is_not_summarised_as_one_cause() -> None:
     from alla_skill_lib.report import SUMMARY_TASK
     task = " ".join(build_task_text(has_symptom=True, has_log=True, low_evidence=False,
                                     has_kb=False, examples=2).split())
-    assert "в ПРИЧИНЕ назови причину каждого примера" in task
+    assert "в ПРИЧИНЕ одной строкой назови причину каждого примера" in task
     assert "не выдавай одну из них за причину всей группы" in task
     assert "ПРИЧИНУ пиши по первому" not in task
     summary = " ".join(SUMMARY_TASK.split())

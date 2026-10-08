@@ -292,9 +292,10 @@ def build_cluster_examples_prompt(
         parts.append(f"Данные теста: {examples[0].test_name}")
     if multi:
         roles = ", ".join(example.role for example in examples)
+        rest = ("" if cluster.member_count <= len(examples) else
+                ". Данные остальных тестов группы в задание не вошли (в TestOps они есть)")
         parts.append(f"Примеров в данных: {len(examples)} ({roles}) — тесты группы отличаются, "
-                     "сравни их. Данные остальных тестов группы в задание не вошли (в TestOps "
-                     "они есть)")
+                     f"сравни их{rest}")
     sources: list[PromptSource] = []
     chars = {"message": 0, "trace": 0, "log": 0}
 
