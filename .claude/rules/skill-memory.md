@@ -71,8 +71,8 @@ paths:
   описывает симптом). Список расширяется, только если эталон это показывает
   (`kb_offers_wrong` падает, `kb_offers_found` нет).
 - Исключение-симптом — `is_symptom_exception`: **корневое** исключение трейса (последняя
-  строка исключения без кадров: самый глубокий `Caused by` у Java, последнее исключение у
-  Python) из `SYMPTOM_EXCEPTION_RE` — `java.net.SocketTimeoutException`,
+  строка исключения основной цепочки: самый глубокий `Caused by` у Java, последнее
+  исключение у Python) из `SYMPTOM_EXCEPTION_RE` — `java.net.SocketTimeoutException`,
   `java.net.SocketException` (reset, broken pipe), `java.net.http.HttpTimeoutException`,
   `java.util.concurrent.TimeoutException`; `requests.exceptions`/`httpx`
   `ReadTimeout|ConnectTimeout|Timeout`, `urllib3` `ReadTimeoutError|ConnectTimeoutError`,
@@ -81,7 +81,13 @@ paths:
   `Read timed out`); `ResourceAccessException … Caused by: SocketTimeoutException` — тоже
   симптом, а таймаут, обёрнутый `Caused by: IOException: No space left`, — нет. Не симптомы:
   `ConnectException` (называет хост), UI-ожидания (Selenium `TimeoutException`, Selenide) —
-  их различает локатор. Решает класс корня, а не текст. Список расширяется, только если
+  их различает локатор. Решает класс корня, а не текст.
+- Основная цепочка — `_main_chain`: без кадров и без веток `Suppressed` (JVM печатает
+  `Suppressed:` с отступом, кадры и `Caused by` ветки — внутри, `Caused by` основной
+  цепочки — левее). Иначе `Caused by: IOException` подавленного исключения становился
+  корнем таймаута, а у общего ассерта отменял его. Без отступов ветку не отличить: всё после
+  `Suppressed:` в цепочку не входит. По ней же `is_generic_assertion` ищет `Caused by` и
+  чужие классы. Список расширяется, только если
   эталон это показывает (растёт `signature_shared_wrong`, README эталона, «Сигнатуры»).
 - Почему не «лог всегда» и не «по решениям кластеризации». Всегда — точное узнавание
   ошибки теста, которая сама называет причину (NPE, `IllegalStateException`), зависело бы от

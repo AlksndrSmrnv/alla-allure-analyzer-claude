@@ -84,8 +84,8 @@ _MAX_CODES = 4
 
 _STACK_FRAME_RE = re.compile(r"^\s*(?:at\s+\S+\(|\.\.\.\s+\d+\s+more\b|File \".+\", line \d+)")
 _PYTEST_PREFIX_RE = re.compile(r"^E\s+")
-_CAUSED_BY_RE = re.compile(r"^\s*Caused by:", re.MULTILINE)
 _CAUSED_BY_PREFIX_RE = re.compile(r"^Caused by:\s*")
+_SUPPRESSED_RE = re.compile(r"^Suppressed:")
 _EXCEPTION_LINE_RE = re.compile(r"^[\w$]+(?:\.[\w$]+)*(?:Exception|Error|Throwable)\b")
 _CAUSE_HINT_RE = re.compile(
     r"(?:Caused by|Traceback)\b|\b[\w.$]+(?:Exception|Error)\b", re.IGNORECASE)
@@ -159,15 +159,43 @@ def _error_lines(text: str) -> list[str]:
     return [line for line in lines if line and not _STACK_FRAME_RE.match(line)]
 
 
+def _main_chain(trace: str) -> list[str]:
+    """Строки трейса без кадров и без веток ``Suppressed`` — основная цепочка причин.
+
+    JVM печатает подавленное исключение строкой ``Suppressed:`` с отступом, его кадры и
+    ``Caused by`` — внутри ветки (отступ не меньше), а ``Caused by`` основной цепочки —
+    левее. Ветка кончается на такой строке; без отступов ветку не отличить, и всё после
+    ``Suppressed:`` в цепочку не входит.
+    """
+    lines: list[str] = []
+    branch: int | None = None  # отступ строки Suppressed: открытой ветки
+    for raw in trace.splitlines():
+        line = _PYTEST_PREFIX_RE.sub("", raw.strip())
+        if not line or _STACK_FRAME_RE.match(line):
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        if branch is not None:
+            if not (_CAUSED_BY_PREFIX_RE.match(line) and indent < branch):
+                continue
+            branch = None
+        if _SUPPRESSED_RE.match(line):
+            branch = indent
+            continue
+        lines.append(line)
+    return lines
+
+
 def is_generic_assertion(message: str, trace: str) -> bool:
     """Ошибка — общий ассерт без ``Caused by``: причину называет не она, а лог.
 
     Нужен признак из :data:`GENERIC_ASSERTION_RE` и ни одной строки с классом
     исключения не из этого списка (``ConnectionError`` внутри ``assert …`` — не ассерт).
+    ``Caused by`` и исключения веток ``Suppressed`` не в счёт (:func:`_main_chain`).
     """
-    if _CAUSED_BY_RE.search(trace):
+    chain = _main_chain(trace)
+    if any(_CAUSED_BY_PREFIX_RE.match(line) for line in chain):
         return False
-    lines = _error_lines(message) + _error_lines(trace)
+    lines = _error_lines(message) + chain
     if not GENERIC_ASSERTION_RE.search("\n".join(lines)):
         return False
     return not any(_EXCEPTION_LINE_RE.match(line) and not GENERIC_ASSERTION_RE.match(line)
@@ -175,9 +203,10 @@ def is_generic_assertion(message: str, trace: str) -> bool:
 
 
 def _root_exception(trace: str) -> str | None:
-    """Корневое исключение трейса: последняя строка исключения без кадров — самый глубокий
-    ``Caused by`` у Java, последнее исключение у Python."""
-    lines = (_CAUSED_BY_PREFIX_RE.sub("", line) for line in _error_lines(trace))
+    """Корневое исключение трейса: последняя строка исключения основной цепочки — самый
+    глубокий ``Caused by`` у Java (ветки ``Suppressed`` не в счёт), последнее исключение у
+    Python."""
+    lines = (_CAUSED_BY_PREFIX_RE.sub("", line) for line in _main_chain(trace))
     roots = [line for line in lines
              if _EXCEPTION_LINE_RE.match(line) or SYMPTOM_EXCEPTION_RE.match(line)]
     return roots[-1] if roots else None

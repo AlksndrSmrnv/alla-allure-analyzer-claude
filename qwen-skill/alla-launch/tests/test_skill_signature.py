@@ -294,6 +294,40 @@ def test_symptom_exception_takes_the_log_errors(message: str, trace: str) -> Non
     assert material is not None and material.splitlines()[0].endswith("+log")
 
 
+# Ветка Suppressed (try-with-resources): JVM печатает её с отступом таба, и её Caused by —
+# тоже; Caused by основной цепочки — без отступа.
+SUPPRESSED = ("\tSuppressed: java.lang.IllegalStateException: stream close failed\n"
+              "\t\tat ru.company.reports.ReportClient.close(ReportClient.java:44)\n"
+              "\tCaused by: java.io.IOException: Broken pipe\n"
+              "\t\t... 4 more\n")
+
+
+@pytest.mark.parametrize(("trace", "root_is_symptom"), [
+    (TIMEOUT_TRACE + SUPPRESSED, True),
+    # Основная цепочка после ветки: корень — её Caused by, а не причина подавленного.
+    ("com.example.export.ExportException: Export job 9 failed\n\tat a.B.c(B.java:1)\n"
+     + SUPPRESSED + "Caused by: java.net.SocketTimeoutException: Read timed out\n"
+     "\t... 3 more\n", True),
+    ("com.example.export.ExportException: Export job 9 failed\n\tat a.B.c(B.java:1)\n"
+     "Caused by: java.net.SocketTimeoutException: Read timed out\n\tat a.B.d(B.java:2)\n"
+     + SUPPRESSED, True),
+    (TIMEOUT_TRACE + SUPPRESSED + "Caused by: java.io.IOException: No space left on device\n",
+     False),
+])
+def test_suppressed_branch_is_not_the_root(trace: str, root_is_symptom: bool) -> None:
+    assert is_symptom_exception(trace) is root_is_symptom
+    pool = _signature(TIMEOUT, trace, PAYMENT_POOL_LOG)
+    assert (pool != _signature(TIMEOUT, trace, CATALOG_NPE_LOG)) is root_is_symptom
+
+
+def test_suppressed_cause_does_not_cancel_a_generic_assertion() -> None:
+    trace = ASSERT_TRACE.rstrip("\n") + "\n" + SUPPRESSED
+
+    assert is_generic_assertion(ASSERT_500, trace)
+    assert _signature(ASSERT_500, trace, PAYMENT_POOL_LOG) != _signature(
+        ASSERT_500, trace, CATALOG_NPE_LOG)
+
+
 def test_shared_background_does_not_make_different_errors_one_signature() -> None:
     background = ("2026-10-03 10:00:00 [ERROR] HealthCheck: redis ping failed\n"
                   "redis.clients.jedis.exceptions.JedisConnectionException: Read timed out\n")
