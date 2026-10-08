@@ -226,27 +226,27 @@ def test_discover_kb_dirs_skips_service_and_build_folders(tmp_path: Path) -> Non
 
 def test_history_recurrence_is_per_module() -> None:
     history = [
-        {"date": "2026-09-20", "launch_id": 1, "signature": "v6:a", "module": "orders"},
-        {"date": "2026-09-21", "launch_id": 2, "signature": "v6:a", "module": "auth"},
-        {"date": "2026-09-22", "launch_id": 3, "signature": "v6:a"},  # запись без модуля — корень
+        {"date": "2026-09-20", "launch_id": 1, "signature": "v7:a", "module": "orders"},
+        {"date": "2026-09-21", "launch_id": 2, "signature": "v7:a", "module": "auth"},
+        {"date": "2026-09-22", "launch_id": 3, "signature": "v7:a"},  # запись без модуля — корень
         {"date": "2026-09-23", "launch_id": 4, "kb_entry": "kb_1", "module": "orders"},
     ]
 
-    orders = recurrence(history, launch_id=9, signature="v6:a", kb_ids={"kb_1"}, module="orders")
+    orders = recurrence(history, launch_id=9, signature="v7:a", kb_ids={"kb_1"}, module="orders")
     assert orders == {"launches": 2, "first_date": "2026-09-20", "last_date": "2026-09-23"}
-    auth = recurrence(history, launch_id=9, signature="v6:a", kb_ids=set(), module="auth")
+    auth = recurrence(history, launch_id=9, signature="v7:a", kb_ids=set(), module="auth")
     assert auth == {"launches": 1, "first_date": "2026-09-21", "last_date": "2026-09-21"}
-    root = recurrence(history, launch_id=9, signature="v6:a", kb_ids=set())
+    root = recurrence(history, launch_id=9, signature="v7:a", kb_ids=set())
     assert root == {"launches": 1, "first_date": "2026-09-22", "last_date": "2026-09-22"}
-    assert recurrence(history, launch_id=9, signature="v6:a", kb_ids=set(), module="other") is None
+    assert recurrence(history, launch_id=9, signature="v7:a", kb_ids=set(), module="other") is None
 
 
 def test_history_records_carry_the_module() -> None:
     run = {
         "launch_id": 5, "created_at": "2026-09-30T10:00:00",
         "clusters": [
-            {"file_id": "01", "signature": "v6:a", "label": "x", "member_count": 1, "module": "orders"},
-            {"file_id": "02", "signature": "v6:b", "label": "y", "member_count": 1},  # старый разбор
+            {"file_id": "01", "signature": "v7:a", "label": "x", "member_count": 1, "module": "orders"},
+            {"file_id": "02", "signature": "v7:b", "label": "y", "member_count": 1},  # старый разбор
         ],
     }
 

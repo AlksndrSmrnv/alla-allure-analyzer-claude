@@ -9,10 +9,6 @@ import pytest
 from skill_fixtures import without_libmagic  # noqa: F401
 from test_core_log_events import OLD_FORMAT_LOGS, _old_extract_error_blocks
 
-from alla_core.knowledge.feedback_signature import (
-    build_feedback_cluster_context,
-    get_cluster_feedback_sources,
-)
 from alla_core.models.clustering import ClusterSignature, FailureCluster
 from alla_core.models.testops import AttachmentMeta, FailedTestSummary
 from alla_core.services.clustering_service import _build_log_document
@@ -30,6 +26,7 @@ from alla_core.utils.log_events import (
 from alla_core.utils.log_focus import focus_log
 from alla_core.utils.log_utils import parse_log_sections
 from alla_core.utils.text_normalization import numeric_codes
+from alla_skill_lib.signature import cluster_signature, cluster_sources, signature_material
 from eval import corpus_dev
 
 REPEATED = "".join(
@@ -66,9 +63,11 @@ def _cluster() -> FailureCluster:
 
 
 def _signature(summary: FailedTestSummary) -> tuple[str, str]:
-    context = build_feedback_cluster_context(_cluster(), {1: summary})
-    assert context is not None
-    return context.base_issue_signature.signature_hash, context.audit_text
+    """Сигнатура и её материал (нормализованный, в нижнем регистре)."""
+    signature = cluster_signature(_cluster(), {1: summary})
+    material = signature_material(_cluster(), {1: summary})
+    assert signature is not None and material is not None
+    return signature, material
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +153,7 @@ def test_marks_stay_out_of_signature_evidence_and_clustering() -> None:
 
     assert "[строк" in summary.log_snippet
     assert _signature(summary) == _signature(stripped)
-    _message, _trace, evidence = get_cluster_feedback_sources(_cluster(), {1: summary})
+    _message, _trace, evidence = cluster_sources(_cluster(), {1: summary})
     assert "[строк" not in evidence and "giving up on order" in evidence
     document = _build_log_document(summary, head_lines=50, tail_lines=50)
     assert document == _build_log_document(stripped, head_lines=50, tail_lines=50)
@@ -162,7 +161,7 @@ def test_marks_stay_out_of_signature_evidence_and_clustering() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Сигнатура (v6)
+# Сигнатура
 # ---------------------------------------------------------------------------
 
 
@@ -193,11 +192,10 @@ def test_signature_does_not_depend_on_repeat_count() -> None:
 ])
 def test_new_formats_sign_by_the_found_error(log: str, line: str) -> None:
     summary = _enrich({"app.log": log}, status_message="request failed")
-    context = build_feedback_cluster_context(_cluster(), {1: summary})
+    material = _signature(summary)[1]
 
-    assert context is not None
-    assert context.base_issue_signature.basis == "message_log_anchor"
-    assert line in context.audit_text.split("[log]", 1)[1]
+    assert material.startswith("message+log\n")
+    assert line.casefold() in material.split("---", 1)[1]
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +229,7 @@ def test_repeats_with_different_ids_do_not_crowd_out_other_anchor_lines() -> Non
     eight = _enrich({"app.log": log(8)}, status_message="request failed")
 
     assert _signature(once)[0] == _signature(eight)[0]
-    assert "ZooService connection refused" in _signature(eight)[1]
+    assert "zooservice connection refused" in _signature(eight)[1]
 
 
 def test_long_source_mark_survives_block_shrinking() -> None:
@@ -325,4 +323,4 @@ def test_thread_names_do_not_change_the_signature(first: str, second: str) -> No
 
     assert _signature(one)[0] == _signature(other)[0]
     assert _signature(one)[0] != _signature(different)[0]
-    assert "<THREAD>" in _signature(one)[1]
+    assert "<thread>" in _signature(one)[1]

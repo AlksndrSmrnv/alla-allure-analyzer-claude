@@ -17,7 +17,7 @@ _LOG_SECTION_RE = re.compile(
 
 # Единый реестр correlation-ключей: новая запись lowercase -> display
 # автоматически подхватывается regex-ами, JSON-recursion и сортировкой.
-# При расширении списка проверьте также feedback_signature.py:_GENERIC_LOG_WORDS,
+# При расширении списка проверьте также text_normalization.NON_CODE_PREFIXES (сигнатура),
 # где похожие токены фильтруются для другой, независимой логики.
 _CANONICAL_CORRELATION_KEYS = {
     "operuid": "operUID",

@@ -25,8 +25,8 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | `SKILL.md`, `references/` | сценарий и правила для модели, форматы её файлов, протокол, установка |
 | `agents/alla-batch.md` | свой субагент Qwen для пакетов кластеров; `prepare` ставит его в `.qwen/agents/` проекта |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` скилла |
-| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `batch_task`, `agent_rules`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `kb`, `modules`, `feedback`, `history`, `proposals`, `errors` |
-| `scripts/alla_core/` | ядро: клиент TestOps, триаж, логи, кластеризация, блок «Данные», сигнатура |
+| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `batch_task`, `agent_rules`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors` |
+| `scripts/alla_core/` | ядро: клиент TestOps, триаж, логи, кластеризация, блок «Данные» |
 | `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
 | `tests/eval/` | эталон точности: кассеты прогонов (`record.py` пишет у команды), размеченный корпус dev/holdout, метрики склеек, дробления, скрытых групп и потери доказательств (`run_eval.py`), см. `README.md` там же |
 
@@ -99,7 +99,7 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 |---|---|---|
 | `skill-protocol.md` | команды, статусы, `prepare`, пакетный разбор, правила исполнителя, справочники | `SKILL.md`, `references/`, `alla_skill.py`, `cli.py`, `workspace.py`, `batch_task.py`, `agent_rules.py`, `errors.py` |
 | `skill-analysis.md` | задание кластера, источники, разбор модели, отчёт, краткий разбор, сводка, известные проблемы | `cluster_task.py`, `sources.py`, `analysis_format.py`, `code_hints.py`, `report.py`, `known_issues.py`, `prompt_builder_service.py`, `log_focus.py` |
-| `skill-memory.md` | база знаний, сигнатура, модули, обратная связь, история | `kb.py`, `modules.py`, `feedback.py`, `history.py`, `alla_core/knowledge/` |
+| `skill-memory.md` | база знаний, сигнатура, модули, обратная связь, история | `kb.py`, `signature.py`, `modules.py`, `feedback.py`, `history.py` |
 | `skill-proposals.md` | предложения правок, `apply`/`revert`, состояние применения | `proposals.py` |
 | `core.md` | ядро: сбор данных, отбор логов, кластеризация, клиент TestOps, настройки `ALLURE_*` | `alla_core/`, `pipeline.py` |
 

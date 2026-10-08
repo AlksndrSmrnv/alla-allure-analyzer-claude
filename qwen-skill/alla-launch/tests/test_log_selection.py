@@ -143,7 +143,7 @@ def test_generated_markers_do_not_change_feedback_anchor_but_raw_markers_do():
     assert cluster_signature(_cluster(), {1: raw}) != baseline
 
 
-def test_untruncated_full_model_json_roundtrip_preserves_v5_signature():
+def test_untruncated_full_model_json_roundtrip_preserves_signature():
     summary = _enrich(["backend pool exhausted"], status_message="request failed")
     cluster = _cluster()
     triage = TriageReport(launch_id=1, total_results=1, failed_count=1, broken_count=0,
