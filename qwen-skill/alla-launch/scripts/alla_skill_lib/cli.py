@@ -97,6 +97,7 @@ from alla_skill_lib.proposals import (
     revert_proposal,
     validate_proposal,
 )
+from alla_skill_lib.session_log import note_session
 from alla_skill_lib.report import (
     build_summary_data,
     build_summary_task,
@@ -422,6 +423,7 @@ def cmd_prepare(
     paths = ws.create_run_dir(reports_dir, launch_id, datetime.now())
     run = _write_run(paths, data, settings, project_root)
     ws.remember_last_run(reports_dir, paths)
+    _note_session(paths)
 
     status, body = next_step(paths)
     counts = run["counts"]
@@ -459,6 +461,7 @@ def _resume(paths: ws.RunPaths, launch_id: int, reports_dir: Path) -> int:
     """Продолжить неоконченный разбор вместо нового: выгрузка не повторяется."""
     run = ws.read_json(paths.run_json)
     ws.remember_last_run(reports_dir, paths)
+    _note_session(paths)
     status, body = next_step(paths)
     name = f" «{run['launch_name']}»" if run.get("launch_name") else ""
     print(f"STATUS: {status}")
@@ -659,6 +662,7 @@ def cmd_next(run_dir: str | None, reports_dir: Path, workers: int | None = None)
         state.pop("batched", None)
         state.pop("wave", None)
         ws.write_json(paths.state_json, state)
+    _note_session(paths)
     status, body = next_step(paths)
     run = ws.read_json(paths.run_json)
     name = f" «{run['launch_name']}»" if run.get("launch_name") else ""
@@ -820,6 +824,13 @@ REJECTED_NOT_PROPOSED = (
 MIXED_GROUP_NOT_PROPOSED = (
     "в группе, похоже, несколько проблем — одна правка на все тесты не предлагается"
 )
+
+
+def _note_session(paths: ws.RunPaths) -> None:
+    """Запомнить сеанс Qwen Code, из которого идёт разбор: по нему ``review`` найдёт журнал."""
+    state = _read_state(paths)
+    if note_session(state):
+        ws.write_json(paths.state_json, state)
 
 
 def _read_state(paths: ws.RunPaths) -> dict[str, Any]:
