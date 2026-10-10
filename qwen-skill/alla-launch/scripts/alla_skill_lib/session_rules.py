@@ -411,18 +411,25 @@ def check_no_code_search(ctx: RuleContext) -> dict[str, Any]:
     return ok()
 
 
+def hinted_files(task_text: str, project: Path) -> list[Path]:
+    """Файлы из раздела «Где искать код автотеста» задания кластера, в порядке задания."""
+    section = task_text.partition(HINTS_HEADING)[2]
+    files: list[Path] = []
+    for line in section.strip("\n").split("\n\n", 1)[0].splitlines():
+        location = line.removeprefix("- ").split(" — ", 1)[0]
+        if line.startswith("- ") and " — " in line and not location.startswith("не найден"):
+            path = canonical(project / re.sub(r":\d+$", "", location))
+            if path not in files:
+                files.append(path)
+    return files
+
+
 def listed_code(ctx: RuleContext) -> set[Path]:
     """Файлы из разделов «Где искать код автотеста» всех заданий кластеров."""
     project = canonical(ctx.project)
-    listed: set[Path] = set()
-    for run_dir in ctx.run_dirs:
-        for task in sorted((run_dir / "clusters").glob("*.md")):
-            section = task.read_text(encoding="utf-8").partition(HINTS_HEADING)[2]
-            for line in section.strip("\n").split("\n\n", 1)[0].splitlines():
-                location = line.removeprefix("- ").split(" — ", 1)[0]
-                if line.startswith("- ") and " — " in line and not location.startswith("не найден"):
-                    listed.add(canonical(project / re.sub(r":\d+$", "", location)))
-    return listed
+    return {path for run_dir in ctx.run_dirs
+            for task in sorted((run_dir / "clusters").glob("*.md"))
+            for path in hinted_files(task.read_text(encoding="utf-8"), project)}
 
 
 def check_listed_code_only(ctx: RuleContext) -> dict[str, Any]:

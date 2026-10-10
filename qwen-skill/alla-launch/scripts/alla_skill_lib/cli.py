@@ -10,11 +10,14 @@
 * ``skip NN`` — пропустить кластер по просьбе пользователя;
 * ``remember NN`` / ``reject NN <id>`` — обратная связь в базу знаний проекта;
 * ``apply NN [--yes --diff ХЭШ] [--repeat]`` / ``revert NN`` — показать, применить или откатить правку автотеста;
-* ``check`` — проверить окружение и доступ к TestOps; ``clean`` — удалить старые разборы.
+* ``check`` — проверить окружение и доступ к TestOps; ``clean`` — удалить старые разборы;
+* ``review [--run DIR] [--no-model]`` — проверка законченного разбора для пилота (только по
+  явной просьбе): факты из папки и журнала сеанса Qwen, оценка диагнозов моделью с чистым
+  контекстом, ``review/report.md`` и сводка без данных прогона ``review/pilot-summary.md``.
 
 Первая строка вывода всегда ``STATUS: <статус>``:
 analyze | analyze_batch | fix | propose | summary | done | diff | applied | reverted | saved |
-ok | ready | error.
+ok | ready | reviewed | error.
 Код возврата 0 всегда, кроме ``error``: статус с инструкцией — не авария.
 """
 
@@ -214,6 +217,8 @@ def _dispatch(argv: list[str] | None) -> int:
         )
     if args.command == "verify":
         return cmd_verify(args.run, args.clusters, reports_dir)
+    if args.command == "review":
+        return cmd_review(args.run_dir or args.run, reports_dir, use_model=not args.no_model)
     if args.command == "check":
         return cmd_check(project_root, reports_dir)
     if args.command == "clean":
@@ -308,6 +313,16 @@ def _build_parser() -> argparse.ArgumentParser:
     check_run.add_argument("clusters", nargs="+", help="номера проблем из пакета: 3 или 03")
     commands.add_parser(
         "check", parents=[common], help="проверить окружение, настройки и доступ к TestOps"
+    )
+    review = commands.add_parser(
+        "review", parents=[common],
+        help="проверить законченный разбор (пилот): отчёт о ходе и качестве и сводка без данных",
+    )
+    review.add_argument("run_dir", nargs="?", help="папка разбора (по умолчанию последняя)")
+    review.add_argument("--run", help="то же, что позиционная папка разбора")
+    review.add_argument(
+        "--no-model", action="store_true",
+        help="без оценки диагнозов моделью: только факты из папки разбора и журнала сеанса",
     )
     cleaner = commands.add_parser("clean", parents=[common], help="удалить старые папки разборов")
     cleaner.add_argument(
@@ -637,6 +652,38 @@ def _member_full_names(
         key=lambda test_id: test_id != cluster.representative_test_id,
     )
     return (tests_by_id[test_id].full_name or "" for test_id in member_ids if test_id in tests_by_id)
+
+
+# ---------------------------------------------------------------------------
+# review
+# ---------------------------------------------------------------------------
+
+
+def cmd_review(run_dir: str | None, reports_dir: Path, *, use_model: bool = True) -> int:
+    """Проверка законченного разбора. Сеанс не запоминается: проверка — не часть разбора."""
+    from alla_skill_lib import review
+
+    try:
+        paths = ws.resolve_run(run_dir, reports_dir)
+    except ws.RunNotFoundError as exc:
+        print("STATUS: error")
+        print(exc)
+        return 1
+    facts = review.collect_facts(paths)
+    if use_model:
+        _progress("Оценка диагнозов моделью с чистым контекстом — до нескольких минут…")
+    facts["assessment"] = review.assess(paths, facts) if use_model else None
+    facts["grades"] = review.grades(facts)
+    report, summary = review.write_review(paths, facts)
+    run = facts["run"]
+    name = f" «{run['launch_name']}»" if run["launch_name"] else ""
+    print("STATUS: reviewed")
+    print(f"Прогон #{run['launch_id']}{name} · папка {paths.root}")
+    print("===ОТЧЁТ===")
+    print(review.render_console(facts, report, summary))
+    print("===КОНЕЦ===")
+    print("Выведи пользователю текст между ===ОТЧЁТ=== и ===КОНЕЦ=== дословно; разбор заново не начинай.")
+    return 0
 
 
 # ---------------------------------------------------------------------------

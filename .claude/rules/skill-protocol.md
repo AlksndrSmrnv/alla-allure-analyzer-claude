@@ -8,10 +8,17 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/batch_task.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/agent_rules.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/errors.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/session_rules.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/session_log.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/review.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/review_model.py"
   - "qwen-skill/alla-launch/tests/test_skill_protocol.py"
   - "qwen-skill/alla-launch/tests/test_skill_parallel.py"
   - "qwen-skill/alla-launch/tests/test_skill_flow.py"
   - "qwen-skill/alla-launch/tests/test_skill_docs.py"
+  - "qwen-skill/alla-launch/tests/test_skill_review.py"
+  - "qwen-skill/alla-launch/tests/test_skill_session_log.py"
+  - "qwen-skill/alla-launch/tests/qwen_stand.py"
 ---
 
 # Протокол скилла: команды, статусы, пакетный разбор, правила исполнителя
@@ -27,6 +34,7 @@ paths:
 
 `prepare <id|URL> [--fresh]`, `next [run_dir | --run DIR] [--workers N | --serial]`,
 `verify N [N…] --run DIR`, `skip N --run DIR`, `check`, `clean`,
+`review [run_dir | --run DIR] [--no-model]`,
 `apply N --run DIR [--yes --diff ХЭШ] [--repeat]`, `revert N --run DIR`,
 `remember N --run DIR [--entry ID] [--from-analysis]`, `reject N <id> --run DIR`.
 
@@ -38,7 +46,7 @@ paths:
 ## Статусы и коды возврата
 
 - Первая строка вывода — `STATUS: analyze|analyze_batch|fix|propose|summary|done|diff|
-  applied|reverted|saved|ok|ready|setup_required|error`.
+  applied|reverted|saved|ok|ready|reviewed|setup_required|error`.
 - Ошибка аргументов и любое необработанное исключение тоже дают `STATUS: error`.
 - Код возврата 0 у всех статусов, кроме `error`: статус с инструкцией — не авария.
 
@@ -114,3 +122,38 @@ paths:
 - Ответ `fix` на предпоследней попытке предупреждает, что третья версия разбора будет
   принята с пометкой «формат нарушен».
 - `errors.py` — подсказки по сбоям выгрузки: токен, TLS, таймаут, лимит страниц, 404.
+
+## Проверка разбора для пилота (`review`, `review.py`, `review_model.py`)
+
+- Выключена по умолчанию и на разбор не влияет: ни задания, ни ответы `next`, ни правила
+  исполнителя о ней не говорят. В `SKILL.md` — только раздел 6 «по прямой просьбе»; из
+  терминала пилот запускает её без модели разбора. Новый справочник для неё не заводить:
+  `test_skill_docs` требует ссылку на каждый справочник из `SKILL.md`, описание — в
+  `setup.md` («Пилот: проверка разбора»).
+- Журнал сеанса: Qwen Code ≥ 0.25 пишет `<QWEN_HOME|~/.qwen>/projects/<sanitizeCwd>/chats/
+  <сеанс>.jsonl` и `subagents/<сеанс>/agent-*.jsonl`, shell-командам передаёт
+  `QWEN_CODE_SESSION_ID`/`QWEN_CODE_PROJECT_DIR`. `prepare` (новый и продолжение) и `next`
+  пишут их в `state.json` (`sessions`, до 20; `qwen_project_dir`) — `session_log.note_session`.
+  `review` сеанс не запоминает. Окно разбора — от первой команды скилла с папкой разбора в
+  выводе до последнего `done` с ней и финального текста до следующей реплики пользователя;
+  команды `review` в окно не входят. У shell в журнале вывод обёрнут `Command:`/`Output:` —
+  берётся `resultDisplay.output`, иначе вырезается из `Output:`.
+- Правила поведения (`shell_only_skill_commands`, `no_code_search`, `listed_code_only`,
+  `allowed_reads`, `allowed_writes`, `report_verbatim`) — одна реализация в
+  `session_rules.py` для стенда и `review`; стенд оборачивает их под прежними именами.
+  Меняя правило, проверь оба: `test_qwen_stand.py` и `test_skill_session_log.py`.
+- Оценка хода — коды причин `review.REASONS`; `сбой` — `not_done`, `status_error`,
+  `traceback`; `no_journal` и `fix_attempts` оценку не снижают. Пороги качества —
+  `GOOD_CONFIRMED_SHARE`, `GOOD_MAX_CATEGORY_DISAGREE`, `FAIR_CONFIRMED_SHARE`; меняя их или
+  причины, правь таблицу в `setup.md`.
+- Проверяющая модель — отдельный процесс `qwen` (`ALLA_REVIEW_QWEN` или PATH): пустая
+  временная папка, `--approval-mode plan`, `--json-schema`, `--system-prompt`, окружение без
+  `QWEN_CODE_*` (иначе запись ушла бы в журнал родителя). Таблица категорий берётся из
+  `references/analysis-format.md` (`categories_table`), а не копией. Оцениваются
+  `MAX_REVIEWED` (10) крупнейших по тестам проблем, разобранных моделью; оценки незапрошенных
+  номеров отбрасываются. Нет `qwen`, тайм-аут (код 55), мусор — отчёт без оценки с
+  `error_code`.
+- `pilot-summary.md` — только числа, коды причин, имена проверок и фиксированные слова; имя
+  модели и версия проходят через `_safe_word`, причина без оценки — только `error_code`.
+  Новое поле в сводке — только из этих источников; утечку охраняет
+  `test_pilot_summary_has_no_run_data`.
