@@ -10,11 +10,14 @@
 * ``skip NN`` — пропустить кластер по просьбе пользователя;
 * ``remember NN`` / ``reject NN <id>`` — обратная связь в базу знаний проекта;
 * ``apply NN [--yes --diff ХЭШ] [--repeat]`` / ``revert NN`` — показать, применить или откатить правку автотеста;
-* ``check`` — проверить окружение и доступ к TestOps; ``clean`` — удалить старые разборы.
+* ``check`` — проверить окружение и доступ к TestOps; ``clean`` — удалить старые разборы;
+* ``review [--run DIR] [--no-model]`` — проверка законченного разбора для пилота (только по
+  явной просьбе): факты из папки и журнала сеанса Qwen, оценка диагнозов моделью с чистым
+  контекстом, ``review/report.md`` и сводка без данных прогона ``review/pilot-summary.md``.
 
 Первая строка вывода всегда ``STATUS: <статус>``:
 analyze | analyze_batch | fix | propose | summary | done | diff | applied | reverted | saved |
-ok | ready | error.
+ok | ready | reviewed | error.
 Код возврата 0 всегда, кроме ``error``: статус с инструкцией — не авария.
 """
 
@@ -97,6 +100,7 @@ from alla_skill_lib.proposals import (
     revert_proposal,
     validate_proposal,
 )
+from alla_skill_lib.session_log import note_session
 from alla_skill_lib.report import (
     build_summary_data,
     build_summary_task,
@@ -213,6 +217,8 @@ def _dispatch(argv: list[str] | None) -> int:
         )
     if args.command == "verify":
         return cmd_verify(args.run, args.clusters, reports_dir)
+    if args.command == "review":
+        return cmd_review(args.run_dir or args.run, reports_dir, use_model=not args.no_model)
     if args.command == "check":
         return cmd_check(project_root, reports_dir)
     if args.command == "clean":
@@ -307,6 +313,16 @@ def _build_parser() -> argparse.ArgumentParser:
     check_run.add_argument("clusters", nargs="+", help="номера проблем из пакета: 3 или 03")
     commands.add_parser(
         "check", parents=[common], help="проверить окружение, настройки и доступ к TestOps"
+    )
+    review = commands.add_parser(
+        "review", parents=[common],
+        help="проверить законченный разбор (пилот): отчёт о ходе и качестве и сводка без данных",
+    )
+    review.add_argument("run_dir", nargs="?", help="папка разбора (по умолчанию последняя)")
+    review.add_argument("--run", help="то же, что позиционная папка разбора")
+    review.add_argument(
+        "--no-model", action="store_true",
+        help="без оценки диагнозов моделью: только факты из папки разбора и журнала сеанса",
     )
     cleaner = commands.add_parser("clean", parents=[common], help="удалить старые папки разборов")
     cleaner.add_argument(
@@ -422,6 +438,7 @@ def cmd_prepare(
     paths = ws.create_run_dir(reports_dir, launch_id, datetime.now())
     run = _write_run(paths, data, settings, project_root)
     ws.remember_last_run(reports_dir, paths)
+    _note_session(paths)
 
     status, body = next_step(paths)
     counts = run["counts"]
@@ -459,6 +476,7 @@ def _resume(paths: ws.RunPaths, launch_id: int, reports_dir: Path) -> int:
     """Продолжить неоконченный разбор вместо нового: выгрузка не повторяется."""
     run = ws.read_json(paths.run_json)
     ws.remember_last_run(reports_dir, paths)
+    _note_session(paths)
     status, body = next_step(paths)
     name = f" «{run['launch_name']}»" if run.get("launch_name") else ""
     print(f"STATUS: {status}")
@@ -637,6 +655,38 @@ def _member_full_names(
 
 
 # ---------------------------------------------------------------------------
+# review
+# ---------------------------------------------------------------------------
+
+
+def cmd_review(run_dir: str | None, reports_dir: Path, *, use_model: bool = True) -> int:
+    """Проверка законченного разбора. Сеанс не запоминается: проверка — не часть разбора."""
+    from alla_skill_lib import review
+
+    try:
+        paths = ws.resolve_run(run_dir, reports_dir)
+    except ws.RunNotFoundError as exc:
+        print("STATUS: error")
+        print(exc)
+        return 1
+    facts = review.collect_facts(paths)
+    if use_model:
+        _progress("Оценка диагнозов моделью с чистым контекстом — до нескольких минут…")
+    facts["assessment"] = review.assess(paths, facts) if use_model else None
+    facts["grades"] = review.grades(facts)
+    report, summary = review.write_review(paths, facts)
+    run = facts["run"]
+    name = f" «{run['launch_name']}»" if run["launch_name"] else ""
+    print("STATUS: reviewed")
+    print(f"Прогон #{run['launch_id']}{name} · папка {paths.root}")
+    print("===ОТЧЁТ===")
+    print(review.render_console(facts, report, summary))
+    print("===КОНЕЦ===")
+    print("Выведи пользователю текст между ===ОТЧЁТ=== и ===КОНЕЦ=== дословно; разбор заново не начинай.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # next
 # ---------------------------------------------------------------------------
 
@@ -659,6 +709,7 @@ def cmd_next(run_dir: str | None, reports_dir: Path, workers: int | None = None)
         state.pop("batched", None)
         state.pop("wave", None)
         ws.write_json(paths.state_json, state)
+    _note_session(paths)
     status, body = next_step(paths)
     run = ws.read_json(paths.run_json)
     name = f" «{run['launch_name']}»" if run.get("launch_name") else ""
@@ -820,6 +871,13 @@ REJECTED_NOT_PROPOSED = (
 MIXED_GROUP_NOT_PROPOSED = (
     "в группе, похоже, несколько проблем — одна правка на все тесты не предлагается"
 )
+
+
+def _note_session(paths: ws.RunPaths) -> None:
+    """Запомнить сеанс Qwen Code, из которого идёт разбор: по нему ``review`` найдёт журнал."""
+    state = _read_state(paths)
+    if note_session(state):
+        ws.write_json(paths.state_json, state)
 
 
 def _read_state(paths: ws.RunPaths) -> dict[str, Any]:
