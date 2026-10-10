@@ -737,3 +737,37 @@ def test_group_lines_follow_the_real_report_format(tmp_path: Path) -> None:
     _, after = _render(run, analyses, paths, _known(run, analyses, paths))
     assert _group_lines_with(after, ENTRY, 1) == []
     assert _group_lines_with(after, ENTRY, 2)  # группа 2, 3 осталась
+
+
+REVIEWED = ("STATUS: reviewed\n===ОТЧЁТ===\nПроверка разбора прогона #777\n\nХод разбора: чисто\n"
+            "===КОНЕЦ===\nВыведи пользователю текст дословно.")
+
+
+def _review_run(tmp_path: Path, assessment: dict[str, Any] | None) -> None:
+    run = tmp_path / "p" / "alla-reports" / "777-1"
+    (run / "review").mkdir(parents=True)
+    (run / "run.json").write_text("{}", encoding="utf-8")
+    for name in ("report.md", "pilot-summary.md"):
+        (run / "review" / name).write_text("…", encoding="utf-8")
+    (run / "review" / "facts.json").write_text(json.dumps({"assessment": assessment}), encoding="utf-8")
+
+
+def test_review_checks_pass_on_verbatim_review_with_assessment(tmp_path: Path) -> None:
+    ctx = context(tmp_path, events(
+        ("run_shell_command", {"command": f"python3 {SKILL} review --run {tmp_path}/p/alla-reports/777-1"},
+         REVIEWED),
+        final="Проверка разбора прогона #777\n\nХод разбора: чисто"), case="R01")
+    _review_run(tmp_path, {"problems": [{"number": 1}], "usage": {"total": 5}})
+    for name in ("reviewed", "review_verbatim", "review_assessed"):
+        assert CHECKS[name](ctx)["status"] == "pass", name
+
+
+def test_review_checks_catch_retelling_and_missing_assessment(tmp_path: Path) -> None:
+    ctx = context(tmp_path, events(
+        ("run_shell_command", {"command": f"python3 {SKILL} review"}, REVIEWED),
+        final="Разбор прошёл чисто."), case="R01")
+    _review_run(tmp_path, {"error": "qwen завершился с кодом 55", "error_code": "timeout"})
+    assert CHECKS["review_verbatim"](ctx)["status"] == "fail"
+    result = CHECKS["review_assessed"](ctx)
+    assert result["status"] == "fail" and "timeout" in result["evidence"]
+    assert CHECKS["reviewed"](context(tmp_path, events(), case="R01"))["status"] == "fail"

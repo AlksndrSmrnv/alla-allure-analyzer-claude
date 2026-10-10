@@ -230,6 +230,15 @@ SCENARIOS: dict[str, Scenario] = {
         "Первый запуск: окружение скилла не установлено", "default", ("/alla-launch 777",),
         (*FULL_RUN, "prepare_launch", "setup_once"), launch_id=777, setup_ready=False,
         note="setup ставит зависимости из сети: pip внутри песочницы"),
+    "R01": Scenario(
+        "Проверка разбора для пилота: разбор, затем «проверь разбор»", "default",
+        ("/alla-launch 777", "Проверь разбор."),
+        (*[name for name in FULL_RUN if name != "report_verbatim"], "prepare_launch",
+         "reviewed", "review_verbatim", "review_assessed"),
+        launch_id=777,
+        review=("Evidence: оценки проверяющей модели в review/report.md правдоподобны для "
+                "разборов A01; pilot-summary.md без данных прогона",),
+        note="review запускает вложенный qwen (оценка диагнозов) — ещё один запрос к модели"),
     "P04": Scenario(
         "40 кластеров: пакеты субагентов", "many:40", ("/alla-launch 900",),
         (*FULL_RUN, "prepare_launch", "subagents_used", "batch_agent_used"), launch_id=900),
@@ -889,6 +898,49 @@ def check_known_issue_grouped(ctx: Context) -> dict[str, Any]:
             return bad(f"{run_dir.name}: в report.md нет блока известных проблем")
         found.append(f"{run_dir.name}: принята в {', '.join(accepted)}")
     return ok("; ".join(found)) if found else bad("нет папок разбора")
+
+
+def _review_calls(ctx: Context) -> list[ToolCall]:
+    return [call for call in ctx.trace.skill_commands()
+            if re.search(r"alla_skill\.py\S*\s+review\b", command_of(call))]
+
+
+def check_reviewed(ctx: Context) -> dict[str, Any]:
+    """``review`` вызван после done, ответил ``reviewed`` и записал оба отчёта."""
+    calls = _review_calls(ctx)
+    if not calls:
+        return bad("review не вызывался")
+    if not re.search(r"^STATUS: reviewed\s*$", calls[-1].result, re.MULTILINE):
+        return bad(at(calls[-1], calls[-1].result[:200]))
+    missing = [str(run / "review" / name) for run in ctx.run_dirs()
+               for name in ("report.md", "pilot-summary.md", "facts.json")
+               if not (run / "review" / name).is_file()]
+    return bad("нет " + ", ".join(missing)) if missing else ok(at(calls[-1], command_of(calls[-1])))
+
+
+def check_review_verbatim(ctx: Context) -> dict[str, Any]:
+    calls = _review_calls(ctx)
+    match = re.search(r"===ОТЧЁТ===\n(.*?)\n===КОНЕЦ===", calls[-1].result, re.DOTALL) if calls else None
+    if match is None:
+        return bad("нет вывода review с блоком ===ОТЧЁТ===")
+    block = rules.normalize(match.group(1))
+    if block in rules.normalize(ctx.trace.final):
+        return ok(f"{len(match.group(1))} символов")
+    return bad(f"итог проверки не выведен дословно; начало: {block[:120]}")
+
+
+def check_review_assessed(ctx: Context) -> dict[str, Any]:
+    """Вложенный qwen действительно оценил диагнозы (а не отчёт без оценки)."""
+    for run in ctx.run_dirs():
+        facts_file = run / "review" / "facts.json"
+        if not facts_file.is_file():
+            continue
+        assessment = json.loads(facts_file.read_text(encoding="utf-8")).get("assessment") or {}
+        if assessment.get("problems"):
+            return ok(f"оценено проблем: {len(assessment['problems'])}, "
+                      f"токенов: {(assessment.get('usage') or {}).get('total', 0)}")
+        return bad(f"оценки нет: {assessment.get('error_code')} — {assessment.get('error', '')[:200]}")
+    return bad("нет review/facts.json")
 
 
 def check_kb_rejected(ctx: Context) -> dict[str, Any]:
