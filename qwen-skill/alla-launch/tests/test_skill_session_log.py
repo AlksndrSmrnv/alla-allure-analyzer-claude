@@ -261,6 +261,48 @@ def test_other_work_between_sessions_is_not_the_run(tmp_path: Path) -> None:
     assert REPORT in log.final
 
 
+def test_turn_with_only_a_crashed_next_belongs_to_the_run(tmp_path: Path) -> None:
+    """«Продолжи» и единственный ``next --run DIR``, упавший без папки в выводе: ход — разбор
+    по папке в аргументах команды."""
+    project = tmp_path / "project"
+    run = _run_dir(project)
+    qdir = qwen_dirs(tmp_path, project)
+    j = Journal("sess-8", project)
+    j.user("разбери прогон 777")
+    j.skill("prepare 777", f"STATUS: analyze\nПапка разбора: {run}")
+    j.user("продолжи")
+    j.skill(f"next --run {run}", "Traceback (most recent call last):\nKeyError: 'clusters'")
+    j.call("read_file", {"file_path": str(project / "missing.txt")}, "not found", error=True)
+    j.user("а что с погодой?")  # посторонний ход: без папки разбора
+    j.skill("check", "STATUS: ready")
+    save_main(j, qdir)
+
+    log = load_session(run, project, _state("sess-8", qdir))
+
+    assert log.turns == 2
+    assert [c.name for c in log.calls] == ["run_shell_command", "run_shell_command", "read_file"]
+    assert skill_status(log.calls[1]) is None and log.calls[2].is_error
+
+
+def test_review_inside_the_run_turn_is_left_out(tmp_path: Path) -> None:
+    """«Закончи разбор и проверь его»: next и review в одном ходе. Идущий review (ещё без
+    результата) и всё после него — не разбор."""
+    project = tmp_path / "project"
+    run = _run_dir(project)
+    qdir = qwen_dirs(tmp_path, project)
+    j = Journal("sess-9", project)
+    j.user("закончи разбор 777 и проверь его")
+    j.skill(f"next {run}", _done_output(run))
+    j.text(REPORT)
+    j.skill(f"review --run {run}", "", pending=True)
+    save_main(j, qdir)
+
+    log = load_session(run, project, _state("sess-9", qdir))
+
+    assert [skill_subcommand(c) for c in log.calls] == ["next"]
+    assert log.reached_done and REPORT in log.final
+
+
 # --- правила по журналу -------------------------------------------------------------------
 
 

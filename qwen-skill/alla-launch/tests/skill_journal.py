@@ -62,7 +62,8 @@ class Journal:
                                     "cachedContentTokenCount": tokens // 2})
 
     def call(self, name: str, args: dict[str, Any], output: str, *, error: bool = False,
-             tokens: int = 100) -> None:
+             tokens: int = 100, pending: bool = False) -> None:
+        """Вызов и его результат; ``pending`` — вызов ещё идёт, результата в журнале нет."""
         self.calls += 1
         call_id = f"call_{self.session[:4]}_{self.calls}"
         self._record("assistant", model="qwen/qwen3.8-flash", provenance="assistant_output",
@@ -71,6 +72,8 @@ class Journal:
                      usageMetadata={"promptTokenCount": tokens, "candidatesTokenCount": 10,
                                     "thoughtsTokenCount": 0, "totalTokenCount": tokens + 10,
                                     "cachedContentTokenCount": 0})
+        if pending:
+            return
         if name == "run_shell_command":
             wrapped = (f"Command: {args.get('command', '')}\nDirectory: (root)\nOutput: {output}\n"
                        f"Error: (none)\nExit Code: {1 if error else 0}\nSignal: (none)")

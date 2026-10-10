@@ -258,14 +258,40 @@ def _turns(entries: list[_Entry]) -> list[_Turn]:
     return turns
 
 
-def _cut_window(log: SessionLog, entries: list[_Entry], root: str) -> None:
-    def of_run(entry: _Entry) -> bool:
-        call = entry.call
-        return (entry.kind == "call" and not entry.subagent and call is not None
-                and call.name == SHELL_TOOL and "alla_skill.py" in command_of(call)
-                and not REVIEW_COMMAND_RE.search(command_of(call)) and root in call.result)
+def _skill_call(entry: _Entry) -> ToolCall | None:
+    call = entry.call
+    if (entry.kind == "call" and not entry.subagent and call is not None
+            and call.name == SHELL_TOOL and "alla_skill.py" in command_of(call)):
+        return call
+    return None
 
-    turns = [turn for turn in _turns(entries) if any(of_run(entry) for entry in turn.entries)]
+
+def _is_review(entry: _Entry) -> bool:
+    call = _skill_call(entry)
+    return call is not None and bool(REVIEW_COMMAND_RE.search(command_of(call)))
+
+
+def _without_review(turn: _Turn) -> _Turn:
+    """Ход без проверки разбора: ``review`` и всё после него в ходе — уже не разбор (а пока
+    проверка идёт, её вызов ещё без результата и выглядел бы падением без STATUS)."""
+    for index, entry in enumerate(turn.entries):
+        if _is_review(entry):
+            return _Turn(turn.session, turn.start, turn.until, turn.entries[:index])
+    return turn
+
+
+def _cut_window(log: SessionLog, entries: list[_Entry], root: str) -> None:
+    name_re = re.compile(r"(?:^|[\s/'\"=])" + re.escape(Path(root).name) + r"(?:[\s/'\"]|$)")
+
+    def of_run(entry: _Entry) -> bool:
+        """Команда скилла этого разбора: папка — в выводе (prepare, next) или в аргументах
+        (``next --run DIR``, упавший без вывода папки)."""
+        call = _skill_call(entry)
+        return (call is not None and not _is_review(entry)
+                and (root in call.result or bool(name_re.search(command_of(call)))))
+
+    turns = [turn for turn in map(_without_review, _turns(entries))
+             if any(of_run(entry) for entry in turn.entries)]
     if not turns:
         log.note = "в журнале нет команд этого разбора"
         return
