@@ -8,8 +8,10 @@ Qwen Code (≥ 0.25) сам пишет журнал каждого сеанса:
 журнал даже из другого сеанса или из терминала.
 
 Здесь журнал превращается в общую модель вызовов (``session_rules.ToolCall``) и
-ограничивается окном одного разбора: от первой команды скилла, назвавшей его папку, до
-последнего ``STATUS: done`` с этой папкой и финального ответа после него.
+ограничивается ходами одного разбора. Ход — всё от реплики пользователя до следующей; ход
+относится к разбору, если в нём есть команда скилла, назвавшая папку разбора, и берётся
+целиком (упавший ``next`` без папки в выводе — тоже). Ходы другой работы между сеансами
+разбора в окно не входят.
 """
 
 from __future__ import annotations
@@ -112,8 +114,9 @@ class _Entry:
     """Событие журнала в порядке времени."""
 
     timestamp: str
-    kind: str  # call | text | user | usage | api_error
+    kind: str  # call | result | text | user | usage | api_error
     subagent: bool = False
+    session: str = ""
     call: ToolCall | None = None
     text: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
@@ -128,6 +131,9 @@ class SessionLog:
     final: str = ""
     started: str = ""
     finished: str = ""
+    # Сумма длительностей ходов разбора, без перерывов и посторонней работы между ними.
+    duration_seconds: int | None = None
+    turns: int = 0
     reached_done: bool = False
     model: str = ""
     version: str = ""
@@ -136,13 +142,6 @@ class SessionLog:
     subagents: int = 0
     skill_problems: list[str] = field(default_factory=list)
     note: str = ""
-
-    @property
-    def duration_seconds(self) -> int | None:
-        start, end = _parse_time(self.started), _parse_time(self.finished)
-        if start is None or end is None:
-            return None
-        return max(0, int((end - start).total_seconds()))
 
 
 def load_session(
@@ -165,17 +164,17 @@ def load_session(
     log = SessionLog(journals=[chat for _, chat, _ in found])
     entries: list[_Entry] = []
     for session, chat, project_dir in found:
-        entries += _read_journal(chat, subagent=False, log=log)
+        entries += _read_journal(chat, subagent=False, log=log, session=session)
         subagent_dir = project_dir / "subagents" / session
         for journal in sorted(subagent_dir.glob("agent-*.jsonl")) if subagent_dir.is_dir() else []:
-            entries += _read_journal(journal, subagent=True, log=log)
+            entries += _read_journal(journal, subagent=True, log=log, session=session)
             log.journals.append(journal)
     entries.sort(key=lambda entry: entry.timestamp)
     _cut_window(log, entries, str(run_root))
     return log
 
 
-def _read_journal(path: Path, *, subagent: bool, log: SessionLog) -> list[_Entry]:
+def _read_journal(path: Path, *, subagent: bool, log: SessionLog, session: str) -> list[_Entry]:
     entries: list[_Entry] = []
     pending: dict[str, ToolCall] = {}
     for record in _records(path):
@@ -201,6 +200,8 @@ def _read_journal(path: Path, *, subagent: bool, log: SessionLog) -> list[_Entry
                 elif isinstance(part.get("text"), str) and not part.get("thought"):
                     entries.append(_Entry(timestamp, "text", subagent, text=part["text"]))
         elif kind == "tool_result":
+            # Время конца команды: ход, который кончается долгим prepare, иначе потерял бы его.
+            entries.append(_Entry(timestamp, "result", subagent))
             status = (record.get("toolCallResult") or {}).get("status")
             display = (record.get("toolCallResult") or {}).get("resultDisplay")
             for part in _parts(record):
@@ -218,50 +219,82 @@ def _read_journal(path: Path, *, subagent: bool, log: SessionLog) -> list[_Entry
             event = (record.get("systemPayload") or {}).get("uiEvent") or {}
             if event.get("event.name") == "qwen-code.api_error":
                 entries.append(_Entry(timestamp, "api_error", subagent))
+    for entry in entries:
+        entry.session = session
     return entries
 
 
-def _cut_window(log: SessionLog, entries: list[_Entry], root: str) -> None:
-    main_calls = [entry for entry in entries
-                  if entry.kind == "call" and not entry.subagent and entry.call is not None]
+@dataclass
+class _Turn:
+    """Ход разговора одного сеанса: от реплики пользователя до следующей."""
 
+    session: str
+    start: str
+    until: str | None  # время следующей реплики пользователя; None — до конца журнала
+    entries: list[_Entry] = field(default_factory=list)
+
+    def holds(self, entry: _Entry) -> bool:
+        return (entry.session == self.session and entry.timestamp >= self.start
+                and (self.until is None or entry.timestamp < self.until))
+
+
+def _turns(entries: list[_Entry]) -> list[_Turn]:
+    """Ходы по репликам пользователя основного журнала каждого сеанса; записи субагентов
+    попадают в ход своего сеанса по времени."""
+    turns: list[_Turn] = []
+    for session in dict.fromkeys(entry.session for entry in entries):
+        main = [entry for entry in entries if entry.session == session and not entry.subagent]
+        if not main:
+            continue
+        starts = [main[0].timestamp] + [entry.timestamp for entry in main[1:] if entry.kind == "user"]
+        for index, start in enumerate(starts):
+            until = starts[index + 1] if index + 1 < len(starts) else None
+            turns.append(_Turn(session, start, until))
+    for entry in entries:
+        for turn in turns:
+            if turn.holds(entry):
+                turn.entries.append(entry)
+                break
+    return turns
+
+
+def _cut_window(log: SessionLog, entries: list[_Entry], root: str) -> None:
     def of_run(entry: _Entry) -> bool:
         call = entry.call
-        return (call is not None and call.name == SHELL_TOOL and "alla_skill.py" in command_of(call)
+        return (entry.kind == "call" and not entry.subagent and call is not None
+                and call.name == SHELL_TOOL and "alla_skill.py" in command_of(call)
                 and not REVIEW_COMMAND_RE.search(command_of(call)) and root in call.result)
 
-    run_calls = [entry for entry in main_calls if of_run(entry)]
-    if not run_calls:
+    turns = [turn for turn in _turns(entries) if any(of_run(entry) for entry in turn.entries)]
+    if not turns:
         log.note = "в журнале нет команд этого разбора"
         return
-    start = run_calls[0].timestamp
-    done = [entry for entry in run_calls if entry.call is not None and DONE_RE.search(entry.call.result)]
-    last = done[-1] if done else run_calls[-1]
+    turns.sort(key=lambda turn: turn.start)
+    window = [entry for turn in turns for entry in turn.entries]
+    done = [entry for entry in window
+            if of_run(entry) and entry.call is not None and DONE_RE.search(entry.call.result)]
     log.reached_done = bool(done)
-    end = last.timestamp
-    # Финальный ответ — текст основного агента после последнего done до следующей реплики
-    # пользователя (дальше — уже другой разговор: правки, обратная связь, проверка).
-    finish = end
-    final_parts: list[str] = []
-    for entry in entries:
-        if entry.timestamp <= end or entry.subagent:
-            continue
-        if entry.kind == "user" or entry.kind == "call":
-            break
-        if entry.kind == "text":
-            final_parts.append(entry.text)
-            finish = entry.timestamp
-    log.final = "".join(final_parts)
-    log.started, log.finished = start, finish
-    index = 0
-    for entry in entries:
-        if not start <= entry.timestamp <= finish:
-            continue
+    if done:
+        # Финальный ответ — текст основного агента после последнего done до следующего
+        # вызова или конца хода.
+        last = done[-1]
+        after = [entry for entry in window if entry.session == last.session
+                 and not entry.subagent and entry.timestamp > last.timestamp]
+        parts: list[str] = []
+        for entry in after:
+            if entry.kind in ("call", "user"):
+                break
+            if entry.kind == "text":
+                parts.append(entry.text)
+        log.final = "".join(parts)
+    log.turns = len(turns)
+    log.started = turns[0].start
+    log.finished = max(turn.entries[-1].timestamp for turn in turns)
+    spans = [_seconds(turn.start, turn.entries[-1].timestamp) for turn in turns]
+    log.duration_seconds = None if None in spans else sum(span or 0 for span in spans)
+    for entry in window:
         if entry.kind == "call" and entry.call is not None:
-            if not entry.subagent and entry.timestamp > end:
-                continue
-            entry.call.index = index
-            index += 1
+            entry.call.index = len(log.calls)
             log.calls.append(entry.call)
         elif entry.kind == "usage":
             log.usage.add(entry.usage)
@@ -269,6 +302,13 @@ def _cut_window(log: SessionLog, entries: list[_Entry], root: str) -> None:
             log.api_errors += 1
     log.subagents = sum(1 for call in log.calls if call.name == "agent" and not call.subagent)
     log.skill_problems = _skill_problems(log)
+
+
+def _seconds(start: str, end: str) -> int | None:
+    begin, finish = _parse_time(start), _parse_time(end)
+    if begin is None or finish is None:
+        return None
+    return max(0, int((finish - begin).total_seconds()))
 
 
 def _skill_problems(log: SessionLog) -> list[str]:

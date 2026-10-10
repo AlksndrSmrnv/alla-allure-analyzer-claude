@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -121,10 +122,12 @@ def test_window_is_from_first_command_of_run_to_final_answer(tmp_path: Path) -> 
     assert log.skill_problems == ["verify принял пустой файл"]
     assert skill_status(log.calls[0]) == "analyze" and skill_status(log.calls[-1]) == "done"
     assert log.model == "qwen/qwen3.8-flash" and log.version == "0.25.0"
-    # от вызова prepare 777 до последнего текста ответа (у вызова две записи: вызов и
-    # результат); токены — четыре вызова и два текста окна, без размышления до него
-    assert log.duration_seconds == 9
-    assert log.usage.requests == 6 and log.usage.total == 4 * 110 + 2 * 115
+    # ход «разбери прогон 777» целиком: от реплики до последнего текста ответа (у вызова две
+    # записи: вызов и результат); токены — размышление, четыре вызова и два текста; ход с
+    # прогоном 555 и ход проверки в окно не входят
+    assert log.turns == 1
+    assert log.duration_seconds == 11
+    assert log.usage.requests == 7 and log.usage.total == 4 * 110 + 3 * 115
 
 
 def test_shell_output_without_display_is_unwrapped(tmp_path: Path) -> None:
@@ -205,6 +208,57 @@ def test_journal_without_run_commands(tmp_path: Path) -> None:
     j.text("привет")
     save_main(j, qdir)
     assert load_session(run, project, _state("sess-5", qdir)).note == "в журнале нет команд этого разбора"
+
+
+def test_unfinished_run_keeps_its_last_actions(tmp_path: Path) -> None:
+    """Без done ход разбора берётся целиком: упавший next без папки в выводе и чтение после
+    него — тоже разбор (их нарушения и токены не теряются)."""
+    project = tmp_path / "project"
+    run = _run_dir(project)
+    qdir = qwen_dirs(tmp_path, project)
+    j = Journal("sess-7", project)
+    j.user("разбери прогон 777")
+    j.skill("prepare 777", f"STATUS: analyze\nПапка разбора: {run}")
+    j.skill(f"next {run}", "Traceback (most recent call last):\nKeyError: 'clusters'")
+    j.call("glob", {"pattern": "**/*.java"}, "Found 3 files")
+    j.text("Скрипт упал, остановился.")
+    save_main(j, qdir)
+
+    log = load_session(run, project, _state("sess-7", qdir))
+
+    assert not log.reached_done and log.final == ""
+    assert [c.name for c in log.calls] == ["run_shell_command", "run_shell_command", "glob"]
+    assert skill_status(log.calls[1]) is None
+    assert log.usage.requests == 4
+
+
+def test_other_work_between_sessions_is_not_the_run(tmp_path: Path) -> None:
+    """Разбор прервали, занялись другим и продолжили в новом сеансе: посторонний ход не
+    проверяется и не оплачивается как разбор, время — сумма ходов разбора."""
+    project = tmp_path / "project"
+    run = _run_dir(project)
+    qdir = qwen_dirs(tmp_path, project)
+    clock = Clock()
+    first = Journal("s-a", project, clock)
+    first.user("разбери прогон 777")
+    first.skill("prepare 777", f"STATUS: analyze\nПапка разбора: {run}")  # ход: 2 с до результата
+    first.user("посмотри README")  # другая работа в том же сеансе
+    first.call("run_shell_command", {"command": "cat README.md"}, "…", tokens=5000)
+    clock.now += timedelta(hours=2)
+    second = Journal("s-b", project, clock)
+    second.user("продолжи разбор 777")
+    second.skill(f"next {run}", _done_output(run))  # ход: 3 с вместе с ответом
+    second.text(REPORT)
+    save_main(first, qdir)
+    save_main(second, qdir)
+
+    log = load_session(run, project, {"sessions": ["s-a", "s-b"], "qwen_project_dir": str(qdir)})
+
+    assert log.turns == 2 and log.reached_done
+    assert [skill_subcommand(c) for c in log.calls] == ["prepare", "next"]
+    assert log.usage.total == 2 * 110 + 115  # два вызова и ответ; 5000 постороннего хода — нет
+    assert log.duration_seconds == 2 + 3
+    assert REPORT in log.final
 
 
 # --- правила по журналу -------------------------------------------------------------------

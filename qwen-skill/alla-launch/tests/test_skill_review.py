@@ -174,6 +174,15 @@ def test_quality_grade_thresholds(causes: list[str], disagree: int, grade: str) 
     assert review.quality_grade({"problems": problems})[0] == grade
 
 
+def test_partial_assessment_is_never_good() -> None:
+    """Модель вернула одну оценку из десяти: пропущенные — не подтверждения."""
+    one = {"problems": [{"cause": "подтверждена", "category": "согласен"}], "requested": 10}
+    grade, note = review.quality_grade(one)
+    assert grade == review.QUALITY_POOR and "оценка частичная" in note
+    nine = {"problems": [{"cause": "подтверждена", "category": "согласен"}] * 9, "requested": 10}
+    assert review.quality_grade(nine)[0] == review.QUALITY_FAIR
+
+
 def test_quality_without_assessment() -> None:
     assert review.quality_grade(None) == (review.QUALITY_NONE, "оценка модели не получена")
     assert review.quality_grade({"error": "qwen не найден"}) == (review.QUALITY_NONE, "qwen не найден")

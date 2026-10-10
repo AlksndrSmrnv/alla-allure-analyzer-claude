@@ -318,17 +318,25 @@ def reason_text(code: str) -> str:
 
 
 def quality_grade(assessment: Mapping[str, Any] | None) -> tuple[str, str]:
-    """Оценка качества диагнозов по ответу проверяющей модели."""
+    """Оценка качества диагнозов по ответу проверяющей модели.
+
+    Доли считаются от числа запрошенных проблем: оценка, которую модель не вернула или
+    которая отброшена как невалидная, — не подтверждение. «Хорошо» — только при полном ответе.
+    """
     if not assessment or not assessment.get("problems"):
         reason = (assessment or {}).get("error") or "оценка модели не получена"
         return QUALITY_NONE, str(reason)
     problems = assessment["problems"]
-    total = len(problems)
+    requested = max(int(assessment.get("requested") or 0), len(problems))
     confirmed = sum(1 for p in problems if p.get("cause") == "подтверждена")
     disagree = sum(1 for p in problems if p.get("category") == "не согласен")
-    share, disagree_share = confirmed / total, disagree / total
-    note = f"причина подтверждена у {confirmed} из {total}, несогласий по категории — {disagree}"
-    if share >= GOOD_CONFIRMED_SHARE and disagree_share <= GOOD_MAX_CATEGORY_DISAGREE:
+    share, disagree_share = confirmed / requested, disagree / requested
+    complete = len(problems) == requested
+    note = (f"причина подтверждена у {confirmed} из {requested}, несогласий по категории — "
+            f"{disagree}")
+    if not complete:
+        note += f"; модель оценила только {len(problems)} из {requested} — оценка частичная"
+    if complete and share >= GOOD_CONFIRMED_SHARE and disagree_share <= GOOD_MAX_CATEGORY_DISAGREE:
         return QUALITY_GOOD, note
     if share >= FAIR_CONFIRMED_SHARE:
         return QUALITY_FAIR, note
@@ -422,8 +430,10 @@ def render_report(facts: Mapping[str, Any]) -> str:
     assessment = facts.get("assessment")
     out += ["## Оценка диагнозов проверяющей моделью", ""]
     if assessment and assessment.get("problems"):
-        out.append(f"Оценено проблем: {len(assessment['problems'])} из {facts['quality']['analysed']} "
-                   f"(они покрывают {assessment.get('tests_covered', 0)} упавших тестов из "
+        out.append(f"Оценено проблем: {len(assessment['problems'])} из запрошенных "
+                   f"{assessment.get('requested', len(assessment['problems']))} "
+                   f"(разобрано моделью — {facts['quality']['analysed']}; "
+                   f"оценённые покрывают {assessment.get('tests_covered', 0)} упавших тестов из "
                    f"{facts['quality']['tests_analysed']}).")
         out += ["", "| № | Причина | Категория | Действия | Замечание |", "|---|---|---|---|---|"]
         for p in assessment["problems"]:
@@ -540,7 +550,8 @@ def render_pilot_summary(facts: Mapping[str, Any]) -> str:
         for field_name, title in (("cause", "причина"), ("category", "категория"), ("actions", "действия")):
             counts = Counter(str(p.get(field_name, "")) for p in problems)
             out.append(f"- {title}: " + ", ".join(f"{k} ×{v}" for k, v in sorted(counts.items())))
-        out.append(f"- оценено: {len(problems)} из {quality['analysed']}, тестов покрыто: "
+        out.append(f"- оценено: {len(problems)}, запрошено: {assessment.get('requested', len(problems))}, "
+                   f"разобрано моделью: {quality['analysed']}, тестов покрыто: "
                    f"{assessment.get('tests_covered', 0)}")
         expected = Counter(str(p.get("category_expected")) for p in problems
                            if p.get("category") == "не согласен" and p.get("category_expected"))

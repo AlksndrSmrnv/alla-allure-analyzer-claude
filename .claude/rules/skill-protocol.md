@@ -134,9 +134,13 @@ paths:
   <сеанс>.jsonl` и `subagents/<сеанс>/agent-*.jsonl`, shell-командам передаёт
   `QWEN_CODE_SESSION_ID`/`QWEN_CODE_PROJECT_DIR`. `prepare` (новый и продолжение) и `next`
   пишут их в `state.json` (`sessions`, до 20; `qwen_project_dir`) — `session_log.note_session`.
-  `review` сеанс не запоминает. Окно разбора — от первой команды скилла с папкой разбора в
-  выводе до последнего `done` с ней и финального текста до следующей реплики пользователя;
-  команды `review` в окно не входят. У shell в журнале вывод обёрнут `Command:`/`Output:` —
+  `review` сеанс не запоминает. Окно разбора — ходы разговора (от реплики пользователя до
+  следующей, по каждому сеансу; записи субагентов — в ход своего сеанса по времени), где есть
+  команда скилла с папкой разбора в выводе; ход берётся целиком (упавший `next` без папки и
+  действия после него — тоже), посторонние ходы между сеансами не входят. Время — сумма
+  длительностей ходов до последней записи, включая время результата инструмента. Финальный
+  ответ — текст после последнего `done` до следующего вызова. Команды `review` разбор не
+  отмечают. У shell в журнале вывод обёрнут `Command:`/`Output:` —
   берётся `resultDisplay.output`, иначе вырезается из `Output:`.
 - Правила поведения (`shell_only_skill_commands`, `no_code_search`, `listed_code_only`,
   `allowed_reads`, `allowed_writes`, `report_verbatim`) — одна реализация в
@@ -144,8 +148,9 @@ paths:
   Меняя правило, проверь оба: `test_qwen_stand.py` и `test_skill_session_log.py`.
 - Оценка хода — коды причин `review.REASONS`; `сбой` — `not_done`, `status_error`,
   `traceback`; `no_journal` и `fix_attempts` оценку не снижают. Пороги качества —
-  `GOOD_CONFIRMED_SHARE`, `GOOD_MAX_CATEGORY_DISAGREE`, `FAIR_CONFIRMED_SHARE`; меняя их или
-  причины, правь таблицу в `setup.md`.
+  `GOOD_CONFIRMED_SHARE`, `GOOD_MAX_CATEGORY_DISAGREE`, `FAIR_CONFIRMED_SHARE`; доли — от числа
+  запрошенных проблем (невозвращённая оценка — не подтверждение), «хорошо» — только при полном
+  ответе. Меняя пороги или причины, правь таблицу в `setup.md`.
 - Проверяющая модель — отдельный процесс `qwen` (`ALLA_REVIEW_QWEN` или PATH): пустая
   временная папка, `--approval-mode plan`, `--json-schema`, `--system-prompt`, окружение без
   `QWEN_CODE_*` (иначе запись ушла бы в журнал родителя). Таблица категорий берётся из
