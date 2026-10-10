@@ -276,6 +276,11 @@ def _without_review(turn: _Turn) -> _Turn:
     проверка идёт, её вызов ещё без результата и выглядел бы падением без STATUS)."""
     for index, entry in enumerate(turn.entries):
         if _is_review(entry):
+            # Режем с начала записи ассистента, где этот вызов: её usage и текст идут в
+            # событиях раньше вызова и с тем же временем — это тоже затраты проверки.
+            while (index > 0 and not turn.entries[index - 1].subagent
+                   and turn.entries[index - 1].timestamp == entry.timestamp):
+                index -= 1
             return _Turn(turn.session, turn.start, turn.until, turn.entries[:index])
     return turn
 

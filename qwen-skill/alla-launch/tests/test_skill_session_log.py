@@ -301,6 +301,8 @@ def test_review_inside_the_run_turn_is_left_out(tmp_path: Path) -> None:
 
     assert [skill_subcommand(c) for c in log.calls] == ["next"]
     assert log.reached_done and REPORT in log.final
+    # затраты — вызов next и ответ с отчётом; запрос, вызвавший review, — уже проверка
+    assert log.usage.requests == 2 and log.usage.total == 110 + 115
 
 
 # --- правила по журналу -------------------------------------------------------------------
