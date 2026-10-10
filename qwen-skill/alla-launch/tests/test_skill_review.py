@@ -307,3 +307,8 @@ def test_parse_output_reads_tool_use_and_text_result() -> None:
     text = {"type": "result", "result": "Ответ: " + json.dumps(answer, ensure_ascii=False)}
     assert review_model.parse_output(json.dumps(text))[0] == answer
     assert review_model.parse_output("мусор") == (None, {})
+
+
+def test_long_note_is_cut_with_ellipsis() -> None:
+    cell = review._cell("слово " * 100)
+    assert len(cell) == 300 and cell.endswith("…") and "|" not in cell.replace("\\|", "")

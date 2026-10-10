@@ -480,8 +480,12 @@ def _cluster_notes(item: Mapping[str, Any]) -> str:
     return ", ".join(notes)
 
 
-def _cell(text: str) -> str:
-    return " ".join(str(text).split()).replace("|", "\\|")[:200]
+def _cell(text: str, limit: int = 300) -> str:
+    """Текст для ячейки таблицы: одной строкой; длинный — с многоточием, а не оборван."""
+    flat = " ".join(str(text).split())
+    if len(flat) > limit:
+        flat = flat[:limit - 1].rstrip() + "…"
+    return flat.replace("|", "\\|")
 
 
 def _duration(seconds: int | None) -> str:
