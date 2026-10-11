@@ -17,7 +17,7 @@ INFO-запись со своим временем не поглощается �
   записи;
 * Java ``Exception in thread "…" pkg.SomeException…`` — исключение без времени;
 * JSON-запись строкой (NDJSON: zap, zerolog, slog, logrus, logstash-logback-encoder,
-  ECS, JsonTemplateLayout) — объект с полем уровня ``level``/``lvl``/``severity``/
+  ECS, JsonTemplateLayout), возможно с отступом, — объект с полем уровня ``level``/``lvl``/``severity``/
   ``log.level`` (или ``{"log": {"level": …}}``); JSON без поля уровня (тело ответа
   после ERROR) остаётся продолжением;
 * Python ``ERROR:root:…`` (``LEVEL:`` без пробела после двоеточия);
@@ -207,7 +207,8 @@ def _without_stacks(record: dict[str, Any], blocks: list[str]) -> dict[str, Any]
 
 def _json_record(line: str) -> tuple[str | None, list[str]] | None:
     """JSON-запись лога в строке: уровень и показ (пустой — строка дословно); иначе ``None``."""
-    if not line.startswith("{"):
+    # Отступ перед записью бывает (вывод через префикс, выравнивание); показ — исходная строка.
+    if not line.lstrip(" \t").startswith("{"):
         return None
     try:
         record = json.loads(line)

@@ -74,7 +74,8 @@ paths:
   `test_core_log_events.py`).
 - JSON-запись строкой (NDJSON: zap, zerolog, slog, logrus, logstash-logback-encoder, ECS,
   Log4j2 JsonTemplateLayout) — тоже начало записи, и в текстовом логе, и во вложении,
-  определённом как json (`ErrorBlocksHandler` берёт `text` и `json`): строка с `{`, объект с
+  определённом как json (`ErrorBlocksHandler` берёт `text` и `json`): строка с `{` (отступ из
+  пробелов и табов допустим, показ — исходная строка), объект с
   полем уровня `level`/`lvl`/`severity`/`log.level` или `{"log": {"level": …}}`. Уровень —
   строка из уровней `log_events` в любом регистре; целое под `level` от −1 до 5 — шкала
   zerolog (3 — ERROR, 4 — FATAL, 5 — PANIC; 2 — WARN); иное значение — уровень неизвестен,

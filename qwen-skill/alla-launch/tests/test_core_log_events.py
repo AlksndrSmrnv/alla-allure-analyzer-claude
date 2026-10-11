@@ -276,6 +276,16 @@ def test_json_records_repeated_at_other_times_are_folded() -> None:
     assert blocks.splitlines()[0] == "[строка 1 · повторялось 2 раза: 1, 2]"
 
 
+@pytest.mark.parametrize("indent", ["  ", "\t"])
+def test_indented_json_record_after_info_is_a_record(indent: str) -> None:
+    record = indent + '{"level":"error","msg":"database unavailable"}'
+    log = f'{{"level":"info","msg":"start"}}\n{record}\n'
+
+    event, = error_events(log)
+
+    assert (event.first_line, event.text) == (2, record)
+
+
 def test_json_without_a_level_after_an_error_stays_in_it() -> None:
     log = ("2026-10-03 10:00:01 ERROR c.e.Client - gateway answered 500\n"
            '{"status": 500, "error": "Internal Server Error"}\n'
