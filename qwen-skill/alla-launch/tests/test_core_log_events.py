@@ -26,6 +26,16 @@ FORMAT_LOGS = {
     "celery": (corpus_dev.CELERY_LOG, "KeyError: 'zone_id'"),
     "syslog": (corpus_dev.SYSLOG_LOG, "redis connection lost"),
     "pipe-level": (corpus_dev.PIPE_LEVEL_LOG, "has no rate for tier PLATINUM"),
+    "klog-error": (corpus_dev.KLOG_ERROR_LOG, "failed to update shop/cart-api-7xk2p"),
+    "klog-fatal": (corpus_dev.KLOG_FATAL_LOG, "did not find expected key"),
+    "go-panic-nil": (corpus_dev.GO_PANIC_NIL_LOG, "nil pointer dereference"),
+    "go-panic-map": (corpus_dev.GO_PANIC_MAP_LOG, "assignment to entry in nil map"),
+    "go-fatal-error": (corpus_dev.GO_FATAL_ERROR_LOG, "concurrent map writes"),
+    "logrus-panic": (corpus_dev.LOGRUS_PANIC_LOG, "payout ledger is inconsistent"),
+    "exception-in-thread": (corpus_dev.EXCEPTION_IN_THREAD_LOG, "FileNotFoundException"),
+    "exception-in-thread-bare": (corpus_dev.EXCEPTION_IN_THREAD_BARE_LOG,
+                                 "Cannot deserialize value"),
+    "long-mdc": (corpus_dev.LONG_MDC_LOG, "payment method PM-88 expired"),
 }
 
 
@@ -66,6 +76,16 @@ def test_neighbouring_info_is_not_swallowed_by_the_stack() -> None:
     "10:00:00.123 [main] some error happened in worker",
     'time=2026-10-03T10:00:00Z level=warn msg="error budget low"',
     'time=2026-10-03T10:00:00Z msg="got level=error in payload" level=info',
+    "2026/10/03 11:00:00 INFO retry policy: on error wait 5s",
+    'time=2026-10-03T11:00:01Z level=info msg="health ok" error=""',
+    'time=2026-10-03T11:00:01Z level=warn msg="retrying upstream" err="unexpected EOF"',
+    "I1003 11:00:01.000100       1 probe.go:30] error rate 0.0% over last minute",
+    "W1003 11:00:01.000200       1 probe.go:35] error threshold is not configured",
+    "2026-10-03 10:55:00.100 [exec-9] [traceId=a, spanId=b, userId=1, tenant=t, requestId=r] "
+    "INFO  c.e.Svc - got ERROR from upstream",
+    "E1003 garbage without a klog header",
+    "  panic: indented, not a record",
+    "Exception in thread main without quotes",
 ])
 def test_error_words_outside_the_level_position_are_not_errors(line: str) -> None:
     assert not list(error_events(line + "\n"))
@@ -82,6 +102,24 @@ def test_error_words_outside_the_level_position_are_not_errors(line: str) -> Non
     "CRITICAL:payments:gateway down",
     'time=2026-10-03T10:00:00Z msg="expected level=info in payload" level=error',
     'time=2026-10-03T10:00:00Z level="ERROR" msg="quoted level"',
+    "2026/10/03 10:00:01 ERROR failed to connect: connection refused",
+    "2026/10/03 10:00:01 main.go:42: ERROR failed to connect",
+    'time="2026-10-03T10:00:01Z" level=error msg="payment declined" error="card expired"',
+    'time="2026-10-03T10:00:01Z" level=panic msg="ledger broken"',
+    "time=2026-10-03T10:00:01.000Z level=ERROR msg=\"db failed\" err=timeout",
+    "2026-10-03T10:00:01.123Z\tERROR\tpayment/client.go:77\tcharge failed\t{\"order\": 42}",
+    "2026-10-03T10:00:01.123Z\tDPANIC\tpayment/client.go:77\tinvariant broken",
+    "2026-10-03 10:00:01.123 [http-nio-8080-exec-1] ERROR c.e.OrderService - order failed",
+    "10:00:01.123 [main] ERROR c.e.Svc - aligned %-5level",
+    "2026-10-03 10:00:01.123 [main] [traceId=abc spanId=def] ERROR c.e.Svc - short MDC",
+    "2026-10-03 10:00:01.123 [exec-9] [traceId=a, spanId=b, userId=1, tenant=t, requestId=r] "
+    "ERROR c.e.Svc - long MDC",
+    "2026-10-03 10:00:01.123 [kafka-producer-network-thread | producer-1] ERROR c.e.Svc - x",
+    "E1003 10:00:01.123456      12 handler.go:88] \"Failed to sync\" err=\"timeout\"",
+    "F1003 10:00:01.123456      12 main.go:9] cannot open db",
+    "panic: runtime error: index out of range [3] with length 3",
+    "fatal error: all goroutines are asleep - deadlock!",
+    'Exception in thread "main" java.lang.IllegalStateException: config missing',
 ])
 def test_error_levels_in_the_level_position(line: str) -> None:
     assert len(list(error_events(line + "\n"))) == 1
@@ -95,6 +133,66 @@ def test_jul_header_and_severe_line_are_one_event() -> None:
     assert event.lines[1].startswith("SEVERE: SMTP server rejected")
     assert event.level_line == 1
     assert "MessagingException" in event.lines[2]
+
+
+def test_go_panic_with_goroutines_is_one_event_until_the_next_record() -> None:
+    event, = error_events(corpus_dev.GO_PANIC_NIL_LOG)
+
+    assert event.level == "PANIC"
+    assert (event.first_line, event.last_line) == (3, 16)
+    assert event.lines[1].startswith("[signal SIGSEGV")
+    assert "goroutine 1 [IO wait]:" in event.lines
+
+
+def test_nested_panic_and_exit_status_stay_in_the_event() -> None:
+    log = ("panic: first [recovered]\n\tpanic: second\n\ngoroutine 1 [running]:\n"
+           "main.main()\n\t/app/main.go:5 +0x2e\nexit status 2\n")
+
+    event, = parse_events(log)
+
+    assert event.is_error and event.last_line == 7
+
+
+def test_klog_levels_come_from_the_first_letter() -> None:
+    events = parse_events(corpus_dev.KLOG_FATAL_LOG)
+
+    assert [event.level for event in events] == ["INFO", "FATAL"]
+    assert events[1].lines[-1] == "\t/app/cmd/tariffs/main.go:57 +0x2f4"
+
+
+def test_zap_console_stacktrace_stays_in_the_event() -> None:
+    log = (
+        "2026-10-03T10:00:00.000Z\tINFO\tserver/main.go:20\tstarting\n"
+        "2026-10-03T10:00:01.123Z\tERROR\tpay/client.go:77\tcharge failed\t{\"order\": 42}\n"
+        "main.(*Client).Charge\n\t/app/pay/client.go:77\nmain.main\n\t/app/main.go:30\n"
+        "2026-10-03T10:00:02.000Z\tINFO\tserver/main.go:30\tdone\n"
+    )
+
+    event, = error_events(log)
+
+    assert (event.first_line, event.last_line) == (2, 6)
+
+
+def test_uncaught_exception_after_info_is_its_own_event() -> None:
+    events = parse_events(corpus_dev.EXCEPTION_IN_THREAD_LOG)
+
+    assert [(event.kind, event.is_error) for event in events] == [
+        ("level", False), ("exception", True)]
+    assert events[1].lines[-1] == "\t... 14 more"
+
+
+def test_caused_by_and_suppressed_stay_in_the_event() -> None:
+    log = (
+        "2026-10-03 10:00:01 ERROR c.e.X - close failed\n"
+        "java.io.IOException: primary\n\tat a.B.c(B.java:1)\n"
+        "\tSuppressed: java.io.IOException: secondary\n\t\tat a.B.d(B.java:2)\n"
+        "Caused by: java.net.SocketException: reset\n\t... 3 more\n"
+        "2026-10-03 10:00:02 INFO c.e.X - ok\n"
+    )
+
+    event, = error_events(log)
+
+    assert (event.first_line, event.last_line) == (1, 7)
 
 
 def test_traceback_ends_at_the_exception_line() -> None:

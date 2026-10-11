@@ -59,7 +59,7 @@ def _pool_log(time: str, thread: str, request: str, order: int) -> str:
 
 def test_signature_has_the_current_version() -> None:
     assert str(_signature(ASSERT_500, ASSERT_TRACE, "")).startswith(f"v{SIGNATURE_VERSION}:")
-    assert SIGNATURE_VERSION == 8
+    assert SIGNATURE_VERSION == 9
 
 
 def test_same_generic_assertion_with_different_log_errors_differs() -> None:

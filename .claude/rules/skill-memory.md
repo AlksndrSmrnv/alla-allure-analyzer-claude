@@ -34,11 +34,13 @@ paths:
 
 ### Сигнатура
 
-- `alla_skill_lib/signature.py`, версия `v8` (`SIGNATURE_VERSION`). Golden-тест
+- `alla_skill_lib/signature.py`, версия `v9` (`SIGNATURE_VERSION`). Golden-тест
   (`test_signature_is_stable_across_runs_and_pinned`) фиксирует хэш: материал меняется только
   осознанно и с новой версией — префикс не даёт старому хэшу совпасть с новым. Чтения и учёта
   старых версий нет: записи и история с другим префиксом просто не совпадают точно, узнавание
-  по `error_example` остаётся.
+  по `error_example` остаётся. `v9` — ядро распознаёт логи Go и Java, которые раньше не
+  доходили до материала (klog, `panic:`/`fatal error:`, `Exception in thread`, уровни
+  `PANIC`/`DPANIC`, длинный MDC, JSON-записи), см. `core.md`, «Сбор данных».
 - Материал — то, что называет причину, и то, что различают gates кластеризации
   (`signature_material`: основа `message+trace+resources+log`… и нормализованные части):
   - трейс есть, ошибка называет причину (исключение не-ассерт или `Caused by`) — сообщение и

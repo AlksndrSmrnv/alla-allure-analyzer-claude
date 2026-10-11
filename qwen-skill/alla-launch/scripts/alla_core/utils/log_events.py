@@ -10,6 +10,12 @@ INFO-запись со своим временем не поглощается �
 * время в начале строки (возможно, в ``[]``): ISO с ``T`` или пробелом,
   ``dd.MM.yyyy``, ``yyyy/MM/dd``, ``HH:mm:ss.SSS``, syslog ``Oct 03 10:00:00``,
   JUL ``Oct 03, 2026 10:00:00 AM``; logfmt ``time=``/``ts=``;
+* заголовок klog/glog ``E1003 10:00:00.123456 12 file.go:42]`` — уровень в первой
+  букве (``I``/``W``/``E``/``F``);
+* Go ``panic: …`` и ``fatal error: …`` с начала строки (уровни ``PANIC`` и
+  ``FATAL``): дамп goroutine, кадры и пустые строки — продолжение до следующей
+  записи;
+* Java ``Exception in thread "…" pkg.SomeException…`` — исключение без времени;
 * Python ``ERROR:root:…`` (``LEVEL:`` без пробела после двоеточия);
 * ``Traceback (most recent call last):`` и строка исключения
   (``pkg.SomeException: …``), за которой идут кадры ``at …`` — если идущее
@@ -17,7 +23,8 @@ INFO-запись со своим временем не поглощается �
 
 Уровень берётся только из позиции уровня: первые слова после времени
 (``ERROR``, ``[ERROR]``, ``|ERROR|``, ``ERROR/Worker``…; в скобках регистр
-любой, без скобок — только заглавные) или ключ ``level=`` в logfmt. Слово
+любой, без скобок — только заглавные; группа в ``[]`` из нескольких слов, как
+MDC ``[traceId=…, spanId=…]``, — одно место) или ключ ``level=`` в logfmt. Слово
 ``ERROR`` в тексте INFO-сообщения ошибкой не считается: первым найденный
 уровень и решает. JUL склеивается: строка «дата + класс + метод» и следующая
 ``SEVERE: …`` — одно событие. Traceback Python заканчивается строкой
@@ -34,6 +41,7 @@ from alla_core.utils.text_normalization import repeat_key
 
 ERROR_LEVELS = frozenset({
     "ERROR", "ERR", "FATAL", "SEVERE", "CRITICAL", "CRIT", "ALERT", "EMERG", "EMERGENCY",
+    "PANIC", "DPANIC",  # logrus, zap, zerolog
 })
 _LEVELS = ERROR_LEVELS | frozenset({
     "WARN", "WARNING", "INFO", "DEBUG", "TRACE", "NOTICE", "FINE", "FINER", "FINEST", "CONFIG",
@@ -56,6 +64,11 @@ _LOGFMT_START_RE = re.compile(r"^(?:time|ts|timestamp|t)=\S")
 # «level=…» внутри msg="…" за поле уровня не принимается.
 _LOGFMT_PAIR_RE = re.compile(r'(?:^|\s)(?P<key>[\w.-]+)=(?P<value>"(?:[^"\\]|\\.)*"|[^\s"]*)')
 _LOGFMT_LEVEL_KEYS = frozenset({"level", "lvl", "severity"})
+_KLOG_RE = re.compile(r"^(?P<level>[IWEF])\d{4} \d{2}:\d{2}:\d{2}\.\d{6}\s+\d+ [^\s\]]+:\d+\] ")
+_KLOG_LEVELS = {"I": "INFO", "W": "WARNING", "E": "ERROR", "F": "FATAL"}
+_GO_CRASH_RE = re.compile(r"^(?P<crash>panic|fatal error): \S")
+_GO_CRASH_LEVELS = {"panic": "PANIC", "fatal error": "FATAL"}
+_UNCAUGHT_RE = re.compile(r'^Exception in thread "[^"]*" [\w.$]+')
 _PYTHON_LEVEL_RE = re.compile(r"^(?P<level>[A-Z]+):(?=\S)")
 _JUL_LEVEL_RE = re.compile(r"^(?P<level>[A-Z]+): ")
 _TRACEBACK_RE = re.compile(r"^Traceback \(most recent call last\):")
@@ -89,8 +102,21 @@ class LogEvent:
 
 
 def _level_after_timestamp(rest: str) -> str | None:
-    """Первый уровень среди первых слов после времени; дальше — уже сообщение."""
-    for token in rest.split()[:_LEVEL_SCAN_TOKENS]:
+    """Первый уровень среди первых слов после времени; дальше — уже сообщение.
+
+    Группа в ``[]`` из нескольких слов (MDC, поток с пробелами) занимает одно место:
+    проверяется её первое слово (``[INFO ]``), остальные пропускаются.
+    """
+    places = 0
+    in_group = False
+    for token in rest.split():
+        if in_group:
+            in_group = not token.endswith("]")
+            continue
+        if places == _LEVEL_SCAN_TOKENS:
+            break
+        places += 1
+        in_group = token.startswith("[") and "]" not in token
         decorated = token != token.strip(_TOKEN_STRIP) or "/" in token
         word = token.strip(_TOKEN_STRIP).split("/", 1)[0]
         if not word:
@@ -108,17 +134,25 @@ def _logfmt_level(line: str) -> str | None:
     return None
 
 
-def _start(line: str) -> tuple[bool, str | None]:
-    """Начинает ли строка запись (время, logfmt, ``ERROR:root:``) и с каким уровнем."""
+def _start(line: str) -> tuple[str | None, str | None]:
+    """Вид записи, которую начинает строка (``None`` — продолжение), и её уровень."""
     match = _TIMESTAMP_RE.match(line)
     if match:
-        return True, _level_after_timestamp(line[match.end():])
+        return "level", _level_after_timestamp(line[match.end():])
     if _LOGFMT_START_RE.match(line):
-        return True, _logfmt_level(line)
+        return "level", _logfmt_level(line)
+    klog = _KLOG_RE.match(line)
+    if klog:
+        return "level", _KLOG_LEVELS[klog.group("level")]
+    crash = _GO_CRASH_RE.match(line)
+    if crash:
+        return "level", _GO_CRASH_LEVELS[crash.group("crash")]
+    if _UNCAUGHT_RE.match(line):
+        return "exception", None
     python = _PYTHON_LEVEL_RE.match(line)
     if python and python.group("level") in _LEVELS:
-        return True, python.group("level")
-    return False, None
+        return "level", python.group("level")
+    return None, None
 
 
 def iter_events(text: str) -> Iterator[LogEvent]:
@@ -128,10 +162,10 @@ def iter_events(text: str) -> Iterator[LogEvent]:
     for index, line in enumerate(lines):
         number = index + 1
         started, level = _start(line)
-        if started:
+        if started is not None:
             if current is not None:
                 yield current
-            current = LogEvent(number, level, "level", [line])
+            current = LogEvent(number, level, started, [line])
             continue
         in_error = current is not None and current.is_error and not current.closed
         kind = None
