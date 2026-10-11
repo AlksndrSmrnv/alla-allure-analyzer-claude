@@ -22,7 +22,7 @@ from alla_skill_lib.signature import (
     signature_material,
 )
 from eval.corpus_dev import ASSERT_500, CATALOG_NPE_LOG, PAYMENT_POOL_LOG, _assert_trace
-from skill_factories import make_single_test_cluster
+from skill_factories import make_error_log, make_single_test_cluster
 
 ASSERT_TRACE = _assert_trace(ASSERT_500, "ru.company.payments.PaymentTest", "payByCard", 30)
 TIMEOUT = "java.net.SocketTimeoutException: Read timed out"
@@ -59,7 +59,7 @@ def _pool_log(time: str, thread: str, request: str, order: int) -> str:
 
 def test_signature_has_the_current_version() -> None:
     assert str(_signature(ASSERT_500, ASSERT_TRACE, "")).startswith(f"v{SIGNATURE_VERSION}:")
-    assert SIGNATURE_VERSION == 8
+    assert SIGNATURE_VERSION == 9
 
 
 def test_same_generic_assertion_with_different_log_errors_differs() -> None:
@@ -231,6 +231,53 @@ def test_error_record_survives_the_log_selection_of_a_big_journal() -> None:
     pool, material = signature("connection pool exhausted")
     assert material is not None and "[error] connection pool exhausted" in material
     assert pool != signature("email gateway unreachable")[0]
+
+
+class _Attachment:
+    def __init__(self, name: str, content_type: str, content: bytes) -> None:
+        self.meta = AttachmentMeta(id=100, name=name, type=content_type)
+        self.content = content
+
+    async def get_attachments_for_test_result(self, _test_id: int) -> list[AttachmentMeta]:
+        return [self.meta]
+
+    async def get_attachment_content(self, _attachment_id: int) -> bytes:
+        return self.content
+
+
+@pytest.mark.parametrize("content_type", ["application/x-ndjson", "text/plain"])
+def test_json_line_log_names_the_cause_in_the_signature(content_type: str) -> None:
+    def record(time: str, cause: str) -> str:
+        return json.dumps({"@timestamp": time, "level": "ERROR", "message": "Charge failed",
+                           "stack_trace": f"{cause}\n\tat c.e.Pay.charge(Pay.java:10)\n"})
+
+    def signature(time: str, cause: str) -> tuple[str | None, str | None]:
+        log = json.dumps({"@timestamp": time, "level": "INFO", "message": "start"})
+        content = f"{log}\n{record(time, cause)}\n".encode()
+        summary = FailedTestSummary(test_result_id=1, name="t", status="failed",
+                                    status_message=ASSERT_500, status_trace=ASSERT_TRACE)
+        service = LogExtractionService(_Attachment("pay.log", content_type, content),
+                                       LogExtractionConfig())
+        asyncio.run(service.enrich_with_logs([summary]))
+        cluster, tests = make_single_test_cluster(ASSERT_500, ASSERT_TRACE)
+        tests[1] = summary
+        return cluster_signature(cluster, tests), signature_material(cluster, tests)
+
+    pool, material = signature("2026-10-03T10:00:01Z", "java.sql.SQLException: pool exhausted")
+    assert material is not None and "java.sql.sqlexception: pool exhausted" in material
+    assert pool == signature("2026-10-05T23:59:59Z", "java.sql.SQLException: pool exhausted")[0]
+    assert pool != signature("2026-10-03T10:00:01Z", "java.io.IOException: disk full")[0]
+
+
+def test_multiline_json_message_names_the_cause_in_the_signature() -> None:
+    def signature(message: str) -> str | None:
+        record = json.dumps({"level": "ERROR", "message": message,
+                             "stack_trace": "java.lang.IllegalStateException: rejected\n"
+                                            "\tat c.e.Stock.reserve(Stock.java:10)\n"})
+        return _signature(ASSERT_500, ASSERT_TRACE, make_error_log(record + "\n"))
+
+    assert (signature("warehouse closed\nretry later")
+            != signature("credentials revoked\nretry later"))
 
 
 NAMES_THE_CAUSE = [

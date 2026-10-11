@@ -42,7 +42,7 @@ from alla_core.utils.text_normalization import (
 )
 
 # Префикс версии не даёт старому хэшу совпасть с новым при смене материала.
-SIGNATURE_VERSION = 8
+SIGNATURE_VERSION = 9
 
 # Признаки общего ассерта: ошибка проверки, которая не называет причину. Проверяются по
 # строкам сообщения и трейса (без кадров и префикса pytest «E »); Hamcrest — через строку.
@@ -317,6 +317,8 @@ def _json_records(body: str) -> list[dict[str, str]] | None:
         return None
     lines = body.splitlines()
     pairs = [_JSON_PAIR_RE.match(line) for line in lines]
+    if not any(pairs):
+        return None  # JSON строкой, а не журнал с полем на строке
     indents = [len(line) - len(line.lstrip()) for line in lines]
     field_indent = min((indent for indent, pair in zip(indents, pairs, strict=True) if pair),
                        default=0)
@@ -358,8 +360,10 @@ def _log_anchor(log: str) -> _LogAnchor:
     causes: list[str] = []
     errors: list[str] = []
     plain: list[str] = []
-    for _, body in parse_log_sections(log, include_http=False):
-        records = _json_records(body)
+    for label, body in parse_log_sections(log, include_http=False):
+        # Журнал — только секция «журнал» (или лог без заголовков); JSON-записи в секции
+        # файла — события, их разбирает iter_events.
+        records = _json_records(body) if not label or label.startswith("журнал: ") else None
         if records is not None:
             for level, text in map(_record_line, records):
                 if text:

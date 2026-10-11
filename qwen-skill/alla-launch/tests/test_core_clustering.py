@@ -1043,6 +1043,34 @@ def test_log_gate_splits_errors_without_exception_classes() -> None:
     assert _groups(_orders(nginx, nginx, query)) == [[1, 2], [3]]
 
 
+def test_log_gate_splits_go_panics_with_shared_frames() -> None:
+    """Кадры Go (net/http, обработчик сервиса) у разных паник общие — в документ не входят;
+    та же паника в другой goroutine с другими адресами — та же ошибка."""
+    from eval.corpus_dev import GO_PANIC_MAP_LOG, GO_PANIC_NIL_LOG
+
+    moved = (GO_PANIC_NIL_LOG.replace("goroutine 54", "goroutine 97")
+             .replace("0xc0001a2000", "0xc0003b4000").replace("+0x3a", "+0x3e"))
+    failures = _orders(GO_PANIC_NIL_LOG, moved, GO_PANIC_MAP_LOG, GO_PANIC_MAP_LOG)
+    assert _groups(failures) == [[1, 2], [3, 4]]
+
+
+def test_log_gate_ignores_go_assembly_frames() -> None:
+    """Кадр из ассемблерного файла рантайма (``asm_amd64.s``) в отдельном блоке goroutine
+    тот же у любой паники — общим блоком ошибки он не считается."""
+    from eval.corpus_dev import GO_PANIC_MAP_LOG, GO_PANIC_NIL_LOG
+
+    idle = ("\ngoroutine 1 [chan receive]:\nruntime.gopark(0x0?, 0x0?, 0x0?)\n"
+            "\t/usr/local/go/src/runtime/proc.go:398 +0xce\nruntime.goexit()\n"
+            "\t/usr/local/go/src/runtime/asm_amd64.s:1650 +0x1\n")
+
+    def with_idle(log: str) -> str:
+        head, restart = log.rsplit("\n2026/", 1)
+        return f"{head}\n{idle}2026/{restart}"
+
+    nil_panic, map_panic = with_idle(GO_PANIC_NIL_LOG), with_idle(GO_PANIC_MAP_LOG)
+    assert _groups(_orders(nil_panic, nil_panic, map_panic, map_panic)) == [[1, 2], [3, 4]]
+
+
 def test_log_gate_keeps_one_error_logged_with_noise() -> None:
     """Потоки, номера строк кадров, номера заказов — не другая ошибка."""
     failures = _orders(
