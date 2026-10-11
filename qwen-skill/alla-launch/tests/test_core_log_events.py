@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
@@ -239,6 +240,17 @@ def test_nested_json_stack_is_taken_out_too() -> None:
     assert '"exception_class": "java.nio.file.AccessDeniedException"' in header
     assert "stacktrace" not in header
     assert first == "java.nio.file.AccessDeniedException: /mnt/exports/invoices-2026-10.xml"
+
+
+def test_multiline_json_message_stays_in_the_header() -> None:
+    record = {"level": "error", "msg": "warehouse closed\nretry later",
+              "stack_trace": "java.lang.IllegalStateException: closed\n\tat a.B.c(B.java:1)"}
+
+    event, = error_events(json.dumps(record) + "\n")
+
+    header, *stack = event.shown
+    assert json.loads(header) == {"level": "error", "msg": "warehouse closed\nretry later"}
+    assert stack == ["java.lang.IllegalStateException: closed", "\tat a.B.c(B.java:1)"]
 
 
 def test_json_record_without_multiline_fields_is_shown_verbatim() -> None:

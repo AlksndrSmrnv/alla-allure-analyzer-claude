@@ -36,9 +36,10 @@ zerolog, 3 и выше — ошибка). Слово
 ``SEVERE: …`` — одно событие. Traceback Python заканчивается строкой
 исключения.
 
-JSON-ошибка показывается строкой записи; многострочные поля (стек в
-``stack_trace``, ``stacktrace``, ``error.stack_trace``…) вынимаются из неё и идут
-строками ниже, а заголовком становится запись без них.
+JSON-ошибка показывается строкой записи; многострочные поля стека (``stack_trace``,
+``stacktrace``, ``error.stack_trace``, ``exception``…) вынимаются из неё и идут
+строками ниже, а заголовком становится запись без них. Многострочное сообщение
+остаётся в заголовке.
 """
 
 from __future__ import annotations
@@ -82,6 +83,10 @@ _GO_CRASH_RE = re.compile(r"^(?P<crash>panic|fatal error): \S")
 _GO_CRASH_LEVELS = {"panic": "PANIC", "fatal error": "FATAL"}
 _UNCAUGHT_RE = re.compile(r'^Exception in thread "[^"]*" [\w.$]+')
 _JSON_LEVEL_KEYS = ("level", "lvl", "severity", "log.level")
+# Поля стека: последняя часть имени (``error.stack_trace`` → ``stack_trace``). Многострочное
+# значение такого поля идёт строками под записью; остальные (сообщение) остаются в заголовке.
+_JSON_STACK_KEYS = frozenset({"stack_trace", "stacktrace", "stack", "exception",
+                              "extendedstacktrace"})
 _ZEROLOG_LEVELS = {-1: "TRACE", 0: "DEBUG", 1: "INFO", 2: "WARN", 3: "ERROR", 4: "FATAL",
                    5: "PANIC"}
 _PYTHON_LEVEL_RE = re.compile(r"^(?P<level>[A-Z]+):(?=\S)")
@@ -182,14 +187,19 @@ def _json_level(record: dict[str, Any]) -> tuple[bool, str | None]:
     return True, None
 
 
-def _without_multiline(record: dict[str, Any], blocks: list[str]) -> dict[str, Any]:
-    """Запись без многострочных строковых полей (на любой глубине); их значения — в ``blocks``."""
+def _without_stacks(record: dict[str, Any], blocks: list[str]) -> dict[str, Any]:
+    """Запись без многострочных полей стека (на любой глубине); их значения — в ``blocks``.
+
+    Многострочное сообщение остаётся в заголовке: оно называет ошибку, а строки под записью
+    сигнатура берёт, только если в них есть признак ошибки.
+    """
     kept: dict[str, Any] = {}
     for key, value in record.items():
-        if isinstance(value, str) and "\n" in value:
+        name = str(key).rsplit(".", 1)[-1].lower()
+        if isinstance(value, str) and "\n" in value and name in _JSON_STACK_KEYS:
             blocks.append(value)
         elif isinstance(value, dict):
-            kept[key] = _without_multiline(value, blocks)
+            kept[key] = _without_stacks(value, blocks)
         else:
             kept[key] = value
     return kept
@@ -209,7 +219,7 @@ def _json_record(line: str) -> tuple[str | None, list[str]] | None:
     if not has_level:
         return None
     blocks: list[str] = []
-    header = _without_multiline(record, blocks)
+    header = _without_stacks(record, blocks)
     if not blocks:
         return level, []
     rendered = [json.dumps(header, ensure_ascii=False)]
