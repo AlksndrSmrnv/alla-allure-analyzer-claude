@@ -278,6 +278,11 @@ def _build_log_document(
 # Кадры стека Java и Python: у одной ошибки различаются путём вызова, у разных — совпадают
 # пакетами, поэтому в документ ошибок лога не входят.
 _STACK_FRAME_RE = re.compile(r"^\s*(?:at\s+\S|\.\.\.\s+\d+\s+more\b|File \".+\", line \d+)")
+# Кадр Go — пара строк: функция и под ней с отступом файл «\t/app/x.go:42 +0x1c»; заголовок
+# дампа «goroutine 54 [running]:» — тоже не ошибка. Общие кадры (net/http, обработчик
+# сервиса) держали вместе разные паники.
+_GO_FRAME_FILE_RE = re.compile(r"^\s+\S+\.go:\d+(?:\s+\+0x[0-9a-f]+)?\s*$")
+_GOROUTINE_RE = re.compile(r"^goroutine \d+ \[[^\]]*\]:$")
 _EXCEPTION_CLASS_RE = re.compile(
     r"\b(?:[A-Za-z_$][\w$]*\.)*([A-Z][\w$]*(?:Exception|Error|Throwable))\b")
 # Как token_pattern TfidfVectorizer: документ без таких слов дал бы нулевой вектор.
@@ -315,6 +320,14 @@ class _ErrorBlock:
     lines: int
 
 
+def _is_frame(lines: list[str], index: int) -> bool:
+    """Строка ``index`` — кадр стека (Java, Python, Go) или заголовок дампа goroutine."""
+    line = lines[index]
+    return bool(_STACK_FRAME_RE.match(line) or _GO_FRAME_FILE_RE.match(line)
+                or _GOROUTINE_RE.match(line)
+                or (index + 1 < len(lines) and _GO_FRAME_FILE_RE.match(lines[index + 1])))
+
+
 def _log_error_blocks(
     failure: FailedTestSummary,
     *,
@@ -331,8 +344,9 @@ def _log_error_blocks(
     for body in _file_sections(snippet):
         # Блоки событий разделены пустыми строками (render_error_blocks).
         for raw in re.split(r"\n[ \t]*\n", body):
-            lines = [line for line in raw.splitlines()
-                     if line.strip() and not _STACK_FRAME_RE.match(line)]
+            raw_lines = raw.splitlines()
+            lines = [line for index, line in enumerate(raw_lines)
+                     if line.strip() and not _is_frame(raw_lines, index)]
             source = "\n".join(lines)
             text = _DIGITS_RE.sub("#", normalize_text(replace_thread_names(source)))
             if not _TOKEN_RE.search(text):

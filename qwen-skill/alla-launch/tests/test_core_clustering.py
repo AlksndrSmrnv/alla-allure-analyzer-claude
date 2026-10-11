@@ -1043,6 +1043,17 @@ def test_log_gate_splits_errors_without_exception_classes() -> None:
     assert _groups(_orders(nginx, nginx, query)) == [[1, 2], [3]]
 
 
+def test_log_gate_splits_go_panics_with_shared_frames() -> None:
+    """Кадры Go (net/http, обработчик сервиса) у разных паник общие — в документ не входят;
+    та же паника в другой goroutine с другими адресами — та же ошибка."""
+    from eval.corpus_dev import GO_PANIC_MAP_LOG, GO_PANIC_NIL_LOG
+
+    moved = (GO_PANIC_NIL_LOG.replace("goroutine 54", "goroutine 97")
+             .replace("0xc0001a2000", "0xc0003b4000").replace("+0x3a", "+0x3e"))
+    failures = _orders(GO_PANIC_NIL_LOG, moved, GO_PANIC_MAP_LOG, GO_PANIC_MAP_LOG)
+    assert _groups(failures) == [[1, 2], [3, 4]]
+
+
 def test_log_gate_keeps_one_error_logged_with_noise() -> None:
     """Потоки, номера строк кадров, номера заказов — не другая ошибка."""
     failures = _orders(
