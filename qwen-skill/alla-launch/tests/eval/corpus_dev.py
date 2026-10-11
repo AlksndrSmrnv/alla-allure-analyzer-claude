@@ -1483,7 +1483,7 @@ _CONTROL_ERRORS = [
      'err="credit limit exceeded for customer C-17"\n',
      "credit limit exceeded for customer C-17"),
     ("ctl-json", "warehouse-quota",
-     _ndjson({"level": "error", "msg": "order rejected",
+     _ndjson({"level": "error", "msg": "stock reservation failed",
               "error": "warehouse quota exhausted for SKU-77"}),
      "warehouse quota exhausted for SKU-77"),
     ("ctl-klog", "address-unresolved",

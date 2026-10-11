@@ -16,6 +16,10 @@ INFO-запись со своим временем не поглощается �
   ``FATAL``): дамп goroutine, кадры и пустые строки — продолжение до следующей
   записи;
 * Java ``Exception in thread "…" pkg.SomeException…`` — исключение без времени;
+* JSON-запись строкой (NDJSON: zap, zerolog, slog, logrus, logstash-logback-encoder,
+  ECS, JsonTemplateLayout) — объект с полем уровня ``level``/``lvl``/``severity``/
+  ``log.level`` (или ``{"log": {"level": …}}``); JSON без поля уровня (тело ответа
+  после ERROR) остаётся продолжением;
 * Python ``ERROR:root:…`` (``LEVEL:`` без пробела после двоеточия);
 * ``Traceback (most recent call last):`` и строка исключения
   (``pkg.SomeException: …``), за которой идут кадры ``at …`` — если идущее
@@ -24,18 +28,26 @@ INFO-запись со своим временем не поглощается �
 Уровень берётся только из позиции уровня: первые слова после времени
 (``ERROR``, ``[ERROR]``, ``|ERROR|``, ``ERROR/Worker``…; в скобках регистр
 любой, без скобок — только заглавные; группа в ``[]`` из нескольких слов, как
-MDC ``[traceId=…, spanId=…]``, — одно место) или ключ ``level=`` в logfmt. Слово
+MDC ``[traceId=…, spanId=…]``, — одно место), ключ ``level=`` в logfmt или поле
+уровня JSON (строка в любом регистре; целое под ``level`` от −1 до 5 — шкала
+zerolog, 3 и выше — ошибка). Слово
 ``ERROR`` в тексте INFO-сообщения ошибкой не считается: первым найденный
 уровень и решает. JUL склеивается: строка «дата + класс + метод» и следующая
 ``SEVERE: …`` — одно событие. Traceback Python заканчивается строкой
 исключения.
+
+JSON-ошибка показывается строкой записи; многострочные поля (стек в
+``stack_trace``, ``stacktrace``, ``error.stack_trace``…) вынимаются из неё и идут
+строками ниже, а заголовком становится запись без них.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from typing import Any
 
 from alla_core.utils.text_normalization import repeat_key
 
@@ -69,6 +81,9 @@ _KLOG_LEVELS = {"I": "INFO", "W": "WARNING", "E": "ERROR", "F": "FATAL"}
 _GO_CRASH_RE = re.compile(r"^(?P<crash>panic|fatal error): \S")
 _GO_CRASH_LEVELS = {"panic": "PANIC", "fatal error": "FATAL"}
 _UNCAUGHT_RE = re.compile(r'^Exception in thread "[^"]*" [\w.$]+')
+_JSON_LEVEL_KEYS = ("level", "lvl", "severity", "log.level")
+_ZEROLOG_LEVELS = {-1: "TRACE", 0: "DEBUG", 1: "INFO", 2: "WARN", 3: "ERROR", 4: "FATAL",
+                   5: "PANIC"}
 _PYTHON_LEVEL_RE = re.compile(r"^(?P<level>[A-Z]+):(?=\S)")
 _JUL_LEVEL_RE = re.compile(r"^(?P<level>[A-Z]+): ")
 _TRACEBACK_RE = re.compile(r"^Traceback \(most recent call last\):")
@@ -87,6 +102,9 @@ class LogEvent:
     lines: list[str] = field(default_factory=list)
     closed: bool = False  # Traceback дошёл до строки исключения
     level_line: int = 0  # индекс строки уровня в ``lines``: у JUL это вторая строка
+    # Показ первой строки, если он не дословный: JSON-запись со стеком — заголовок и
+    # строки многострочных полей. Пометка строк у них — строка записи.
+    rendered: list[str] = field(default_factory=list)
 
     @property
     def last_line(self) -> int:
@@ -97,8 +115,19 @@ class LogEvent:
         return self.level in ERROR_LEVELS or self.kind in ("traceback", "exception")
 
     @property
+    def shown(self) -> list[str]:
+        """Строки показа: ``lines``, где первая заменена на ``rendered``, если он есть."""
+        return [*self.rendered, *self.lines[1:]] if self.rendered else self.lines
+
+    @property
     def text(self) -> str:
-        return "\n".join(self.lines)
+        return "\n".join(self.shown)
+
+    def source_offset(self, index: int) -> int:
+        """Смещение в ``lines`` строки показа ``index``."""
+        if not self.rendered:
+            return index
+        return max(0, index - len(self.rendered) + 1)
 
 
 def _level_after_timestamp(rest: str) -> str | None:
@@ -134,6 +163,60 @@ def _logfmt_level(line: str) -> str | None:
     return None
 
 
+def _json_level(record: dict[str, Any]) -> tuple[bool, str | None]:
+    """Есть ли у JSON-объекта поле уровня и какой уровень (``None`` — неизвестный)."""
+    nested = record.get("log")
+    for key in _JSON_LEVEL_KEYS:
+        if key in record:
+            value = record[key]
+            break
+    else:
+        if not isinstance(nested, dict) or "level" not in nested:
+            return False, None
+        key, value = "log.level", nested["level"]
+    if isinstance(value, str):
+        level = value.upper()
+        return True, level if level in _LEVELS else None
+    if key == "level" and isinstance(value, int) and not isinstance(value, bool):
+        return True, _ZEROLOG_LEVELS.get(value)
+    return True, None
+
+
+def _without_multiline(record: dict[str, Any], blocks: list[str]) -> dict[str, Any]:
+    """Запись без многострочных строковых полей (на любой глубине); их значения — в ``blocks``."""
+    kept: dict[str, Any] = {}
+    for key, value in record.items():
+        if isinstance(value, str) and "\n" in value:
+            blocks.append(value)
+        elif isinstance(value, dict):
+            kept[key] = _without_multiline(value, blocks)
+        else:
+            kept[key] = value
+    return kept
+
+
+def _json_record(line: str) -> tuple[str | None, list[str]] | None:
+    """JSON-запись лога в строке: уровень и показ (пустой — строка дословно); иначе ``None``."""
+    if not line.startswith("{"):
+        return None
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    has_level, level = _json_level(record)
+    if not has_level:
+        return None
+    blocks: list[str] = []
+    header = _without_multiline(record, blocks)
+    if not blocks:
+        return level, []
+    rendered = [json.dumps(header, ensure_ascii=False)]
+    rendered += [part.rstrip() for block in blocks for part in block.splitlines() if part.strip()]
+    return level, rendered
+
+
 def _start(line: str) -> tuple[str | None, str | None]:
     """Вид записи, которую начинает строка (``None`` — продолжение), и её уровень."""
     match = _TIMESTAMP_RE.match(line)
@@ -162,10 +245,14 @@ def iter_events(text: str) -> Iterator[LogEvent]:
     for index, line in enumerate(lines):
         number = index + 1
         started, level = _start(line)
+        rendered: list[str] = []
+        if started is None and (record := _json_record(line)) is not None:
+            started = "level"
+            level, rendered = record
         if started is not None:
             if current is not None:
                 yield current
-            current = LogEvent(number, level, started, [line])
+            current = LogEvent(number, level, started, [line], rendered=rendered)
             continue
         in_error = current is not None and current.is_error and not current.closed
         kind = None
@@ -278,12 +365,14 @@ def _marked_event(event: LogEvent, repeats: list[tuple[int, int]]) -> str:
     У первого абзаца — ещё и места повторов. Блок, отобранный без соседних абзацев,
     так всё равно знает свои строки.
     """
-    starts = {start: (index, end) for index, (start, end) in enumerate(_paragraphs(event.lines))}
+    shown = event.shown
+    starts = {start: (index, end) for index, (start, end) in enumerate(_paragraphs(shown))}
     out: list[str] = []
-    for offset, line in enumerate(event.lines):
+    for offset, line in enumerate(shown):
         if offset in starts:
             index, end = starts[offset]
-            span = (event.first_line + offset, event.first_line + end)
+            span = (event.first_line + event.source_offset(offset),
+                    event.first_line + event.source_offset(end))
             out.append(source_mark(span, repeats if index == 0 else None))
         out.append(line)
     return "\n".join(out)

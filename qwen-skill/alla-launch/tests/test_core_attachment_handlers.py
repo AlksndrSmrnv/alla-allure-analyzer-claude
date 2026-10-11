@@ -318,7 +318,7 @@ class TestErrorBlocksHandler:
         assert "Boom" in result.section
         assert "[INFO]" not in result.section
 
-    def test_skips_non_text(self) -> None:
+    def test_json_without_log_records_gives_no_section(self) -> None:
         ctx = AttachmentContext(
             att=AttachmentMeta(id=1, name="x.json", type="application/json"),
             content=b'{"x":1}',
@@ -326,6 +326,19 @@ class TestErrorBlocksHandler:
             decoded_text='{"x":1}',
         )
         assert ErrorBlocksHandler().handle(ctx) is None
+
+    def test_json_line_log_gives_its_error_records(self) -> None:
+        text = ('{"level":"info","msg":"start"}\n'
+                '{"level":"error","msg":"charge failed","error":"gateway timeout"}\n')
+        result = ErrorBlocksHandler().handle(_ctx(text.encode("utf-8"), name="app.log"))
+        assert result is not None and result.label == "файл"
+        assert result.section == ('[строка 2]\n'
+                                  '{"level":"error","msg":"charge failed","error":"gateway timeout"}')
+
+    def test_skips_binary_and_xml(self) -> None:
+        for detected_type in ("binary", "xml"):
+            ctx = _ctx(b"2026-01-01 10:00:00 [ERROR] Boom", detected_type=detected_type)
+            assert ErrorBlocksHandler().handle(ctx) is None
 
 
 class TestHttpSignalsHandler:

@@ -8,7 +8,7 @@ import pytest
 import skill_fixtures  # noqa: F401  # scripts/ в sys.path
 
 from alla_core.services.log_extraction_service import _detect_content_type, _extract_error_blocks
-from alla_core.utils.log_events import error_events, parse_events
+from alla_core.utils.log_events import error_events, parse_events, render_error_blocks
 from eval import corpus_dev
 
 FORMAT_LOGS = {
@@ -36,6 +36,14 @@ FORMAT_LOGS = {
     "exception-in-thread-bare": (corpus_dev.EXCEPTION_IN_THREAD_BARE_LOG,
                                  "Cannot deserialize value"),
     "long-mdc": (corpus_dev.LONG_MDC_LOG, "payment method PM-88 expired"),
+    "zap-json": (corpus_dev.ZAP_JSON_LOG, "quota exceeded for account SH-12"),
+    "zerolog-numeric": (corpus_dev.ZEROLOG_NUMERIC_LOG, "references deleted tier GOLD_OLD"),
+    "slog-json": (corpus_dev.SLOG_JSON_LOG, "warehouse WH-3 is closed"),
+    "logrus-json": (corpus_dev.LOGRUS_JSON_LOG, "registration token is not registered"),
+    "logstash-json": (corpus_dev.LOGSTASH_JSON_LOG, "canceling statement due to lock timeout"),
+    "ecs-json": (corpus_dev.ECS_JSON_LOG, "exceeds captured amount 1200.00"),
+    "json-template": (corpus_dev.JSON_TEMPLATE_LOG,
+                      "AccessDeniedException: /mnt/exports/invoices-2026-10.xml"),
 }
 
 
@@ -86,6 +94,14 @@ def test_neighbouring_info_is_not_swallowed_by_the_stack() -> None:
     "E1003 garbage without a klog header",
     "  panic: indented, not a record",
     "Exception in thread main without quotes",
+    '{"level": "info", "msg": "error budget ok", "error": ""}',
+    '{"level": "warn", "msg": "retrying", "error": "connection reset by peer"}',
+    '{"level": 2, "message": "cache miss", "error": "key not found"}',
+    '{"level": 30, "msg": "pino scale is not read"}',
+    '{"level": true, "msg": "not a level"}',
+    '{"status": 500, "error": "Internal Server Error", "message": "no level field"}',
+    '{"severity": "NOTICE", "message": "error rate dropped"}',
+    '[{"level": "error", "msg": "array, not a record"}]',
 ])
 def test_error_words_outside_the_level_position_are_not_errors(line: str) -> None:
     assert not list(error_events(line + "\n"))
@@ -120,6 +136,14 @@ def test_error_words_outside_the_level_position_are_not_errors(line: str) -> Non
     "panic: runtime error: index out of range [3] with length 3",
     "fatal error: all goroutines are asleep - deadlock!",
     'Exception in thread "main" java.lang.IllegalStateException: config missing',
+    '{"level": "error", "msg": "zap"}',
+    '{"lvl": "ERR", "msg": "short level"}',
+    '{"severity": "CRITICAL", "message": "gcp"}',
+    '{"log.level": "ERROR", "message": "ecs dotted"}',
+    '{"log": {"level": "error", "logger": "x"}, "message": "ecs nested"}',
+    '{"level": 3, "message": "zerolog error"}',
+    '{"level": 5, "message": "zerolog panic"}',
+    '{"level": "dpanic", "msg": "zap development panic"}',
 ])
 def test_error_levels_in_the_level_position(line: str) -> None:
     assert len(list(error_events(line + "\n"))) == 1
@@ -193,6 +217,71 @@ def test_caused_by_and_suppressed_stay_in_the_event() -> None:
     event, = error_events(log)
 
     assert (event.first_line, event.last_line) == (1, 7)
+
+
+def test_json_stack_goes_below_the_record_and_the_mark_is_the_record_line() -> None:
+    blocks = render_error_blocks(corpus_dev.LOGSTASH_JSON_LOG)
+
+    mark, header, *stack = blocks.splitlines()
+    assert mark == "[строка 2]"
+    assert header.startswith("{") and '"level": "ERROR"' in header
+    assert "stack_trace" not in header and "\\n" not in header
+    assert stack[0] == ("org.springframework.dao.CannotAcquireLockException: could not "
+                        "execute statement; SQL [n/a]")
+    assert "\tSuppressed: java.lang.IllegalStateException: Transaction rollback failed" in stack
+    assert stack[-1] == "\t... 37 more"
+
+
+def test_nested_json_stack_is_taken_out_too() -> None:
+    event, = error_events(corpus_dev.JSON_TEMPLATE_LOG)
+
+    header, first, *_ = event.shown
+    assert '"exception_class": "java.nio.file.AccessDeniedException"' in header
+    assert "stacktrace" not in header
+    assert first == "java.nio.file.AccessDeniedException: /mnt/exports/invoices-2026-10.xml"
+
+
+def test_json_record_without_multiline_fields_is_shown_verbatim() -> None:
+    event, = error_events(corpus_dev.SLOG_JSON_LOG)
+
+    assert event.text == corpus_dev.SLOG_JSON_LOG.splitlines()[1]
+    assert (event.first_line, event.level) == (2, "ERROR")
+
+
+def test_rendered_json_block_parses_back_to_the_same_event() -> None:
+    event, = error_events(corpus_dev.ZAP_JSON_LOG)
+
+    again, = parse_events(event.text)
+
+    assert again.is_error and again.text == event.text and not again.rendered
+
+
+def test_json_records_repeated_at_other_times_are_folded() -> None:
+    record = ('{{"time": "2026-10-03T10:00:0{0}Z", "level": "error", "msg": "charge failed", '
+              '"stacktrace": "main.charge\\n\\t/app/charge.go:40"}}\n')
+    blocks = render_error_blocks(record.format(1) + record.format(2))
+
+    assert blocks.splitlines()[0] == "[строка 1 · повторялось 2 раза: 1, 2]"
+
+
+def test_json_without_a_level_after_an_error_stays_in_it() -> None:
+    log = ("2026-10-03 10:00:01 ERROR c.e.Client - gateway answered 500\n"
+           '{"status": 500, "error": "Internal Server Error"}\n'
+           "2026-10-03 10:00:02 INFO c.e.Client - done\n")
+
+    event, = error_events(log)
+
+    assert (event.first_line, event.last_line) == (1, 2)
+
+
+def test_json_records_inside_a_text_log_are_records() -> None:
+    log = ("Go service banner v1.2\n"
+           '{"level": "info", "msg": "started"}\n'
+           '{"level": "error", "msg": "db failed", "error": "dial tcp: i/o timeout"}\n'
+           "panic: db failed\n\ngoroutine 1 [running]:\nmain.main()\n")
+
+    assert [(event.first_line, event.level) for event in error_events(log)] == [
+        (3, "ERROR"), (4, "PANIC")]
 
 
 def test_traceback_ends_at_the_exception_line() -> None:

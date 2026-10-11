@@ -217,7 +217,7 @@ class StructuredErrorLogHandler:
 
 @dataclass
 class ErrorBlocksHandler:
-    """Извлекает события-ошибки из текстовых вложений.
+    """Извлекает события-ошибки из текстовых вложений и JSON-логов строками.
 
     Каждый блок начинается пометкой строк источника (``[строки 120–134]``),
     точные повторы свёрнуты в первое вхождение (:func:`render_error_blocks`).
@@ -228,7 +228,8 @@ class ErrorBlocksHandler:
     label: str = "файл"
 
     def handle(self, ctx: AttachmentContext) -> HandlerResult | None:
-        if ctx.detected_type != "text":
+        # NDJSON-лог (zap, logstash-logback-encoder…) начинается с «{» и определяется как json.
+        if ctx.detected_type not in ("text", "json"):
             return None
         if ctx.decoded_text is None:
             return None
