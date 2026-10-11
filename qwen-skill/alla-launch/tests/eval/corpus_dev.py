@@ -1,12 +1,14 @@
 """Синтетический корпус dev: по нему подбираются пороги, веса и правила.
 
 Прогон на сценарий. Тексты — по публичным форматам логов (Spring Boot, logback, log4j2,
-JUL, Python logging, logfmt, nginx, Celery, syslog) и по тому, как TestOps отвечает в
+JUL, Python logging, logfmt, nginx, Celery, syslog; Go: klog, panic, logrus, zap, zerolog,
+slog; JSON-логи Java: logstash-logback-encoder, ECS, JsonTemplateLayout) и по тому, как TestOps отвечает в
 ``skill_fake_testops.py``.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 from eval.corpus import Case, LaunchBuilder, java_trace, noise_lines
@@ -1138,6 +1140,378 @@ def silent_and_step_only() -> Case:
 
 
 # ---------------------------------------------------------------------------
+# Логи Go и Java
+# ---------------------------------------------------------------------------
+
+def _ndjson(*records: dict[str, object]) -> str:
+    """JSON-лог: запись на строку, поля в порядке словаря."""
+    return "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records)
+
+
+KLOG_ERROR_LOG = (
+    "I1003 10:00:00.120456       1 controller.go:118] Starting EndpointSlice controller\n"
+    "I1003 10:00:00.130112       1 shared_informer.go:311] Waiting for caches to sync\n"
+    "E1003 10:00:01.204877       1 endpointslice_controller.go:302] \"Error syncing endpoint "
+    "slices for service, retrying\" err=\"failed to update shop/cart-api-7xk2p EndpointSlice: "
+    "the object has been modified\" service=\"shop/cart-api\"\n"
+    "I1003 10:00:01.300554       1 controller.go:140] Endpoint slice sync finished\n"
+)
+KLOG_FATAL_LOG = (
+    "I1003 10:05:00.000101       7 main.go:41] Loading tariff config from "
+    "/etc/tariffs/config.yaml\n"
+    "F1003 10:05:00.002345       7 main.go:57] Failed to parse tariff config: yaml: line 14: "
+    "did not find expected key\n"
+    "goroutine 1 [running]:\n"
+    "k8s.io/klog/v2.stacks(0x1)\n"
+    "\t/go/pkg/mod/k8s.io/klog/v2@v2.100.1/klog.go:860 +0x89\n"
+    "main.main()\n"
+    "\t/app/cmd/tariffs/main.go:57 +0x2f4\n"
+)
+GO_PANIC_NIL_LOG = (
+    "2026/10/03 10:10:00 orders-api listening on :8080\n"
+    "2026/10/03 10:10:02 POST /orders customer=4411\n"
+    "panic: runtime error: invalid memory address or nil pointer dereference\n"
+    "[signal SIGSEGV: segmentation violation code=0x1 addr=0x18 pc=0x6d4c1a]\n"
+    "\n"
+    "goroutine 54 [running]:\n"
+    "example.com/orders/internal/pricing.(*Calculator).Total(0x0, {0xc0001a2000, 0x2, 0x2})\n"
+    "\t/app/internal/pricing/calculator.go:73 +0x3a\n"
+    "example.com/orders/internal/api.(*Handler).CreateOrder(0xc000126480, {0x8f2a40, "
+    "0xc0002b80e0}, 0xc0002ac100)\n"
+    "\t/app/internal/api/orders.go:118 +0x1c5\n"
+    "net/http.HandlerFunc.ServeHTTP(...)\n"
+    "\t/usr/local/go/src/net/http/server.go:2136 +0x29\n"
+    "\n"
+    "goroutine 1 [IO wait]:\n"
+    "internal/poll.runtime_pollWait(0x7f1c2a5e8e58, 0x72)\n"
+    "\t/usr/local/go/src/runtime/netpoll.go:343 +0x85\n"
+    "2026/10/03 10:10:05 orders-api restarted\n"
+)
+GO_PANIC_MAP_LOG = (
+    "2026/10/03 10:12:00 orders-api listening on :8080\n"
+    "2026/10/03 10:12:01 POST /orders/bulk items=3\n"
+    "panic: assignment to entry in nil map\n"
+    "\n"
+    "goroutine 61 [running]:\n"
+    "example.com/orders/internal/bulk.(*Importer).Add(...)\n"
+    "\t/app/internal/bulk/importer.go:44\n"
+    "example.com/orders/internal/api.(*Handler).BulkOrders(0xc000126480, {0x8f2a40, "
+    "0xc0002b81c0}, 0xc0002ac300)\n"
+    "\t/app/internal/api/bulk.go:61 +0x2b1\n"
+    "net/http.HandlerFunc.ServeHTTP(...)\n"
+    "\t/usr/local/go/src/net/http/server.go:2136 +0x29\n"
+    "2026/10/03 10:12:03 orders-api restarted\n"
+)
+GO_FATAL_ERROR_LOG = (
+    "2026/10/03 10:15:00 cache warmup started\n"
+    "fatal error: concurrent map writes\n"
+    "\n"
+    "goroutine 88 [running]:\n"
+    "example.com/catalog/internal/cache.(*Store).Put(...)\n"
+    "\t/app/internal/cache/store.go:29\n"
+    "example.com/catalog/internal/cache.(*Warmer).run(0xc0000a4000)\n"
+    "\t/app/internal/cache/warmer.go:52 +0x14d\n"
+    "created by example.com/catalog/internal/cache.(*Warmer).Start in goroutine 1\n"
+    "\t/app/internal/cache/warmer.go:31 +0x6a\n"
+)
+LOGRUS_PANIC_LOG = (
+    'time="2026-10-03T10:20:00Z" level=info msg="payout worker started" worker=3\n'
+    'time="2026-10-03T10:20:04Z" level=panic msg="payout ledger is inconsistent: balance '
+    '-120.50 for account ACC-7731" worker=3\n'
+)
+ZAP_JSON_LOG = _ndjson(
+    {"level": "info", "ts": 1759486200.101, "caller": "server/http.go:51",
+     "msg": "shipping-api started", "addr": ":8080"},
+    {"level": "error", "ts": 1759486203.512, "caller": "quote/client.go:96",
+     "msg": "carrier quote failed", "carrier": "dpd",
+     "error": "carrier dpd responded 503: quota exceeded for account SH-12",
+     "stacktrace": "example.com/shipping/internal/quote.(*Client).Fetch\n"
+                   "\t/app/internal/quote/client.go:96\n"
+                   "example.com/shipping/internal/api.(*Handler).Quote\n"
+                   "\t/app/internal/api/quote.go:40\n"
+                   "net/http.HandlerFunc.ServeHTTP\n"
+                   "\t/usr/local/go/src/net/http/server.go:2136"},
+    {"level": "info", "ts": 1759486203.530, "caller": "server/http.go:77",
+     "msg": "request finished", "path": "/quotes"},
+)
+ZEROLOG_NUMERIC_LOG = _ndjson(
+    {"level": 1, "time": "2026-10-03T10:25:00Z", "order": "ORD-5521",
+     "message": "points accrual started"},
+    {"level": 3, "time": "2026-10-03T10:25:01Z", "order": "ORD-5521",
+     "message": "points rule LP-9 references deleted tier GOLD_OLD"},
+    {"level": 1, "time": "2026-10-03T10:25:01Z", "order": "ORD-5521",
+     "message": "points accrual finished"},
+)
+SLOG_JSON_LOG = _ndjson(
+    {"time": "2026-10-03T10:30:00.101Z", "level": "INFO", "msg": "reservation request",
+     "sku": "SKU-88"},
+    {"time": "2026-10-03T10:30:00.240Z", "level": "ERROR", "msg": "reservation failed",
+     "sku": "SKU-88", "err": "warehouse WH-3 is closed for inventory count"},
+    {"time": "2026-10-03T10:30:00.260Z", "level": "INFO", "msg": "request finished"},
+)
+LOGRUS_JSON_LOG = _ndjson(
+    {"level": "info", "msg": "sending push", "time": "2026-10-03T10:35:00Z", "user": "u-102"},
+    {"error": "fcm: registration token is not registered", "level": "error",
+     "msg": "push delivery failed", "time": "2026-10-03T10:35:01Z", "user": "u-102"},
+)
+
+# (группа, причина, категория, сервис, сообщение теста, вложение (имя, текст, тип),
+#  доказательства)
+_GO_FORMATS: list[tuple[str, str, str, str, str, tuple[str, str, str], list[str]]] = [
+    ("go-klog-error", "endpoint-slice-conflict", "окружение", "cart",
+     "Cart API is unreachable after deploy",
+     ("kube-controller.log", KLOG_ERROR_LOG, "text/plain"),
+     ["failed to update shop/cart-api-7xk2p EndpointSlice"]),
+    ("go-klog-fatal", "tariff-config-invalid", "окружение", "tariffs",
+     "Tariff list expected 12 items but was 0",
+     ("tariffs.log", KLOG_FATAL_LOG, "text/plain"),
+     ["Failed to parse tariff config: yaml: line 14: did not find expected key"]),
+    ("go-fatal-error", "catalog-cache-race", "приложение", "catalog",
+     "Catalog page did not load within 10 seconds",
+     ("catalog.log", GO_FATAL_ERROR_LOG, "text/plain"),
+     ["fatal error: concurrent map writes"]),
+    ("go-logrus-panic", "payout-ledger-broken", "данные", "payouts",
+     "Payout status expected SENT but was PENDING",
+     ("payouts.log", LOGRUS_PANIC_LOG, "text/plain"),
+     ["payout ledger is inconsistent: balance -120.50 for account ACC-7731"]),
+    ("go-zap-json", "carrier-quota-exceeded", "окружение", "shipping",
+     "Shipping quote request failed with HTTP 502 Bad Gateway",
+     ("shipping.log", ZAP_JSON_LOG, "text/plain"),
+     ["carrier quote failed", "carrier dpd responded 503: quota exceeded for account SH-12"]),
+    ("go-zerolog-numeric", "loyalty-tier-deleted", "данные", "loyalty",
+     "Loyalty points for order ORD-5521 expected 55 but was 0",
+     ("loyalty.ndjson", ZEROLOG_NUMERIC_LOG, "application/x-ndjson"),
+     ["points rule LP-9 references deleted tier GOLD_OLD"]),
+    ("go-slog-json", "warehouse-closed", "окружение", "inventory",
+     "Reservation for SKU-88 expected RESERVED but was FAILED",
+     ("inventory.log", SLOG_JSON_LOG, "text/plain"),
+     ["warehouse WH-3 is closed for inventory count"]),
+    ("go-logrus-json", "push-token-stale", "данные", "notify",
+     "Push notification for user u-102 was not delivered",
+     ("notify.json", LOGRUS_JSON_LOG, "application/json"),
+     ["push delivery failed", "fcm: registration token is not registered"]),
+]
+
+
+def go_log_formats() -> Case:
+    """Группа на формат лога Go; две паники — за одним ассертом в одном шаге."""
+    builder = LaunchBuilder(6201, "Go services")
+    for group, cause, category, service, message, attachment, evidence in _GO_FORMATS:
+        test_class = f"ru.shop.{service}.{service.title()}ApiTest"
+        for index, method in enumerate(("check", "checkAgain")):
+            builder.add_failure(
+                group, cause=cause, category=category, name=f"{service} {method}",
+                full_name=f"{test_class}.{method}", message=message,
+                trace=_assert_trace(message, test_class, method, 20 + index * 10),
+                step=f"Проверить сервис {service}", logs=[attachment], evidence=evidence,
+            )
+    panics = [
+        ("go-panic-nil", "pricing-nil-calculator", GO_PANIC_NIL_LOG, ("createOrder", "createGiftOrder"),
+         "panic: runtime error: invalid memory address or nil pointer dereference"),
+        ("go-panic-map", "bulk-import-nil-map", GO_PANIC_MAP_LOG, ("bulkOrders", "bulkOrdersAgain"),
+         "panic: assignment to entry in nil map"),
+    ]
+    for group, cause, log, methods, evidence_line in panics:
+        for index, method in enumerate(methods):
+            builder.add_failure(
+                group, cause=cause, category="приложение", name=f"orders {method}",
+                full_name=f"ru.shop.orders.OrdersApiTest.{method}", message=ASSERT_500,
+                trace=_assert_trace(ASSERT_500, "ru.shop.orders.OrdersApiTest", method,
+                                    40 + index * 10),
+                step="Вызвать API заказов", log=log, log_name="orders-api.log",
+                evidence=[evidence_line],
+            )
+    return builder.build("go_log_formats")
+
+
+EXCEPTION_IN_THREAD_LOG = (
+    "2026-10-03 10:40:00.100  INFO 4242 --- [           main] c.e.batch.BatchApplication   "
+    "            : Starting BatchApplication using Java 21\n"
+    "Exception in thread \"main\" java.lang.IllegalStateException: Failed to load "
+    "ApplicationContext for batch job 'settlement'\n"
+    "\tat org.springframework.boot.SpringApplication.run(SpringApplication.java:335)\n"
+    "\tat com.example.batch.BatchApplication.main(BatchApplication.java:12)\n"
+    "Caused by: org.springframework.beans.factory.BeanCreationException: Error creating bean "
+    "with name 'settlementReader': Invocation of init method failed\n"
+    "\tat org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory"
+    ".initializeBean(AbstractAutowireCapableBeanFactory.java:1786)\n"
+    "\t... 8 more\n"
+    "Caused by: java.io.FileNotFoundException: /data/settlement/2026-10-03.csv (No such file "
+    "or directory)\n"
+    "\tat java.base/java.io.FileInputStream.open0(Native Method)\n"
+    "\t... 14 more\n"
+)
+EXCEPTION_IN_THREAD_BARE_LOG = (
+    "Exception in thread \"kafka-consumer-1\" org.apache.kafka.common.errors."
+    "SerializationException: Error deserializing key/value for partition invoices-3 at offset "
+    "1182\n"
+    "\tat org.apache.kafka.clients.consumer.internals.CompletedFetch.parseRecord"
+    "(CompletedFetch.java:331)\n"
+    "\tat org.apache.kafka.clients.consumer.KafkaConsumer.poll(KafkaConsumer.java:1250)\n"
+    "Caused by: com.fasterxml.jackson.databind.exc.InvalidFormatException: Cannot deserialize "
+    "value of type `java.math.BigDecimal` from String \"12,50\": not a valid representation\n"
+    "\tat com.fasterxml.jackson.databind.exc.InvalidFormatException.from"
+    "(InvalidFormatException.java:67)\n"
+    "\t... 9 more\n"
+)
+LOGSTASH_JSON_LOG = _ndjson(
+    {"@timestamp": "2026-10-03T10:45:00.120+03:00", "@version": "1",
+     "message": "Recalculating tariffs for region 77",
+     "logger_name": "com.example.tariffs.TariffService", "thread_name": "scheduling-1",
+     "level": "INFO", "level_value": 20000},
+    {"@timestamp": "2026-10-03T10:45:02.410+03:00", "@version": "1",
+     "message": "Tariff recalculation failed for region 77",
+     "logger_name": "com.example.tariffs.TariffService", "thread_name": "scheduling-1",
+     "level": "ERROR", "level_value": 40000,
+     "stack_trace": "org.springframework.dao.CannotAcquireLockException: could not execute "
+                    "statement; SQL [n/a]\n"
+                    "\tat org.springframework.orm.jpa.vendor.HibernateJpaDialect."
+                    "convertHibernateAccessException(HibernateJpaDialect.java:284)\n"
+                    "\tat com.example.tariffs.TariffService.recalculate(TariffService.java:88)\n"
+                    "\tSuppressed: java.lang.IllegalStateException: Transaction rollback failed\n"
+                    "\t\tat com.example.tariffs.TxSupport.rollback(TxSupport.java:31)\n"
+                    "Caused by: org.postgresql.util.PSQLException: ERROR: canceling statement "
+                    "due to lock timeout\n"
+                    "\tat org.postgresql.core.v3.QueryExecutorImpl.receiveErrorResponse"
+                    "(QueryExecutorImpl.java:2725)\n"
+                    "\t... 37 more\n"},
+)
+ECS_JSON_LOG = _ndjson(
+    {"@timestamp": "2026-10-03T07:48:00.010Z", "log.level": "INFO",
+     "message": "Refund requested for payment P-9001", "ecs.version": "1.2.0",
+     "service.name": "refunds", "log.logger": "com.example.refunds.RefundController",
+     "process.thread.name": "http-nio-8080-exec-4"},
+    {"@timestamp": "2026-10-03T07:48:00.090Z", "log.level": "ERROR",
+     "message": "Refund processing failed", "ecs.version": "1.2.0",
+     "service.name": "refunds", "log.logger": "com.example.refunds.RefundService",
+     "process.thread.name": "http-nio-8080-exec-4",
+     "error.type": "java.lang.IllegalArgumentException",
+     "error.message": "Refund amount 1500.00 exceeds captured amount 1200.00",
+     "error.stack_trace": "java.lang.IllegalArgumentException: Refund amount 1500.00 exceeds "
+                          "captured amount 1200.00\n"
+                          "\tat com.example.refunds.RefundPolicy.check(RefundPolicy.java:41)\n"
+                          "\tat com.example.refunds.RefundService.refund(RefundService.java:67)\n"},
+)
+JSON_TEMPLATE_LOG = _ndjson(
+    {"@version": 1, "@timestamp": "2026-10-03T10:50:00.100+03:00",
+     "message": "Invoice export started", "level": "INFO",
+     "logger_name": "com.example.invoices.ExportJob", "thread_name": "export-2"},
+    {"@version": 1, "@timestamp": "2026-10-03T10:50:00.300+03:00",
+     "message": "Invoice export failed", "level": "ERROR",
+     "logger_name": "com.example.invoices.ExportJob", "thread_name": "export-2",
+     "exception": {
+         "exception_class": "java.nio.file.AccessDeniedException",
+         "exception_message": "/mnt/exports/invoices-2026-10.xml",
+         "stacktrace": "java.nio.file.AccessDeniedException: /mnt/exports/invoices-2026-10.xml\n"
+                       "\tat java.base/sun.nio.fs.UnixException.translateToIOException"
+                       "(UnixException.java:90)\n"
+                       "\tat com.example.invoices.ExportJob.write(ExportJob.java:52)\n"}},
+)
+_MDC = "[traceId=6f1c2a, spanId=91be, userId=5512, tenant=retail, requestId=r-77]"
+LONG_MDC_LOG = (
+    f"2026-10-03 10:55:00.100 [http-nio-8080-exec-9] {_MDC} INFO  "
+    "c.e.subs.SubscriptionController - Renew subscription SUB-301\n"
+    f"2026-10-03 10:55:00.180 [http-nio-8080-exec-9] {_MDC} ERROR "
+    "c.e.subs.SubscriptionService - Renewal of SUB-301 failed: payment method PM-88 expired "
+    "in 09/2026\n"
+    f"2026-10-03 10:55:00.200 [http-nio-8080-exec-9] {_MDC} INFO  "
+    "c.e.subs.SubscriptionController - Request finished\n"
+)
+
+_JAVA_FORMATS: list[tuple[str, str, str, str, str, tuple[str, str, str], list[str]]] = [
+    ("java-exception-in-thread", "settlement-file-missing", "данные", "batch",
+     "Settlement report for 2026-10-03 was not created",
+     ("batch.log", EXCEPTION_IN_THREAD_LOG, "text/plain"),
+     ["java.io.FileNotFoundException: /data/settlement/2026-10-03.csv (No such file or "
+      "directory)"]),
+    ("java-exception-bare", "invoice-amount-format", "данные", "invoices",
+     "Invoice INV-1182 expected status POSTED but was NEW",
+     ("consumer-stderr.log", EXCEPTION_IN_THREAD_BARE_LOG, "text/plain"),
+     ["Cannot deserialize value of type `java.math.BigDecimal` from String \"12,50\""]),
+    ("java-logstash-json", "tariff-lock-timeout", "окружение", "tariffs",
+     "Tariffs for region 77 expected version 5 but was 4",
+     ("tariffs.json.log", LOGSTASH_JSON_LOG, "text/plain"),
+     ["Tariff recalculation failed for region 77",
+      "PSQLException: ERROR: canceling statement due to lock timeout"]),
+    ("java-ecs-json", "refund-over-capture", "данные", "refunds",
+     "Refund for payment P-9001 expected REFUNDED but was FAILED",
+     ("refunds.ndjson", ECS_JSON_LOG, "application/x-ndjson"),
+     ["Refund amount 1500.00 exceeds captured amount 1200.00"]),
+    ("java-json-template", "export-dir-readonly", "окружение", "exports",
+     "Invoice export file invoices-2026-10.xml was not found",
+     ("export.json", JSON_TEMPLATE_LOG, "application/json"),
+     ["java.nio.file.AccessDeniedException: /mnt/exports/invoices-2026-10.xml"]),
+    ("java-long-mdc", "payment-method-expired", "данные", "subscriptions",
+     "Subscription SUB-301 expected ACTIVE but was SUSPENDED",
+     ("subscriptions.log", LONG_MDC_LOG, "text/plain"),
+     ["Renewal of SUB-301 failed: payment method PM-88 expired in 09/2026"]),
+]
+
+
+def java_log_formats() -> Case:
+    """Группа на формат лога Java: необработанное исключение потока, JSON, длинный MDC."""
+    builder = LaunchBuilder(6202, "Java services")
+    for group, cause, category, service, message, attachment, evidence in _JAVA_FORMATS:
+        test_class = f"ru.shop.{service}.{service.title()}FlowTest"
+        for index, method in enumerate(("verify", "verifyAgain")):
+            builder.add_failure(
+                group, cause=cause, category=category, name=f"{service} {method}",
+                full_name=f"{test_class}.{method}", message=message,
+                trace=_assert_trace(message, test_class, method, 30 + index * 10),
+                step=f"Проверить {service}", logs=[attachment], evidence=evidence,
+            )
+    return builder.build("java_log_formats")
+
+
+# Одинаковый шум во всех трёх логах: слово error вне уровня, пустое поле error при INFO,
+# WARN с ошибкой, числовой уровень zerolog ниже ошибки.
+LEVEL_NOISE_LOG = (
+    "2026/10/03 11:00:00 INFO retry policy: on error wait 5s\n"
+    "2026/10/03 11:00:00 WARN slow upstream response, error budget at 80%\n"
+    'time=2026-10-03T11:00:01Z level=info msg="health ok" error=""\n'
+    'time=2026-10-03T11:00:01Z level=warn msg="retrying upstream" err="unexpected EOF"\n'
+    "I1003 11:00:01.000100       1 probe.go:30] error rate 0.0% over last minute\n"
+    "W1003 11:00:01.000200       1 probe.go:35] error threshold is not configured\n"
+) + _ndjson(
+    {"level": "info", "msg": "error budget ok", "error": ""},
+    {"level": "warn", "msg": "retrying", "error": "connection reset by peer"},
+    {"level": 2, "message": "cache miss", "error": "key not found"},
+)
+_CONTROL_ERRORS = [
+    ("ctl-logfmt", "credit-limit",
+     'time=2026-10-03T11:00:02Z level=error msg="order rejected" '
+     'err="credit limit exceeded for customer C-17"\n',
+     "credit limit exceeded for customer C-17"),
+    ("ctl-json", "warehouse-quota",
+     _ndjson({"level": "error", "msg": "order rejected",
+              "error": "warehouse quota exhausted for SKU-77"}),
+     "warehouse quota exhausted for SKU-77"),
+    ("ctl-klog", "address-unresolved",
+     "E1003 11:00:02.000300       1 geocode.go:88] Delivery address of order 905 cannot be "
+     "geocoded: street not found\n",
+     "Delivery address of order 905 cannot be geocoded: street not found"),
+]
+
+
+def log_level_controls() -> Case:
+    """Один ассерт и шаг, разные ошибки лога и одинаковый шум без уровня ошибки."""
+    builder = LaunchBuilder(6203, "Order controls")
+    tail = "2026/10/03 11:00:03 INFO request finished\n"
+    for group, cause, error, evidence_line in _CONTROL_ERRORS:
+        for index in range(2):
+            method = f"{group.split('-', 1)[1]}Order{index + 1}"
+            builder.add_failure(
+                group, cause=cause, category="данные", name=f"orders {method}",
+                full_name=f"ru.shop.orders.OrderControlTest.{method}", message=ASSERT_500,
+                trace=_assert_trace(ASSERT_500, "ru.shop.orders.OrderControlTest", method,
+                                    50 + index * 10),
+                step="Создать заказ", log=LEVEL_NOISE_LOG + error + tail,
+                log_name="orders.log", evidence=[evidence_line],
+            )
+    return builder.build("log_level_controls")
+
+
+# ---------------------------------------------------------------------------
 # Большой прогон
 # ---------------------------------------------------------------------------
 
@@ -1203,5 +1577,8 @@ CASES: dict[str, Callable[[], Case]] = {
     "mixed_formats": mixed_formats,
     "ui_and_network": ui_and_network,
     "silent_and_step_only": silent_and_step_only,
+    "go_log_formats": go_log_formats,
+    "java_log_formats": java_log_formats,
+    "log_level_controls": log_level_controls,
     "big_launch": big_launch,
 }
