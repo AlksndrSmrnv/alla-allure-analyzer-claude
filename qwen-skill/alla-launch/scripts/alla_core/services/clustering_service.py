@@ -278,10 +278,11 @@ def _build_log_document(
 # Кадры стека Java и Python: у одной ошибки различаются путём вызова, у разных — совпадают
 # пакетами, поэтому в документ ошибок лога не входят.
 _STACK_FRAME_RE = re.compile(r"^\s*(?:at\s+\S|\.\.\.\s+\d+\s+more\b|File \".+\", line \d+)")
-# Кадр Go — пара строк: функция и под ней с отступом файл «\t/app/x.go:42 +0x1c»; заголовок
-# дампа «goroutine 54 [running]:» — тоже не ошибка. Общие кадры (net/http, обработчик
-# сервиса) держали вместе разные паники.
-_GO_FRAME_FILE_RE = re.compile(r"^\s+\S+\.go:\d+(?:\s+\+0x[0-9a-f]+)?\s*$")
+# Кадр Go — пара строк: функция и под ней с отступом файл «\t/app/x.go:42 +0x1c» (у рантайма
+# и ассемблерный, «runtime/asm_amd64.s:1650 +0x1»); заголовок дампа «goroutine 54
+# [running]:» — тоже не ошибка. Общие кадры (net/http, обработчик сервиса, runtime.goexit в
+# отдельном блоке goroutine) держали вместе разные паники.
+_GO_FRAME_FILE_RE = re.compile(r"^\s+\S+\.(?:go|s):\d+(?:\s+\+0x[0-9a-f]+)?\s*$")
 _GOROUTINE_RE = re.compile(r"^goroutine \d+ \[[^\]]*\]:$")
 _EXCEPTION_CLASS_RE = re.compile(
     r"\b(?:[A-Za-z_$][\w$]*\.)*([A-Z][\w$]*(?:Exception|Error|Throwable))\b")
