@@ -314,8 +314,8 @@ def _cut_window(log: SessionLog, entries: list[_Entry], root: str) -> None:
     log.reached_done = bool(done)
     if done:
         # Финальный ответ — текст основного агента после последнего done до следующего
-        # вызова или конца хода. Чтение и запись файла проблем скилла ответ не обрывают:
-        # агент может дописать его и перед выводом отчёта.
+        # вызова или конца хода. Чтение и запись файла проблем скилла и чтение справочника
+        # ответ не обрывают: done велит дописать файл по problem-report.md до вывода отчёта.
         last = done[-1]
         after = [entry for entry in window if entry.session == last.session
                  and not entry.subagent and entry.timestamp > last.timestamp]
@@ -355,7 +355,11 @@ def _seconds(start: str, end: str) -> int | None:
 def _touches_skill_problems(call: ToolCall | None) -> bool:
     if call is None or call.name not in ("read_file", "write_file"):
         return False
-    return path_of(call).replace("\\", "/").rsplit("/", 1)[-1] == SKILL_PROBLEMS_FILE
+    path = path_of(call).replace("\\", "/")
+    if path.rsplit("/", 1)[-1] == SKILL_PROBLEMS_FILE:
+        return True
+    # Справочник скилла (problem-report.md и др.): чтение ничего не выводит пользователю.
+    return call.name == "read_file" and "/references/" in path and path.endswith(".md")
 
 
 def read_skill_problems(path: Path) -> list[str]:
@@ -367,10 +371,15 @@ def read_skill_problems(path: Path) -> list[str]:
         return []
     block = text.partition(PROBLEMS_HEADING)[2] if PROBLEMS_HEADING in text else text
     problems: list[list[str]] = []
+    outer: int | None = None  # отступ внешней нумерации — по первому пункту
     for line in block.splitlines():
-        match = re.match(r"\s*\d+\.\s+(.+)", line)
-        if match:
-            problems.append([match.group(1).strip()])
+        match = re.match(r"(\s*)(\d+)\.\s+(.+)", line)
+        # Новый пункт — только следующий номер на отступе внешней нумерации: «1. …» внутри
+        # «Произошло:» (цитата вывода скрипта) — продолжение текущего пункта.
+        if match and (outer is None or (len(match.group(1)) <= outer
+                                        and int(match.group(2)) == len(problems) + 1)):
+            outer = len(match.group(1)) if outer is None else outer
+            problems.append([match.group(3).strip()])
         elif problems and line.strip() and not line.lstrip().startswith("```"):
             problems[-1].append(line.strip())
     return ["\n".join(lines) for lines in problems]

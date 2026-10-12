@@ -153,10 +153,12 @@ paths:
   всё после неё — не разбор (идущий `review` ещё без результата выглядел бы падением без
   STATUS). Время — сумма длительностей ходов до последней записи, включая время результата
   инструмента. Финальный ответ — текст после последнего `done` до следующего вызова; чтение и запись
-  `skill-problems.md` (read_file, write_file) его не обрывают. У shell в журнале вывод обёрнут `Command:`/`Output:` —
+  `skill-problems.md` и чтение справочников `references/*.md` его не обрывают (`done` велит
+  дописать файл по `problem-report.md` до вывода отчёта). У shell в журнале вывод обёрнут `Command:`/`Output:` —
   берётся `resultDisplay.output`, иначе вырезается из `Output:`.
 - Проблемы скилла для `review` — пункты `skill-problems.md` целиком, с полями «Где:»,
-  «Произошло:»… (`read_skill_problems`,
+  «Произошло:»…; новый пункт — только следующий номер на отступе внешней нумерации, «1. …»
+  из цитаты вывода — продолжение пункта (`read_skill_problems`,
   `process.skill_problems`, читаются и без журнала) плюс строки субагентов из журнала
   (`journal.skill_problems`); сумма — `review.skill_problems`.
 - Правила поведения (`shell_only_skill_commands`, `no_code_search`, `listed_code_only`,
