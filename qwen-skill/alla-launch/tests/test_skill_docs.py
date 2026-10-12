@@ -347,6 +347,8 @@ def test_propose_fix_summary_and_done_outputs_point_to_their_references(
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: done")
     assert "Проблемы скилла" in out and "references/problem-report.md" in out
+    assert f"сначала запиши их в {run_dir / 'skill-problems.md'}" in out
+    assert out.index("skill-problems.md") < out.index("===ОТЧЁТ===")
     assert "references/feedback.md" in out
 
 
@@ -355,7 +357,7 @@ def test_batch_task_carries_rules_reference_and_problem_line(
 ) -> None:
     run_dir, _, out = _prepare(project, capsys)
     assert out.startswith("STATUS: analyze_batch")
-    assert "Проблема скилла" in out  # основной агент переносит такие строки дословно
+    assert "Проблема скилла" in out and "никуда не переноси" in out  # их видит review
     batch = _read(run_dir / "batches" / "1.md")
     assert EXECUTOR_RULES in batch
     assert "references/analysis-format.md" in batch

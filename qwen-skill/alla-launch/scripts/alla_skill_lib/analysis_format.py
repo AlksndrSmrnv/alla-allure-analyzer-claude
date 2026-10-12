@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Any
 
+from alla_skill_lib.agent_rules import RECORD_PROBLEM
 from alla_skill_lib.code_hints import SOURCE_EXTENSIONS, ProjectIndex
 
 CATEGORIES = ("тест", "приложение", "окружение", "данные", "неизвестно")
@@ -501,8 +502,8 @@ _QUOTE_NORMALIZE = str.maketrans({char: '"' for char in "«»“”„‘’`'"}
 OBSERVATION_LINE = "«- [S3] «дословная цитата»»"
 REGISTRY_MISSING = (
     "реестр источников этого кластера (evidence/NN.sources.json) не найден или повреждён — "
-    "цитаты нельзя проверить. Разбор не меняй: это неполадка скилла, сообщи о ней в блоке "
-    "«Проблемы скилла»"
+    "цитаты нельзя проверить. Разбор не меняй: это неполадка скилла (SKILL.md, «Проблемы "
+    f"скилла») — {RECORD_PROBLEM}"
 )
 
 

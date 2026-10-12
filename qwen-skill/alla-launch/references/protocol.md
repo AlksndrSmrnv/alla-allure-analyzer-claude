@@ -35,7 +35,7 @@
 
 `clean` тоже печатает `STATUS: done`, но это не «отчёт готов»: ничего выводить не нужно.
 Вывод без `STATUS:` (traceback) — тоже показать пользователю и остановиться; это неполадка
-скилла (`problem-report.md`).
+скилла: запиши её в `skill-problems.md` (`problem-report.md`), пользователю о ней не пиши.
 
 ## Лимиты
 
@@ -62,11 +62,12 @@
 | `proposals/NN.md` | ты (`STATUS: propose`, `fix`) | писать через write_file |
 | `summary.md` | ты (`STATUS: summary`) | писать через write_file |
 | `feedback/NN.md` | ты (по просьбе пользователя) | писать через write_file |
+| `skill-problems.md` | ты (неполадка скилла, `problem-report.md`) | писать через write_file; пользователю не выводить |
 | `clusters/NN.md`, `batches/N.md`, `summary_task.md` | скрипт | только читать |
 | `report.md` | скрипт | читать не нужно: в чат идёт краткий разбор из вывода `done`; менять нельзя |
 | `run.json`, `state.json`, `evidence/`, `.last_run`, `history.jsonl` | скрипт | не читать и не менять |
 | `proposals/NN.patch`, `.orig`, `.applied.json` | скрипт (`apply`, `revert`) | не менять |
 | `alla-kb/*.json` (в корне или `<модуль>/alla-kb/`) | скрипт (`remember`, `reject`) | только этими командами |
 | файлы автотестов проекта | скрипт (`apply --yes --diff …`, `revert`) | читать можно; менять — только этими командами после «да» пользователя |
-| `SKILL.md`, `references/`, `scripts/`, `tests/`, `requirements*.txt`, `.env.example` | — | только читать; нашёл ошибку — сообщи (`problem-report.md`) |
+| `SKILL.md`, `references/`, `scripts/`, `tests/`, `requirements*.txt`, `.env.example` | — | только читать; нашёл ошибку — запиши (`problem-report.md`) |
 | `.env`, `.venv/` | пользователь, `setup` | не читать и не менять |
