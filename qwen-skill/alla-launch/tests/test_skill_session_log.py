@@ -16,6 +16,7 @@ from alla_skill_lib.session_log import (
     MAX_SESSIONS,
     load_session,
     note_session,
+    read_skill_problems,
     sanitize_cwd,
     skill_status,
     skill_subcommand,
@@ -107,8 +108,13 @@ def test_window_is_from_first_command_of_run_to_final_answer(tmp_path: Path) -> 
     j.call("read_file", {"file_path": str(run / "clusters" / "01.md")}, "# Кластер 1")
     j.call("write_file", {"file_path": str(run / "analyses" / "01.md"), "content": "x"}, "ok")
     j.skill(f"next {run}", _done_output(run))
+    # проблему скилла агент дописывает в файл перед отчётом: финальный ответ это не обрывает
+    j.call("read_file", {"file_path": str(run / "skill-problems.md")}, "Проблемы скилла:\n1. …")
+    j.call("read_file", {"file_path": str(project / ".qwen/skills/alla-launch/references/"
+                                               "problem-report.md")}, "# Проблемы скилла")
+    j.call("write_file", {"file_path": str(run / "skill-problems.md"),
+                          "content": "Проблемы скилла:\n1. verify принял пустой файл\n"}, "ok")
     j.text(REPORT + "\n\n")
-    j.text("Проблемы скилла:\n1. verify принял пустой файл\n   Где: verify\n")
     j.user("проверь разбор")
     j.skill(f"review --run {run}", f"STATUS: reviewed\nпапка {run}")
     save_main(j, qdir)
@@ -117,17 +123,17 @@ def test_window_is_from_first_command_of_run_to_final_answer(tmp_path: Path) -> 
 
     assert log.note == "" and log.reached_done
     assert [skill_subcommand(c) for c in log.calls if c.name == "run_shell_command"] == ["prepare", "next"]
-    assert [c.index for c in log.calls] == [0, 1, 2, 3]
+    assert [c.index for c in log.calls] == [0, 1, 2, 3, 4, 5, 6]
     assert REPORT in log.final and "думаю" not in log.final
-    assert log.skill_problems == ["verify принял пустой файл"]
-    assert skill_status(log.calls[0]) == "analyze" and skill_status(log.calls[-1]) == "done"
+    assert log.skill_problems == []  # свои проблемы основного агента — в файле, не в журнале
+    assert skill_status(log.calls[0]) == "analyze" and skill_status(log.calls[3]) == "done"
     assert log.model == "qwen/qwen3.8-flash" and log.version == "0.25.0"
     # ход «разбери прогон 777» целиком: от реплики до последнего текста ответа (у вызова две
-    # записи: вызов и результат); токены — размышление, четыре вызова и два текста; ход с
+    # записи: вызов и результат); токены — размышление, семь вызовов и текст; ход с
     # прогоном 555 и ход проверки в окно не входят
     assert log.turns == 1
-    assert log.duration_seconds == 11
-    assert log.usage.requests == 7 and log.usage.total == 4 * 110 + 3 * 115
+    assert log.duration_seconds == 16
+    assert log.usage.requests == 9 and log.usage.total == 7 * 110 + 2 * 115
 
 
 def test_shell_output_without_display_is_unwrapped(tmp_path: Path) -> None:
@@ -328,3 +334,36 @@ def test_rules_run_over_journal_calls(tmp_path: Path) -> None:
     assert results["shell_only_skill_commands"] == "fail"
     assert results["report_verbatim"] == "fail"
     assert results["allowed_writes"] == "pass"
+
+
+def test_skill_problems_block_in_final_answer_breaks_report_verbatim(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    run = _run_dir(project)
+    qdir = qwen_dirs(tmp_path, project)
+    j = Journal("sess-10", project)
+    j.skill(f"next {run}", _done_output(run))
+    j.text(REPORT + "\n\nПроблемы скилла:\n1. verify принял пустой файл\n")
+    save_main(j, qdir)
+
+    log = load_session(run, project, _state("sess-10", qdir))
+    result = RULES["report_verbatim"](RuleContext(project, tmp_path, log.calls, log.final, [run]))
+    assert result["status"] == "fail" and "Проблемы скилла" in result["evidence"]
+
+
+def test_read_skill_problems(tmp_path: Path) -> None:
+    path = tmp_path / "skill-problems.md"
+    assert read_skill_problems(path) == []
+    path.write_text("```text\nПроблемы скилла:\n1. verify молчит\n   Где: verify\n"
+                    "   Произошло: STATUS: ok\n\n2. нет справочника\n```\n", encoding="utf-8")
+    assert read_skill_problems(path) == ["verify молчит\nГде: verify\nПроизошло: STATUS: ok",
+                                         "нет справочника"]
+    # нумерация внутри «Произошло:» — не новые проблемы: с отступом глубже внешней или с
+    # номером не по порядку (цитата шаблона «1. …» без отступа)
+    path.write_text("Проблемы скилла:\n1. fix противоречит справочнику\n   Произошло:\n"
+                    "     1. Передавать customer\n     2. Проверить ответ\n1. Шаг шаблона\n"
+                    "   Что сделал: продолжил\n2. нет справочника\n", encoding="utf-8")
+    assert read_skill_problems(path) == [
+        "fix противоречит справочнику\nПроизошло:\n1. Передавать customer\n2. Проверить ответ\n"
+        "1. Шаг шаблона\nЧто сделал: продолжил", "нет справочника"]
+    path.write_text("1. без заголовка\n", encoding="utf-8")
+    assert read_skill_problems(path) == ["без заголовка"]

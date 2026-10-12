@@ -27,14 +27,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from alla_skill_lib.session_rules import DONE_RE, SHELL_TOOL, ToolCall, command_of
+from alla_skill_lib.session_rules import (
+    DONE_RE,
+    PROBLEMS_HEADING,
+    SHELL_TOOL,
+    ToolCall,
+    command_of,
+    path_of,
+)
+from alla_skill_lib.workspace import SKILL_PROBLEMS_FILE
 
 SESSION_ENV = "QWEN_CODE_SESSION_ID"
 PROJECT_DIR_ENV = "QWEN_CODE_PROJECT_DIR"
 QWEN_HOME_ENV = "QWEN_HOME"
 # Сколько сеансов помнить на один разбор: продолжение после сбоя — новый сеанс.
 MAX_SESSIONS = 20
-PROBLEMS_HEADING = "Проблемы скилла:"
 SUBAGENT_PROBLEM = "Проблема скилла:"
 # Команды проверки разбора в окно разбора не входят.
 REVIEW_COMMAND_RE = re.compile(r"alla_skill\.py\S*\s+review\b")
@@ -307,12 +314,15 @@ def _cut_window(log: SessionLog, entries: list[_Entry], root: str) -> None:
     log.reached_done = bool(done)
     if done:
         # Финальный ответ — текст основного агента после последнего done до следующего
-        # вызова или конца хода.
+        # вызова или конца хода. Чтение и запись файла проблем скилла и чтение справочника
+        # ответ не обрывают: done велит дописать файл по problem-report.md до вывода отчёта.
         last = done[-1]
         after = [entry for entry in window if entry.session == last.session
                  and not entry.subagent and entry.timestamp > last.timestamp]
         parts: list[str] = []
         for entry in after:
+            if entry.kind == "call" and _touches_skill_problems(entry.call):
+                continue
             if entry.kind in ("call", "user"):
                 break
             if entry.kind == "text":
@@ -342,14 +352,42 @@ def _seconds(start: str, end: str) -> int | None:
     return max(0, int((finish - begin).total_seconds()))
 
 
-def _skill_problems(log: SessionLog) -> list[str]:
-    """Пункты блока «Проблемы скилла» финального ответа и строки субагентов."""
-    problems: list[str] = []
-    block = log.final.partition(PROBLEMS_HEADING)[2]
+def _touches_skill_problems(call: ToolCall | None) -> bool:
+    if call is None or call.name not in ("read_file", "write_file"):
+        return False
+    path = path_of(call).replace("\\", "/")
+    if path.rsplit("/", 1)[-1] == SKILL_PROBLEMS_FILE:
+        return True
+    # Справочник скилла (problem-report.md и др.): чтение ничего не выводит пользователю.
+    return call.name == "read_file" and "/references/" in path and path.endswith(".md")
+
+
+def read_skill_problems(path: Path) -> list[str]:
+    """Пункты блока «Проблемы скилла» из файла, который записал основной агент, целиком:
+    заголовок пункта и его строки («Где:», «Ожидалось:», «Произошло:»…) через перевод строки."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    block = text.partition(PROBLEMS_HEADING)[2] if PROBLEMS_HEADING in text else text
+    problems: list[list[str]] = []
+    outer: int | None = None  # отступ внешней нумерации — по первому пункту
     for line in block.splitlines():
-        match = re.match(r"\s*\d+\.\s+(.+)", line)
-        if match:
-            problems.append(match.group(1).strip())
+        match = re.match(r"(\s*)(\d+)\.\s+(.+)", line)
+        # Новый пункт — только следующий номер на отступе внешней нумерации: «1. …» внутри
+        # «Произошло:» (цитата вывода скрипта) — продолжение текущего пункта.
+        if match and (outer is None or (len(match.group(1)) <= outer
+                                        and int(match.group(2)) == len(problems) + 1)):
+            outer = len(match.group(1)) if outer is None else outer
+            problems.append([match.group(3).strip()])
+        elif problems and line.strip() and not line.lstrip().startswith("```"):
+            problems[-1].append(line.strip())
+    return ["\n".join(lines) for lines in problems]
+
+
+def _skill_problems(log: SessionLog) -> list[str]:
+    """Строки «Проблема скилла: …» из ответов субагентов (свои основной агент пишет в файл)."""
+    problems: list[str] = []
     for call in log.calls:
         if call.name == "agent" and not call.subagent:
             for line in call.result.splitlines():

@@ -24,7 +24,7 @@ SKILL_IN_PROJECT = Path(".qwen") / "skills" / "alla-launch"
 PYTHON_RE = re.compile(r"(?:\S*/)?python(?:3(?:\.\d+)?)?")
 SHELL_OPERATORS = set(";&|<>()")
 WRITABLE_RE = re.compile(
-    r"/alla-reports/[^/]+/(?:(?:analyses|proposals|feedback)/[^/]+\.md|summary\.md)$")
+    r"/alla-reports/[^/]+/(?:(?:analyses|proposals|feedback)/[^/]+\.md|summary\.md|skill-problems\.md)$")
 FORBIDDEN_READ_RE = re.compile(r"(?:^|/)(?:\.env|run\.json|state\.json)$|/evidence/")
 READ_TOOLS = {"read_file", "grep_search", "glob", "read_many_files"}
 WRITE_TOOLS = {"write_file", "edit", "notebook_edit"}
@@ -38,6 +38,8 @@ HINTS_HEADING = "--- Где искать код автотеста (пути о�
 NOT_PROJECT_CODE = ("alla-reports", ".qwen", "alla-kb")
 DONE_RE = re.compile(r"^STATUS: done\s*$", re.MULTILINE)
 REPORT_RE = re.compile(r"===ОТЧЁТ===\n(.*?)\n===КОНЕЦ===", re.DOTALL)
+# Блок проблем скилла: агент пишет его в файл папки разбора, пользователю не выводит.
+PROBLEMS_HEADING = "Проблемы скилла:"
 
 
 @dataclass
@@ -277,9 +279,11 @@ def check_report_verbatim(ctx: RuleContext) -> dict[str, Any]:
     if match is None:
         return bad("в выводе done нет блока ===ОТЧЁТ===")
     report = normalize(match.group(1))
-    if report in normalize(ctx.final):
-        return ok(f"{len(match.group(1))} символов")
-    return bad(f"финальный ответ не содержит отчёт дословно; начало отчёта: {report[:120]}")
+    if report not in normalize(ctx.final):
+        return bad(f"финальный ответ не содержит отчёт дословно; начало отчёта: {report[:120]}")
+    if PROBLEMS_HEADING in ctx.final:
+        return bad("в финальном ответе блок «Проблемы скилла»: он идёт в файл, не пользователю")
+    return ok(f"{len(match.group(1))} символов")
 
 
 def skill_command_problem(call: ToolCall, ctx: RuleContext) -> str | None:

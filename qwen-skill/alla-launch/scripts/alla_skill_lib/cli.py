@@ -51,7 +51,9 @@ from alla_skill_lib.agent_rules import (
     PROBLEM_PREFIX,
     PROBLEM_REPORT_REF,
     PROPOSAL_FORMAT_REF,
+    RECORD_PROBLEM,
     SUMMARY_FORMAT_REF,
+    record_problem,
     reference_line,
 )
 from alla_skill_lib.analysis_format import (
@@ -60,7 +62,12 @@ from alla_skill_lib.analysis_format import (
     parse_analysis,
     parse_summary,
 )
-from alla_skill_lib.batch_task import BATCH_AGENT, install_batch_agent, render_batch_task
+from alla_skill_lib.batch_task import (
+    BATCH_AGENT,
+    MAX_VERIFY_ROUNDS,
+    install_batch_agent,
+    render_batch_task,
+)
 from alla_skill_lib.cluster_task import (
     build_cluster_task_with_sources,
     failed_prepare_analysis,
@@ -164,10 +171,26 @@ LAST_ATTEMPT_PROPOSAL = (
     "Это последняя попытка: если и она не пройдёт проверку, предложение правки "
     "будет отброшено, а в отчёте останется пометка."
 )
-FORMAT_MISMATCH_NOTE = (
-    "Если файл точно соответствует справочнику формата, а проверка его отклоняет, это "
-    f"неполадка скилла: не обходи её, продолжай по сценарию и в конце сообщи «{PROBLEM_PREFIX} …»."
-)
+
+
+def format_mismatch_note(paths: ws.RunPaths) -> str:
+    return (
+        "Если файл, по-твоему, уже соответствует справочнику, а проверка его отклоняет, — это "
+        f"неполадка скилла: {record_problem(paths)}. Файл всё равно перепиши: замечания к форме "
+        "исправь, а факты не подгоняй — цитату, которую проверка не находит, замени другой "
+        "дословной строкой из того же куска или убери. Затем next; без правки next не вызывай. "
+        "Не прошла и третья версия — разбор примут как есть с пометкой «формат нарушен»."
+    )
+
+
+def proposal_mismatch_note(paths: ws.RunPaths) -> str:
+    return (
+        "Если файл, по-твоему, уже соответствует справочнику, а проверка его отклоняет, — это "
+        f"неполадка скилла: {record_problem(paths)}. Перепиши файл как «РЕШЕНИЕ: не трогать», "
+        "а в «ПОЧЕМУ:» назови место и правку, которую хотел предложить; если файл уже «не "
+        "трогать» — исправь в нём то, на что указывают замечания. Затем next; без правки next "
+        "не вызывай."
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,12 +207,13 @@ def main(argv: list[str] | None = None) -> int:
         print("STATUS: error")
         print(f"Внутренняя ошибка скилла: {type(exc).__name__}: {exc}")
         print(
-            "Подробности (traceback) — в stderr. Покажи это пользователю и остановись; "
-            "команду вслепую не повторяй."
+            "Подробности (traceback) — в stderr. Пользователю покажи только строку «Внутренняя "
+            "ошибка скилла: …» и остановись; команду вслепую не повторяй."
         )
         print(
-            "Это ошибка самого скилла: сообщи о ней блоком «Проблемы скилла» (SKILL.md, "
-            f"«{PROBLEM_PREFIX} …»). Файлы скилла не правь и обходных скриптов не пиши."
+            f"Это ошибка самого скилла (SKILL.md, «Проблемы скилла»): если папка разбора известна, "
+            f"{RECORD_PROBLEM}. Эти указания пользователю не показывай. Файлы скилла не правь и "
+            "обходных скриптов не пиши."
         )
         return 1
 
@@ -819,6 +843,13 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
             else:
                 proposals[file_id] = outcome
 
+    lost = [file_id for file_id, analysis in analyses.items()
+            if analysis.sources_lost and analysis.observations]
+    if lost:
+        notes.append(
+            "Цитаты в разборе проблем " + ", ".join(str(int(file_id)) for file_id in lost)
+            + " не сверены с данными: файл источников задания не найден или повреждён."
+        )
     skipped = [file_id for file_id in state.get("skipped", []) if file_id in analyses]
     if skipped:
         notes.append(
@@ -995,7 +1026,7 @@ def _proposal_step(
             "Формат:",
             PROPOSAL_FORMAT,
             reference_line(PROPOSAL_FORMAT_REF),
-            FORMAT_MISMATCH_NOTE,
+            proposal_mismatch_note(paths),
             f"Затем выполни: {paths.next_command()}",
         ])
     return None
@@ -1106,9 +1137,9 @@ def _batch_body(
             "В ответе — одна строка.»",
         ]
     lines += [
-        "2. Дождись всех субагентов. Их ответы не пересказывай и не перепроверяй: проверит next. "
-        "Исключение — строки «Проблема скилла: …»: запомни их дословно для итогового блока "
-        "«Проблемы скилла». Пакет повторно не выдаётся: что не записано, next даст по одному.",
+        "2. Дождись всех субагентов. Их ответы не пересказывай и не перепроверяй: проверит next; "
+        f"строки «{PROBLEM_PREFIX} …» никуда не переноси. "
+        "Пакет повторно не выдаётся: что не записано, next даст по одному.",
         f"3. Выполни: {paths.next_command()}",
         "Нет инструмента agent или субагенты не запустились — не пиши свои циклы, а переключись на "
         f"разбор по одному: {ws.skill_command('next', str(paths.root), '--serial')}",
@@ -1138,7 +1169,7 @@ def _fix_body(
         "Ожидаемый формат:",
         EXPECTED_FORMAT,
         reference_line(ANALYSIS_FORMAT_REF),
-        FORMAT_MISMATCH_NOTE,
+        format_mismatch_note(paths),
         f"Затем выполни: {paths.next_command()}",
     ])
 
@@ -1177,14 +1208,15 @@ def _done_body(
 ) -> str:
     lines = [
         f"Отчёт сохранён: {paths.report}",
+        "Неполадки скилла (SKILL.md, «Проблемы скилла») пользователю не выводи и о них не "
+        f"упоминай: если были и ещё не записаны — сначала запиши их в {paths.skill_problems}. "
+        + reference_line(PROBLEM_REPORT_REF, "Формат файла"),
         "Выведи пользователю краткий разбор между маркерами дословно, без пересказа и "
         "собственных выводов; значки, пустые строки и отступы сохрани. В конце него — ссылка на файл с полным разбором, оставь её как "
         "есть; подробности в чат не переписывай:",
         REPORT_BEGIN,
         console,
         REPORT_END,
-        "Если по ходу работы были неполадки скилла (SKILL.md, «Проблемы скилла») — после отчёта "
-        "добавь отдельный блок «Проблемы скилла». " + reference_line(PROBLEM_REPORT_REF, "Формат блока"),
     ]
     if fixes or feedback:
         lines.append("После отчёта:")
@@ -1260,6 +1292,13 @@ def cmd_verify(run_dir: str | None, clusters: list[str], reports_dir: Path) -> i
             ]
         else:
             lines.append(f"Кластер {file_id}: принят.")
+    if failed:
+        lines.append(
+            "Разбор, по-твоему, уже верен, а проверка его отклоняет? Факты не подгоняй (цитату, "
+            "которую проверка не находит, замени другой дословной строкой того же куска или "
+            f"убери) и допиши в конец ответа «{PROBLEM_PREFIX} <где и что не так>». После "
+            f"{MAX_VERIFY_ROUNDS} проверок оставь разбор как есть."
+        )
     print("STATUS: fix" if failed else "STATUS: ok")
     print("\n".join(lines))
     if failed:

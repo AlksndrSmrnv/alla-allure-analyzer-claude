@@ -167,6 +167,8 @@ class ClusterAnalysis:
     # Реестр источников кластера (id → откуда кусок данных); заполняет проверка
     # разбора нового формата, нужен отчёту для подписи цитат.
     sources: dict[str, dict[str, Any]] | None = None
+    # Реестр у кластера должен быть, но не найден или повреждён: цитаты не сверены.
+    sources_lost: bool = False
 
     @property
     def unconfirmed_by_log(self) -> bool:
@@ -464,9 +466,9 @@ def validate_analysis(
 
     ``observed`` — разбор по заданию с реестром источников (все кластеры, кроме ``auto``,
     чьи разборы пишет код): нужны наблюдения с цитатами, найденными в своём источнике из ``sources``
-    (реестр кластера; ``None`` — реестр не найден или повреждён: наблюдения с ним
-    не проверить, это ошибка), а при категории «неизвестно» — содержательный
-    «НЕ ХВАТАЕТ».
+    (реестр кластера; ``None`` — реестр не найден или повреждён: цитаты не сверить, но
+    это неполадка скилла, а не разбора — ошибкой не считается, отчёт помечает такие
+    цитаты непроверенными), а при категории «неизвестно» — содержательный «НЕ ХВАТАЕТ».
     """
     errors: list[str] = []
     if not analysis.what:
@@ -499,11 +501,6 @@ MIN_QUOTE_CHARS = 8  # значимых символов (буквы и цифр
 _ELLIPSIS_RE = re.compile(r"…|\.{3,}")
 _QUOTE_NORMALIZE = str.maketrans({char: '"' for char in "«»“”„‘’`'"})
 OBSERVATION_LINE = "«- [S3] «дословная цитата»»"
-REGISTRY_MISSING = (
-    "реестр источников этого кластера (evidence/NN.sources.json) не найден или повреждён — "
-    "цитаты нельзя проверить. Разбор не меняй: это неполадка скилла, сообщи о ней в блоке "
-    "«Проблемы скилла»"
-)
 
 
 def normalize_quote_text(text: str) -> str:
@@ -574,8 +571,7 @@ def observation_errors(
             "проверка различит версии причины"
         )
     if sources is None:
-        if analysis.observations:
-            errors.append(REGISTRY_MISSING)
+        # Модель тут ничего не исправит: разбор принимается, цитаты помечаются в отчёте.
         return errors
     known = ", ".join(sorted(sources, key=lambda key: int(key[1:]) if key[1:].isdigit() else 0))
     for observation in analysis.observations:

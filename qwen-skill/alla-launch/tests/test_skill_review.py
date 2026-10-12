@@ -90,8 +90,10 @@ def test_review_finds_rule_violations_and_failures(
     j.skill(f"next {run_dir}", f"Traceback (most recent call last):\nKeyError: 'x' {run_dir}")
     j.call("read_file", {"file_path": str(project / "missing.txt")}, "File not found", error=True)
     j.skill(f"next {run_dir}", done)
-    j.text("Отчёт готов: две проблемы.\n\nПроблемы скилла:\n1. verify не видит файл\n")
+    j.text("Отчёт готов: две проблемы.")  # пересказ вместо отчёта
     save_main(j, qdir)
+    (run_dir / "skill-problems.md").write_text("Проблемы скилла:\n1. verify не видит файл\n",
+                                               encoding="utf-8")
 
     code, out = _run(["review", "--run", str(run_dir), "--no-model"], capsys)
 
@@ -102,6 +104,9 @@ def test_review_finds_rule_violations_and_failures(
     assert {"status_error", "traceback", "rule:no_code_search", "rule:report_verbatim",
             "skill_problems", "tool_errors"} <= codes
     assert facts["journal"]["tool_errors"] == {"read_file": 1}
+    assert facts["process"]["skill_problems"] == ["verify не видит файл"]
+    assert "- модель записала: verify не видит файл" in (run_dir / "review" / "report.md").read_text(
+        encoding="utf-8")
     summary = (run_dir / "review" / "pilot-summary.md").read_text(encoding="utf-8")
     assert "- status_error ×1" in summary and "- no_code_search: fail" in summary
 
@@ -116,6 +121,23 @@ def test_review_without_journal(project: Path, testops: FakeTestOps, capsys,
     facts = json.loads((run_dir / "review" / "facts.json").read_text(encoding="utf-8"))
     assert facts["grades"]["process"] == review.PROCESS_CLEAN
     assert "Не проверены:" in (run_dir / "review" / "report.md").read_text(encoding="utf-8")
+
+
+def test_review_reads_skill_problems_file_without_journal(
+    project: Path, testops: FakeTestOps, capsys, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    run_dir, _, _ = _finished_run(project, capsys, monkeypatch, tmp_path)
+    (run_dir / "skill-problems.md").write_text(
+        "Проблемы скилла:\n1. справочник не открылся\n   Где: references/x.md\n", encoding="utf-8")
+
+    code, out = _run(["review", "--run", str(run_dir), "--no-model"], capsys)
+
+    assert code == 0 and "Проблем скилла записано: 1" in out
+    facts = json.loads((run_dir / "review" / "facts.json").read_text(encoding="utf-8"))
+    assert facts["grades"]["process"] == review.PROCESS_NOTES
+    assert ["skill_problems", "1"] in facts["grades"]["process_reasons"]
+    report = (run_dir / "review" / "report.md").read_text(encoding="utf-8")
+    assert "- модель записала: справочник не открылся\n  Где: references/x.md" in report
 
 
 def test_review_of_unknown_run_is_error(project: Path, capsys) -> None:
@@ -134,11 +156,14 @@ def test_pilot_summary_has_no_run_data(project: Path, testops: FakeTestOps, caps
     j.skill(f"verify 01 --run {run_dir}", f"STATUS: error\n{LEAK}-ошибка {run_dir}")
     j.call("read_file", {"file_path": f"/{LEAK}/x"}, f"{LEAK}", error=True)
     j.skill(f"next {run_dir}", done)
-    j.text(f"{_report_block(done)}\n\nПроблемы скилла:\n1. {LEAK}-проблема\n")
+    j.text(_report_block(done))
+    j.call("agent", {"prompt": "пакет 1"}, f"Готово.\nПроблема скилла: {LEAK}-субагент\n")
     for record in j.records:
         if record["type"] == "assistant":
             record["model"] = f"evil {LEAK} model"
     save_main(j, qdir)
+    (run_dir / "skill-problems.md").write_text(f"Проблемы скилла:\n1. {LEAK}-проблема\n",
+                                               encoding="utf-8")
     run = ws.read_json(run_dir / "run.json")
     facts = review.collect_facts(ws.RunPaths(run_dir))
     facts["assessment"] = {

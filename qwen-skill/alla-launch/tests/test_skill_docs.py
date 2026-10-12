@@ -18,11 +18,13 @@ from test_skill_parallel import small_batches_fixture  # noqa: F401
 
 from alla_skill_lib.agent_rules import EXECUTOR_RULES, PROBLEM_PREFIX
 from alla_skill_lib.analysis_format import EXPECTED_FORMAT, parse_analysis, validate_analysis
+from alla_skill_lib import workspace as ws
 from alla_skill_lib.cli import (
-    FORMAT_MISMATCH_NOTE,
     LAST_ATTEMPT_ANALYSIS,
     LAST_ATTEMPT_PROPOSAL,
     PROPOSAL_FORMAT,
+    format_mismatch_note,
+    proposal_mismatch_note,
 )
 from alla_skill_lib.feedback import FEEDBACK_FORMAT
 from alla_skill_lib.proposals import parse_proposal, validate_proposal
@@ -310,7 +312,7 @@ def test_fix_output_points_to_the_reference_and_warns_before_the_last_attempt(
     path.write_text("ПРИЧИНА: баг\nбез формата", encoding="utf-8")
     first = _next(run_dir, capsys)
     assert first.startswith("STATUS: fix") and "попытка 1 из 3" in first
-    assert "references/analysis-format.md" in first and FORMAT_MISMATCH_NOTE in first
+    assert "references/analysis-format.md" in first and format_mismatch_note(ws.RunPaths(run_dir)) in first
     assert LAST_ATTEMPT_ANALYSIS not in first
     path.write_text("ПРИЧИНА: баг\nбез формата, версия 2", encoding="utf-8")
     second = _next(run_dir, capsys)
@@ -331,7 +333,7 @@ def test_propose_fix_summary_and_done_outputs_point_to_their_references(
     proposal.write_text("РЕШЕНИЕ: исправить | не трогать\nПОЧЕМУ: x\n", encoding="utf-8")
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: fix") and "«РЕШЕНИЕ:» должно быть" in out
-    assert "references/proposal-format.md" in out and FORMAT_MISMATCH_NOTE in out
+    assert "references/proposal-format.md" in out and proposal_mismatch_note(ws.RunPaths(run_dir)) in out
     proposal.write_text(PROPOSAL.replace("assertEquals(200", "assertEqual(200", 1), encoding="utf-8")
     out = _next(run_dir, capsys)
     assert LAST_ATTEMPT_PROPOSAL in out
@@ -347,6 +349,8 @@ def test_propose_fix_summary_and_done_outputs_point_to_their_references(
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: done")
     assert "Проблемы скилла" in out and "references/problem-report.md" in out
+    assert f"сначала запиши их в {run_dir / 'skill-problems.md'}" in out
+    assert out.index("skill-problems.md") < out.index("===ОТЧЁТ===")
     assert "references/feedback.md" in out
 
 
@@ -355,7 +359,7 @@ def test_batch_task_carries_rules_reference_and_problem_line(
 ) -> None:
     run_dir, _, out = _prepare(project, capsys)
     assert out.startswith("STATUS: analyze_batch")
-    assert "Проблема скилла" in out  # основной агент переносит такие строки дословно
+    assert "Проблема скилла" in out and "никуда не переноси" in out  # их видит review
     batch = _read(run_dir / "batches" / "1.md")
     assert EXECUTOR_RULES in batch
     assert "references/analysis-format.md" in batch

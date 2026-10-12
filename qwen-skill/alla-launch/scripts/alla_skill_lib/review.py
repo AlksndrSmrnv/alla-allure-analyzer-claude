@@ -22,7 +22,13 @@ from typing import Any
 
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.proposals import parse_proposal
-from alla_skill_lib.session_log import SessionLog, load_session, skill_status, skill_subcommand
+from alla_skill_lib.session_log import (
+    SessionLog,
+    load_session,
+    read_skill_problems,
+    skill_status,
+    skill_subcommand,
+)
 from alla_skill_lib.session_rules import RULES, RuleContext, skill_commands
 from alla_skill_lib.sources import check_entry_analysis
 
@@ -47,7 +53,7 @@ RULE_TITLES = {
     "listed_code_only": "код открывал только из «Где искать код автотеста»",
     "allowed_reads": "не читал служебные файлы и файлы вне проекта",
     "allowed_writes": "писал только свои файлы разбора",
-    "report_verbatim": "вывел краткий разбор дословно",
+    "report_verbatim": "вывел краткий разбор дословно, без блока проблем скилла",
 }
 # Причины оценки хода: код (идёт в сводку для разработчика) → текст для человека.
 REASONS = {
@@ -57,7 +63,8 @@ REASONS = {
     "missing_analyses": "есть кластеры без разбора",
     "rule": "нарушено правило исполнителя",
     "format_broken": "разбор принят с пометкой «формат нарушен»",
-    "skill_problems": "модель сообщила о проблемах скилла",
+    "sources_lost": "реестр источников не найден или повреждён — цитаты не сверены",
+    "skill_problems": "модель записала проблемы скилла",
     "fix_attempts": "разборы или предложения исправлялись после проверки",
     "batch_fallback": "пакетный режим выключился (субагенты не записали разборы)",
     "tool_errors": "ошибки инструментов (чтение несуществующего файла и т. п.)",
@@ -152,6 +159,7 @@ def _cluster_facts(
                 "mixed": analysis.consistency_kind == "different",
                 "kb_used": analysis.kb_ref is not None,
                 "code": bool(analysis.code),
+                "sources_lost": analysis.sources_lost,
                 "format_broken": bool(errors) and not item["auto"],
                 "format_errors": len(errors) if not item["auto"] else 0,
             })
@@ -178,11 +186,14 @@ def _process_facts(
         "fixed_analyses": sum(1 for item in manual if item["attempts"] > 0),
         "fix_attempts": sum(item["attempts"] + item["proposal_attempts"] for item in clusters),
         "format_broken": [item["number"] for item in manual if item.get("format_broken")],
+        "sources_lost": [item["number"] for item in manual if item.get("sources_lost")],
         "batched": len(batched),
         "batch_fallback": bool(batched) and int(state.get("workers", 0) or 0) == 1,
         "proposals": sum(1 for item in clusters if item.get("proposal")),
         "proposal_fixes": sum(1 for item in clusters if item.get("proposal") == "fix"),
         "applied": sum(1 for item in clusters if item.get("applied")),
+        # Свои проблемы основной агент пишет в файл; строки субагентов — в journal.
+        "skill_problems": read_skill_problems(paths.skill_problems),
     }
 
 
@@ -300,8 +311,11 @@ def process_reasons(facts: Mapping[str, Any]) -> list[tuple[str, str]]:
         reasons.append(("no_journal", str(journal.get("note", ""))))
     if process["format_broken"]:
         reasons.append(("format_broken", _numbers(process["format_broken"])))
-    if journal["found"] and journal["skill_problems"]:
-        reasons.append(("skill_problems", str(len(journal["skill_problems"]))))
+    if process["sources_lost"]:
+        reasons.append(("sources_lost", _numbers(process["sources_lost"])))
+    problems = skill_problems(facts)
+    if problems:
+        reasons.append(("skill_problems", str(len(problems))))
     if process["batch_fallback"]:
         reasons.append(("batch_fallback", ""))
     if journal["found"] and journal["tool_errors"]:
@@ -309,6 +323,13 @@ def process_reasons(facts: Mapping[str, Any]) -> list[tuple[str, str]]:
     if process["fix_attempts"]:
         reasons.append(("fix_attempts", str(process["fix_attempts"])))
     return reasons
+
+
+def skill_problems(facts: Mapping[str, Any]) -> list[str]:
+    """Проблемы скилла: записанные основным агентом в файл и строки субагентов из журнала."""
+    journal = facts["journal"]
+    return list(facts["process"]["skill_problems"]) + (
+        list(journal["skill_problems"]) if journal["found"] else [])
 
 
 def reason_text(code: str) -> str:
@@ -407,12 +428,15 @@ def render_report(facts: Mapping[str, Any]) -> str:
             out.append(f"| {RULE_TITLES.get(rule, rule)} | {mark} | {_cell(result['evidence'])} |")
         out.append("")
 
-        out += ["## Сбои и проблемы скилла", ""]
-        items = [f"- `{e['command']}` → STATUS: error: {e['text']}" for e in journal["status_errors"]]
+    items: list[str] = []
+    if journal["found"]:
+        items += [f"- `{e['command']}` → STATUS: error: {e['text']}" for e in journal["status_errors"]]
         items += [f"- `{e['command']}` упала без STATUS: {e['text']}" for e in journal["tracebacks"]]
         items += [f"- ошибки инструмента {k}: {v}" for k, v in journal["tool_errors"].items()]
-        items += [f"- модель сообщила: {text}" for text in journal["skill_problems"]]
-        out += (items or ["Не было."]) + [""]
+    # Пункт из файла многострочный: поля «Где:», «Произошло:»… — вложенными строками.
+    items += ["- модель записала: " + text.replace("\n", "\n  ") for text in skill_problems(facts)]
+    if items or journal["found"]:
+        out += ["## Сбои и проблемы скилла", "", *(items or ["Не было."]), ""]
 
     out += ["## Разборы по проблемам", "",
             "| № | Тестов | Категория | Цитат (из лога) | Замечания |", "|---|---|---|---|---|"]
@@ -467,6 +491,8 @@ def _cluster_notes(item: Mapping[str, Any]) -> str:
     notes = []
     if item.get("format_broken"):
         notes.append("формат нарушен")
+    if item.get("sources_lost"):
+        notes.append("цитаты не сверены: нет реестра источников")
     if item.get("attempts"):
         notes.append(f"исправлялся {item['attempts']} раз")
     if item.get("unconfirmed_by_log"):
@@ -517,10 +543,12 @@ def render_pilot_summary(facts: Mapping[str, Any]) -> str:
             f"- отчёт: {_yes(process['report_written'])}, сводка: {_yes(process['summary_written'])}",
             f"- без разбора: {len(process['missing_analyses'])}, пропущено: {len(process['skipped'])}",
             f"- исправлялись: {process['fixed_analyses']}, попыток исправления: {process['fix_attempts']}",
-            f"- формат нарушен: {len(process['format_broken'])}",
+            f"- формат нарушен: {len(process['format_broken'])}, "
+            f"цитаты не сверены (нет реестра): {len(process['sources_lost'])}",
             f"- в пакетах: {process['batched']}, пакетный режим выключился: {_yes(process['batch_fallback'])}",
             f"- предложений: {process['proposals']} (правок: {process['proposal_fixes']}, "
-            f"применено: {process['applied']})", "",
+            f"применено: {process['applied']})",
+            f"- проблем скилла: {len(skill_problems(facts))}", "",
             "## Журнал сеанса", ""]
     if not journal["found"]:
         out.append("- не найден")
@@ -537,7 +565,7 @@ def render_pilot_summary(facts: Mapping[str, Any]) -> str:
                 + _commands(journal["status_errors"]),
                 f"- без STATUS (traceback): {len(journal['tracebacks'])} " + _commands(journal["tracebacks"]),
                 "- ошибки инструментов: " + (", ".join(f"{k} ×{v}" for k, v in journal["tool_errors"].items()) or "нет"),
-                f"- проблем скилла сообщено: {len(journal['skill_problems'])}", "",
+                "",
                 "## Правила исполнителя", ""]
         out += [f"- {rule}: {result['status']}" for rule, result in journal["rules"].items()]
     out += ["", "## Признаки качества разборов", "",
@@ -610,9 +638,9 @@ def render_console(facts: Mapping[str, Any], report: Path, summary: Path) -> str
         checked = sum(1 for result in rules if result["status"] in ("pass", "fail"))
         usage = journal["usage"]
         lines.append(f"Правила исполнителя: соблюдено {kept} из {checked}; сбоев команд: "
-                     f"{len(journal['status_errors']) + len(journal['tracebacks'])}; проблем скилла: "
-                     f"{len(journal['skill_problems'])}.")
+                     f"{len(journal['status_errors']) + len(journal['tracebacks'])}.")
         lines.append(f"Время: {_duration(journal['duration_seconds'])}, токенов: {usage['total']}.")
+    lines.append(f"Проблем скилла записано: {len(skill_problems(facts))}.")
     lines.append(f"Разобрано моделью: {quality['analysed']}; «неизвестно»: {quality['unknown']}; "
                  f"причина не подтверждена логом: {quality['unconfirmed_by_log']}.")
     lines += ["", f"Полный отчёт: {report}",

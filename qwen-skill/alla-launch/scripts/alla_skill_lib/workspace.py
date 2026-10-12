@@ -22,6 +22,7 @@ from typing import Any
 
 REPORTS_DIRNAME = "alla-reports"
 LAST_RUN_FILE = ".last_run"
+SKILL_PROBLEMS_FILE = "skill-problems.md"
 RESUME_WINDOW_HOURS = 24  # неоконченный разбор того же прогона продолжается, а не дублируется
 # Версия папки разбора. Папку другой версии не продолжить: поддерживается только текущий
 # формат (3: наблюдения с реестром источников, примеры, повторы, сигнатура v7).
@@ -92,6 +93,11 @@ class RunPaths:
     @property
     def report(self) -> Path:
         return self.root / "report.md"
+
+    @property
+    def skill_problems(self) -> Path:
+        """Проблемы скилла, которые записал агент: пользователю не выводятся, их читает ``review``."""
+        return self.root / SKILL_PROBLEMS_FILE
 
     @property
     def reports_dir(self) -> Path:

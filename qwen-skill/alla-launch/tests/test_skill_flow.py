@@ -403,6 +403,26 @@ def test_report_says_when_proposal_limit_is_reached(
     )
 
 
+def test_remember_stops_after_three_refusals_in_a_row(
+    project: Path, testops: FakeTestOps, capsys
+) -> None:
+    """Модель отказы не считает: третий подряд останавливает её ошибкой, счёт начинается заново."""
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    (run_dir / "feedback" / f"{order}.md").write_text(
+        FEEDBACK.replace("приложение", "неизвестно"), encoding="utf-8")
+
+    outs = [_run(["remember", "1", "--run", str(run_dir)], capsys) for _ in range(4)]
+
+    assert [code for code, _ in outs] == [0, 0, 1, 0]
+    assert outs[1][1].startswith("STATUS: fix") and "Попытка 2 из 3." in outs[1][1]
+    stop = outs[2][1]
+    assert stop.startswith("STATUS: error") and "отклонила файл 3 раза подряд" in stop
+    assert "«неизвестно» запоминать нельзя" in stop and "remember не повторяй" in stop
+    assert "Затем выполни" not in stop
+    assert "Попытка 1 из 3." in outs[3][1]
+
 def test_feedback_is_remembered_and_recognized_next_launch(
     project: Path, testops: FakeTestOps, monkeypatch, capsys
 ) -> None:
@@ -419,10 +439,11 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     feedback.write_text(FEEDBACK.replace("приложение", "неизвестно"), encoding="utf-8")
     code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
     assert code == 0 and out.startswith("STATUS: fix") and "«неизвестно» запоминать нельзя" in out
+    assert "Попытка 1 из 3." in out and str(run_dir / "skill-problems.md") in out
 
     feedback.write_text(FEEDBACK + "ПРИЗНАК: Payment gateway declined\n", encoding="utf-8")
     code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
-    assert code == 0 and "строки признака нет в данных кластера" in out
+    assert code == 0 and "строки признака нет в данных кластера" in out and "Попытка 2 из 3." in out
 
     feedback.write_text(FEEDBACK, encoding="utf-8")
     code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
@@ -448,6 +469,7 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     code, out = _run(["remember", "1", "--entry", entry_id, "--run", str(run_dir)], capsys)
     assert code == 0 and out.startswith("STATUS: fix")
     assert "«КАК ИСПРАВИТЬ:» строка похожа на секрет" in out
+    assert "Попытка 1 из 3." in out  # успешный remember сбросил счёт отказов
     assert f"remember 01 --entry {entry_id} --run" in out
     assert "hunter2" not in kb_file.read_text(encoding="utf-8")
     feedback.write_text(FEEDBACK, encoding="utf-8")

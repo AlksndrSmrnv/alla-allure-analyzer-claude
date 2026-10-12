@@ -904,6 +904,7 @@ def _unconfirmed(problem: _Problem) -> str:
 
 MIXED_GROUP_NOTE = "в группе, похоже, несколько проблем"
 UNCHECKED_GROUP_NOTE = "однородность группы не проверена: недостаточно данных"
+SOURCES_LOST_NOTE = "цитата не сверена с данными: файл источников задания не найден"
 
 
 def _consistency_lines(analysis: ClusterAnalysis, prefix: str, *, bold: bool = False) -> list[str]:
@@ -924,11 +925,12 @@ def _evidence_lines(analysis: ClusterAnalysis, title: str, missing_title: str) -
     """Цитаты с понятным источником и чего не хватает — отдельно от предположения о причине."""
     lines: list[str] = []
     # Без реестра (разбор auto-кластера) источник не назвать — цитаты не показываем.
-    if analysis.observations and analysis.sources is not None:
+    # Реестр потерян — цитаты показываем, но предупреждаем, что они не сверены с данными.
+    if analysis.observations and (analysis.sources is not None or analysis.sources_lost):
         lines.append(title)
         for item in analysis.observations:
-            record = analysis.sources.get(item.source_id)
-            where = describe(record) if record else item.source_id
+            record = (analysis.sources or {}).get(item.source_id)
+            where = describe(record) if record else f"{item.source_id}, {SOURCES_LOST_NOTE}"
             lines.append(f"   - «{_one_line(item.quote)}» — {where}")
     if analysis.missing_text:
         lines.append(f"{missing_title}{analysis.missing_text}")
