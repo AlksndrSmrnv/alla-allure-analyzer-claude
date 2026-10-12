@@ -63,6 +63,7 @@ REASONS = {
     "missing_analyses": "есть кластеры без разбора",
     "rule": "нарушено правило исполнителя",
     "format_broken": "разбор принят с пометкой «формат нарушен»",
+    "sources_lost": "реестр источников не найден или повреждён — цитаты не сверены",
     "skill_problems": "модель записала проблемы скилла",
     "fix_attempts": "разборы или предложения исправлялись после проверки",
     "batch_fallback": "пакетный режим выключился (субагенты не записали разборы)",
@@ -158,6 +159,7 @@ def _cluster_facts(
                 "mixed": analysis.consistency_kind == "different",
                 "kb_used": analysis.kb_ref is not None,
                 "code": bool(analysis.code),
+                "sources_lost": analysis.sources_lost,
                 "format_broken": bool(errors) and not item["auto"],
                 "format_errors": len(errors) if not item["auto"] else 0,
             })
@@ -184,6 +186,7 @@ def _process_facts(
         "fixed_analyses": sum(1 for item in manual if item["attempts"] > 0),
         "fix_attempts": sum(item["attempts"] + item["proposal_attempts"] for item in clusters),
         "format_broken": [item["number"] for item in manual if item.get("format_broken")],
+        "sources_lost": [item["number"] for item in manual if item.get("sources_lost")],
         "batched": len(batched),
         "batch_fallback": bool(batched) and int(state.get("workers", 0) or 0) == 1,
         "proposals": sum(1 for item in clusters if item.get("proposal")),
@@ -308,6 +311,8 @@ def process_reasons(facts: Mapping[str, Any]) -> list[tuple[str, str]]:
         reasons.append(("no_journal", str(journal.get("note", ""))))
     if process["format_broken"]:
         reasons.append(("format_broken", _numbers(process["format_broken"])))
+    if process["sources_lost"]:
+        reasons.append(("sources_lost", _numbers(process["sources_lost"])))
     problems = skill_problems(facts)
     if problems:
         reasons.append(("skill_problems", str(len(problems))))
@@ -485,6 +490,8 @@ def _cluster_notes(item: Mapping[str, Any]) -> str:
     notes = []
     if item.get("format_broken"):
         notes.append("формат нарушен")
+    if item.get("sources_lost"):
+        notes.append("цитаты не сверены: нет реестра источников")
     if item.get("attempts"):
         notes.append(f"исправлялся {item['attempts']} раз")
     if item.get("unconfirmed_by_log"):
@@ -535,7 +542,8 @@ def render_pilot_summary(facts: Mapping[str, Any]) -> str:
             f"- отчёт: {_yes(process['report_written'])}, сводка: {_yes(process['summary_written'])}",
             f"- без разбора: {len(process['missing_analyses'])}, пропущено: {len(process['skipped'])}",
             f"- исправлялись: {process['fixed_analyses']}, попыток исправления: {process['fix_attempts']}",
-            f"- формат нарушен: {len(process['format_broken'])}",
+            f"- формат нарушен: {len(process['format_broken'])}, "
+            f"цитаты не сверены (нет реестра): {len(process['sources_lost'])}",
             f"- в пакетах: {process['batched']}, пакетный режим выключился: {_yes(process['batch_fallback'])}",
             f"- предложений: {process['proposals']} (правок: {process['proposal_fixes']}, "
             f"применено: {process['applied']})",

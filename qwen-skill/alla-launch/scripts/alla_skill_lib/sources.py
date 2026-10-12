@@ -113,6 +113,7 @@ def check_entry_analysis(
     with_sources = observed(entry)
     sources = load_registry(paths.sources(entry["file_id"])) if with_sources else None
     analysis.sources = sources
+    analysis.sources_lost = with_sources and sources is None
     errors = validate_analysis(analysis, project_root, offered, observed=with_sources,
                                sources=sources, examples=example_blocks(entry))
     return analysis, errors

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from alla_skill_lib import workspace as ws
-from alla_skill_lib.agent_rules import FEEDBACK_FORMAT_REF, reference_line
+from alla_skill_lib.agent_rules import FEEDBACK_FORMAT_REF, record_problem, reference_line
 from alla_skill_lib.analysis_format import parse_analysis
 from alla_skill_lib.kb import (
     CATEGORY_TO_KB,
@@ -79,7 +79,7 @@ def remember(
     feedback_path = paths.feedback(file_id)
     has_feedback = feedback_path.is_file() and bool(feedback_path.read_text(encoding="utf-8").strip())
     if not has_feedback and not from_analysis:
-        return "fix", _fix_body(paths, file_id, [
+        return _refused(paths, file_id, [
             f"нет файла обратной связи {feedback_path} — запиши его со слов пользователя; "
             "если пользователь подтвердил разбор как есть, повтори команду с --from-analysis"
         ], entry_id)
@@ -96,7 +96,7 @@ def remember(
         parsed, analysis_errors = check_entry_analysis(
             source.read_text(encoding="utf-8"), entry, project_root, paths)
         if analysis_errors:
-            return "fix", _fix_body(paths, file_id, [
+            return _refused(paths, file_id, [
                 "разбор кластера не прошёл проверку формата ("
                 + "; ".join(analysis_errors[:3]) + ") — analyses/NN.md не переписывай: "
                 "спроси пользователя причину и рецепт и запиши их в файл обратной связи"
@@ -141,7 +141,7 @@ def remember(
                 f"в «{field_name}:» строка похожа на секрет, её нельзя коммитить: «{line[:60]}»"
             )
     if errors:
-        return "fix", _fix_body(paths, file_id, errors, entry_id)
+        return _refused(paths, file_id, errors, entry_id)
 
     assert parsed.category is not None
     signature = str(entry["signature"])
@@ -187,6 +187,7 @@ def remember(
             other.confirmed_signatures.remove(signature)
             changed.append(kb.save(other))
             touched.append(other.id)
+    _count_refusal(paths, file_id, reset=True)
     return "saved", "\n".join([
         f"Запомнено в базе знаний ({action}): {record.id} — «{record.title}»",
         *(
@@ -295,6 +296,55 @@ def _fingerprint_errors(fingerprint: str, evidence_path: Path) -> list[str]:
             "из сообщения об ошибке, трейса или лога в задании кластера"
         )
     return errors
+
+
+# Отказов remember подряд по одной проблеме, после которых он останавливает модель (error):
+# сама она отказы не сосчитает, а лимита попыток, как у next, у remember нет.
+MAX_REFUSALS = 3
+
+
+def _count_refusal(paths: ws.RunPaths, file_id: str, *, reset: bool = False) -> int:
+    """Учесть отказ ``remember`` (или сбросить счёт); вернуть номер отказа подряд."""
+    try:
+        loaded = ws.read_json(paths.state_json) if paths.state_json.is_file() else {}
+    except (OSError, ValueError):
+        loaded = {}
+    state: dict[str, Any] = loaded if isinstance(loaded, dict) else {}
+    refusals = state.setdefault("refusals", {})
+    if reset:
+        if refusals.pop(file_id, None) is not None:
+            ws.write_json(paths.state_json, state)
+        return 0
+    count = int(refusals.get(file_id, 0)) + 1
+    if count >= MAX_REFUSALS:
+        refusals.pop(file_id, None)  # следующая просьба пользователя — новые попытки
+    else:
+        refusals[file_id] = count
+    ws.write_json(paths.state_json, state)
+    return count
+
+
+def _refused(
+    paths: ws.RunPaths,
+    file_id: str,
+    errors: list[str],
+    entry_id: str | None,
+) -> tuple[str, str]:
+    count = _count_refusal(paths, file_id)
+    mismatch = (f"Если файл, по-твоему, верен, а проверка его отклоняет, — это неполадка скилла: "
+                f"{record_problem(paths)}.")
+    if count >= MAX_REFUSALS:
+        return "error", "\n".join([
+            f"Обратная связь не сохранена: проверка отклонила файл {MAX_REFUSALS} раза подряд.",
+            *(f"- {error}" for error in errors),
+            "Покажи пользователю эти замечания как есть и скажи, что сохранить в базу знаний не "
+            "удалось; remember не повторяй, пока пользователь не уточнит причину или рецепт.",
+            mismatch,
+        ])
+    return "fix", "\n".join([
+        f"Попытка {count} из {MAX_REFUSALS}. " + _fix_body(paths, file_id, errors, entry_id),
+        mismatch,
+    ])
 
 
 def _fix_body(

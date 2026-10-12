@@ -16,7 +16,8 @@ from pathlib import Path
 from alla_skill_lib import workspace as ws
 
 PROBLEM_PREFIX = "Проблема скилла:"
-# Куда деть неполадку скилла: в файл папки разбора, а не в ответ пользователю.
+# Куда деть неполадку скилла: в файл папки разбора, а не в ответ пользователю. Общий
+# текст — где путь неизвестен; в ответах основному агенту — ``record_problem`` с путём.
 RECORD_PROBLEM = (
     f"запиши её в {ws.SKILL_PROBLEMS_FILE} папки разбора, там же, где analyses/ (субагент — "
     f"«{PROBLEM_PREFIX} …» в конце ответа); пользователю не выводи"
@@ -37,6 +38,12 @@ EXECUTOR_RULES = f"""\
   противоречит себе — не обходи: продолжай по сценарию и запиши это в
   {ws.SKILL_PROBLEMS_FILE} папки разбора, там же, где analyses/ (субагент — в конце ответа
   «{PROBLEM_PREFIX} <где и что не так>»); пользователю не выводи."""
+
+
+
+def record_problem(paths: ws.RunPaths) -> str:
+    return f"запиши её в {paths.skill_problems}; пользователю о ней не пиши"
+
 
 ANALYSIS_FORMAT_REF = "analysis-format.md"
 PROPOSAL_FORMAT_REF = "proposal-format.md"

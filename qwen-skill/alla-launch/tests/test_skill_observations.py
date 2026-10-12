@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 from skill_fake_testops import FakeTestOps
 from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
-from test_skill_flow import MARKDOWN_ANALYSIS, VALID_ANALYSIS, _next, _prepare, _run
+from test_skill_flow import MARKDOWN_ANALYSIS, VALID_ANALYSIS, _finish, _next, _prepare, _run
 
+from alla_skill_lib import review
+from alla_skill_lib import workspace as ws
 from alla_skill_lib.analysis_format import (
     EXPECTED_FORMAT,
     parse_analysis,
@@ -72,16 +74,15 @@ def test_observations_are_required_unless_the_cause_is_unknown() -> None:
     assert validate_analysis(parse_analysis(ok), Path("."), observed=True, sources=SOURCES) == []
 
 
-def test_missing_registry_rejects_observations_of_the_new_format() -> None:
+def test_missing_registry_is_not_an_error_of_the_analysis() -> None:
+    """Потерянный реестр — неполадка скилла: модель её не исправит, разбор не отклоняется."""
     analysis = parse_analysis(HEAD + "НАБЛЮДЕНИЯ:\n- [S999] «anything at all here»\n" + TAIL)
-    errors = validate_analysis(analysis, Path("."), observed=True, sources=None)
-    assert any("реестр источников этого кластера" in error and "Проблемы скилла" in error
-               for error in errors)
+    assert validate_analysis(analysis, Path("."), observed=True, sources=None) == []
 
 
 @pytest.mark.parametrize("content", [None, "{не json", "[]", '{"S1": "текст"}',
                                      '{"S1": {"kind": "message"}}'])
-def test_next_and_verify_reject_quotes_when_the_registry_is_broken(
+def test_broken_registry_accepts_analysis_and_marks_quotes_unverified(
     content: str | None, project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str]
 ) -> None:
     run_dir, run, _ = _prepare(project, capsys)
@@ -94,10 +95,19 @@ def test_next_and_verify_reject_quotes_when_the_registry_is_broken(
     fake = VALID_ANALYSIS.replace("- [S3] «java.lang", "- [S999] «java.lang")
     (run_dir / "analyses" / f"{order}.md").write_text(fake, encoding="utf-8")
 
-    out = _next(run_dir, capsys)
-    assert out.startswith("STATUS: fix") and "реестр источников этого кластера" in out
     _code, verify = _run(["verify", order, "--run", str(run_dir)], capsys)
-    assert verify.startswith("STATUS: fix")
+    assert verify.startswith("STATUS: ok")
+    login = next(entry["file_id"] for entry in run["clusters"]
+                 if not entry["auto"] and entry["file_id"] != order)
+    done = _finish(run_dir, capsys, {order: fake, login: MARKDOWN_ANALYSIS})
+
+    number = int(order)
+    assert f"Цитаты в разборе проблем {number} не сверены с данными" in done
+    report = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert "S999, цитата не сверена с данными: файл источников задания не найден" in report
+    facts = review.collect_facts(ws.RunPaths(run_dir))
+    assert facts["process"]["sources_lost"] == [number]
+    assert ["sources_lost", str(number)] in facts["grades"]["process_reasons"]
 
 
 def test_quote_parts_must_follow_in_order() -> None:
