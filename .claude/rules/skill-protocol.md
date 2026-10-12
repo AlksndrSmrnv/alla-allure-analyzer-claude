@@ -152,10 +152,11 @@ paths:
   посторонние ходы между сеансами не входят. Ход обрезается на первом `review`: проверка и
   всё после неё — не разбор (идущий `review` ещё без результата выглядел бы падением без
   STATUS). Время — сумма длительностей ходов до последней записи, включая время результата
-  инструмента. Финальный ответ — текст после последнего `done` до следующего вызова; запись
-  `skill-problems.md` (write_file) его не обрывает. У shell в журнале вывод обёрнут `Command:`/`Output:` —
+  инструмента. Финальный ответ — текст после последнего `done` до следующего вызова; чтение и запись
+  `skill-problems.md` (read_file, write_file) его не обрывают. У shell в журнале вывод обёрнут `Command:`/`Output:` —
   берётся `resultDisplay.output`, иначе вырезается из `Output:`.
-- Проблемы скилла для `review` — пункты `skill-problems.md` (`read_skill_problems`,
+- Проблемы скилла для `review` — пункты `skill-problems.md` целиком, с полями «Где:»,
+  «Произошло:»… (`read_skill_problems`,
   `process.skill_problems`, читаются и без журнала) плюс строки субагентов из журнала
   (`journal.skill_problems`); сумма — `review.skill_problems`.
 - Правила поведения (`shell_only_skill_commands`, `no_code_search`, `listed_code_only`,

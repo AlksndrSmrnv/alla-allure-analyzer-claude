@@ -314,14 +314,14 @@ def _cut_window(log: SessionLog, entries: list[_Entry], root: str) -> None:
     log.reached_done = bool(done)
     if done:
         # Финальный ответ — текст основного агента после последнего done до следующего
-        # вызова или конца хода. Запись проблем скилла в файл ответ не обрывает: агент
-        # может сделать её и перед выводом отчёта.
+        # вызова или конца хода. Чтение и запись файла проблем скилла ответ не обрывают:
+        # агент может дописать его и перед выводом отчёта.
         last = done[-1]
         after = [entry for entry in window if entry.session == last.session
                  and not entry.subagent and entry.timestamp > last.timestamp]
         parts: list[str] = []
         for entry in after:
-            if entry.kind == "call" and _writes_skill_problems(entry.call):
+            if entry.kind == "call" and _touches_skill_problems(entry.call):
                 continue
             if entry.kind in ("call", "user"):
                 break
@@ -352,25 +352,28 @@ def _seconds(start: str, end: str) -> int | None:
     return max(0, int((finish - begin).total_seconds()))
 
 
-def _writes_skill_problems(call: ToolCall | None) -> bool:
-    if call is None or call.name != "write_file":
+def _touches_skill_problems(call: ToolCall | None) -> bool:
+    if call is None or call.name not in ("read_file", "write_file"):
         return False
     return path_of(call).replace("\\", "/").rsplit("/", 1)[-1] == SKILL_PROBLEMS_FILE
 
 
 def read_skill_problems(path: Path) -> list[str]:
-    """Пункты блока «Проблемы скилла» из файла, который записал основной агент."""
+    """Пункты блока «Проблемы скилла» из файла, который записал основной агент, целиком:
+    заголовок пункта и его строки («Где:», «Ожидалось:», «Произошло:»…) через перевод строки."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     block = text.partition(PROBLEMS_HEADING)[2] if PROBLEMS_HEADING in text else text
-    problems: list[str] = []
+    problems: list[list[str]] = []
     for line in block.splitlines():
         match = re.match(r"\s*\d+\.\s+(.+)", line)
         if match:
-            problems.append(match.group(1).strip())
-    return problems
+            problems.append([match.group(1).strip()])
+        elif problems and line.strip() and not line.lstrip().startswith("```"):
+            problems[-1].append(line.strip())
+    return ["\n".join(lines) for lines in problems]
 
 
 def _skill_problems(log: SessionLog) -> list[str]:

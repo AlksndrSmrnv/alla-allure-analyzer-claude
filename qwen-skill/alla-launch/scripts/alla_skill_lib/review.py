@@ -433,7 +433,8 @@ def render_report(facts: Mapping[str, Any]) -> str:
         items += [f"- `{e['command']}` → STATUS: error: {e['text']}" for e in journal["status_errors"]]
         items += [f"- `{e['command']}` упала без STATUS: {e['text']}" for e in journal["tracebacks"]]
         items += [f"- ошибки инструмента {k}: {v}" for k, v in journal["tool_errors"].items()]
-    items += [f"- модель записала: {text}" for text in skill_problems(facts)]
+    # Пункт из файла многострочный: поля «Где:», «Произошло:»… — вложенными строками.
+    items += ["- модель записала: " + text.replace("\n", "\n  ") for text in skill_problems(facts)]
     if items or journal["found"]:
         out += ["## Сбои и проблемы скилла", "", *(items or ["Не было."]), ""]
 

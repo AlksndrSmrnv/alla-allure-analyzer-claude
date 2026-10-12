@@ -127,8 +127,8 @@ def test_review_reads_skill_problems_file_without_journal(
     project: Path, testops: FakeTestOps, capsys, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     run_dir, _, _ = _finished_run(project, capsys, monkeypatch, tmp_path)
-    (run_dir / "skill-problems.md").write_text("Проблемы скилла:\n1. справочник не открылся\n",
-                                               encoding="utf-8")
+    (run_dir / "skill-problems.md").write_text(
+        "Проблемы скилла:\n1. справочник не открылся\n   Где: references/x.md\n", encoding="utf-8")
 
     code, out = _run(["review", "--run", str(run_dir), "--no-model"], capsys)
 
@@ -137,7 +137,7 @@ def test_review_reads_skill_problems_file_without_journal(
     assert facts["grades"]["process"] == review.PROCESS_NOTES
     assert ["skill_problems", "1"] in facts["grades"]["process_reasons"]
     report = (run_dir / "review" / "report.md").read_text(encoding="utf-8")
-    assert "- модель записала: справочник не открылся" in report
+    assert "- модель записала: справочник не открылся\n  Где: references/x.md" in report
 
 
 def test_review_of_unknown_run_is_error(project: Path, capsys) -> None:
