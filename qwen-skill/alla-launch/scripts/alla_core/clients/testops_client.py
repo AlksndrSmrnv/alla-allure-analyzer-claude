@@ -9,7 +9,7 @@ from alla_core.clients.auth import AllureAuthManager
 from alla_core.config import Settings
 from alla_core.exceptions import AllaError, AllureApiError, PaginationLimitError
 from alla_core.models.common import PageResponse
-from alla_core.models.testops import AttachmentMeta, CommentResponse, ExecutionStep, LaunchResponse, TestResultResponse
+from alla_core.models.testops import AttachmentMeta, ExecutionStep, LaunchResponse, TestResultResponse
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,6 @@ class AllureTestOpsClient:
 
     LAUNCH_ENDPOINT = "/api/launch"
     TESTRESULT_ENDPOINT = "/api/testresult"
-    COMMENT_ENDPOINT = "/api/comment"
     ATTACHMENT_ENDPOINT = "/api/testresult/attachment"
     PROJECT_ENDPOINT = "/api/project"
 
@@ -230,107 +229,6 @@ class AllureTestOpsClient:
             page + 1,
         )
         return all_results
-
-    # --- Запись данных (протокол TestResultsUpdater) ---
-
-    async def post_comment(
-        self,
-        test_case_id: int,
-        body: str,
-    ) -> None:
-        """Добавить комментарий к тест-кейсу.
-
-        ``POST /api/comment``
-        """
-        payload = {"testCaseId": test_case_id, "body": body}
-        logger.debug(
-            "POST comment для test_case %d: body=%s",
-            test_case_id,
-            body[:100] + "..." if len(body) > 100 else body,
-        )
-        result = await self._request(
-            "POST",
-            self.COMMENT_ENDPOINT,
-            json=payload,
-            expect_json=False,
-        )
-        logger.debug(
-            "POST comment для test_case %d: ответ=%s",
-            test_case_id,
-            str(result)[:500] if result is not None else "None (пустое тело)",
-        )
-
-    async def patch_launch_links(self, launch_id: int, name: str, url: str) -> None:
-        """Добавить ссылку к запуску.
-
-        Алгоритм:
-        1. ``GET /api/launch/{id}`` — получить текущий JSON запуска.
-        2. Добавить новую ссылку к существующему массиву ``links``.
-        3. ``PATCH /api/launch/{id}`` — отправить обновлённый JSON.
-        """
-        data = await self._request("GET", f"{self.LAUNCH_ENDPOINT}/{launch_id}")
-        if not isinstance(data, dict):
-            raise AllureApiError(
-                0,
-                "Неожиданный формат ответа GET /api/launch/{id}",
-                f"{self.LAUNCH_ENDPOINT}/{launch_id}",
-            )
-
-        existing_links = data.get("links") or []
-        if not isinstance(existing_links, list):
-            existing_links = []
-
-        patch_payload = dict(data)
-        patch_payload["links"] = existing_links + [{"name": name, "url": url}]
-
-        logger.info(
-            "PATCH /api/launch/%d: добавление ссылки '%s' → '%s'",
-            launch_id, name, url,
-        )
-        await self._request(
-            "PATCH",
-            f"{self.LAUNCH_ENDPOINT}/{launch_id}",
-            json=patch_payload,
-            expect_json=False,
-        )
-        logger.debug("Ссылка добавлена к запуску #%d", launch_id)
-
-    # --- Комментарии (протокол CommentManager) ---
-
-    async def get_comments(self, test_case_id: int) -> list[CommentResponse]:
-        """Получить все комментарии для тест-кейса.
-
-        ``GET /api/comment?testCaseId={id}&size=1000``
-        """
-        params = {
-            "testCaseId": test_case_id,
-            "size": 1000,
-        }
-        logger.debug("Получение комментариев для тест-кейса %d", test_case_id)
-        data = await self._request("GET", self.COMMENT_ENDPOINT, params=params)
-
-        content = data.get("content", []) if isinstance(data, dict) else []
-        comments = [CommentResponse.model_validate(item) for item in content]
-
-        logger.debug(
-            "Получено %d комментариев для тест-кейса %d",
-            len(comments),
-            test_case_id,
-        )
-        return comments
-
-    async def delete_comment(self, comment_id: int) -> None:
-        """Удалить комментарий по ID.
-
-        ``DELETE /api/comment/{id}``
-        """
-        logger.debug("Удаление комментария %d", comment_id)
-        await self._request(
-            "DELETE",
-            f"{self.COMMENT_ENDPOINT}/{comment_id}",
-            expect_json=False,
-        )
-        logger.debug("Комментарий %d удалён", comment_id)
 
     # --- Аттачменты (протокол AttachmentProvider) ---
 
