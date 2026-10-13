@@ -265,7 +265,7 @@ def _wrapped(cause: BaseException) -> AllureApiError:
 @pytest.mark.parametrize(
     ("exc", "expected"),
     [
-        (_wrapped(httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] bad")), "ALLURE_SSL_VERIFY=false"),
+        (_wrapped(httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] bad")), "SSL_CERT_FILE"),
         (_wrapped(httpx.ReadTimeout("slow")), "ALLURE_REQUEST_TIMEOUT (сейчас 11 с)"),
         (_wrapped(httpx.ConnectError("refused")), "Нет соединения с https://testops.example"),
         (PaginationLimitError("много"), "ALLURE_MAX_PAGES (сейчас 7)"),
@@ -279,6 +279,14 @@ def test_fetch_error_hints(exc: BaseException, expected: str) -> None:
     hint = fetch_error_hint(exc, _settings(), Path("/skill/.env"))
     assert (expected in hint) if expected else hint == ""
 
+
+
+def test_tls_hint_offers_trusting_the_proxy_before_disabling_verification() -> None:
+    error = _wrapped(httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] bad"))
+    hint = fetch_error_hint(error, _settings(), Path("/skill/.env"))
+    assert hint.index("SSL_CERT_FILE") < hint.index("ALLURE_SSL_VERIFY=false")
+    assert "временный обход" in hint
+    assert "перехватить" in hint
 
 # --- зависшая модель, файлы модели, битые кластеры ---------------------------------
 

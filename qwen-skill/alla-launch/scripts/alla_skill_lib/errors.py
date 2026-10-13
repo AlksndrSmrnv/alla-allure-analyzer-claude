@@ -39,10 +39,15 @@ def fetch_error_hint(exc: BaseException, settings: Settings, env_file: Path) -> 
     causes = list(_chain(exc))
     texts = " ".join(str(item) for item in causes)
     if any(isinstance(item, ssl.SSLError) for item in causes) or "CERTIFICATE_VERIFY_FAILED" in texts:
+        # Сначала доверие сертификату прокси: ALLURE_SSL_VERIFY=false снимает проверку целиком,
+        # и токен уходит любому посреднику. httpx берёт SSL_CERT_FILE только из окружения.
         return (
-            "Не удалось проверить TLS-сертификат. Для корпоративного прокси с "
-            "самоподписанным сертификатом задай ALLURE_SSL_VERIFY=false "
-            f"(в {env_file} или в переменных окружения)."
+            "Не удалось проверить TLS-сертификат. Если сертификат подменяет корпоративный "
+            "прокси, укажи файл с его корневым сертификатом в переменной окружения "
+            "SSL_CERT_FILE (в .env скилла она не читается; файл заменяет встроенный список "
+            "доверенных сертификатов) и перезапусти Qwen Code. Только как временный обход — "
+            f"ALLURE_SSL_VERIFY=false (в {env_file} или в переменных окружения): проверка "
+            "отключится полностью, и API-токен сможет перехватить посредник."
         )
     if any(isinstance(item, httpx.TimeoutException) for item in causes):
         return (
