@@ -281,6 +281,40 @@ def evaluate_signatures(
     return {**result, "signature_shared_wrong": wrong, "signature_problems": problems}
 
 
+NEAR_KEYS = ("near_pairs", "near_pairs_same")
+
+
+def evaluate_near_pairs(
+    labels: dict[str, Any] | None,
+    clusters: Iterable[ClusterView],
+    near: Iterable[tuple[str, str, str]],
+) -> dict[str, Any]:
+    """Близкие пары кластеров (почти одинаковый текст ошибки, ``NearPair``).
+
+    * ``near_pairs`` — такие пары (разметка не нужна);
+    * ``near_pairs_same`` — только с разметкой: из них пары, где хоть один тест одного
+      кластера — та же проблема, что тест другого (правило развело одну проблему; цена
+      осторожной кластеризации, которую после разбора закрывает пометка «одна причина»).
+    """
+    near = list(near)
+    result: dict[str, Any] = {"near_pairs": len(near)}
+    if labels is None:
+        return result
+    by_id = {cluster.file_id: cluster for cluster in clusters}
+    groups = {group["id"]: group for group in labels["groups"]}
+    group_of = {test: group["id"] for group in labels["groups"] for test in group["tests"]}
+    same_count = 0
+    problems: list[str] = []
+    for first, second, reason in near:
+        same = any(_same_problem(groups, group_of, a, b)
+                   for a in by_id[first].members if a in group_of
+                   for b in by_id[second].members if b in group_of)
+        same_count += same
+        problems.append(f"кластеры {first} и {second}: развело {reason}, "
+                        + ("одна проблема" if same else "разные проблемы"))
+    return {**result, "near_pairs_same": same_count, "near_problems": problems}
+
+
 KB_OFFER_KEYS = ("kb_offers", "kb_offers_found", "kb_offers_wrong")
 
 

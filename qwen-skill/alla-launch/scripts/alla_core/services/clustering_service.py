@@ -37,6 +37,8 @@
 6. Агломеративная кластеризация (complete linkage) по итоговой distance.
 7. Счётчики gates (``ClusteringReport.gates``): сколько пар решил каждый gate и сколько
    пар gate по логу не разделил из-за общей ошибки — только числа, для эталона команды.
+8. Близкие пары кластеров (``ClusteringReport.near_pairs``): кластеры с почти одинаковым
+   текстом ошибки и правило, которое их развело. Кластеры не меняет.
 """
 
 import hashlib
@@ -54,11 +56,13 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import normalize
 
 from alla_core.models.clustering import (
+    NEAR_REASONS,
     ClusterExample,
     ClusteringGateStats,
     ClusteringReport,
     ClusterSignature,
     FailureCluster,
+    NearPair,
 )
 from alla_core.models.testops import FailedTestSummary
 from alla_core.utils.log_events import SOURCE_MARK_RE, strip_source_marks
@@ -552,6 +556,7 @@ class ClusteringService:
         """Кластеризовать список ошибок и вернуть ``ClusteringReport``."""
         self._last_condensed: np.ndarray | None = None
         self._last_gates = ClusteringGateStats()
+        self._last_near: list[tuple[int, int, str, int]] = []
         if not failures:
             return ClusteringReport(
                 launch_id=launch_id,
@@ -645,11 +650,13 @@ class ClusteringService:
 
         # 4. Конвертация в выходные модели
         result_clusters: list[FailureCluster] = []
+        label_ids: dict[int, str] = {}
 
-        for group_indices in cluster_groups.values():
+        for label, group_indices in cluster_groups.items():
             cluster = self._build_cluster(group_indices, failures)
             cluster.examples = select_examples(group_indices, failures, distance, documents)
             result_clusters.append(cluster)
+            label_ids[label] = cluster.cluster_id
 
         # Singleton-кластеры — тесты без текста
         for idx in empty_indices:
@@ -661,6 +668,12 @@ class ClusteringService:
         result_clusters.sort(key=lambda c: (-c.member_count, c.cluster_id))
 
         unclustered = sum(1 for c in result_clusters if c.member_count == 1)
+        order = {cluster.cluster_id: position for position, cluster in enumerate(result_clusters)}
+        near_pairs = []
+        for la, lb, reason, pairs in self._last_near:
+            a, b = sorted((label_ids[la], label_ids[lb]), key=order.__getitem__)
+            near_pairs.append(NearPair(cluster_a=a, cluster_b=b, reason=reason, pairs=pairs))
+        near_pairs.sort(key=lambda pair: (order[pair.cluster_a], order[pair.cluster_b]))
 
         logger.info(
             "Сгруппировано %d падений в %d кластеров (%d одиночных)",
@@ -676,6 +689,7 @@ class ClusteringService:
             clusters=result_clusters,
             unclustered_count=unclustered,
             gates=gates,
+            near_pairs=near_pairs[:MAX_NEAR_PAIRS],
         )
 
     # --- Кластеризация ---
@@ -727,6 +741,8 @@ class ClusteringService:
             log_weight = 0.0
 
         condensed = np.ones(n * (n - 1) // 2, dtype=np.float64)
+        # Чем решена пара (``NEAR_REASONS``): 0 — посчитана похожесть, иначе первый gate.
+        reasons = np.zeros(len(condensed), dtype=np.int8)
         collect_stats = logger.isEnabledFor(logging.DEBUG)
         final_min, final_max, final_sum = 1.0, 0.0, 0.0
         has_message = [bool(doc.strip()) for doc in message_documents]
@@ -764,6 +780,7 @@ class ClusteringService:
                     and assertion_actuals[i] != assertion_actuals[j]
                 ):
                     assertion_split += 1
+                    reasons[idx] = _REASON_ASSERTION
                     if collect_stats:
                         final_min = 0.0
                     continue
@@ -784,6 +801,7 @@ class ClusteringService:
                     and float(step_sim[i, j]) < self._config.step_path_strict_threshold
                 ):
                     step_split += 1
+                    reasons[idx] = _REASON_STEP
                     if collect_stats:
                         final_min = 0.0
                     continue
@@ -797,6 +815,7 @@ class ClusteringService:
                         log_pairs += 1
                     if verdict == log_split_verdict:
                         log_split += 1
+                        reasons[idx] = _REASON_LOG
                         if collect_stats:
                             final_min = 0.0
                         continue
@@ -833,8 +852,10 @@ class ClusteringService:
                         # и лог не override'ит — пара не может быть склеена.
                         if message_sim[i, j] < self._config.similarity_threshold:
                             message_split += 1
+                            reasons[idx] = _REASON_MESSAGE
                         else:
                             resource_split += 1
+                            reasons[idx] = _REASON_RESOURCE
                         pair_sim = 0.0 if resources_differ else message_sim[i, j]
                     elif log_overrides_gate and messages_differ:
                         # Override по log: message различаются, но лог одинаковый.
@@ -905,6 +926,7 @@ class ClusteringService:
             criterion="distance",
         )
         result = [int(label) for label in labels.tolist()]
+        self._last_near = self._near_pairs(message_sim, has_message, labels, condensed, reasons)
 
         held = held_by_key + (
             [pair for pair, kept in zip(shared, log_gate.held_by_shared(shared)) if kept]
@@ -927,6 +949,42 @@ class ClusteringService:
             held_test_pairs=held,
             override_test_pairs=overrides,
         )
+        return result
+
+    def _near_pairs(
+        self,
+        message_sim: np.ndarray,
+        has_message: list[bool],
+        labels: np.ndarray,
+        condensed: np.ndarray,
+        reasons: np.ndarray,
+    ) -> list[tuple[int, int, str, int]]:
+        """Пары кластеров с почти одинаковым текстом ошибки и что их развело.
+
+        Близкие — хоть одна пара падений из двух кластеров с похожестью сообщений не ниже
+        порога. Развело то правило, что чаще всего решило пары между кластерами с
+        расстоянием выше порога (complete linkage: хватило бы одной такой пары).
+        """
+        n = len(labels)
+        with_message = np.asarray(has_message, dtype=bool)
+        close = (np.triu(message_sim >= self._config.similarity_threshold, k=1)
+                 & with_message[:, None] & with_message[None, :])
+        rows, cols = np.nonzero(close)
+        across = labels[rows] != labels[cols]
+        counts = Counter(
+            (int(min(a, b)), int(max(a, b)))
+            for a, b in zip(labels[rows[across]], labels[cols[across]])
+        )
+        members = {int(label): np.flatnonzero(labels == label) for label in np.unique(labels)}
+        limit = self._config.distance_threshold
+        result = []
+        for (la, lb), pairs in sorted(counts.items()):
+            a, b = np.meshgrid(members[la], members[lb], indexing="ij")
+            i, j = np.minimum(a, b).ravel(), np.maximum(a, b).ravel()
+            index = n * i - i * (i + 1) // 2 + (j - i - 1)
+            decided = Counter(int(code) for code in reasons[index][condensed[index] > limit])
+            reason = min(decided, key=lambda code: (-decided[code], code)) if decided else 0
+            result.append((la, lb, NEAR_REASONS[reason], pairs))
         return result
 
     def _pairwise_similarity(self, documents: list[str]) -> np.ndarray:
@@ -1115,6 +1173,12 @@ def generate_cluster_id(
         components.append("|".join(str(tid) for tid in sorted(member_ids)))
     raw = "\n".join(components)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+# Код решения пары в ``_cluster_texts`` → причина в ``NearPair.reason``.
+_REASON_ASSERTION, _REASON_STEP, _REASON_LOG, _REASON_MESSAGE, _REASON_RESOURCE = 1, 2, 3, 4, 5
+# Близких пар в отчёте не больше: в run.json и в задания идёт только начало списка.
+MAX_NEAR_PAIRS = 50
 
 
 class _Distances:

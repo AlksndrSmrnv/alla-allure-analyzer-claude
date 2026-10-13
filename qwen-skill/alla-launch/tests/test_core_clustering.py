@@ -1467,3 +1467,51 @@ def test_gates_held_by_block_is_the_same_in_small_batches(monkeypatch: pytest.Mo
     monkeypatch.setattr(_LogErrorGate, "PAIR_BATCH", 1)
     assert _gates(failures) == default
     assert default["log_held_by_block"] >= 9
+
+
+# ---------------------------------------------------------------------------
+# Близкие пары кластеров (NearPair)
+# ---------------------------------------------------------------------------
+
+
+def _near(failures: list[FailedTestSummary]) -> list[tuple[int, int, str, int]]:
+    """Близкие пары как (номер кластера A, номер B, причина, пар падений)."""
+    report = ClusteringService(ClusteringConfig(log_similarity_weight=0.15)
+                               ).cluster_failures(launch_id=1, failures=failures)
+    number = {cluster.cluster_id: index for index, cluster in enumerate(report.clusters)}
+    return [(number[pair.cluster_a], number[pair.cluster_b], pair.reason, pair.pairs)
+            for pair in report.near_pairs]
+
+
+def test_near_pair_names_the_step_gate_that_split_one_error() -> None:
+    """Одна NPE на разных шагах: шаг развёл, текст ошибки тот же — близкая пара."""
+    failures = _orders(_log(NPE_LOG), _log(NPE_LOG), _log(NPE_LOG))
+    failures[2] = failures[2].model_copy(update={"failed_step_path": "Отменить заказ"})
+    assert _near(failures) == [(0, 1, "step", 2)]
+
+
+@pytest.mark.parametrize(("failures", "reason"), [
+    (_calls(_connect("inventory.svc"), _connect("loyalty.svc")), "resource"),
+    (_orders(_log(POOL_LOG), _log(NPE_LOG)), "log"),
+])
+def test_near_pair_reason_follows_the_gate(failures: list[FailedTestSummary], reason: str) -> None:
+    assert [pair[2] for pair in _near(failures)] == [reason]
+
+
+def test_near_pairs_skip_different_texts_and_one_cluster() -> None:
+    assert _near(_calls("java.net.ConnectException: Connection refused",
+                        "java.lang.IllegalStateException: order is already closed")) == []
+    assert _near(_orders(_log(NPE_LOG), _log(NPE_LOG))) == []
+    assert _near([]) == []
+
+
+def test_near_pair_reason_is_the_first_gate_of_each_pair() -> None:
+    """Пара на разных шагах засчитывается шагу, даже если логи тоже разные."""
+    failures = _orders(_log(NPE_LOG), _log(NPE_LOG), _log(POOL_LOG))
+    failures[1] = failures[1].model_copy(update={"failed_step_path": "Отменить заказ"})
+    report = ClusteringService(ClusteringConfig(log_similarity_weight=0.15)
+                               ).cluster_failures(launch_id=1, failures=failures)
+    assert report.cluster_count == 3
+    assert sorted(pair.reason for pair in report.near_pairs) == ["log", "step", "step"]
+    assert {pair["reason"] for pair in report.model_dump(mode="json")["near_pairs"]} == {
+        "log", "step"}

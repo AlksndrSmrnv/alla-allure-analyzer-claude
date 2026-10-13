@@ -184,6 +184,28 @@ def test_pilot_summary_has_no_run_data(project: Path, testops: FakeTestOps, caps
     assert "модель: ?" in summary and "причина: частично ×1" in summary
 
 
+def test_pilot_summary_counts_near_problems_by_reason_only(
+        project: Path, testops: FakeTestOps, capsys, monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path) -> None:
+    """Близкие проблемы — только числа по кодам причин; чужой код не попадает в сводку."""
+    run_dir, _, _ = _finished_run(project, capsys, monkeypatch, tmp_path)
+    run = ws.read_json(run_dir / "run.json")
+    ids = [entry["cluster_id"] for entry in run["clusters"]]
+    run["clustering"]["near_pairs"] = [
+        {"cluster_a": ids[0], "cluster_b": ids[1], "reason": "step", "pairs": 2},
+        {"cluster_a": ids[0], "cluster_b": ids[1], "reason": "step", "pairs": 1},
+        {"cluster_a": ids[0], "cluster_b": ids[1], "reason": f"{LEAK}", "pairs": 1},
+    ]
+    ws.write_json(run_dir / "run.json", run)
+    facts = review.collect_facts(ws.RunPaths(run_dir))
+
+    summary = review.render_pilot_summary(facts)
+
+    assert facts["clustering"]["near_pairs"] == {"step": 2}
+    assert "## Кластеризация" in summary
+    assert "что развело: step ×2" in summary and LEAK not in summary
+
+
 # --- оценки -------------------------------------------------------------------------------
 
 

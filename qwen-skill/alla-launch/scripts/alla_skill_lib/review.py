@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from alla_core.models.clustering import NEAR_REASONS
+
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.proposals import parse_proposal
 from alla_skill_lib.session_log import (
@@ -107,10 +109,22 @@ def collect_facts(
         "journal": _journal_facts(log, project_root, paths),
         "clusters": clusters,
         "quality": _quality_facts(clusters),
+        "clustering": _clustering_facts(run),
         "assessment": None,
     }
     facts["grades"] = grades(facts)
     return facts
+
+
+def _clustering_facts(run: Mapping[str, Any]) -> dict[str, Any]:
+    """Счётчики gates и близкие пары по причинам — только числа и коды из
+    ``NEAR_REASONS``: видно, какое правило дробит почти одинаковые ошибки."""
+    clustering = run.get("clustering") or {}
+    gates = {key: value for key, value in (clustering.get("gates") or {}).items()
+             if isinstance(value, int) and not isinstance(value, bool)}
+    reasons = Counter(str(pair.get("reason")) for pair in clustering.get("near_pairs") or [])
+    return {"gates": gates,
+            "near_pairs": {reason: reasons[reason] for reason in NEAR_REASONS if reasons[reason]}}
 
 
 def _read_state(paths: ws.RunPaths) -> dict[str, Any]:
@@ -575,6 +589,17 @@ def render_pilot_summary(facts: Mapping[str, Any]) -> str:
             f"- без цитат: {quality['without_observations']}, с цитатами из лога: {quality['with_log_quotes']}",
             f"- назван недостающий источник: {quality['missing_named']}, разные проблемы в группе: {quality['mixed']}",
             f"- с базой знаний: {quality['kb_used']}, с местом в коде: {quality['with_code']}", "",
+            "## Кластеризация", ""]
+    clustering = facts.get("clustering") or {"gates": {}, "near_pairs": {}}
+    gates = clustering["gates"]
+    out += [f"- пар падений: {gates.get('pairs', 0)}, в одной проблеме: "
+            f"{gates.get('pairs_in_one_problem', 0)}",
+            "- развели правила: " + (", ".join(
+                f"{key} ×{value}" for key, value in gates.items()
+                if value and key not in ("pairs", "pairs_in_one_problem")) or "нет"),
+            "- близкие проблемы (текст почти тот же), что развело: " + (", ".join(
+                f"{reason} ×{count}" for reason, count in clustering["near_pairs"].items())
+                or "нет"), "",
             "## Оценка проверяющей модели", ""]
     assessment = facts.get("assessment")
     if assessment and assessment.get("problems"):

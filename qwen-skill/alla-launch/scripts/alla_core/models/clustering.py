@@ -73,6 +73,28 @@ class ClusteringGateStats(BaseModel):
     override_test_pairs: list[tuple[int, int]] = Field(default_factory=list, exclude=True)
 
 
+# Что развело близкие кластеры (``NearPair.reason``); индекс — код решения пары в
+# кластеризации: 0 — посчитана похожесть, дальше gates в порядке применения.
+NEAR_REASONS = ("score", "assertion", "step", "log", "message", "resource")
+
+
+class NearPair(BaseModel):
+    """Две проблемы с почти одинаковым текстом ошибки и правило, которое их развело.
+
+    Близкие — есть пара падений из двух кластеров с похожестью сообщений не ниже порога.
+    ``reason`` — чаще всего решавшее правило среди пар между кластерами, которые не дали
+    их склеить (complete linkage): ``assertion``, ``step``, ``log``, ``message``,
+    ``resource`` или ``score`` (gate не сработал, итоговая похожесть ниже порога).
+    ``pairs`` — сколько пар падений между кластерами близки по тексту. Только для показа
+    и подсказки модели: кластеры остаются раздельными.
+    """
+
+    cluster_a: str
+    cluster_b: str
+    reason: str
+    pairs: int = 0
+
+
 class ClusteringReport(BaseModel):
     """Результат кластеризации всех падений в рамках одного launch."""
 
@@ -82,3 +104,4 @@ class ClusteringReport(BaseModel):
     clusters: list[FailureCluster] = Field(default_factory=list)
     unclustered_count: int = 0
     gates: ClusteringGateStats = Field(default_factory=ClusteringGateStats)
+    near_pairs: list[NearPair] = Field(default_factory=list)

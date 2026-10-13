@@ -315,6 +315,33 @@ def same_assertion_two_npes() -> Case:
     return builder.build("same_assertion_two_npes")
 
 
+def step_split_one_cause() -> Case:
+    """Один NPE сервиса заказов, тесты падают на разных шагах — одна проблема.
+
+    Кластеризация делит её намеренно: шаг — жёсткий gate, и log override его не обходит
+    (иначе одинаковый фон лога склеивал бы разные шаги). Это цена осторожности, видна как
+    близкая пара (``near_pairs``, развело ``step``); после разбора её закрывает пометка
+    «одна причина» скилла, а не кластеризация.
+    """
+    builder = LaunchBuilder(5119, "Orders and checkout")
+    evidence = "Cannot invoke \"Customer.id()\" because \"customer\" is null"
+    variants = [
+        ("ru.company.orders.OrderApiTest", "Отправить запрос POST /orders", FIRST_METHODS),
+        ("ru.company.checkout.CheckoutTest", "Оформить заказ из корзины",
+         ("checkoutCart", "checkoutWithBonus", "checkoutGuest")),
+    ]
+    for variant, (test_class, step, methods) in enumerate(variants):
+        for index, method in enumerate(methods):
+            line = 30 + (variant * len(methods) + index) * 9
+            builder.add_failure(
+                "orders-customer-null", cause="orders-customer-null", category="приложение",
+                name=method, full_name=f"{test_class}.{method}", message=ASSERT_500,
+                trace=_assert_trace(ASSERT_500, test_class, method, line),
+                step=step, log=CUSTOMER_NPE_LOG, evidence=[evidence],
+            )
+    return builder.build("step_split_one_cause")
+
+
 def auth_401_403() -> Case:
     """401 и 403 с похожим текстом — разные причины."""
     builder = LaunchBuilder(5104, "Access regression")
@@ -1569,6 +1596,7 @@ CASES: dict[str, Callable[[], Case]] = {
     "retries": retries,
     "retries_by_context": retries_by_context,
     "same_assertion_two_npes": same_assertion_two_npes,
+    "step_split_one_cause": step_split_one_cause,
     "log_noise_one_problem": log_noise_one_problem,
     "background_log_errors": background_log_errors,
     "resources_split": resources_split,

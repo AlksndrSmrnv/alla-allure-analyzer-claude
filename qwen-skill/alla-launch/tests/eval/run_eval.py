@@ -43,6 +43,7 @@ from eval.cassette import load_cassette, replay  # noqa: E402
 from eval.corpus import Case, validate_labels  # noqa: E402
 from eval.metrics import (  # noqa: E402
     KB_OFFER_KEYS,
+    NEAR_KEYS,
     RETRY_KEYS,
     SIGNATURE_KEYS,
     ClusterView,
@@ -51,6 +52,7 @@ from eval.metrics import (  # noqa: E402
     evaluate,
     evaluate_gate_pairs,
     evaluate_kb_offers,
+    evaluate_near_pairs,
     evaluate_retries,
     evaluate_signatures,
     kb_offer_records,
@@ -75,6 +77,7 @@ class PreparedRun:
     triage: dict[str, Any]
     gates: ClusteringGateStats
     signature_log: dict[str, int]
+    near_pairs: list[tuple[str, str, str]]
 
     @property
     def max_task_chars(self) -> int:
@@ -156,7 +159,10 @@ def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
             stability["signature_log_clusters"] += logs > 1
             stability["signature_log_unstable"] += signatures > 1
     gates = data.clustering.gates if data.clustering else ClusteringGateStats()
-    return PreparedRun(run_dir, views, seconds, run["triage"], gates, stability)
+    file_ids = {entry["cluster_id"]: entry["file_id"] for entry in run["clusters"]}
+    near = [(file_ids[pair.cluster_a], file_ids[pair.cluster_b], pair.reason)
+            for pair in (data.clustering.near_pairs if data.clustering else [])]
+    return PreparedRun(run_dir, views, seconds, run["triage"], gates, stability, near)
 
 
 def signature_log_stability(cluster: Any, tests_by_id: dict[int, Any]) -> tuple[int, int]:
@@ -187,6 +193,7 @@ def evaluate_fixture(fixture: LaunchFixture, labels: dict[str, Any] | None) -> d
         return {"tests": sum(len(cluster.members) for cluster in prepared.clusters),
                 "clusters": len(prepared.clusters), "gates": prepared.gates.model_dump(),
                 **evaluate_signatures(None, prepared.clusters), **prepared.signature_log,
+                **evaluate_near_pairs(None, prepared.clusters, prepared.near_pairs),
                 "max_task_chars": prepared.max_task_chars, "seconds": round(prepared.seconds, 2)}
     validate_labels(fixture, labels)
     with tempfile.TemporaryDirectory(prefix="alla-eval-") as tmp:
@@ -194,6 +201,7 @@ def evaluate_fixture(fixture: LaunchFixture, labels: dict[str, Any] | None) -> d
         result = evaluate(labels, prepared.clusters)
         result.update(evaluate_signatures(labels, prepared.clusters))
         result.update(prepared.signature_log)
+        result.update(evaluate_near_pairs(labels, prepared.clusters, prepared.near_pairs))
         result["gates"] = {**prepared.gates.model_dump(), **evaluate_gate_pairs(
             labels, prepared.gates.held_test_pairs, prepared.gates.override_test_pairs)}
         if labels.get("retries"):
@@ -272,13 +280,18 @@ def evaluate_cases(
 def baseline_entry(result: dict[str, Any]) -> dict[str, Any]:
     """Метрики для базовой линии: без времени (оно зависит от машины)."""
     return {**summary(result), **retry_summary(result), **kb_offer_summary(result),
-            **signature_summary(result), "gates": result["gates"],
+            **signature_summary(result), **near_summary(result), "gates": result["gates"],
             "max_task_chars": result["max_task_chars"]}
 
 
 def signature_summary(result: dict[str, Any]) -> dict[str, int]:
     """Числа сигнатур; ``signature_shared_wrong`` — только с разметкой."""
     return {key: result[key] for key in SIGNATURE_KEYS if key in result}
+
+
+def near_summary(result: dict[str, Any]) -> dict[str, int]:
+    """Числа близких пар; ``near_pairs_same`` — только с разметкой."""
+    return {key: result[key] for key in NEAR_KEYS if key in result}
 
 
 def kb_offer_summary(result: dict[str, Any]) -> dict[str, int]:
@@ -334,6 +347,10 @@ def print_table(results: dict[str, dict[str, dict[str, Any]]]) -> None:
                       f"(у разных проблем {result['signature_shared_wrong']}); меняется с "
                       f"логом участника {result['signature_log_unstable']} из "
                       f"{result['signature_log_clusters']}")
+        for case_name, result in cases.items():
+            if result["near_pairs"]:
+                print(f"близкие пары {case_name}: {result['near_pairs']}, из них одна "
+                      f"проблема {result['near_pairs_same']}")
 
 
 def _retry_cells(result: dict[str, Any]) -> str:
@@ -359,6 +376,7 @@ def print_details(results: dict[str, dict[str, dict[str, Any]]]) -> None:
             lines += [f"  повторы: {problem}" for problem in result.get("retry_problems", [])]
             lines += [f"  база знаний: {problem}" for problem in result.get("kb_offer_problems", [])]
             lines += [f"  сигнатура: {problem}" for problem in result.get("signature_problems", [])]
+            lines += [f"  близкие: {problem}" for problem in result.get("near_problems", [])]
             decided = {key: value for key, value in result["gates"].items() if value}
             if set(decided) - {"pairs", "pairs_in_one_problem"}:
                 lines.append("  gates: " + ", ".join(f"{key} {value}"
@@ -441,7 +459,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         print(json.dumps({**summary(result), **retry_summary(result), **coverage(result),
-                          **signature_summary(result), "gates": result["gates"], "max_task_chars": result["max_task_chars"],
+                          **signature_summary(result), **near_summary(result), "gates": result["gates"],
+                          "max_task_chars": result["max_task_chars"],
                           "seconds": result["seconds"]}, ensure_ascii=False, indent=2))
         if result["unclustered"] or result["unlabeled"]:
             print("Внимание: разметка не совпадает с активными падениями прогона — "

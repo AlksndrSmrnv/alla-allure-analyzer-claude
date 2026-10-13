@@ -14,12 +14,14 @@ from skill_fake_testops import LaunchFixture, default_launch
 from eval import corpus_dev, run_eval
 from eval.cassette import save_cassette
 from eval.metrics import (
+    NEAR_KEYS,
     SIGNATURE_KEYS,
     SUMMARY_KEYS,
     ClusterView,
     combine,
     evaluate,
     evaluate_gate_pairs,
+    evaluate_near_pairs,
     evaluate_retries,
     evaluate_signatures,
     summary,
@@ -139,7 +141,7 @@ def test_run_eval_on_a_cassette_prints_only_numbers(
 
 
 # Ключи сводки по кассете: всё, что может уйти за пределы команды, кроме чисел.
-_CASSETTE_KEYS = {*SUMMARY_KEYS, *SIGNATURE_KEYS, "unclustered", "unlabeled", "gates",
+_CASSETTE_KEYS = {*SUMMARY_KEYS, *SIGNATURE_KEYS, *NEAR_KEYS, "unclustered", "unlabeled", "gates",
                   "max_task_chars",
                   "seconds", *ClusteringGateStats().model_dump(), "log_held_same_problem",
                   "log_held_different_problems", "log_override_same_problem",
@@ -358,3 +360,20 @@ def test_run_eval_defaults_to_dev(monkeypatch: pytest.MonkeyPatch) -> None:
     run_eval.main(["--set", "all"])
 
     assert seen == [("dev",), ("dev", "holdout")]
+
+
+def test_near_pairs_count_one_problem_split_by_a_gate() -> None:
+    labels = {"groups": [
+        {"id": "npe-orders", "cause": "npe", "tests": [1, 2]},
+        {"id": "npe-checkout", "cause": "npe", "tests": [3]},
+        {"id": "pool", "tests": [4]},
+    ]}
+    clusters = [ClusterView("01", (1, 2), (1,), ""), ClusterView("02", (3,), (3,), ""),
+                ClusterView("03", (4,), (4,), "")]
+    near = [("01", "02", "step"), ("01", "03", "log")]
+
+    assert evaluate_near_pairs(None, clusters, near) == {"near_pairs": 2}
+    result = evaluate_near_pairs(labels, clusters, near)
+    assert {key: result[key] for key in NEAR_KEYS} == {"near_pairs": 2, "near_pairs_same": 1}
+    assert result["near_problems"] == ["кластеры 01 и 02: развело step, одна проблема",
+                                       "кластеры 01 и 03: развело log, разные проблемы"]
