@@ -191,6 +191,9 @@ def test_pilot_summary_counts_near_problems_by_reason_only(
     run_dir, _, _ = _finished_run(project, capsys, monkeypatch, tmp_path)
     run = ws.read_json(run_dir / "run.json")
     ids = [entry["cluster_id"] for entry in run["clusters"]]
+    run["clustering"]["gates"] = {"pairs": 10, "pairs_in_one_problem": 3, "step_split": 4,
+                                  "log_split": 1, "log_pairs": 5, "log_held_by_key": 2,
+                                  "log_held_merged": 2, "log_override": 0}
     run["clustering"]["near_pairs"] = [
         {"cluster_a": ids[0], "cluster_b": ids[1], "reason": "step", "pairs": 2},
         {"cluster_a": ids[0], "cluster_b": ids[1], "reason": "step", "pairs": 1},
@@ -208,6 +211,9 @@ def test_pilot_summary_counts_near_problems_by_reason_only(
     assert facts["clustering"]["near_pairs"] == {"step": 2}
     assert "## Кластеризация" in summary
     assert "что развело: step ×2" in summary and LEAK not in summary
+    assert "- развели правила: step_split ×4, log_split ×1\n" in summary
+    assert ("- лог и log override (пары, удержанные, объединённые): log_pairs ×5, "
+            "log_held_by_key ×2, log_held_merged ×2\n") in summary
     assert ("- похожие после разбора: групп 2 (проблем 5; связи: near ×1, text ×4), "
             "одна причина: групп 1 (проблем 2)") in summary
 

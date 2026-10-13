@@ -608,7 +608,11 @@ def render_pilot_summary(facts: Mapping[str, Any]) -> str:
             f"{gates.get('pairs_in_one_problem', 0)}",
             "- развели правила: " + (", ".join(
                 f"{key} ×{value}" for key, value in gates.items()
-                if value and key not in ("pairs", "pairs_in_one_problem")) or "нет"),
+                if value and key.endswith("_split")) or "нет"),
+            # Удержание и объединение пар — не разделение: своей строкой.
+            "- лог и log override (пары, удержанные, объединённые): " + (", ".join(
+                f"{key} ×{value}" for key, value in gates.items()
+                if value and key.startswith("log_") and not key.endswith("_split")) or "нет"),
             "- близкие проблемы (текст почти тот же), что развело: " + (", ".join(
                 f"{reason} ×{count}" for reason, count in clustering["near_pairs"].items())
                 or "нет")]

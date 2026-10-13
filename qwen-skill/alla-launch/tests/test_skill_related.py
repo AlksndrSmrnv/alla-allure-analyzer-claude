@@ -291,3 +291,25 @@ def test_related_file_is_the_agents_own_file_for_stand_and_review() -> None:
 
     assert WRITABLE_RE.search("/p/alla-reports/5119-20261013-100000/related.md")
     assert not WRITABLE_RE.search("/p/alla-reports/5119-20261013-100000/relate_task.md")
+
+
+def test_vanished_candidates_clear_both_hash_and_stats(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """Группы исчезли — из state.json уходят и хэш, и числа: review не покажет старые."""
+    run_dir, ids = _step_split_run(project, monkeypatch, capsys)
+    assert _next(run_dir, capsys).startswith("STATUS: relate")
+    (run_dir / "related.md").write_text("ОДНА ПРИЧИНА: 1, 2 — покупатель не заполнен\n",
+                                        encoding="utf-8")
+    assert _next(run_dir, capsys).startswith("STATUS: summary")
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert state["related_data_hash"] and state["related"]["confirmed_groups"] == 1
+
+    text = NPE.format(cause="сервис заказов теряет скидку в корзине.", quote=_quote(run_dir, ids[1]),
+                      step="Проверить расчёт скидки в CartService.")
+    (run_dir / "analyses" / f"{ids[1]}.md").write_text(
+        text.replace("приложение —", "окружение —"), encoding="utf-8")
+    assert _next(run_dir, capsys).startswith("STATUS: summary")
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert "related_data_hash" not in state and "related" not in state
+    assert not (run_dir / "related.md").exists()

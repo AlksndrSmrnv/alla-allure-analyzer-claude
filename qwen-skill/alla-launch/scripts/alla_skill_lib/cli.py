@@ -1086,7 +1086,9 @@ def _related_step(
     groups = candidate_groups(run, analyses, flagged, project_root, known)
     if not groups:
         paths.related.unlink(missing_ok=True)
-        if state.pop("related_data_hash", None) is not None or state.pop("related", None):
+        # Оба поля — независимо: иначе review показал бы числа исчезнувших групп.
+        stale = [state.pop(key, None) for key in ("related_data_hash", "related")]
+        if any(value is not None for value in stale):
             ws.write_json(paths.state_json, state)
         return Related()
     data = relate_data(run, groups, analyses)
