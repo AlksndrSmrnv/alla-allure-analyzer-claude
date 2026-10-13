@@ -649,6 +649,35 @@ def _code_location(text: str, root: Path) -> tuple[str, str | None] | None:
     return (legacy.group("path"), legacy.group("line")) if legacy else None
 
 
+def code_locations(analysis: ClusterAnalysis, project_root: Path) -> list[tuple[str, int | None]]:
+    """Места из раздела КОД, найденные в проекте: (путь от корня проекта, строка).
+
+    Имя файла без пути разрешается, только если оно однозначно (как в ``code_ref_errors``);
+    не найденные и внешние пути пропускаются.
+    """
+    root = project_root.resolve()
+    result: list[tuple[str, int | None]] = []
+    for line in analysis.code:
+        location = _code_location(line, root)
+        if location is None or not _looks_like_file_ref(location[0]):
+            continue
+        raw, number = location[0].replace("\\", "/"), location[1]
+        candidate = Path(raw)
+        path = candidate if candidate.is_absolute() else root / candidate
+        try:
+            resolved = path.resolve()
+            if not resolved.is_file() and "/" not in raw:
+                found = [c for c in _index(root).candidates(PurePath(raw).stem) if c.name == raw]
+                if len(found) == 1:
+                    resolved = (root / found[0]).resolve()
+            relative = resolved.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if resolved.is_file():
+            result.append((relative.as_posix(), int(number) if number else None))
+    return result
+
+
 def code_ref_errors(analysis: ClusterAnalysis, project_root: Path) -> list[str]:
     """Проблемы ссылок из раздела КОД: нет файла в проекте или строка вне файла."""
     errors: list[str] = []

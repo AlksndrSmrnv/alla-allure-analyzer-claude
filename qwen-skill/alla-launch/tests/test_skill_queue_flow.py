@@ -129,6 +129,7 @@ def test_known_issue_is_grouped_through_cli_and_splits_after_reject(
     _write(run_dir, other, APP_ANALYSIS.replace("{quote}", _quote(run_dir, other))
            .replace("пул соединений БД платежей исчерпан", "цена товара в каталоге пустая"))
     out = _next(run_dir, capsys)
+    # Проблемы с подтверждённой записью не сравниваются — у посторонней пары нет.
     assert out.startswith("STATUS: summary"), out
     (run_dir / "summary.md").write_text("Итог прогона.", encoding="utf-8")
     out = _next(run_dir, capsys)

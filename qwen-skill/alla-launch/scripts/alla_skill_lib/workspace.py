@@ -91,6 +91,16 @@ class RunPaths:
         return self.root / "summary.md"
 
     @property
+    def relate_task(self) -> Path:
+        """Задание сравнить разборы похожих проблем (``related.py``)."""
+        return self.root / "relate_task.md"
+
+    @property
+    def related(self) -> Path:
+        """Решение модели: у каких похожих проблем одна причина."""
+        return self.root / "related.md"
+
+    @property
     def report(self) -> Path:
         return self.root / "report.md"
 

@@ -32,6 +32,7 @@ from alla_skill_lib.cluster_task import UNTRUSTED_NOTE
 from alla_skill_lib.history import format_date
 from alla_skill_lib.known_issues import KnownIssue, KnownIssues, KnownRecord
 from alla_skill_lib.proposals import Proposal, weakening_warnings
+from alla_skill_lib.related import Related, RelatedGroup
 from alla_skill_lib.retries import MAX_REPORT_PASSED, passed_after_retry, report_line, retry_facts
 from alla_skill_lib.sources import describe
 from alla_skill_lib.workspace import RunPaths
@@ -94,6 +95,10 @@ SUMMARY_TASK = """\
 Если в данных есть блок «Известные проблемы из базы знаний», проблемы из одной его строки —
 одна причина: называй их одной проблемой с номерами из блока («проблемы 3, 7 и 12 — одна
 известная проблема: …»), а не разными сбоями.
+Если в данных есть блок «Похоже, одна причина», проблемы из одной его строки агент счёл одной
+причиной, сравнив разборы: называй их вместе и с оговоркой «похоже» («проблемы 4 и 9, похоже,
+одна причина: …»), но не известной проблемой — пользователь этого не подтверждал. Последняя
+строка этого блока «Кроме них, ещё N таких групп…» — разные причины, их не объединяй.
 Проблема со строкой «СОГЛАСОВАННОСТЬ: разные проблемы» — не одна проблема: в её тестах,
 похоже, разные сбои. Так и скажи, назови их причины из этой строки и не выдавай одну из них
 за причину всей проблемы.
@@ -180,6 +185,8 @@ class _Problem:
     mismatch: KnownRecord | None = None
     group: KnownIssue | None = None
     rejected: KnownRecord | None = None
+    # Группа «похоже, одна причина» (решение модели после сравнения разборов).
+    related: RelatedGroup | None = None
 
     @property
     def applied(self) -> bool:
@@ -245,6 +252,7 @@ def build_summary_data(
     analyses: dict[str, ClusterAnalysis],
     flagged: set[str],
     known: KnownIssues | None = None,
+    related: Related | None = None,
 ) -> str:
     """Общий блок данных для задания сводки и проверки её актуальности.
 
@@ -294,6 +302,7 @@ def build_summary_data(
         prompt.user_prompt,
         *(["", _summary_rest(rest, analyses, flagged, rejected)] if rest else []),
         *(["", *_summary_known(known)] if known and known.groups else []),
+        *(["", *_summary_related(related)] if related and related.groups else []),
     ])
 
 
@@ -397,6 +406,25 @@ def _summary_known(known: KnownIssues) -> list[str]:
     return lines
 
 
+def _summary_related(related: Related) -> list[str]:
+    """Похоже, одна причина: какие проблемы агент счёл одной причиной, сравнив разборы."""
+    lines = ["--- Похоже, одна причина (агент сравнил разборы; пользователь не подтверждал) ---"]
+    for group in related.groups[:MAX_SUMMARY_GROUPS]:
+        lines.append(
+            f"{_numbers_phrase(group.file_ids, MAX_SUMMARY_GROUP_NUMBERS)} — "
+            f"{_truncate(_one_line(group.cause), SUMMARY_LABEL_CHARS)} — {group.size} "
+            f"{_plural(group.size, 'тест', 'теста', 'тестов')}"
+        )
+    rest = related.groups[MAX_SUMMARY_GROUPS:]
+    if rest:
+        problems = sum(len(group.file_ids) for group in rest)
+        lines.append(
+            f"Кроме них, ещё {len(rest)} {_plural(len(rest), 'такая группа', 'такие группы', 'таких групп')} "
+            f"({problems} {_plural(problems, 'проблема', 'проблемы', 'проблем')}), у каждой своя причина."
+        )
+    return lines
+
+
 def _numbers_phrase(file_ids: list[str], limit: int | None = None) -> str:
     """«проблемы 3, 7, 12»; с лимитом — «проблемы 3, 7, 12, 15, 20 и ещё 4»."""
     numbers = [str(int(file_id)) for file_id in file_ids]
@@ -433,6 +461,7 @@ def render_report(
     notes: list[str] | None = None,
     not_proposed: dict[str, str] | None = None,
     known: KnownIssues | None = None,
+    related: Related | None = None,
 ) -> tuple[str, str]:
     """Вернуть (краткий текст для консоли, полный текст report.md).
 
@@ -440,7 +469,8 @@ def render_report(
     ``apply_states`` — ``applied_state`` каждой правки (нет записи = не применена);
     ``not_proposed`` — почему по проблеме «тест» правку не предлагали;
     ``known`` — подтверждённые известные проблемы (``known_issues``); без него ссылка
-    разбора на запись базы знаний показывается как есть, без групп.
+    разбора на запись базы знаний показывается как есть, без групп;
+    ``related`` — группы «похоже, одна причина» (``related.py``): только пометки.
     """
     proposals = proposals or {}
     apply_states = apply_states or {}
@@ -449,6 +479,9 @@ def render_report(
         _problem(entry, analyses[entry["file_id"]], flagged, proposals, apply_states, known)
         for entry in run["clusters"]
     ]
+    if related is not None:
+        for problem in problems:
+            problem.related = related.group_of(problem.entry["file_id"])
     reasons = not_proposed or {}
     link = _report_link(paths)
 
@@ -470,6 +503,8 @@ def render_report(
     full += ["", "### Коротко", summary]
     if known and known.groups:
         full += ["", *_known_section(known, problems)]
+    if related and related.groups:
+        full += ["", *_related_section(related)]
     for bucket, title, hint in SECTIONS:
         group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
         if group:
@@ -602,6 +637,20 @@ def _known_section(known: KnownIssues, problems: list[_Problem]) -> list[str]:
             lines.append(f"   Причина: {record.description}")
         if record.first_step:
             lines.append(f"   Что делать: {_one_line(record.first_step)}")
+    return lines
+
+
+def _related_section(related: Related) -> list[str]:
+    """«Похоже, одна причина» в report.md: какие проблемы агент счёл одной причиной."""
+    lines = [
+        f"### Похоже, одна причина ({len(related.groups)})",
+        ("Агент сравнил разборы похожих проблем и считает, что у этих проблем, скорее всего, одна "
+         "причина: начните с одной из них — исправление может убрать и остальные. Это вывод агента, "
+         "а не запись базы знаний; ниже проблемы остаются под своими номерами."),
+    ]
+    for group in related.groups:
+        size = f"{group.size} {_plural(group.size, 'тест', 'теста', 'тестов')}"
+        lines += ["", f"- {_numbers_phrase(group.file_ids).capitalize()} · {size} — {_one_line(group.cause)}"]
     return lines
 
 
@@ -956,7 +1005,16 @@ def _brief_tags(problem: _Problem) -> list[str]:
         tags.append(f"расходится с базой знаний: {problem.mismatch.id}")
     if problem.rejected is not None:
         tags.append(REJECTED_TAG)
+    if problem.related is not None:
+        others = _others(problem.related, problem.number)
+        shown = others[:MAX_BRIEF_GROUP_NUMBERS]
+        tail = f" и ещё {len(others) - len(shown)}" if len(others) > len(shown) else ""
+        tags.append(f"похоже, та же причина, что у {', '.join(shown)}{tail}")
     return tags
+
+
+def _others(group: RelatedGroup, number: int) -> list[str]:
+    return [str(int(file_id)) for file_id in group.file_ids if int(file_id) != number]
 
 
 def _item_title(problem: _Problem) -> str:
@@ -1010,6 +1068,13 @@ def _history_lines(problem: _Problem) -> list[str]:
             f"впервые {format_date(history['first_date'])}"
         )
     lines += _known_lines(problem)
+    if problem.related is not None:
+        others = _others(problem.related, problem.number)
+        shown = others[:MAX_REPORT_GROUP_NUMBERS]
+        together = ("у проблемы " if len(others) == 1 else "у проблем ") + ", ".join(shown)
+        if len(others) > len(shown):
+            together += f" и ещё {len(others) - len(shown)} (все — в разделе «Похоже, одна причина»)"
+        lines.append(f"- Похоже, та же причина, что {together}: {_one_line(problem.related.cause)}")
     return lines
 
 

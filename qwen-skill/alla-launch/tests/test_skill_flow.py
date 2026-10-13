@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from skill_fixtures import (  # noqa: F401
+    answer_related,
     multimodule_project_fixture,
     nested_project_fixture,
     project_fixture,
@@ -276,6 +277,9 @@ def _finish(run_dir: Path, capsys: pytest.CaptureFixture[str], analyses: dict[st
     for file_id, text in analyses.items():
         (run_dir / "analyses" / f"{file_id}.md").write_text(text, encoding="utf-8")
     out = _next(run_dir, capsys)
+    if out.startswith("STATUS: relate"):  # одинаковые разборы разных проблем — сравнить
+        answer_related(run_dir)
+        out = _next(run_dir, capsys)
     assert out.startswith("STATUS: summary"), out
     (run_dir / "summary.md").write_text("Итог прогона.", encoding="utf-8")
     out = _next(run_dir, capsys)

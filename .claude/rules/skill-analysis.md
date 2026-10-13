@@ -6,16 +6,19 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/code_hints.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/report.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/known_issues.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/related.py"
   - "qwen-skill/alla-launch/scripts/alla_core/services/prompt_builder_service.py"
   - "qwen-skill/alla-launch/scripts/alla_core/utils/log_focus.py"
   - "qwen-skill/alla-launch/references/analysis-format.md"
   - "qwen-skill/alla-launch/references/summary-format.md"
+  - "qwen-skill/alla-launch/references/related-format.md"
   - "qwen-skill/alla-launch/tests/test_skill_prompts.py"
   - "qwen-skill/alla-launch/tests/test_skill_sources.py"
   - "qwen-skill/alla-launch/tests/test_skill_report.py"
   - "qwen-skill/alla-launch/tests/test_code_references.py"
   - "qwen-skill/alla-launch/tests/test_summary_refresh.py"
   - "qwen-skill/alla-launch/tests/test_known_issues.py"
+  - "qwen-skill/alla-launch/tests/test_skill_related.py"
 ---
 
 # Задания, разборы и отчёт
@@ -235,6 +238,44 @@ paths:
   маленькой проблемы не менял бы хэш и сводка осталась бы прежней.
 - `render_report`/`build_summary_data` без `known` (старые вызовы, тесты) показывают ссылку
   разбора как есть, без групп.
+
+### Похожие проблемы (`related.py`, шаг `relate`)
+
+Кластеризация разводит почти одинаковые ошибки намеренно (`core.md`, «Близкие пары»: на dev
+из 15 близких пар одна проблема только у `step_split_one_cause`), поэтому лишнее дробление
+закрывается после разбора, а не ослаблением gates. Проблемы не сливаются — только пометки.
+
+- Кандидаты (`candidate_groups`): принятые разборы модели — не `auto`, не «формат нарушен»,
+  не «СОГЛАСОВАННОСТЬ: разные проблемы», не `known.rejected` (причина не подтверждена), не
+  `known.refs` (причина известна и показана блоком известных проблем; иначе одна проблема
+  попала бы в оба блока сводки) — одной категории.
+  Связи по старшинству: `near` — близкая пара из `run.json` (`clustering.near_pairs`), с
+  причиной разделения словами (`NEAR_WHY`: «в логах разные ошибки» — довод за разные);
+  `code` — тот же файл в «КОД» и строки не дальше `LINE_WINDOW` (`code_locations` в
+  `analysis_format`, имя без пути — только однозначное); `text` — взвешенный Жаккар слов
+  причины и первого шага (idf по разборам прогона, длиннее 3 букв, без служебных слов) не
+  ниже `TEXT_SIMILARITY` и не меньше `MIN_SHARED_WORDS` общих слов. У «неизвестно» — только
+  `near`: такие причины пишутся одними словами. Без sklearn: `next` зовут десятки раз.
+- Группа — компонента связности: до `MAX_RELATE_GROUP` крупнейших проблем (без связей внутри
+  оставшихся — выпадает), групп — до `MAX_RELATE_GROUPS`, крупные первыми.
+- Задание (`RELATE_RULES`, `RELATE_TASK`, `EXECUTOR_RULES`): одна причина — одно исправление
+  уберёт все; похожий текст ошибки — не довод; разные ошибки лога, хосты, элементы — довод за
+  `РАЗНЫЕ`, разные шаги сами по себе — нет; номера — проблем, не групп (ревью исполнителя:
+  «Группа 1» и «Проблема 1» в одном задании); сомнение — `РАЗНЫЕ`; новых фактов нет, код и
+  логи не открывать. Запасной путь `fix` (`related_mismatch_note`) — сначала исправить по
+  замечаниям, сброс в `РАЗНЫЕ` только при отклонённом верном файле. Директивы охраняет `test_relate_task_keeps_its_directives`.
+- Формат `related.md` (`RELATED_FORMAT`): строки `ОДНА ПРИЧИНА: N, M — причина` и
+  `РАЗНЫЕ: N — чем отличаются`; парсер прощает жирный, маркеры, ограды, «и»/«;» между номерами.
+  Проверка: каждый номер групп ровно один раз, `ОДНА ПРИЧИНА` — от двух номеров одной группы и
+  с причиной.
+- Показ (по образцу известных проблем): `report.md` — раздел «### Похоже, одна причина (N)»
+  после известных проблем и у проблемы «Похоже, та же причина, что у проблем …: причина» (до
+  `MAX_REPORT_GROUP_NUMBERS`); бриф — метка «похоже, та же причина, что у N» (до
+  `MAX_BRIEF_GROUP_NUMBERS`), без сворачивания; сводка — блок «--- Похоже, одна причина (агент
+  сравнил разборы; пользователь не подтверждал) ---» в `build_summary_data` (входит в хэш:
+  новое решение — новая сводка), директива в `SUMMARY_TASK` и `summary-format.md`: называть
+  вместе, с оговоркой «похоже», не известной проблемой; хвостовую строку «Кроме них…» не
+  объединять.
 
 ### Краткий разбор в терминале
 

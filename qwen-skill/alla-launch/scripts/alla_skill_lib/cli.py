@@ -52,6 +52,7 @@ from alla_skill_lib.agent_rules import (
     PROBLEM_REPORT_REF,
     PROPOSAL_FORMAT_REF,
     RECORD_PROBLEM,
+    RELATED_FORMAT_REF,
     SUMMARY_FORMAT_REF,
     record_problem,
     reference_line,
@@ -81,7 +82,7 @@ from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
 from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
 from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, reject
 from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
-from alla_skill_lib.known_issues import KnownRecord, known_issues
+from alla_skill_lib.known_issues import KnownIssues, KnownRecord, known_issues
 from alla_skill_lib.kb import (
     KBRecord,
     ProjectKB,
@@ -106,6 +107,17 @@ from alla_skill_lib.proposals import (
     recorded_applied_state,
     revert_proposal,
     validate_proposal,
+)
+from alla_skill_lib.related import (
+    RELATED_FORMAT,
+    Related,
+    build_relate_task,
+    candidate_groups,
+    candidate_stats,
+    parse_related,
+    relate_data,
+    related_groups,
+    validate_related,
 )
 from alla_skill_lib.session_log import note_session
 from alla_skill_lib.report import (
@@ -171,6 +183,14 @@ LAST_ATTEMPT_PROPOSAL = (
     "Это последняя попытка: если и она не пройдёт проверку, предложение правки "
     "будет отброшено, а в отчёте останется пометка."
 )
+LAST_ATTEMPT_RELATED = (
+    "Это последняя попытка: если и она не пройдёт проверку, похожие проблемы останутся "
+    "без пометки «одна причина»."
+)
+RELATED_DROPPED_NOTE = (
+    "Похожие проблемы не сравнены: решение агента (related.md) не прошло проверку за "
+    f"{MAX_FIX_ATTEMPTS} попытки."
+)
 
 
 def format_mismatch_note(paths: ws.RunPaths) -> str:
@@ -180,6 +200,16 @@ def format_mismatch_note(paths: ws.RunPaths) -> str:
         "исправь, а факты не подгоняй — цитату, которую проверка не находит, замени другой "
         "дословной строкой из того же куска или убери. Затем next; без правки next не вызывай. "
         "Не прошла и третья версия — разбор примут как есть с пометкой «формат нарушен»."
+    )
+
+
+def related_mismatch_note(paths: ws.RunPaths) -> str:
+    return (
+        "Сначала исправь файл по замечаниям выше — решения по проблемам сохрани. Только если "
+        "файл уже соответствует справочнику, а проверка всё равно его отклоняет, — это неполадка "
+        f"скилла: {record_problem(paths)}; тогда перепиши файл одной строкой «РАЗНЫЕ: …» со всеми "
+        "номерами проблем из групп задания — пометок «одна причина» не будет, но отчёт соберётся. "
+        "Затем next; без правки next не вызывай."
     )
 
 
@@ -860,7 +890,13 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
 
     known = known_issues(run, analyses, flagged, paths)
     notes += known.notes
-    summary_data = build_summary_data(run, analyses, flagged, known)
+    related_outcome = _related_step(paths, state, run, analyses, flagged, known, project_root)
+    if isinstance(related_outcome, tuple):
+        return related_outcome
+    related = related_outcome or Related()
+    if related_outcome is None:
+        notes.append(RELATED_DROPPED_NOTE)
+    summary_data = build_summary_data(run, analyses, flagged, known, related)
     summary_hash = hashlib.sha256(summary_data.encode("utf-8")).hexdigest()
     previous_hash = state.get("summary_data_hash")
     summary = ws.read_text(paths.summary) if paths.summary.is_file() else ""
@@ -887,7 +923,8 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
         for file_id, p in fixes.items()
     }
     console, full = render_report(
-        run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed, known
+        run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed, known,
+        related,
     )
     ws.write_text(paths.report, full)
     # Уже применённую или неоднозначную правку повторно не предлагаем.
@@ -1030,6 +1067,79 @@ def _proposal_step(
             f"Затем выполни: {paths.next_command()}",
         ])
     return None
+
+
+def _related_step(
+    paths: ws.RunPaths,
+    state: dict[str, Any],
+    run: dict[str, Any],
+    analyses: dict[str, ClusterAnalysis],
+    flagged: set[str],
+    known: KnownIssues,
+    project_root: Path,
+) -> tuple[str, str] | Related | None:
+    """Шаг «похожие проблемы»: (статус, текст), подтверждённые группы или None (отброшено).
+
+    Нет кандидатов — шага нет. Решение модели действует, пока не изменились данные
+    групп (``state.related_data_hash``): иначе ``related.md`` удаляется и просится заново.
+    """
+    groups = candidate_groups(run, analyses, flagged, project_root, known)
+    if not groups:
+        paths.related.unlink(missing_ok=True)
+        if state.pop("related_data_hash", None) is not None or state.pop("related", None):
+            ws.write_json(paths.state_json, state)
+        return Related()
+    data = relate_data(run, groups, analyses)
+    digest = hashlib.sha256(data.encode("utf-8")).hexdigest()
+    if state.get("related_data_hash") != digest:
+        paths.related.unlink(missing_ok=True)
+        state["attempts"].pop("related", None)
+        state["related_data_hash"] = digest
+        state["related"] = candidate_stats(groups)
+        ws.write_json(paths.state_json, state)
+    text = ws.read_text(paths.related) if paths.related.is_file() else ""
+    if not text.strip():
+        ws.write_text(paths.relate_task, build_relate_task(run, data, paths))
+        return "relate", _relate_body(paths, len(groups))
+    decision = parse_related(text)
+    errors = validate_related(decision, groups)
+    if errors:
+        attempt, unchanged = _register_invalid(state, "related", text, paths)
+        if attempt >= MAX_FIX_ATTEMPTS:
+            return None
+        return "fix", "\n".join([
+            f"Решение по похожим проблемам не прошло проверку (попытка {attempt} из "
+            f"{MAX_FIX_ATTEMPTS}):",
+            *(f"- {error}" for error in errors),
+            *([UNCHANGED_NOTE] if unchanged >= 2 else []),
+            *([LAST_ATTEMPT_RELATED] if attempt == MAX_FIX_ATTEMPTS - 1 else []),
+            f"Задание: {paths.relate_task}",
+            f"Исправь файл: {paths.related}",
+            "Формат:",
+            RELATED_FORMAT,
+            reference_line(RELATED_FORMAT_REF),
+            related_mismatch_note(paths),
+            f"Затем выполни: {paths.next_command()}",
+        ])
+    related = related_groups(decision, run)
+    confirmed = {"confirmed_groups": len(related.groups),
+                 "confirmed_problems": sum(len(group.file_ids) for group in related.groups)}
+    stats = state.get("related") or {}
+    if any(stats.get(key) != value for key, value in confirmed.items()):
+        state["related"] = {**stats, **confirmed}
+        ws.write_json(paths.state_json, state)
+    return related
+
+
+def _relate_body(paths: ws.RunPaths, groups: int) -> str:
+    return "\n".join([
+        f"Все кластеры разобраны. Среди них есть похожие: групп для сравнения — {groups}. "
+        "Реши, у каких проблем одна причина.",
+        f"1. Прочитай задание: {paths.relate_task}",
+        f"2. Запиши решение в файл: {paths.related}",
+        reference_line(RELATED_FORMAT_REF, "   Формат с примером"),
+        f"3. Выполни: {paths.next_command()}",
+    ])
 
 
 def _proposal_files(paths: ws.RunPaths, file_id: str) -> ProposalFiles:

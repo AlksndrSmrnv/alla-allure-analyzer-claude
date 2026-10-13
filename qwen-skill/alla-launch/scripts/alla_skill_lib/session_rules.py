@@ -24,7 +24,7 @@ SKILL_IN_PROJECT = Path(".qwen") / "skills" / "alla-launch"
 PYTHON_RE = re.compile(r"(?:\S*/)?python(?:3(?:\.\d+)?)?")
 SHELL_OPERATORS = set(";&|<>()")
 WRITABLE_RE = re.compile(
-    r"/alla-reports/[^/]+/(?:(?:analyses|proposals|feedback)/[^/]+\.md|summary\.md|skill-problems\.md)$")
+    r"/alla-reports/[^/]+/(?:(?:analyses|proposals|feedback)/[^/]+\.md|related\.md|summary\.md|skill-problems\.md)$")
 FORBIDDEN_READ_RE = re.compile(r"(?:^|/)(?:\.env|run\.json|state\.json)$|/evidence/")
 READ_TOOLS = {"read_file", "grep_search", "glob", "read_many_files"}
 WRITE_TOOLS = {"write_file", "edit", "notebook_edit"}

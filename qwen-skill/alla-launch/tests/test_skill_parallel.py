@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import answer_related, project_fixture, testops_fixture, without_libmagic  # noqa: F401
 from skill_fake_testops import FakeTestOps, many_launch
 
 from alla_skill_lib import cli
@@ -161,6 +161,9 @@ def test_waves_cover_all_clusters_then_go_to_summary(
     _answer(run_dir, manual[24:])
 
     out = _next(run_dir, capsys)
+    assert out.startswith("STATUS: relate")  # у всех один и тот же разбор
+    answer_related(run_dir)
+    out = _next(run_dir, capsys)
     assert out.startswith("STATUS: summary")
     (run_dir / "summary.md").write_text("Итог.", encoding="utf-8")
     assert _next(run_dir, capsys).startswith("STATUS: done")
@@ -189,6 +192,8 @@ def test_invalid_batch_answer_is_repaired_one_by_one(
     assert out.startswith("STATUS: fix\n") and f"Кластер {int(second)} из" in out
     assert "попытка 1 из 3" in out
     _answer(run_dir, [second])
+    assert _next(run_dir, capsys).startswith("STATUS: relate")  # одинаковые разборы
+    answer_related(run_dir)
     assert _next(run_dir, capsys).startswith("STATUS: summary")
 
 

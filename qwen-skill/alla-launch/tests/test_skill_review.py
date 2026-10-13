@@ -197,6 +197,10 @@ def test_pilot_summary_counts_near_problems_by_reason_only(
         {"cluster_a": ids[0], "cluster_b": ids[1], "reason": f"{LEAK}", "pairs": 1},
     ]
     ws.write_json(run_dir / "run.json", run)
+    state = ws.read_json(run_dir / "state.json")
+    state["related"] = {"groups": 2, "problems": 5, "edges": {"near": 1, "text": 4, LEAK: 9},
+                        "confirmed_groups": 1, "confirmed_problems": 2, LEAK: 1}
+    ws.write_json(run_dir / "state.json", state)
     facts = review.collect_facts(ws.RunPaths(run_dir))
 
     summary = review.render_pilot_summary(facts)
@@ -204,6 +208,8 @@ def test_pilot_summary_counts_near_problems_by_reason_only(
     assert facts["clustering"]["near_pairs"] == {"step": 2}
     assert "## Кластеризация" in summary
     assert "что развело: step ×2" in summary and LEAK not in summary
+    assert ("- похожие после разбора: групп 2 (проблем 5; связи: near ×1, text ×4), "
+            "одна причина: групп 1 (проблем 2)") in summary
 
 
 # --- оценки -------------------------------------------------------------------------------

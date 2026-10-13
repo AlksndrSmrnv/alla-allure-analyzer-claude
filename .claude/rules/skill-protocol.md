@@ -45,7 +45,7 @@ paths:
 
 ## Статусы и коды возврата
 
-- Первая строка вывода — `STATUS: analyze|analyze_batch|fix|propose|summary|done|diff|
+- Первая строка вывода — `STATUS: analyze|analyze_batch|fix|propose|relate|summary|done|diff|
   applied|reverted|saved|ok|ready|reviewed|setup_required|error`.
 - Ошибка аргументов и любое необработанное исключение тоже дают `STATUS: error`.
 - Код возврата 0 у всех статусов, кроме `error`: статус с инструкцией — не авария.
@@ -94,9 +94,25 @@ paths:
   считаются), `STATUS: ok|fix`.
 - `state.json` пишет только основной агент. Невалидный или недописанный разбор
   возвращается обычным `fix`/`analyze` по одному (лимит попыток прежний).
-- Хвост меньше порога, `fix`, `propose`, `summary` идут по одному.
+- Хвост меньше порога, `fix`, `propose`, `relate`, `summary` идут по одному.
 - `next --workers N` (1–`MAX_WORKERS`=8; `--serial` = 1) сохраняется в `state.json`; это
   запасной путь без субагентов.
+
+## Шаг `relate` (`cli._related_step`, `related.py`)
+
+- После предложений правок и известных проблем, до сводки. Нет кандидатов
+  (`related.candidate_groups`, см. `skill-analysis.md`) — шага нет: `related.md`, отметки в
+  `state.json` удаляются, `next` сразу просит сводку.
+- Данные групп (`relate_data`) хэшируются в `state.related_data_hash`; другой хэш — `related.md`
+  удаляется, попытки `attempts["related"]` сбрасываются, `next` отвечает `STATUS: relate` с
+  заданием `relate_task.md`. Тот же хэш — решение действует (после `skip`/`reject`/правки
+  разбора, не задевших группы, повторно не спрашиваем).
+- Неверный файл — `fix` с теми же `MAX_FIX_ATTEMPTS`/`_register_invalid`, что у разборов;
+  запасной путь «верный файл отклонён» — `related_mismatch_note`: записать проблему скилла и
+  переписать одной строкой `РАЗНЫЕ` со всеми номерами. После лимита решение отбрасывается:
+  групп нет, в «Замечаниях» — `RELATED_DROPPED_NOTE`.
+- `state.related` — только числа (`candidate_stats` и `confirmed_*`): их берёт `review` в
+  `pilot-summary.md`.
 
 ## Правила исполнителя и справочники
 
@@ -113,13 +129,14 @@ paths:
   запрещён тем же списком: модель искала код проекта сама (E07, E10); на стенде это ловит
   проверка `no_code_search`, а чтение кода не из «Где искать код автотеста» — `listed_code_only`.
 - Один и тот же текст правил — `alla_skill_lib/agent_rules.py` (`EXECUTOR_RULES`): он
-  подставляется в `clusters/NN.md`, `batches/N.md`, `summary_task.md` и повторён в
-  `SKILL.md`.
+  подставляется в `clusters/NN.md`, `batches/N.md`, `relate_task.md`, `summary_task.md` и
+  повторён в `SKILL.md`.
 - Форматы файлов, которые пишет агент, — в `references/`: `analysis-format.md`
-  (`analyses/NN.md`), `proposal-format.md` (`proposals/NN.md`), `summary-format.md`
-  (`summary.md`), `feedback.md` (`feedback/NN.md`); `protocol.md` — статусы, лимиты попыток и
+  (`analyses/NN.md`), `proposal-format.md` (`proposals/NN.md`), `related-format.md`
+  (`related.md`), `summary-format.md` (`summary.md`), `feedback.md` (`feedback/NN.md`); `protocol.md` — статусы, лимиты попыток и
   разграничение файлов.
-- Шаблоны из констант кода (`EXPECTED_FORMAT`, `PROPOSAL_FORMAT`, `FEEDBACK_FORMAT`) вставлены в
+- Шаблоны из констант кода (`EXPECTED_FORMAT`, `PROPOSAL_FORMAT`, `FEEDBACK_FORMAT`,
+  `RELATED_FORMAT`) вставлены в
   справочники дословно; примеры с пометкой `<!-- example: … -->` прогоняет через настоящие
   парсеры `tests/test_skill_docs.py`. Меняя формат или текст ошибки в коде, правьте
   справочник — тест покажет расхождение.

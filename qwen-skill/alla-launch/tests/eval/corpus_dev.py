@@ -325,14 +325,15 @@ def step_split_one_cause() -> Case:
     """
     builder = LaunchBuilder(5119, "Orders and checkout")
     evidence = "Cannot invoke \"Customer.id()\" because \"customer\" is null"
+    # Строки кадров — как в исходниках стенда Qwen (E11): OrderApiTest — те же, что у E08.
     variants = [
-        ("ru.company.orders.OrderApiTest", "Отправить запрос POST /orders", FIRST_METHODS),
+        ("ru.company.orders.OrderApiTest", "Отправить запрос POST /orders", FIRST_METHODS, 40),
         ("ru.company.checkout.CheckoutTest", "Оформить заказ из корзины",
-         ("checkoutCart", "checkoutWithBonus", "checkoutGuest")),
+         ("checkoutCart", "checkoutWithBonus", "checkoutGuest"), 30),
     ]
-    for variant, (test_class, step, methods) in enumerate(variants):
+    for test_class, step, methods, first_line in variants:
         for index, method in enumerate(methods):
-            line = 30 + (variant * len(methods) + index) * 9
+            line = first_line + index * 7
             builder.add_failure(
                 "orders-customer-null", cause="orders-customer-null", category="приложение",
                 name=method, full_name=f"{test_class}.{method}", message=ASSERT_500,

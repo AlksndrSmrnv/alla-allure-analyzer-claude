@@ -23,6 +23,7 @@ from typing import Any
 from alla_core.models.clustering import NEAR_REASONS
 
 from alla_skill_lib import workspace as ws
+from alla_skill_lib.related import EDGE_KINDS
 from alla_skill_lib.proposals import parse_proposal
 from alla_skill_lib.session_log import (
     SessionLog,
@@ -109,22 +110,33 @@ def collect_facts(
         "journal": _journal_facts(log, project_root, paths),
         "clusters": clusters,
         "quality": _quality_facts(clusters),
-        "clustering": _clustering_facts(run),
+        "clustering": _clustering_facts(run, state),
         "assessment": None,
     }
     facts["grades"] = grades(facts)
     return facts
 
 
-def _clustering_facts(run: Mapping[str, Any]) -> dict[str, Any]:
-    """Счётчики gates и близкие пары по причинам — только числа и коды из
-    ``NEAR_REASONS``: видно, какое правило дробит почти одинаковые ошибки."""
+def _clustering_facts(run: Mapping[str, Any], state: Mapping[str, Any]) -> dict[str, Any]:
+    """Счётчики gates, близкие пары по причинам и шаг «похожие проблемы» — только числа и
+    коды из ``NEAR_REASONS`` и ``EDGE_KINDS``: видно, какое правило дробит почти одинаковые
+    ошибки и сколько из них агент свёл после разбора."""
     clustering = run.get("clustering") or {}
     gates = {key: value for key, value in (clustering.get("gates") or {}).items()
-             if isinstance(value, int) and not isinstance(value, bool)}
+             if _count(value)}
     reasons = Counter(str(pair.get("reason")) for pair in clustering.get("near_pairs") or [])
+    stats = state.get("related") or {}
+    edges = stats.get("edges") or {}
+    related = {key: stats[key] for key in ("groups", "problems", "confirmed_groups",
+                                           "confirmed_problems") if _count(stats.get(key))}
+    related["edges"] = {kind: edges[kind] for kind in EDGE_KINDS if _count(edges.get(kind))}
     return {"gates": gates,
-            "near_pairs": {reason: reasons[reason] for reason in NEAR_REASONS if reasons[reason]}}
+            "near_pairs": {reason: reasons[reason] for reason in NEAR_REASONS if reasons[reason]},
+            "related": related}
+
+
+def _count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _read_state(paths: ws.RunPaths) -> dict[str, Any]:
@@ -599,7 +611,13 @@ def render_pilot_summary(facts: Mapping[str, Any]) -> str:
                 if value and key not in ("pairs", "pairs_in_one_problem")) or "нет"),
             "- близкие проблемы (текст почти тот же), что развело: " + (", ".join(
                 f"{reason} ×{count}" for reason, count in clustering["near_pairs"].items())
-                or "нет"), "",
+                or "нет")]
+    related = clustering.get("related") or {}
+    out += [f"- похожие после разбора: групп {related.get('groups', 0)} (проблем "
+            f"{related.get('problems', 0)}; связи: " + (", ".join(
+                f"{kind} ×{count}" for kind, count in (related.get("edges") or {}).items())
+                or "нет") + f"), одна причина: групп {related.get('confirmed_groups', 0)} "
+            f"(проблем {related.get('confirmed_problems', 0)})", "",
             "## Оценка проверяющей модели", ""]
     assessment = facts.get("assessment")
     if assessment and assessment.get("problems"):

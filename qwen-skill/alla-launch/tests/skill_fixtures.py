@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -112,3 +113,16 @@ def testops_fixture(monkeypatch: pytest.MonkeyPatch) -> FakeTestOps:
     fake = FakeTestOps(default_launch())
     fake.install(monkeypatch)
     return fake
+
+
+def related_numbers(run_dir: Path) -> list[int]:
+    """Номера проблем из групп задания ``relate_task.md``."""
+    task = (run_dir / "relate_task.md").read_text(encoding="utf-8")
+    headers = re.findall(r"^--- Группа \d+: проблемы ([\d, ]+) ---$", task, re.MULTILINE)
+    return sorted({int(number) for header in headers for number in header.split(",")})
+
+
+def answer_related(run_dir: Path) -> None:
+    """Ответ на ``STATUS: relate``: у всех проблем групп разные причины (пометок нет)."""
+    numbers = ", ".join(map(str, related_numbers(run_dir)))
+    (run_dir / "related.md").write_text(f"РАЗНЫЕ: {numbers} — причины разные\n", encoding="utf-8")

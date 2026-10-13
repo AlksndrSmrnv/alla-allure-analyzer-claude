@@ -28,6 +28,7 @@ from alla_skill_lib.cli import (
 )
 from alla_skill_lib.feedback import FEEDBACK_FORMAT
 from alla_skill_lib.proposals import parse_proposal, validate_proposal
+from alla_skill_lib.related import RELATED_FORMAT, CandidateGroup, parse_related, validate_related
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 SKILL_MD = SKILL_DIR / "SKILL.md"
@@ -35,7 +36,7 @@ REFERENCES = SKILL_DIR / "references"
 LIB = SKILL_DIR / "scripts" / "alla_skill_lib"
 
 STATUSES = (
-    "analyze", "analyze_batch", "fix", "propose", "summary", "done", "diff", "applied",
+    "analyze", "analyze_batch", "fix", "propose", "relate", "summary", "done", "diff", "applied",
     "reverted", "saved", "ok", "ready", "reviewed", "setup_required", "error",
 )
 _EXAMPLE_RE = re.compile(
@@ -134,6 +135,7 @@ def test_problem_block_template_is_identical_in_skill_md_and_reference() -> None
         ("analysis-format.md", EXPECTED_FORMAT),
         ("proposal-format.md", PROPOSAL_FORMAT),
         ("feedback.md", FEEDBACK_FORMAT),
+        ("related-format.md", RELATED_FORMAT),
     ],
 )
 def test_reference_embeds_the_template_from_code_verbatim(reference: str, template: str) -> None:
@@ -265,6 +267,26 @@ def test_feedback_example_parses_into_a_savable_recipe() -> None:
     parsed = parse_analysis(text)
     assert parsed.category in {"тест", "приложение", "окружение", "данные"}
     assert parsed.title and parsed.fix.strip() and parsed.fingerprint
+
+
+def _example_groups() -> list[CandidateGroup]:
+    """Группы из образца задания в related-format.md (``<!-- example-data -->``)."""
+    body = _read(REFERENCES / "related-format.md").split("<!-- example-data -->", 1)[1]
+    headers = re.findall(r"^--- Группа \d+: проблемы ([\d, ]+) ---$", body.split("\n```\n", 1)[0],
+                         re.MULTILINE)
+    assert len(headers) == 2
+    return [CandidateGroup([f"{int(n):02d}" for n in header.split(",")], []) for header in headers]
+
+
+def test_related_examples_pass_and_fail_as_documented() -> None:
+    groups = _example_groups()
+    for _, text in _examples("related-format.md", "related-ok"):
+        assert validate_related(parse_related(text), groups) == [], text
+    errors_examples = _examples("related-format.md", "related-error")
+    assert len(errors_examples) >= 4
+    for expected, text in errors_examples:
+        errors = validate_related(parse_related(text), groups)
+        assert any(expected in error for error in errors), (expected, errors)
 
 
 def _summary_shape_problems(text: str) -> list[str]:

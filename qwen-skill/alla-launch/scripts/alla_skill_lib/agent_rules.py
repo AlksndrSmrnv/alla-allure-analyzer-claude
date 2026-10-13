@@ -5,7 +5,7 @@
 Эти правила есть в ``SKILL.md``, но после сжатия контекста или у субагента,
 который видит только свой файл задания, ``SKILL.md`` недоступен. Поэтому один и
 тот же текст (``EXECUTOR_RULES``) подставляется в ``clusters/NN.md``,
-``batches/N.md`` и ``summary_task.md``; ``tests/test_skill_docs.py`` сверяет его
+``batches/N.md``, ``relate_task.md`` и ``summary_task.md``; ``tests/test_skill_docs.py`` сверяет его
 с ``SKILL.md``.
 """
 
@@ -48,6 +48,7 @@ def record_problem(paths: ws.RunPaths) -> str:
 ANALYSIS_FORMAT_REF = "analysis-format.md"
 PROPOSAL_FORMAT_REF = "proposal-format.md"
 SUMMARY_FORMAT_REF = "summary-format.md"
+RELATED_FORMAT_REF = "related-format.md"
 FEEDBACK_FORMAT_REF = "feedback.md"
 PROBLEM_REPORT_REF = "problem-report.md"
 

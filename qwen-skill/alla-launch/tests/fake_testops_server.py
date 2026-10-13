@@ -43,6 +43,7 @@ FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
     "mixed": lambda: _mixed_launch(),
     "retries": lambda: _retries_launch(),
     "known": lambda: _known_launch(),
+    "split": lambda: _split_launch(),
 }
 
 
@@ -71,9 +72,17 @@ def _known_launch() -> LaunchFixture:
     return known_issue_symptoms().fixture
 
 
+def _split_launch() -> LaunchFixture:
+    """Одна NPE из двух шагов теста — кластеризация делит её, после разбора пометка «одна
+    причина» (корпус эталона, E11)."""
+    from eval.corpus_dev import step_split_one_cause
+
+    return step_split_one_cause().fixture
+
+
 def build_fixture(spec: str) -> LaunchFixture:
     """``default`` | ``green`` | ``info_only`` | ``injection`` | ``scant`` | ``mixed`` |
-    ``retries`` | ``many:<число>``."""
+    ``retries`` | ``known`` | ``split`` | ``many:<число>``."""
     name, _, arg = spec.partition(":")
     if name == "many":
         return many_launch(int(arg or 40))

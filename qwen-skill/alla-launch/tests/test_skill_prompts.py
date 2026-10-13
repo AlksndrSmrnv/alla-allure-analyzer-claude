@@ -190,6 +190,31 @@ def test_summary_task_names_a_known_issue_as_one_problem() -> None:
     assert "называй их одной проблемой с номерами из блока" in text
 
 
+def test_summary_task_names_related_problems_with_a_hedge() -> None:
+    """Пометка «похоже, одна причина» — вывод агента, не известная проблема."""
+    from alla_skill_lib.report import SUMMARY_TASK
+
+    text = " ".join(SUMMARY_TASK.split())
+    assert "«Похоже, одна причина»" in text and "с оговоркой «похоже»" in text
+    assert "не известной проблемой" in text
+
+
+def test_relate_task_keeps_its_directives() -> None:
+    """Задание сравнения: одна причина — одно исправление, общий текст ошибки — не довод,
+    сомнение — РАЗНЫЕ, каждый номер ровно один раз, новых фактов нет."""
+    from alla_skill_lib.related import RELATE_RULES, RELATE_TASK
+
+    task = " ".join(RELATE_TASK.split())
+    for phrase in ("одно исправление уберёт их все", "Похожий текст ошибки — ещё не одна причина",
+                   "разные шаги теста сами по себе не довод", "сомневаешься — РАЗНЫЕ",
+                   "Номера — номера проблем («Проблема 4»), не групп",
+                   "Каждый номер проблемы из групп — ровно в одной строке",
+                   "минимум два номера из одной группы"):
+        assert phrase in task, phrase
+    rules = " ".join(RELATE_RULES.split())
+    assert "новых фактов и версий не добавляй" in rules and "код и логи не открывай" in rules
+
+
 @pytest.mark.parametrize("variant", VARIANTS)
 def test_every_variant_asks_for_quoted_observations_and_what_is_missing(variant: str) -> None:
     task = _task(variant)
