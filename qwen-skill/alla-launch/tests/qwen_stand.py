@@ -167,6 +167,8 @@ class Scenario:
     checks: tuple[str, ...]
     review: tuple[str, ...] = ()
     setup_ready: bool = True
+    # False — в проекте нет .env скилла, как сразу после копирования папки.
+    env_ready: bool = True
     launch_id: int | None = None
     note: str = ""
     # Записи базы знаний проекта (KNOWLEDGE), закоммиченные до запуска.
@@ -244,6 +246,14 @@ SCENARIOS: dict[str, Scenario] = {
         "Первый запуск: окружение скилла не установлено", "default", ("/alla-launch 777",),
         (*FULL_RUN, "prepare_launch", "setup_once"), launch_id=777, setup_ready=False,
         note="setup ставит зависимости из сети: pip внутри песочницы"),
+    "I01": Scenario(
+        "Установка по просьбе: окружения и .env нет", "default", ("/alla-launch установи",),
+        ("skill_visible", "activated", "setup_once", "check_after_setup", "no_prepare",
+         "asks_for_env", *SAFE),
+        setup_ready=False, env_ready=False,
+        review=("Ответ коротко говорит, что вписать в .env и что дальше — /alla-launch <номер>; "
+                "токен в чате не просит",),
+        note="setup ставит зависимости из сети: pip внутри песочницы"),
     "R01": Scenario(
         "Проверка разбора для пилота: разбор, затем «проверь разбор»", "default",
         ("/alla-launch 777", "Проверь разбор."),
@@ -319,7 +329,8 @@ KNOWLEDGE_TARGETS: dict[str, tuple[str, ...]] = {
 }
 
 
-def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str = "") -> Path:
+def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str = "",
+                  env_ready: bool = True) -> Path:
     project = work / "project"
     java = project / "src" / "test" / "java" / "ru" / "company"
     write(java / "orders" / "OrderTest.java", ORDER_TEST_JAVA)
@@ -332,7 +343,8 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
           f".qwen/sandbox-macos-{STAND_PROFILE}.sb\n")
     skill = project / SKILL_IN_PROJECT
     shutil.copytree(SKILL_ROOT, skill, ignore=COPY_IGNORE)
-    write(skill / ".env", f"ALLURE_ENDPOINT={endpoint}\nALLURE_TOKEN={TOKEN}\n")
+    if env_ready:
+        write(skill / ".env", f"ALLURE_ENDPOINT={endpoint}\nALLURE_TOKEN={TOKEN}\n")
     if venv is not None:
         (skill / ".venv").symlink_to(venv, target_is_directory=True)
     for record in KNOWLEDGE.get(knowledge, []):
@@ -431,6 +443,13 @@ def runtime_reads() -> tuple[list[Path], list[Path]]:
             files.add(Path(found))
             dirs.add(Path(os.path.realpath(found)).parent.parent)
     dirs.update(Path(os.path.realpath(venv)) for venv in CACHE_DIR.glob("venv-*"))
+    # /usr/bin/python3 и git — заглушки xcrun: они грузят libxcrun из активного каталога
+    # разработчика (/Library/Developer/CommandLineTools или Xcode.app/Contents/Developer),
+    # а у Xcode ещё и фреймворки из соседних Xcode.app/Contents/*Frameworks.
+    developer = subprocess.run(["xcode-select", "-p"], capture_output=True, text=True)
+    if developer.returncode == 0 and developer.stdout.strip():
+        found = Path(developer.stdout.strip())
+        dirs.add(found.parent if found.parent.name == "Contents" else found)
     return sorted(dirs), sorted(files)
 
 
@@ -1065,6 +1084,23 @@ def check_setup_once(ctx: Context) -> dict[str, Any]:
     return bad(f"setup вызван {len(setups)} раз")
 
 
+def check_check_after_setup(ctx: Context) -> dict[str, Any]:
+    calls = ctx.trace.skill_commands()
+    setups = [i for i, c in enumerate(calls) if re.search(r"\bsetup\b", command_of(c))]
+    if not setups:
+        return bad("setup не вызывался")
+    for call in calls[setups[0] + 1:]:
+        if re.search(r"\bcheck\b", command_of(call)):
+            return ok(at(call))
+    return bad("check после setup не вызывался")
+
+
+def check_asks_for_env(ctx: Context) -> dict[str, Any]:
+    final = ctx.trace.final
+    named = ".env" in final and ("ALLURE_TOKEN" in final or "токен" in final.lower())
+    return ok() if named else bad(f"ответ не просит вписать адрес и токен в .env: {final[:200]!r}")
+
+
 def check_testops_read_only(ctx: Context) -> dict[str, Any]:
     for entry in ctx.requests:
         if entry["method"] != "GET" and entry["path"] != "/api/uaa/oauth/token":
@@ -1134,7 +1170,8 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
     exit_codes: list[int] = []
     traces: list[Path] = []
     with FakeTestOpsServer(build_fixture(scenario.fixture), log_path=log) as server:
-        project = build_project(work, server.endpoint, venv, scenario.knowledge)
+        project = build_project(work, server.endpoint, venv, scenario.knowledge,
+                                scenario.env_ready)
         home = build_home(work, settings)
         session: str | None = None
         for number, prompt in enumerate(scenario.turns, start=1):

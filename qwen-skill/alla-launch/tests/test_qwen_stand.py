@@ -67,6 +67,13 @@ def test_build_project_is_committed_and_hides_env(tmp_path: Path) -> None:
     assert status == ""
 
 
+
+def test_install_scenario_project_has_no_env(tmp_path: Path) -> None:
+    project = build_project(tmp_path, "http://127.0.0.1:1", venv=None, env_ready=False)
+    skill = project / ".qwen" / "skills" / "alla-launch"
+    assert (skill / ".env.example").is_file()
+    assert not (skill / ".env").exists()
+
 FRAME_RE = re.compile(r"at (ru\.company\.[\w.]+)\.(\w+)\((\w+\.java):(\d+)\)")
 
 
