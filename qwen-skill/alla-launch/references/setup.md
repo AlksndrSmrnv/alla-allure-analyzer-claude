@@ -260,7 +260,7 @@ Gradle/Maven) — в корне git-репозитория. В многомод�
 |---|---|---|
 | `ALLURE_ENDPOINT` | — | URL Allure TestOps (обязательно) |
 | `ALLURE_TOKEN` | — | API-токен (обязательно) |
-| `ALLURE_SSL_VERIFY` | `true` | Проверка TLS; `false` для корпоративного прокси |
+| `ALLURE_SSL_VERIFY` | `true` | Проверка TLS. Для корпоративного прокси лучше указать его корневой сертификат в переменной окружения `SSL_CERT_FILE`; `false` отключает проверку полностью (токен не защищён) — только временный обход |
 | `ALLURE_REQUEST_TIMEOUT` | `30` | Таймаут HTTP-запроса, сек |
 | `ALLURE_PAGE_SIZE` / `ALLURE_MAX_PAGES` | `100` / `50` | Пагинация результатов |
 | `ALLURE_DETAIL_CONCURRENCY` | `10` | Параллельные запросы деталей тестов |
