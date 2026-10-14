@@ -1771,24 +1771,34 @@ def _install_extension_agents(project_root: Path) -> None:
 
 
 def _with_report_hooks(paths: ws.RunPaths, body: str) -> str:
-    """Хуки ``after_report``: один раз на содержимое отчёта для каждого расширения."""
+    """Хуки ``after_report`` и неисправности включённых расширений — один раз на содержимое
+    отчёта: повторный ``next`` с тем же отчётом их не повторяет."""
     run = ws.read_json(paths.run_json)
     current = ext.active(Path(run["project_root"]))
     names = [extension.name for extension, _ in current.extensions
              if extension.hooks_for("after_report")]
-    if not names or not paths.report.is_file():
+    if not (names or current.problems) or not paths.report.is_file():
         return body
     digest = hashlib.sha256(paths.report.read_bytes()).hexdigest()
     state = _read_state(paths)
+    lines: list[str] = []
+    # Сломанное расширение исключено из активных, и его хук молча не сработал бы: сказать.
+    problems = (
+        hashlib.sha256("\n".join([digest, *current.problems]).encode("utf-8")).hexdigest()
+        if current.problems else None
+    )
+    if problems is not None and state.get("extension_problems") != problems:
+        lines += ext.problem_lines(current.problems)
+        state["extension_problems"] = problems
     fired = dict(state.get("extension_reports") or {})
     pending = [name for name in names if fired.get(name) != digest]
-    if not pending:
+    if pending:
+        lines += ext.fire("after_report", paths, run, _report_data(paths, run, body), only=pending)
+        state["extension_reports"] = {**fired, **dict.fromkeys(pending, digest)}
+    if not lines:
         return body
-    lines = ext.fire("after_report", paths, run, _report_data(paths, run, body), only=pending)
-    state["extension_reports"] = {**fired, **dict.fromkeys(pending, digest)}
     ws.write_json(paths.state_json, state)
-    hooks = ext.block(lines)
-    return f"{body}\n{hooks}" if hooks else body
+    return f"{body}\n{ext.block(lines)}"
 
 
 def _report_data(paths: ws.RunPaths, run: dict[str, Any], body: str) -> dict[str, Any]:

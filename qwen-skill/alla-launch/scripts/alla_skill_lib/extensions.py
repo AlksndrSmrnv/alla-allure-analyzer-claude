@@ -455,8 +455,7 @@ def fire(
     """
     project_root = Path(run["project_root"])
     current = active(project_root)
-    lines = [f"- Расширения не работают: {problem}. Покажи пользователю эту строку."
-             for problem in current.problems if only is None]
+    lines = problem_lines(current.problems) if only is None else []
     for extension, settings in current.extensions:
         if only is not None and extension.name not in only:
             continue
@@ -469,6 +468,12 @@ def fire(
                     f"{exc}. Покажи пользователю эту строку."
                 )
     return lines
+
+
+def problem_lines(problems: list[str]) -> list[str]:
+    """Строки блока «Расширения:» о неисправных включённых расширениях."""
+    return [f"- Расширения не работают: {problem}. Покажи пользователю эту строку."
+            for problem in problems]
 
 
 def block(lines: list[str]) -> str:

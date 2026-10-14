@@ -29,7 +29,9 @@ paths:
   с ним, несовместимо — только с новым `api`.
 - События: `after_apply` (`_apply`, только `result.changed`), `after_revert` (`_revert`,
   отметка читается до отката), `after_report` (`next_step` при `done`, один раз на хэш
-  `report.md` для каждого расширения: `state.json["extension_reports"]`). Повтор —
+  `report.md` для каждого расширения: `state.json["extension_reports"]`). Там же, один раз на
+  отчёт и набор ошибок (`state.json["extension_problems"]`), — строки о неисправных включённых
+  расширениях: сломанное исключено из активных, и его хук иначе молча не сработал бы. Повтор —
   `extensions run <имя> [N]`: `after_apply` только для правки в состоянии `applied`.
 - Хук `task` — задание субагенту `alla-<имя>` (файл агента расширения, проверяется как
   `alla-batch`): контекст `<папка разбора>/extensions/<имя>/<stem>.json`, задание `<stem>.md`,

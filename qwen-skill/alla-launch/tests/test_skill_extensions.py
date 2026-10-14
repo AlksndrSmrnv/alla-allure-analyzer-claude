@@ -482,3 +482,52 @@ def test_authoring_guide_template_rules(project: Path, testops: FakeTestOps, cap
         env={**os.environ, "ALLA_CONTEXT": str(context)}, capture_output=True, text=True,
         check=True).stdout
     assert out.strip() == "событие after_report, проблема None, проблем в отчёте 2"
+
+
+def test_broken_extension_is_reported_at_done(project: Path, testops: FakeTestOps, capsys) -> None:
+    """Сломанное расширение исключено из активных — done всё равно об этом говорит, один раз на
+    отчёт, и рядом с исправным расширением тоже."""
+    make_demo(project)
+    healthy = project / ext.PROJECT_DIRNAME / "healthy"
+    shutil.copytree(project / ext.PROJECT_DIRNAME / "demo", healthy)
+    for name in ("extension.toml", "agent.md"):
+        path = healthy / name
+        path.write_text(path.read_text(encoding="utf-8").replace("demo", "healthy"), encoding="utf-8")
+    ext.set_enabled(project, "demo", True)
+    ext.set_enabled(project, "healthy", True)
+    (project / ext.PROJECT_DIRNAME / "demo" / "act.py").unlink()
+
+    run_dir, _, _ = _prepare(project, capsys)
+    entries = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["clusters"]
+    order, login = [entry["file_id"] for entry in entries if not entry["auto"]]
+    out = _finish(run_dir, capsys, {order: TEST_ANALYSIS.replace("тест —", "окружение —"),
+                                    login: LOGIN_ANALYSIS})
+    assert "- Расширения не работают: расширение demo включено, но не работает: actions.act: " \
+           "нет файла act.py. Покажи пользователю эту строку." in out
+    assert "- Демо (healthy) — покажи пользователю как есть:" in out  # исправное сработало
+    again = _run(["next", str(run_dir)], capsys)[1]
+    assert ext.BLOCK_HEADING not in again  # тот же отчёт — без повторов
+
+    ext.set_enabled(project, "healthy", False)
+    (healthy.parent / "demo" / "act.py").write_text("", encoding="utf-8")  # починили demo
+    repaired = _run(["next", str(run_dir)], capsys)[1]
+    assert "- Демо (demo) — покажи пользователю как есть:" in repaired  # хук отчёта — впервые
+    assert "не работают" not in repaired
+    (healthy.parent / "demo" / "act.py").unlink()  # сломали снова: тот же набор ошибок
+    assert ext.BLOCK_HEADING not in _run(["next", str(run_dir)], capsys)[1]
+
+
+def test_broken_extension_without_report_hooks_is_reported(
+    project: Path, testops: FakeTestOps, capsys
+) -> None:
+    make_demo(project, extension_toml=MANIFEST.replace(
+        '[[hooks]]\nevent = "after_report"\nscript = "hook.py"\n', ""))
+    ext.set_enabled(project, "demo", True)
+    (project / ext.PROJECT_DIRNAME / "demo" / "agent.md").unlink()
+    run_dir, _, _ = _prepare(project, capsys)
+    entries = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["clusters"]
+    order, login = [entry["file_id"] for entry in entries if not entry["auto"]]
+    out = _finish(run_dir, capsys, {order: TEST_ANALYSIS.replace("тест —", "окружение —"),
+                                    login: LOGIN_ANALYSIS})
+    assert "Расширения не работают: расширение demo включено, но не работает: agent: нет файла " \
+           "agent.md" in out
