@@ -435,21 +435,25 @@ def _summary_related(related: Related, run: dict[str, Any], separate: set[str]) 
         f"Проблем после объединения: {merged_count(run, related, separate)}",
     ]
     for group in related.groups[:MAX_SUMMARY_GROUPS]:
+        fixed = [file_id for file_id in group.file_ids if file_id in separate]
         merged = [file_id for file_id in group.file_ids if file_id not in separate]
-        apart = [file_id for file_id in group.file_ids if file_id in separate]
-        if len(merged) < 2:  # объединять в отчёте нечего — все с правкой агента
-            merged, apart = [], group.file_ids
-        # Тесты — того пункта, что показывает отчёт; у отдельных проблем — своё число.
-        size = sum(sizes[file_id] for file_id in merged or apart)
-        title = (_merged_title(merged, MAX_SUMMARY_GROUP_NUMBERS).lower() + " — " if merged else
-                 f"{_numbers_phrase(apart)} (у каждой своя правка агента) — ")
-        line = (title + f"{_truncate(_one_line(group.cause), SUMMARY_LABEL_CHARS)} — {size} "
-                f"{_plural(size, 'тест', 'теста', 'тестов')}")
-        if merged and apart:
-            others = sum(sizes[file_id] for file_id in apart)
-            line += (f"; та же причина {_at_problems(apart, MAX_SUMMARY_GROUP_NUMBERS)} (ещё {others} "
-                     f"{_plural(others, 'тест', 'теста', 'тестов')}), у них своя правка агента, "
-                     "в отчёте они отдельно")
+        cause = _truncate(_one_line(group.cause), SUMMARY_LABEL_CHARS)
+        if len(merged) >= 2:
+            # Тесты — того пункта, что показывает отчёт; у проблем с правкой — своё число.
+            size = sum(sizes[file_id] for file_id in merged)
+            line = (f"{_merged_title(merged, MAX_SUMMARY_GROUP_NUMBERS).lower()} — {cause} — {size} "
+                    f"{_plural(size, 'тест', 'теста', 'тестов')}")
+            if fixed:
+                others = sum(sizes[file_id] for file_id in fixed)
+                line += (f"; та же причина {_at_problems(fixed, MAX_SUMMARY_GROUP_NUMBERS)} (ещё "
+                         f"{others} {_plural(others, 'тест', 'теста', 'тестов')}), у них своя правка "
+                         "агента, в отчёте они отдельно")
+        else:
+            # Объединять в отчёте нечего: правка есть не у всех, называем только тех, у кого есть.
+            size = sum(sizes[file_id] for file_id in group.file_ids)
+            line = (f"{_numbers_phrase(group.file_ids, MAX_SUMMARY_GROUP_NUMBERS)} — {cause} — {size} "
+                    f"{_plural(size, 'тест', 'теста', 'тестов')}; в отчёте они отдельно: своя правка "
+                    f"агента {_at_problems(fixed, MAX_SUMMARY_GROUP_NUMBERS)}")
         lines.append(line)
     rest = related.groups[MAX_SUMMARY_GROUPS:]
     if rest:

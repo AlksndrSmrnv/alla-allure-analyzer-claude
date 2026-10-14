@@ -836,5 +836,10 @@ def test_summary_data_keeps_problems_with_an_agent_fix_apart(tmp_path: Path) -> 
     assert "Проблем после объединения: 2" in data
     assert ("проблема 2 и 3 — ожидаемый код устарел — 4 теста; та же причина у проблемы 1 (ещё 2 "
             "теста), у них своя правка агента, в отчёте они отдельно") in data
+    # Правка у 1 и 2: объединять нечего, а у 3 правки нет — её не приписываем.
     data = build_summary_data(run, analyses, set(), related=related, separate={"01", "02"})
-    assert "проблемы 1, 2, 3 (у каждой своя правка агента) — ожидаемый код устарел — 6 тестов" in data
+    assert "Проблем после объединения: 3" in data
+    assert ("проблемы 1, 2, 3 — ожидаемый код устарел — 6 тестов; в отчёте они отдельно: своя "
+            "правка агента у проблем 1, 2") in data
+    data = build_summary_data(run, analyses, set(), related=related, separate={"01", "02", "03"})
+    assert "в отчёте они отдельно: своя правка агента у проблем 1, 2, 3" in data
