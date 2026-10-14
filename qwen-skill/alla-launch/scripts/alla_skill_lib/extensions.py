@@ -135,8 +135,13 @@ def discover(project_root: Path) -> Catalog:
         for folder in sorted(path for path in base.iterdir() if (path / MANIFEST_FILE).is_file()):
             try:
                 extension = load_manifest(folder, bundled=bundled)
-            except ExtensionError as exc:
-                catalog.errors[folder.name] = str(exc)
+            except (ExtensionError, OSError, ValueError) as exc:  # ValueError — и UnicodeDecodeError
+                error = str(exc) if isinstance(exc, ExtensionError) else f"{type(exc).__name__}: {exc}"
+                if not bundled and catalog.extensions.pop(folder.name, None) is not None:
+                    # Команда заменила встроенное своим (например, с ограничениями git-publish):
+                    # неисправная замена выключает расширение, а не возвращает встроенное.
+                    error = f"своя замена встроенного расширения не работает — оно выключено: {error}"
+                catalog.errors[folder.name] = error
                 continue
             if not bundled and extension.name in catalog.extensions:
                 extension = replace(extension, overrides_bundled=True)
@@ -175,6 +180,14 @@ def load_manifest(folder: Path, *, bundled: bool) -> Extension:
     if agent is not None:
         _check_agent(agent, AGENT_PREFIX + name)
     hooks = tuple(_hook(folder, raw, agent) for raw in _list_of_tables(data, "hooks"))
+    task_events = [hook.event for hook in hooks if hook.task is not None]
+    repeated = sorted({event for event in task_events if task_events.count(event) > 1})
+    if repeated:
+        # Задание события пишется в один файл <событие>-NN.md: второе затёрло бы первое.
+        raise ExtensionError(
+            f"хук task на событие {', '.join(repeated)} — не больше одного: шаги одного "
+            "субагента пишутся в одно задание"
+        )
     actions_raw = data.get("actions", {})
     if not isinstance(actions_raw, dict):
         raise ExtensionError("[actions] — таблица «имя = путь к скрипту»")
@@ -238,7 +251,10 @@ def _hook(folder: Path, raw: dict[str, Any], agent: Path | None) -> Hook:
 
 def _check_agent(path: Path, expected: str) -> None:
     """Файл агента Qwen: невалидный Qwen пропускает молча, и хук ушёл бы в пустоту."""
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ExtensionError(f"{path.name} не читается: {exc}") from exc
     parts = text.split("---\n", 2)
     if len(parts) != 3 or parts[0].strip():
         raise ExtensionError(f"{path.name}: нет заголовка --- name/description/tools ---")
@@ -340,7 +356,11 @@ def active(project_root: Path) -> Active:
         return result
     if not config.enabled:
         return result
-    catalog = discover(project_root)
+    try:
+        catalog = discover(project_root)
+    except Exception as exc:  # prepare, next и apply не должны падать из-за папки расширений
+        result.problems.append(f"расширения не прочитаны: {type(exc).__name__}: {exc}")
+        return result
     for name in config.enabled:
         extension = catalog.extensions.get(name)
         if extension is None:

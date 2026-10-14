@@ -371,3 +371,55 @@ def test_session_rules_allow_only_extension_text_files() -> None:
     assert not WRITABLE_RE.search(f"{run}/after_apply-01.json")
     assert not WRITABLE_RE.search(f"{run}/after_apply-01.md")
     assert not WRITABLE_RE.search("/p/alla-extensions/config.toml")
+
+
+def test_broken_override_disables_bundled(project: Path, testops: FakeTestOps, capsys) -> None:
+    """Своя замена встроенного с ошибкой не возвращает встроенное: у команды могли быть
+    свои ограничения (другой remote, confirm)."""
+    shutil.copytree(BUNDLED / "git-publish", ws.SKILL_DIR / "extensions" / "git-publish")
+    own = project / ext.PROJECT_DIRNAME / "git-publish"
+    shutil.copytree(BUNDLED / "git-publish", own)
+    ext.set_enabled(project, "git-publish", True)
+    manifest = own / "extension.toml"
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace("api = 1", "api = 2"),
+                        encoding="utf-8")
+    catalog = ext.discover(project)
+    assert "git-publish" not in catalog.extensions
+    assert "своя замена встроенного расширения не работает" in catalog.errors["git-publish"]
+    current = ext.active(project)
+    assert not current.extensions and "git-publish" in current.problems[0]
+    _, _, out = applied(project, capsys)
+    assert "subagent_type" not in out and "своя замена встроенного" in out
+
+
+def test_unreadable_agent_is_an_extension_error(project: Path, testops: FakeTestOps, capsys) -> None:
+    folder = make_demo(project)
+    ext.set_enabled(project, "demo", True)
+    (folder / "agent.md").write_bytes(b"---\nname: alla-demo\n\xff\xfe\n---\n")
+    assert "demo" in ext.discover(project).errors
+    run_dir, order, out = applied(project, capsys)  # правка записана — ответ applied
+    assert out.startswith("STATUS: applied") and "Расширения не работают" in out
+
+
+def test_commands_survive_unexpected_discovery_failure(
+    project: Path, testops: FakeTestOps, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_demo(project)
+    ext.set_enabled(project, "demo", True)
+
+    def broken(_: Path) -> ext.Catalog:
+        raise PermissionError("нет доступа к alla-extensions")
+
+    monkeypatch.setattr(ext, "discover", broken)
+    run_dir, _, out = applied(project, capsys)  # prepare и next до done тоже прошли
+    assert out.startswith("STATUS: applied") and "PermissionError: нет доступа" in out
+
+
+def test_one_task_hook_per_event(project: Path) -> None:
+    second = '\n[[hooks]]\nevent = "after_apply"\ntask = "task.md"\n'
+    folder = make_demo(project, extension_toml=MANIFEST.replace("[actions]", second + "\n[actions]"))
+    with pytest.raises(ext.ExtensionError, match="хук task на событие after_apply — не больше одного"):
+        ext.load_manifest(folder, bundled=False)
+    scripts = '\n[[hooks]]\nevent = "after_revert"\nscript = "hook.py"\n'
+    folder = make_demo(project, extension_toml=MANIFEST.replace("[actions]", scripts + "\n[actions]"))
+    assert len(ext.load_manifest(folder, bundled=False).hooks_for("after_revert")) == 2
