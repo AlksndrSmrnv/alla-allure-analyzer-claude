@@ -58,13 +58,21 @@ def test_scenarios_reference_existing_checks_and_fixtures() -> None:
 
 
 def test_build_project_is_committed_and_hides_env(tmp_path: Path) -> None:
-    project = build_project(tmp_path, "http://127.0.0.1:1", venv=None)
+    """.env и .venv (симлинк на кэш машины) не попадают в исходный коммит проекта."""
+    cached = tmp_path / "cache-venv"
+    cached.mkdir()
+    project = build_project(tmp_path / "work", "http://127.0.0.1:1", venv=cached)
     skill = project / ".qwen" / "skills" / "alla-launch"
     assert (skill / "SKILL.md").is_file()
     assert TOKEN in (skill / ".env").read_text()
+    assert (project / ".venv").is_symlink()
     status = subprocess.run(["git", "-C", str(project), "status", "--porcelain"],
                             capture_output=True, text=True, check=True).stdout
     assert status == ""
+    tracked = subprocess.run(["git", "-C", str(project), "ls-files"],
+                             capture_output=True, text=True, check=True).stdout.split()
+    assert ".venv" not in tracked
+    assert not any(name.endswith(".env") for name in tracked)
 
 
 

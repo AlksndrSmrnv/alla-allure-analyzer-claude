@@ -683,6 +683,42 @@ def test_setup_refuses_unusable_project_venv(tmp_path: Path, python_body: str, m
     assert not (project / ".venv" / ".alla-setup-complete").exists()
 
 
+# «Python» .venv без pip: отвечает версией, pip появляется только после ensurepip.
+_NO_PIP_PYTHON = """case "$2" in
+  pip) [ -f "$0.pip" ] || exit 1; exit 0;;
+  ensurepip) {ensurepip};;
+esac
+echo 3.11"""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="обёртка .venv/bin/python — POSIX")
+def test_setup_installs_missing_pip_with_ensurepip(tmp_path: Path) -> None:
+    project, stub = _install_skill_copy(tmp_path)
+    python = _fake_venv_python(project, _NO_PIP_PYTHON.format(ensurepip='touch "$0.pip"'))
+
+    result = _run_stub(stub, "setup")
+
+    assert result.returncode == 0, result.stdout
+    assert "нет pip — ставлю его через ensurepip" in result.stdout
+    assert Path(f"{python}.pip").exists()
+    assert "STATUS: ready" in result.stdout
+    assert (project / ".venv" / ".alla-setup-complete").is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="обёртка .venv/bin/python — POSIX")
+def test_setup_explains_venv_without_pip(tmp_path: Path) -> None:
+    project, stub = _install_skill_copy(tmp_path)
+    python = _fake_venv_python(project, _NO_PIP_PYTHON.format(ensurepip="exit 1"))
+
+    result = _run_stub(stub, "setup")
+
+    assert result.returncode == 1
+    assert "STATUS: error" in result.stdout
+    assert f"{python} -m ensurepip --upgrade" in result.stdout
+    assert "pip install завершился" not in result.stdout
+    assert not (project / ".venv" / ".alla-setup-complete").exists()
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="нужен git")
 def test_setup_adds_project_venv_to_gitignore(tmp_path: Path) -> None:
     import alla_skill
@@ -692,9 +728,27 @@ def test_setup_adds_project_venv_to_gitignore(tmp_path: Path) -> None:
     gitignore.write_text("build/", encoding="utf-8")
 
     assert alla_skill.ensure_gitignored(tmp_path) == gitignore
-    assert gitignore.read_text(encoding="utf-8") == "build/\n.venv/\n"
+    assert gitignore.read_text(encoding="utf-8") == "build/\n/.venv\n"
     assert alla_skill.ensure_gitignored(tmp_path) is None  # уже игнорируется — без дублей
-    assert gitignore.read_text(encoding="utf-8") == "build/\n.venv/\n"
+    assert gitignore.read_text(encoding="utf-8") == "build/\n/.venv\n"
+
+
+@pytest.mark.skipif(shutil.which("git") is None or os.name == "nt", reason="нужны git и симлинки")
+def test_setup_ignores_symlinked_project_venv(tmp_path: Path) -> None:
+    """Шаблон «.venv/» симлинк не прикрывает: setup дописывает /.venv, и git его не берёт."""
+    import alla_skill
+
+    project = tmp_path / "project"
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    (tmp_path / "shared-venv").mkdir()
+    (project / ".venv").symlink_to(tmp_path / "shared-venv", target_is_directory=True)
+    (project / ".gitignore").write_text(".venv/\n", encoding="utf-8")
+
+    assert alla_skill.ensure_gitignored(project) == project / ".gitignore"
+    subprocess.run(["git", "-C", str(project), "add", "-A"], check=True)
+    staged = subprocess.run(["git", "-C", str(project), "ls-files"], capture_output=True,
+                            text=True, check=True).stdout.split()
+    assert staged == [".gitignore"]
 
 
 def test_setup_leaves_gitignore_outside_git(tmp_path: Path) -> None:

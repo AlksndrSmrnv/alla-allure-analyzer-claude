@@ -339,9 +339,10 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
     write(java / "auth" / "LoginTest.java", LOGIN_TEST_JAVA)
     for path, text in STAND_SOURCES.items():
         write(java / path, text)
+    # .venv проекта — симлинк на кэш: «.venv/» с ним не совпадает, и он ушёл бы в коммит.
     # .qwen/tmp пишет сам Qwen Code (аргументы slash-вызова скилла) — это не правка агента.
     write(project / ".gitignore",
-          ".qwen/skills/alla-launch/.env\n.venv/\n.qwen/tmp/\n"
+          ".qwen/skills/alla-launch/.env\n/.venv\n.qwen/tmp/\n"
           f".qwen/sandbox-macos-{STAND_PROFILE}.sb\n")
     skill = project / SKILL_IN_PROJECT
     shutil.copytree(SKILL_ROOT, skill, ignore=COPY_IGNORE)

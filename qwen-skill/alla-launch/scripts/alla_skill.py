@@ -128,13 +128,17 @@ def split_setup_args(argv: Sequence[str]) -> tuple[str | None, list[str]]:
 
 
 def ensure_gitignored(root: Path) -> Path | None:
-    """Дописать ``.venv/`` в ``<root>/.gitignore``, если git его не игнорирует.
+    """Дописать ``/.venv`` в ``<root>/.gitignore``, если git его не игнорирует.
 
+    ``/.venv`` без слэша на конце: ``.venv`` может быть и симлинком, а шаблон ``.venv/``
+    совпадает только с папкой. Существующий ``.venv`` git проверяет по его типу
+    (у симлинка путь со слэшем — ошибка 128); ещё не созданный — как папку.
     Не git-репозиторий или git не установлен — ничего не делать.
     """
+    path = ".venv" if os.path.lexists(str(root / ".venv")) else ".venv/"
     try:
         code = subprocess.call(
-            ["git", "-C", str(root), "check-ignore", "-q", ".venv/"],
+            ["git", "-C", str(root), "check-ignore", "-q", path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -146,7 +150,7 @@ def ensure_gitignored(root: Path) -> Path | None:
     text = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
     prefix = "\n" if text and not text.endswith("\n") else ""
     with gitignore.open("a", encoding="utf-8") as stream:
-        stream.write(prefix + ".venv/\n")
+        stream.write(prefix + "/.venv\n")
     return gitignore
 
 
@@ -207,6 +211,28 @@ def create_venv(explicit: str | None) -> int:
     return 0
 
 
+def ensure_pip(python: Path) -> bool:
+    """pip в ``.venv``: окружение могли создать с ``--without-pip``.
+
+    ``ensurepip`` ставит pip из колёс, вшитых в Python, — без сети и зеркала.
+    """
+    check = [str(python), "-m", "pip", "--version"]
+    if subprocess.call(check, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+        return True
+    print("В {} нет pip — ставлю его через ensurepip.".format(VENV_DIR), flush=True)
+    if subprocess.call([str(python), "-m", "ensurepip", "--upgrade"]) == 0:
+        return True
+    print("STATUS: error")
+    print(
+        "В {} нет pip, и ensurepip не смог его поставить (на Debian/Ubuntu для ensurepip нужен "
+        "пакет python3-venv). Поставь pip в этот .venv сам: {} -m ensurepip --upgrade — или "
+        "пересоздай .venv на Python {}.{}+, затем повтори: {}".format(
+            VENV_DIR, python, MIN_VERSION[0], MIN_VERSION[1], self_command("setup")
+        )
+    )
+    return False
+
+
 def setup(argv: Sequence[str]) -> int:
     explicit, pip_args = split_setup_args(argv)
     if VENV_DIR.exists():
@@ -218,9 +244,11 @@ def setup(argv: Sequence[str]) -> int:
             return code
 
     target = venv_python()
+    if not ensure_pip(target):
+        return 1
     gitignore = ensure_gitignored(PROJECT_DIR)
     if gitignore is not None:
-        print("Добавил .venv/ в {}".format(gitignore), flush=True)
+        print("Добавил /.venv в {}".format(gitignore), flush=True)
     try:
         SETUP_MARKER.unlink()
     except FileNotFoundError:
