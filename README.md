@@ -271,7 +271,14 @@ confirm = false          # true — спрашивать перед каждой
 
 Как написать расширение: события, поля данных, шаблон задания субагента, правила —
 [`extensions/README.md`](qwen-skill/alla-launch/extensions/README.md). Пример целиком —
-[`extensions/git-publish/`](qwen-skill/alla-launch/extensions/git-publish/).
+[`extensions/git-publish/`](qwen-skill/alla-launch/extensions/git-publish/). Если расширение
+пишет агент, попросите его следовать инструкции
+[`extensions/AUTHORING.md`](qwen-skill/alla-launch/extensions/AUTHORING.md):
+
+```text
+напиши расширение alla, которое заводит задачу в Jira на каждую проблему приложения;
+следуй .qwen/skills/alla-launch/extensions/AUTHORING.md
+```
 
 ## Что появится в проекте
 

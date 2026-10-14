@@ -33,6 +33,7 @@ from typing import Any
 
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.analysis_format import parse_analysis
+from alla_skill_lib.batch_task import BATCH_AGENT
 from alla_skill_lib.proposals import parse_proposal
 
 API_VERSION = 1
@@ -44,6 +45,8 @@ MANIFEST_FILE = "extension.toml"
 AGENT_PREFIX = "alla-"
 BLOCK_HEADING = "Расширения:"
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
+# Имена, чей субагент alla-<имя> затёр бы субагента самого скилла в .qwen/agents/.
+RESERVED_NAMES = frozenset({BATCH_AGENT.removeprefix("alla-")})
 ACTION_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
 DEFAULT_TIMEOUT = 120  # секунд на скрипт расширения
 MAX_TIMEOUT = 600
@@ -171,6 +174,8 @@ def load_manifest(folder: Path, *, bundled: bool) -> Extension:
     name = data.get("name")
     if not isinstance(name, str) or not NAME_RE.fullmatch(name):
         raise ExtensionError("name — латиница в нижнем регистре, цифры и дефис, с буквы")
+    if name in RESERVED_NAMES:
+        raise ExtensionError(f"имя «{name}» занято самим скиллом (субагент alla-{name})")
     if name != folder.name:
         raise ExtensionError(f"name «{name}» не совпадает с именем папки «{folder.name}»")
     if data.get("api") != API_VERSION:

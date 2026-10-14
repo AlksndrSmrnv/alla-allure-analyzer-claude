@@ -450,3 +450,35 @@ def test_service_folders_are_not_extensions(project: Path) -> None:
     catalog = ext.discover(project)
     assert set(catalog.extensions) == {"demo"}
     assert catalog.errors == {"draft": "в папке нет файла extension.toml"}
+
+
+def test_name_of_skill_agent_is_reserved(project: Path) -> None:
+    folder = project / ext.PROJECT_DIRNAME / "batch"
+    folder.mkdir(parents=True)
+    (folder / "extension.toml").write_text(
+        MANIFEST.replace('name = "demo"', 'name = "batch"'), encoding="utf-8")
+    with pytest.raises(ext.ExtensionError, match="занято самим скиллом"):
+        ext.load_manifest(folder, bundled=False)
+
+
+def test_authoring_guide_template_rules(project: Path, testops: FakeTestOps, capsys) -> None:
+    """AUTHORING.md: «$$» — литеральный «$», неизвестная переменная остаётся, скрипт хука
+    запускается и отдельно — со своим контекстом в ALLA_CONTEXT."""
+    make_demo(project, task_md="Цена $$5, $unknown, проблема $problem\n")
+    ext_cli(project, capsys, "enable", "demo")
+    run_dir, order, _ = applied(project, capsys)
+    task = (run_dir / "extensions" / "demo" / f"after_apply-{order}.md").read_text(encoding="utf-8")
+    assert task == "Цена $5, $unknown, проблема 1\n"
+
+    import os
+    import subprocess
+    import sys
+
+    context = project / "ctx.json"
+    context.write_text(json.dumps({"api": 1, "event": "after_report", "problems": [{}, {}]}),
+                       encoding="utf-8")
+    out = subprocess.run(
+        [sys.executable, str(project / ext.PROJECT_DIRNAME / "demo" / "hook.py")],
+        env={**os.environ, "ALLA_CONTEXT": str(context)}, capture_output=True, text=True,
+        check=True).stdout
+    assert out.strip() == "событие after_report, проблема None, проблем в отчёте 2"
