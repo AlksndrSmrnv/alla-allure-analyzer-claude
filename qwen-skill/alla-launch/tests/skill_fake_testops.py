@@ -133,6 +133,37 @@ def many_launch(count: int, launch_id: int = 900) -> LaunchFixture:
     )
 
 
+def test_bug_launch(launch_id: int = 782) -> LaunchFixture:
+    """Дефект автотеста: API по контракту отвечает 201 Created, а тест ждёт 200 (стенд X01)."""
+    trace = ORDER_TRACE.replace("<500>", "<201>").format(method="createOrder", line=6)
+    log = (
+        "2026-09-01 10:00:00 [INFO] OrderService: request received POST /orders\n"
+        "2026-09-01 10:00:01 [INFO] OrderService: order 5512 created\n"
+        "2026-09-01 10:00:01 [INFO] OrderController: responded 201 Created "
+        "(contract v2: POST /orders returns 201)\n"
+    )
+    return LaunchFixture(
+        launch={"id": launch_id, "name": "Orders smoke", "projectId": 5},
+        results=[
+            {
+                "id": 201,
+                "name": "createOrder",
+                "fullName": "ru.company.orders.OrderTest.createOrder",
+                "status": "failed",
+                "statusDetails": {"message": "expected: <200> but was: <201>", "trace": trace},
+            },
+            {"id": 202, "name": "updateOrder", "status": "passed"},
+        ],
+        executions={201: [{
+            "name": "Создать заказ",
+            "status": "failed",
+            "statusDetails": {"message": "expected: <200> but was: <201>"},
+        }]},
+        attachments={201: [{"id": 9101, "name": "app.log", "type": "text/plain"}]},
+        contents={9101: log.encode("utf-8")},
+    )
+
+
 def green_launch() -> LaunchFixture:
     return LaunchFixture(
         launch={"id": 778, "name": "Smoke", "projectId": 5},

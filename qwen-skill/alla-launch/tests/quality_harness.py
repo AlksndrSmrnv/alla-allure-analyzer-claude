@@ -126,7 +126,9 @@ def skill_files(root: Path) -> list[Path]:
     Один список для harness и стенда Qwen, чтобы версия считалась одинаково.
     """
     files = [root / "SKILL.md"]
-    for directory, pattern in (("references", "*.md"), ("agents", "*.md"), ("scripts", "*.py")):
+    for directory, pattern in (("references", "*.md"), ("agents", "*.md"), ("commands", "*.md"),
+                               ("scripts", "*.py"), ("extensions", "*.md"),
+                               ("extensions", "*.toml"), ("extensions", "*.py")):
         files.extend((root / directory).rglob(pattern))
     files.extend(root.glob("requirements*.txt"))
     return files

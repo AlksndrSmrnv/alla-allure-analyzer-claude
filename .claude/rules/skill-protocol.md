@@ -47,7 +47,7 @@ paths:
 
 - `commands/alla/*.md` — команды Qwen Code (`FileCommandLoader`: подпапка `alla/` даёт имя
   `alla:<файл>`): `run`, `continue`, `apply`, `revert`, `remember`, `reject`, `review`,
-  `setup`. Frontmatter — `description`, `argument-hint` (у команд с аргументами, тогда в теле
+  `setup`, `extensions`. Frontmatter — `description`, `argument-hint` (у команд с аргументами, тогда в теле
   `{{args}}`), `disable-model-invocation: true` (без него команду может вызвать сама модель).
 - Тело — короткая просьба «вызови скилл alla-launch (инструмент skill) и действуй по разделу
   N»: шаги и правила не копируются, источник — `SKILL.md`. Папку разбора для `apply`,
@@ -67,12 +67,16 @@ paths:
 `verify N [N…] --run DIR`, `skip N --run DIR`, `check`, `clean`,
 `review [run_dir | --run DIR] [--no-model]`,
 `apply N --run DIR [--yes --diff ХЭШ] [--repeat]`, `revert N --run DIR`,
-`remember N --run DIR [--entry ID] [--from-analysis]`, `reject N <id> --run DIR`.
+`remember N --run DIR [--entry ID] [--from-analysis]`, `reject N <id> --run DIR`,
+`extensions [list|enable|disable|run|action]` (`skill-extensions.md`).
 
 - Где в синтаксисе есть `--run DIR`, он обязателен: `.last_run` после нового `prepare`
   указывает на другой прогон.
 - Разбор модели сохраняется в базу знаний только с явным `--from-analysis`; он выбирает
   разбор, даже если есть `feedback/NN.md`.
+
+- Ответы `applied`, `reverted`, `done` могут заканчиваться блоком «Расширения:» (хуки
+  включённых расширений, `skill-extensions.md`); модель выполняет его по `SKILL.md`, раздел 7.
 
 ## Статусы и коды возврата
 

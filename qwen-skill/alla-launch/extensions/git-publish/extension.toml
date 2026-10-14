@@ -1,0 +1,28 @@
+# Встроенное расширение alla-launch: выгрузка применённой правки автотеста в git.
+# Включить:  python3 .qwen/skills/alla-launch/scripts/alla_skill.py extensions enable git-publish
+# Настройки меняются в <проект>/alla-extensions/config.toml, таблица [git-publish].
+
+name = "git-publish"
+title = "Выгрузка правки в git"
+description = "После apply коммитит правку в новую ветку и пушит её; рабочую копию не трогает"
+api = 1
+agent = "agent.md"
+timeout = 300
+
+[settings]
+remote = "origin"         # куда пушить
+branch_prefix = "alla/"   # ветка: <prefix><прогон>-problem-<N>
+base = "HEAD"             # от какого коммита ветка: HEAD — текущий коммит инженера
+confirm = false           # true — спрашивать пользователя перед каждой выгрузкой
+
+[[hooks]]
+event = "after_apply"
+task = "task.md"
+ask = "Выгрузить правку в новую ветку git?"
+
+[[hooks]]
+event = "after_revert"
+script = "scripts/after_revert.py"
+
+[actions]
+publish = "scripts/publish.py"

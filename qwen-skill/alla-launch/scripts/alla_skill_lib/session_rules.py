@@ -23,8 +23,11 @@ from typing import Any
 SKILL_IN_PROJECT = Path(".qwen") / "skills" / "alla-launch"
 PYTHON_RE = re.compile(r"(?:\S*/)?python(?:3(?:\.\d+)?)?")
 SHELL_OPERATORS = set(";&|<>()")
+# extensions/<имя>/ — файлы, которые задание расширения велит записать своему субагенту
+# (сообщение коммита git-publish); контекст и задание пишет скрипт, их субагент только читает.
 WRITABLE_RE = re.compile(
-    r"/alla-reports/[^/]+/(?:(?:analyses|proposals|feedback)/[^/]+\.md|related\.md|summary\.md|skill-problems\.md)$")
+    r"/alla-reports/[^/]+/(?:(?:analyses|proposals|feedback)/[^/]+\.md|related\.md|summary\.md"
+    r"|skill-problems\.md|extensions/[^/]+/[^/]+\.txt)$")
 FORBIDDEN_READ_RE = re.compile(r"(?:^|/)(?:\.env|run\.json|state\.json)$|/evidence/")
 READ_TOOLS = {"read_file", "grep_search", "glob", "read_many_files"}
 WRITE_TOOLS = {"write_file", "edit", "notebook_edit"}

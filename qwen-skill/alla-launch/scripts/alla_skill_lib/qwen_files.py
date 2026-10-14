@@ -69,3 +69,36 @@ def install_commands(project_root: Path) -> list[Path]:
         for source in sorted(source_dir.glob("*.md"))
         if _install(source, target_dir / source.name)
     ]
+
+
+def extension_agent_target(project_root: Path, agent_name: str) -> Path:
+    return project_root / ".qwen" / "agents" / f"{agent_name}.md"
+
+
+def install_extension_agent(project_root: Path, source: Path, agent_name: str) -> Path | None:
+    """Положить субагента расширения в ``<проект>/.qwen/agents/<имя агента>.md``.
+
+    Как у субагента пакетов: Qwen увидит его со следующего сеанса. Возвращает путь, если
+    файл записан.
+    """
+    target = extension_agent_target(project_root, agent_name)
+    return target if _install(source, target) else None
+
+
+def remove_extension_agent(project_root: Path, source: Path | None, agent_name: str) -> str:
+    """Убрать субагента выключенного расширения: ``removed`` | ``absent`` | ``kept`` (файл
+    правили руками — не наш, не удаляем)."""
+    target = extension_agent_target(project_root, agent_name)
+    if not target.is_file():
+        return "absent"
+    try:
+        same = source is not None and target.read_text(encoding="utf-8") == source.read_text(
+            encoding="utf-8"
+        )
+        if not same:
+            return "kept"
+        target.unlink()
+    except OSError as error:
+        logger.warning("Не удалось убрать %s: %s", target, error)
+        return "kept"
+    return "removed"

@@ -25,8 +25,9 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | `SKILL.md`, `references/` | сценарий и правила для модели, форматы её файлов, протокол, установка |
 | `agents/alla-batch.md` | свой субагент Qwen для пакетов кластеров; `prepare` ставит его в `.qwen/agents/` проекта |
 | `commands/alla/` | слэш-команды Qwen `/alla:run`, `/alla:apply`…; `setup` и `prepare` ставят их в `.qwen/commands/alla/` проекта |
+| `extensions/` | расширения скилла: `README.md` (контракт для авторов), встроенное `git-publish/` (выгрузка правки в новую ветку git); свои расширения проекта — `<проект>/alla-extensions/` |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` проекта автотестов |
-| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `batch_task`, `agent_rules`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files` |
+| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `batch_task`, `agent_rules`, `extensions`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files` |
 | `scripts/alla_core/` | ядро: клиент TestOps, триаж, логи, кластеризация, блок «Данные» |
 | `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
 | `tests/eval/` | эталон точности: кассеты прогонов (`record.py` пишет у команды), размеченный корпус dev/holdout, метрики склеек, дробления, скрытых групп и потери доказательств (`run_eval.py`), см. `README.md` там же |
@@ -37,7 +38,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 python3.11 -m venv .venv && .venv/bin/pip install -r qwen-skill/alla-launch/requirements-dev.txt
 .venv/bin/python -m pytest                      # из корня, несколько секунд
 .venv/bin/ruff check qwen-skill/alla-launch
-.venv/bin/mypy qwen-skill/alla-launch/scripts   # strict, без ошибок — так и держать
+.venv/bin/mypy qwen-skill/alla-launch/scripts qwen-skill/alla-launch/extensions   # strict, без ошибок
 .venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case A01 --output /tmp/alla-stand-001
 .venv/bin/python qwen-skill/alla-launch/tests/eval/run_eval.py --details   # эталон, офлайн, ~2 с
 ```
@@ -50,7 +51,7 @@ python3.11 -m venv .venv && .venv/bin/pip install -r qwen-skill/alla-launch/requ
 проверяет протокол; выполняет ли модель инструкции — видно только на стенде. Запускай его
 после правки `SKILL.md`, справочников, текстов заданий и правил исполнителя.
 
-- Сценарии — `qwen_stand.py list`; короткие (A03, A04, P01, E03, E07, I01) — до минуты, A01/C01/C02/E06/E08/E09/E10/E11 — 2–3
+- Сценарии — `qwen_stand.py list`; короткие (A03, A04, P01, E03, E07, I01) — до минуты, A01/C01/C02/E06/E08/E09/E10/E11/X01 — 2–3
   минуты, P04 (40 кластеров, субагенты) — 8–10 минут и 3–4 млн токенов: только когда
   меняются пакеты или правила субагентов.
 - Диагностика — один запуск с `--api-log` (что модель на самом деле получила), а не серия
@@ -109,6 +110,7 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 | `skill-analysis.md` | задание кластера, источники, разбор модели, отчёт, краткий разбор, сводка, известные и похожие проблемы | `cluster_task.py`, `sources.py`, `analysis_format.py`, `code_hints.py`, `report.py`, `known_issues.py`, `related.py`, `prompt_builder_service.py`, `log_focus.py` |
 | `skill-memory.md` | база знаний, сигнатура, модули, обратная связь, история | `kb.py`, `signature.py`, `modules.py`, `feedback.py`, `history.py` |
 | `skill-proposals.md` | предложения правок, `apply`/`revert`, состояние применения | `proposals.py` |
+| `skill-extensions.md` | расширения: манифест, события, хуки, действия, `config.toml`, git-publish | `extensions.py`, `extensions/` |
 | `core.md` | ядро: сбор данных, отбор логов, кластеризация, клиент TestOps, настройки `ALLURE_*` | `alla_core/`, `pipeline.py` |
 
 ## Инструменты Claude Code

@@ -786,3 +786,30 @@ def test_review_checks_catch_retelling_and_missing_assessment(tmp_path: Path) ->
     result = CHECKS["review_assessed"](ctx)
     assert result["status"] == "fail" and "timeout" in result["evidence"]
     assert CHECKS["reviewed"](context(tmp_path, events(), case="R01"))["status"] == "fail"
+
+
+def test_agent_checks_see_deferred_tool_call(tmp_path: Path) -> None:
+    """Qwen Code 0.25: ``agent`` отложен и вызывается обёрткой ``tool_call``."""
+    prompt = "Выполни задание /p/alla-reports/782-1/extensions/git-publish/after_apply-01.md"
+    wrapped = ("tool_call", {"name": "agent", "arguments": {
+        "subagent_type": "alla-git-publish", "prompt": prompt, "run_in_background": False}}, "ok")
+    ctx = context(tmp_path, events(wrapped), case="X01")
+    assert CHECKS["ext_agent_used"](ctx)["status"] == "pass"
+    assert CHECKS["subagents_used"](ctx)["status"] == "pass"
+    assert CHECKS["batch_agent_used"](ctx)["status"] == "fail"
+    ctx = context(tmp_path, events(("agent", {"subagent_type": "alla-batch", "prompt": "x"}, "ok")))
+    assert CHECKS["ext_agent_used"](ctx)["status"] == "fail"
+    assert CHECKS["batch_agent_used"](ctx)["status"] == "pass"
+
+
+def test_x01_project_has_extension_and_remote(tmp_path: Path) -> None:
+    project = build_project(tmp_path, "http://127.0.0.1:1", None, extensions=("git-publish",))
+    assert (project / "alla-extensions" / "config.toml").read_text(encoding="utf-8") == \
+        'enabled = ["git-publish"]\n'
+    assert (project / ".qwen" / "agents" / "alla-git-publish.md").is_file()
+    remote = subprocess.run(["git", "-C", str(project), "remote", "get-url", "origin"],
+                            capture_output=True, text=True, check=True).stdout.strip()
+    assert remote == str(project / ".stand-remote.git")
+    status = subprocess.run(["git", "-C", str(project), "status", "--porcelain"],
+                            capture_output=True, text=True, check=True).stdout
+    assert status == ""

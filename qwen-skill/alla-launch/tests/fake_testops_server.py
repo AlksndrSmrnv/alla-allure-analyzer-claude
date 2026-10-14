@@ -32,6 +32,7 @@ from skill_fake_testops import (  # noqa: E402
     injection_launch,
     many_launch,
     scant_launch,
+    test_bug_launch,
 )
 
 FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
@@ -44,6 +45,7 @@ FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
     "retries": lambda: _retries_launch(),
     "known": lambda: _known_launch(),
     "split": lambda: _split_launch(),
+    "test_bug": test_bug_launch,
 }
 
 
@@ -82,7 +84,7 @@ def _split_launch() -> LaunchFixture:
 
 def build_fixture(spec: str) -> LaunchFixture:
     """``default`` | ``green`` | ``info_only`` | ``injection`` | ``scant`` | ``mixed`` |
-    ``retries`` | ``known`` | ``split`` | ``many:<число>``."""
+    ``retries`` | ``known`` | ``split`` | ``test_bug`` | ``many:<число>``."""
     name, _, arg = spec.partition(":")
     if name == "many":
         return many_launch(int(arg or 40))
