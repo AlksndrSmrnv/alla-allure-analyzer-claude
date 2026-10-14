@@ -132,7 +132,7 @@ def discover(project_root: Path) -> Catalog:
     for bundled, base in ((True, bundled_dir()), (False, project_dir(project_root))):
         if not base.is_dir():
             continue
-        for folder in sorted(path for path in base.iterdir() if (path / MANIFEST_FILE).is_file()):
+        for folder in _extension_folders(base, bundled=bundled):
             try:
                 extension = load_manifest(folder, bundled=bundled)
             except (ExtensionError, OSError, ValueError) as exc:  # ValueError — и UnicodeDecodeError
@@ -150,7 +150,20 @@ def discover(project_root: Path) -> Catalog:
     return catalog
 
 
+def _extension_folders(base: Path, *, bundled: bool) -> list[Path]:
+    """Папки расширений. В ``alla-extensions/`` расширение — любая папка, и папка без
+    манифеста — неисправное расширение: иначе удалённый ``extension.toml`` своей замены
+    молча вернул бы встроенное (с его настройками вместо ограничений команды)."""
+    folders = [path for path in base.iterdir()
+               if path.is_dir() and not path.name.startswith((".", "_"))]
+    if bundled:
+        folders = [path for path in folders if (path / MANIFEST_FILE).is_file()]
+    return sorted(folders)
+
+
 def load_manifest(folder: Path, *, bundled: bool) -> Extension:
+    if not (folder / MANIFEST_FILE).is_file():
+        raise ExtensionError(f"в папке нет файла {MANIFEST_FILE}")
     try:
         data = tomllib.loads((folder / MANIFEST_FILE).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:

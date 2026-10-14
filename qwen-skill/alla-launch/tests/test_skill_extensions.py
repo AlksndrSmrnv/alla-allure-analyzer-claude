@@ -423,3 +423,30 @@ def test_one_task_hook_per_event(project: Path) -> None:
     scripts = '\n[[hooks]]\nevent = "after_revert"\nscript = "hook.py"\n'
     folder = make_demo(project, extension_toml=MANIFEST.replace("[actions]", scripts + "\n[actions]"))
     assert len(ext.load_manifest(folder, bundled=False).hooks_for("after_revert")) == 2
+
+
+@pytest.mark.parametrize("damage", ["deleted", "directory"])
+def test_override_without_manifest_disables_bundled(project: Path, damage: str) -> None:
+    shutil.copytree(BUNDLED / "git-publish", ws.SKILL_DIR / "extensions" / "git-publish")
+    own = project / ext.PROJECT_DIRNAME / "git-publish"
+    shutil.copytree(BUNDLED / "git-publish", own)
+    ext.set_enabled(project, "git-publish", True)
+    (own / "extension.toml").unlink()
+    if damage == "directory":
+        (own / "extension.toml").mkdir()
+    catalog = ext.discover(project)
+    assert "git-publish" not in catalog.extensions
+    assert catalog.errors["git-publish"] == (
+        "своя замена встроенного расширения не работает — оно выключено: в папке нет файла "
+        "extension.toml")
+    assert not ext.active(project).extensions
+
+
+def test_service_folders_are_not_extensions(project: Path) -> None:
+    make_demo(project)
+    (project / ext.PROJECT_DIRNAME / "__pycache__").mkdir()
+    (project / ext.PROJECT_DIRNAME / ".idea").mkdir()
+    (project / ext.PROJECT_DIRNAME / "draft").mkdir()
+    catalog = ext.discover(project)
+    assert set(catalog.extensions) == {"demo"}
+    assert catalog.errors == {"draft": "в папке нет файла extension.toml"}
