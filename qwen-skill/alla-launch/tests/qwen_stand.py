@@ -280,16 +280,18 @@ def requirements_hash() -> str:
 
 
 def ensure_venv() -> Path:
-    """Готовое окружение скилла в кэше; проект ссылается на него, чтобы не ставить каждый раз.
+    """Готовый .venv проекта в кэше; проект ссылается на него, чтобы не ставить каждый раз.
 
-    Создаётся настоящей командой ``setup`` из копии скилла, поэтому маркер совпадает.
+    Создаётся настоящей командой ``setup`` из копии скилла в пустом проекте, поэтому
+    маркер совпадает.
     """
-    skill = CACHE_DIR / f"venv-{requirements_hash()}" / "alla-launch"
-    venv = skill / ".venv"
+    cached = CACHE_DIR / f"venv-{requirements_hash()}" / "project"
+    skill = cached / SKILL_IN_PROJECT
+    venv = cached / ".venv"
     if (venv / ".alla-setup-complete").is_file():
         return venv
-    if skill.exists():
-        shutil.rmtree(skill)
+    if cached.exists():
+        shutil.rmtree(cached)
     shutil.copytree(SKILL_ROOT, skill, ignore=COPY_IGNORE)
     print(f"Ставлю окружение скилла в {skill} (один раз)…", file=sys.stderr)
     subprocess.run([sys.executable, str(skill / "scripts" / "alla_skill.py"), "setup"],
@@ -339,14 +341,14 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
         write(java / path, text)
     # .qwen/tmp пишет сам Qwen Code (аргументы slash-вызова скилла) — это не правка агента.
     write(project / ".gitignore",
-          ".qwen/skills/alla-launch/.env\n.qwen/skills/alla-launch/.venv\n.qwen/tmp/\n"
+          ".qwen/skills/alla-launch/.env\n.venv/\n.qwen/tmp/\n"
           f".qwen/sandbox-macos-{STAND_PROFILE}.sb\n")
     skill = project / SKILL_IN_PROJECT
     shutil.copytree(SKILL_ROOT, skill, ignore=COPY_IGNORE)
     if env_ready:
         write(skill / ".env", f"ALLURE_ENDPOINT={endpoint}\nALLURE_TOKEN={TOKEN}\n")
     if venv is not None:
-        (skill / ".venv").symlink_to(venv, target_is_directory=True)
+        (project / ".venv").symlink_to(venv, target_is_directory=True)
     for record in KNOWLEDGE.get(knowledge, []):
         write(project / "alla-kb" / f"{record['id']}.json",
               json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
@@ -562,7 +564,7 @@ def run_turn(project: Path, home: Path, secret_env: dict[str, str], prompt: str,
     (home / "tmp").mkdir(exist_ok=True)
     if sandbox:
         profile = write_stand_profile(project)
-        venv = project / SKILL_IN_PROJECT / ".venv"
+        venv = project / ".venv"
         check_sandbox(profile, project, home, venv if venv.exists() else None)
     with trace.open("w", encoding="utf-8") as out, stderr.open("w", encoding="utf-8") as err:
         process = subprocess.run(cmd, cwd=project, env=env, stdout=out, stderr=err,

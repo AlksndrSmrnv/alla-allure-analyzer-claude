@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import os
 import shutil
 import subprocess
@@ -569,8 +570,11 @@ def test_settings_errors(environ: dict[str, str], message: str) -> None:
         Settings.load(None, environ=environ)
 
 
-def test_detect_project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from alla_skill_lib.workspace import detect_project_root
+@pytest.mark.parametrize("module", ["alla_skill_lib.workspace", "alla_skill"])
+def test_detect_project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module: str) -> None:
+    """Точка входа (3.8+) ищет корень проекта для .venv так же, как библиотека скилла."""
+    imported = importlib.import_module(module)
+    detect_project_root = getattr(imported, "detect_project_root", None) or imported.project_root
 
     project = tmp_path / "autotests"
     assert detect_project_root(project / ".qwen" / "skills" / "alla-launch") == project.resolve()
@@ -587,18 +591,20 @@ def test_detect_project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 def _install_skill_copy(tmp_path: Path) -> tuple[Path, Path]:
-    """Копия скилла без .venv: (папка скилла, путь к alla_skill.py)."""
-    skill = tmp_path / "skill"
+    """Копия скилла в проекте без .venv: (корень проекта, путь к alla_skill.py)."""
+    project = tmp_path / "project"
+    skill = project / ".qwen" / "skills" / "alla-launch"
     shutil.copytree(SCRIPTS_DIR, skill / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
     (skill / "requirements.txt").write_text("httpx>=0.27\n", encoding="utf-8")
-    return skill, skill / "scripts" / "alla_skill.py"
+    return project, skill / "scripts" / "alla_skill.py"
 
 
-def _fake_venv_python(skill: Path) -> Path:
-    """«Python» в .venv скилла — обёртка над текущим интерпретатором."""
-    python = skill / ".venv" / "bin" / "python"
+def _fake_venv_python(project: Path, body: str = "") -> Path:
+    """«Python» в .venv проекта — обёртка над текущим интерпретатором или своим скриптом."""
+    python = project / ".venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
-    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    body = body or f'exec "{sys.executable}" "$@"'
+    python.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
     python.chmod(0o755)
     return python
 
@@ -617,40 +623,85 @@ def _run_stub(stub: Path, *args: str) -> subprocess.CompletedProcess[str]:
 @pytest.mark.parametrize(
     ("state", "message"),
     [
-        ("missing", "не установлено"),
-        ("no_marker", "не доустановлено"),
-        ("stale_marker", "не доустановлено"),
+        ("missing", "не установлены"),
+        ("no_marker", "не доустановлены"),
+        ("stale_marker", "не доустановлены"),
     ],
 )
 @pytest.mark.skipif(os.name == "nt", reason="обёртка .venv/bin/python — POSIX")
 def test_entrypoint_requires_complete_setup(tmp_path: Path, state: str, message: str) -> None:
-    skill, stub = _install_skill_copy(tmp_path)
+    project, stub = _install_skill_copy(tmp_path)
     if state != "missing":
-        _fake_venv_python(skill)
+        _fake_venv_python(project)
     if state == "stale_marker":
-        (skill / ".venv" / ".alla-setup-complete").write_text("0" * 64, encoding="utf-8")
+        (project / ".venv" / ".alla-setup-complete").write_text("0" * 64, encoding="utf-8")
 
     result = _run_stub(stub, "prepare", "123")
 
     assert result.returncode == 0
     assert result.stdout.startswith("STATUS: setup_required")
     assert message in result.stdout
+    assert str(project.resolve() / ".venv") in result.stdout
     assert f"{stub} setup" in result.stdout
     assert "Traceback" not in result.stderr
 
 
 @pytest.mark.skipif(os.name == "nt", reason="обёртка .venv/bin/python — POSIX")
 def test_entrypoint_runs_cli_after_complete_setup(tmp_path: Path) -> None:
-    skill, stub = _install_skill_copy(tmp_path)
-    _fake_venv_python(skill)
-    digest = hashlib.sha256((skill / "requirements.txt").read_bytes()).hexdigest()
-    (skill / ".venv" / ".alla-setup-complete").write_text(digest + "\n", encoding="utf-8")
+    project, stub = _install_skill_copy(tmp_path)
+    _fake_venv_python(project)
+    digest = hashlib.sha256((stub.parents[1] / "requirements.txt").read_bytes()).hexdigest()
+    (project / ".venv" / ".alla-setup-complete").write_text(digest + "\n", encoding="utf-8")
 
-    result = _run_stub(stub, "next", "--project-root", str(tmp_path / "project"))
+    result = _run_stub(stub, "next", "--project-root", str(project))
 
     assert result.returncode == 1, result.stderr
     assert result.stdout.startswith("STATUS: error")  # CLI отработал: разборов ещё нет
     assert "prepare" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("python_body", "message"),
+    [
+        ("echo 3.9", "создан на Python 3.9, а скиллу нужен 3.11+"),
+        ("exit 1", "Python в нём не запускается"),
+    ],
+)
+@pytest.mark.skipif(os.name == "nt", reason="обёртка .venv/bin/python — POSIX")
+def test_setup_refuses_unusable_project_venv(tmp_path: Path, python_body: str, message: str) -> None:
+    """Чужой .venv проекта setup не пересоздаёт и pip в него не зовёт."""
+    project, stub = _install_skill_copy(tmp_path)
+    python = _fake_venv_python(project, python_body)
+
+    result = _run_stub(stub, "setup")
+
+    assert result.returncode == 2
+    assert result.stdout.startswith("STATUS: error")
+    assert message in result.stdout
+    assert f"{stub} setup" in result.stdout
+    assert python.read_text(encoding="utf-8").endswith(python_body + "\n")
+    assert not (project / ".venv" / ".alla-setup-complete").exists()
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="нужен git")
+def test_setup_adds_project_venv_to_gitignore(tmp_path: Path) -> None:
+    import alla_skill
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text("build/", encoding="utf-8")
+
+    assert alla_skill.ensure_gitignored(tmp_path) == gitignore
+    assert gitignore.read_text(encoding="utf-8") == "build/\n.venv/\n"
+    assert alla_skill.ensure_gitignored(tmp_path) is None  # уже игнорируется — без дублей
+    assert gitignore.read_text(encoding="utf-8") == "build/\n.venv/\n"
+
+
+def test_setup_leaves_gitignore_outside_git(tmp_path: Path) -> None:
+    import alla_skill
+
+    assert alla_skill.ensure_gitignored(tmp_path) is None
+    assert not (tmp_path / ".gitignore").exists()
 
 
 def test_cli_does_not_load_clustering_libraries() -> None:

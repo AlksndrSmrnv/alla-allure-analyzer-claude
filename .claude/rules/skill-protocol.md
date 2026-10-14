@@ -25,10 +25,15 @@ paths:
 
 ## Точка входа и установка
 
-- `scripts/alla_skill.py` (Python 3.8+) перезапускает себя в `.venv` скилла.
-- `setup [--python P] [-- pip-аргументы]` создаёт venv; после успешного pip install пишет
-  `.venv/.alla-setup-complete` (хэш `requirements.txt`) и создаёт `.env` из образца. Без
-  маркера все команды отвечают `STATUS: setup_required`.
+- `scripts/alla_skill.py` (Python 3.8+) перезапускает себя в `.venv` в корне проекта
+  автотестов (`project_root` — копия `workspace.detect_project_root`: `alla_skill_lib` на 3.8
+  не импортируется).
+- `setup [--python P] [-- pip-аргументы]` создаёт `.venv` проекта или берёт существующий;
+  существующий на Python < 3.11 или неработающий — `STATUS: error`, чужой venv не
+  пересоздаём. Если git не игнорирует `.venv/` (`check-ignore` со слэшем: без него шаблон
+  `.venv/` до создания папки не совпадает), дописывает строку в корневой `.gitignore`. После
+  успешного pip install пишет `.venv/.alla-setup-complete` (хэш `requirements.txt`) и создаёт
+  `.env` скилла из образца. Без маркера все команды отвечают `STATUS: setup_required`.
 - `/alla-launch установи` (`SKILL.md`, «1. Старт») — модель выполняет `setup`, затем `check`, и
   без номера прогона ничего не разбирает; пустой `.env` — `check` отвечает `error`, модель
   просит пользователя вписать адрес и токен. Отдельной команды скрипта для этого нет.

@@ -5,9 +5,10 @@
     python3 .qwen/skills/alla-launch/scripts/alla_skill.py prepare <launch_id>
     python3 .qwen/skills/alla-launch/scripts/alla_skill.py next [run_dir]
 
-Файл совместим с Python 3.8+: основная логика выполняется в ``.venv``
-скилла (Python 3.11+), куда этот скрипт перезапускает сам себя. ``setup``
-создаёт ``.venv`` и ставит зависимости из ``requirements.txt``.
+Файл совместим с Python 3.8+: основная логика выполняется в ``.venv`` в корне
+проекта автотестов (Python 3.11+), куда этот скрипт перезапускает сам себя.
+``setup`` создаёт этот ``.venv`` (или берёт существующий) и ставит в него
+зависимости из ``requirements.txt``.
 """
 
 # Аннотации — строками (PEP 563): Python 3.8 их не вычисляет, а mypy проверяет.
@@ -26,7 +27,23 @@ if TYPE_CHECKING:
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPTS_DIR.parent
-VENV_DIR = SKILL_DIR / ".venv"
+
+
+def project_root(skill_dir: Path = SKILL_DIR) -> Path:
+    """``<project>/.qwen/skills/<name>`` → ``<project>``, иначе текущая папка.
+
+    Та же логика, что ``workspace.detect_project_root``: здесь её не импортировать —
+    ``alla_skill_lib`` требует Python 3.11+.
+    """
+    if skill_dir.parent.name == "skills" and skill_dir.parent.parent.name == ".qwen":
+        candidate = skill_dir.parent.parent.parent.resolve()
+        if candidate != Path.home().resolve():
+            return candidate
+    return Path.cwd().resolve()
+
+
+PROJECT_DIR = project_root()
+VENV_DIR = PROJECT_DIR / ".venv"
 REQUIREMENTS = SKILL_DIR / "requirements.txt"
 # Пишется только после успешного pip install: хэш requirements.txt, с которым
 # ставились зависимости. Нет маркера или хэш другой — окружение не готово.
@@ -110,6 +127,29 @@ def split_setup_args(argv: Sequence[str]) -> tuple[str | None, list[str]]:
     return explicit, pip_args
 
 
+def ensure_gitignored(root: Path) -> Path | None:
+    """Дописать ``.venv/`` в ``<root>/.gitignore``, если git его не игнорирует.
+
+    Не git-репозиторий или git не установлен — ничего не делать.
+    """
+    try:
+        code = subprocess.call(
+            ["git", "-C", str(root), "check-ignore", "-q", ".venv/"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+    if code != 1:  # 0 — уже игнорируется, 128 — не репозиторий
+        return None
+    gitignore = root / ".gitignore"
+    text = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    prefix = "\n" if text and not text.endswith("\n") else ""
+    with gitignore.open("a", encoding="utf-8") as stream:
+        stream.write(prefix + ".venv/\n")
+    return gitignore
+
+
 def create_env_file() -> Path | None:
     """``.env`` из образца, чтобы пользователю оставалось вписать endpoint и токен."""
     env_file = SKILL_DIR / ".env"
@@ -122,8 +162,34 @@ def create_env_file() -> Path | None:
     return env_file
 
 
-def setup(argv: Sequence[str]) -> int:
-    explicit, pip_args = split_setup_args(argv)
+def use_existing_venv(explicit: str | None) -> bool:
+    """Существующий ``.venv`` проекта годится: Python в нём запускается и он 3.11+."""
+    version = python_version(str(venv_python()))
+    wanted = "{}.{}".format(*MIN_VERSION)
+    if version is None:
+        print("STATUS: error")
+        print(
+            "В проекте есть {}, но Python в нём не запускается. Пересоздай этот .venv на "
+            "Python {}+ (и поставь в него зависимости проекта заново) или удали его, затем "
+            "повтори: {}".format(VENV_DIR, wanted, self_command("setup"))
+        )
+        return False
+    if version < MIN_VERSION:
+        print("STATUS: error")
+        print(
+            "{} проекта создан на Python {}.{}, а скиллу нужен {}+. Пересоздай этот .venv на "
+            "Python {}+ (и поставь в него зависимости проекта заново), затем повтори: {}".format(
+                VENV_DIR, version[0], version[1], wanted, wanted, self_command("setup")
+            )
+        )
+        return False
+    if explicit:
+        print("{} уже есть — --python не используется.".format(VENV_DIR), flush=True)
+    return True
+
+
+def create_venv(explicit: str | None) -> int:
+    """Создать ``.venv`` проекта; 0 — создан, иначе код возврата ``setup``."""
     base = find_base_python(explicit)
     if base is None:
         print("STATUS: error")
@@ -133,22 +199,35 @@ def setup(argv: Sequence[str]) -> int:
             )
         )
         return 2
+    print("Создаю окружение {} (Python: {})".format(VENV_DIR, base), flush=True)
+    if subprocess.call([base, "-m", "venv", str(VENV_DIR)]) != 0:
+        print("STATUS: error")
+        print("Не удалось создать venv. На Debian/Ubuntu нужен пакет python3-venv.")
+        return 1
+    return 0
+
+
+def setup(argv: Sequence[str]) -> int:
+    explicit, pip_args = split_setup_args(argv)
+    if VENV_DIR.exists():
+        if not use_existing_venv(explicit):
+            return 2
+    else:
+        code = create_venv(explicit)
+        if code != 0:
+            return code
 
     target = venv_python()
-    if not target.exists():
-        print("Создаю окружение {} (Python: {})".format(VENV_DIR, base), flush=True)
-        if subprocess.call([base, "-m", "venv", str(VENV_DIR)]) != 0:
-            print("STATUS: error")
-            print("Не удалось создать venv. На Debian/Ubuntu нужен пакет python3-venv.")
-            return 1
-
+    gitignore = ensure_gitignored(PROJECT_DIR)
+    if gitignore is not None:
+        print("Добавил .venv/ в {}".format(gitignore), flush=True)
     try:
         SETUP_MARKER.unlink()
     except FileNotFoundError:
         pass
     print(
-        "Ставлю зависимости из {} (numpy, scipy, scikit-learn — это 1–3 минуты, "
-        "не прерывай).".format(REQUIREMENTS),
+        "Ставлю зависимости скилла из {} в .venv проекта {} (numpy, scipy, scikit-learn — "
+        "это 1–3 минуты, не прерывай).".format(REQUIREMENTS, VENV_DIR),
         flush=True,
     )
     code = subprocess.call([
@@ -166,7 +245,7 @@ def setup(argv: Sequence[str]) -> int:
         return 1
     SETUP_MARKER.write_text(requirements_digest() + "\n", encoding="utf-8")
     print("STATUS: ready")
-    print("Окружение скилла готово: {}".format(VENV_DIR))
+    print("Зависимости скилла установлены в {}".format(VENV_DIR))
     created = create_env_file()
     if created is not None:
         print(
@@ -190,11 +269,14 @@ def main(argv: Sequence[str]) -> int:
 
     if not setup_complete():
         if venv_python().exists():
-            state = "не доустановлено или устарело (изменился requirements.txt)"
+            state = "не доустановлены или устарели (изменился requirements.txt)"
         else:
-            state = "не установлено"
+            state = "не установлены"
         print("STATUS: setup_required")
-        print("Окружение скилла {}. Выполни один раз (займёт пару минут):".format(state))
+        print(
+            "Зависимости скилла в .venv проекта ({}) {}. Выполни один раз (займёт пару "
+            "минут):".format(VENV_DIR, state)
+        )
         print(self_command("setup"))
         print("Затем повтори команду:")
         print(self_command(*argv))
