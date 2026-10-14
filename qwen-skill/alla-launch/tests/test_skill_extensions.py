@@ -531,3 +531,61 @@ def test_broken_extension_without_report_hooks_is_reported(
                                     login: LOGIN_ANALYSIS})
     assert "Расширения не работают: расширение demo включено, но не работает: agent: нет файла " \
            "agent.md" in out
+
+
+def test_silent_report_hook_runs_once(project: Path, testops: FakeTestOps, capsys) -> None:
+    """Пустой вывод разрешён: хук отчёта всё равно отмечается и с тем же отчётом не повторяется."""
+    counter = project / "runs.txt"
+    make_demo(project, hook_py=(
+        "import pathlib\n"
+        f"path = pathlib.Path({str(counter)!r})\n"
+        "path.write_text(path.read_text() + 'x' if path.exists() else 'x')\n"))
+    ext.set_enabled(project, "demo", True)
+    run_dir, _, _ = _prepare(project, capsys)
+    entries = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["clusters"]
+    order, login = [entry["file_id"] for entry in entries if not entry["auto"]]
+    out = _finish(run_dir, capsys, {order: TEST_ANALYSIS.replace("тест —", "окружение —"),
+                                    login: LOGIN_ANALYSIS})
+    assert ext.BLOCK_HEADING not in out and counter.read_text() == "x"
+    _run(["next", str(run_dir)], capsys)
+    _run(["next", str(run_dir)], capsys)
+    assert counter.read_text() == "x"
+
+
+def test_enable_touches_only_root_enabled(project: Path, capsys) -> None:
+    make_demo(project, extension_toml=MANIFEST.replace(
+        'greeting = "привет"', 'greeting = "привет"\nenabled = ["base"]'))
+    config = ext.config_path(project)
+    text = '# наш проект\n[demo]\nenabled = ["feature-x"]\n'
+    config.write_text(text, encoding="utf-8")
+    code, out = ext_cli(project, capsys, "enable", "demo")
+    assert code == 0, out
+    assert config.read_text(encoding="utf-8") == (
+        '# наш проект\nenabled = ["demo"]\n\n[demo]\nenabled = ["feature-x"]\n')
+    assert ext.load_config(project).enabled == ("demo",)
+    assert ext.load_config(project).settings == {"demo": {"enabled": ["feature-x"]}}
+
+    code, out = ext_cli(project, capsys, "disable", "demo")
+    assert code == 0 and ext.load_config(project).settings == {"demo": {"enabled": ["feature-x"]}}
+    assert 'enabled = []\n\n[demo]\nenabled = ["feature-x"]' in config.read_text(encoding="utf-8")
+
+
+def test_enable_refuses_unsafe_rewrite(project: Path, capsys) -> None:
+    """Строка «enabled = [...]» внутри многострочной строки TOML — не ключ: перезапись изменила
+    бы значение, и файл не пишется."""
+    make_demo(project)
+    config = ext.config_path(project)
+    text = 'note = """\nenabled = ["y"]\n"""\nenabled = ["x"]\n'
+    config.write_text(text, encoding="utf-8")
+    code, out = ext_cli(project, capsys, "enable", "demo")
+    assert code == 1 and "Не удалось безопасно изменить enabled" in out
+    assert config.read_text(encoding="utf-8") == text
+
+
+def test_enable_keeps_keys_that_only_look_like_enabled(project: Path, capsys) -> None:
+    make_demo(project)
+    config = ext.config_path(project)
+    config.write_text('enabled = ["x"] # список\n"enabled.extra" = 1\n', encoding="utf-8")
+    code, out = ext_cli(project, capsys, "enable", "demo")
+    assert code == 0 and ext.load_config(project).enabled == ("x", "demo")
+    assert config.read_text(encoding="utf-8") == 'enabled = ["x", "demo"]\n"enabled.extra" = 1\n'

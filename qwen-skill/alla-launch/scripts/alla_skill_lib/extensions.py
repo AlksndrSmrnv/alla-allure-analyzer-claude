@@ -51,8 +51,11 @@ ACTION_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
 DEFAULT_TIMEOUT = 120  # секунд на скрипт расширения
 MAX_TIMEOUT = 600
 OUTPUT_LIMIT = 4000  # символов вывода скрипта в ответе скилла
-_ENABLED_LINE_RE = re.compile(r"^enabled\s*=\s*\[[^\]\n]*\]\s*(?:#.*)?$", re.MULTILINE)
-_ENABLED_KEY_RE = re.compile(r"^enabled\s*=", re.MULTILINE)
+# [ \t], а не \s: \s захватил бы перевод строки и пустые строки после enabled.
+_ENABLED_LINE_RE = re.compile(r"^[ \t]*enabled[ \t]*=[ \t]*\[[^\]\n]*\][ \t]*(?:#.*)?$",
+                              re.MULTILINE)
+_ENABLED_KEY_RE = re.compile(r"^[ \t]*enabled[ \t]*=", re.MULTILINE)
+_TABLE_RE = re.compile(r"^[ \t]*\[", re.MULTILINE)
 _SETTING_TYPES = (str, bool, int)
 CONFIG_HEADER = (
     "# Расширения скилла alla-launch для этого проекта.\n"
@@ -321,22 +324,41 @@ def set_enabled(project_root: Path, name: str, on: bool) -> bool:
     line = "enabled = [" + ", ".join(json.dumps(item) for item in names) + "]"
     path = config_path(project_root)
     text = path.read_text(encoding="utf-8") if path.is_file() else CONFIG_HEADER
-    if _ENABLED_LINE_RE.search(text):
-        text = _ENABLED_LINE_RE.sub(lambda _: line, text, count=1)
-    elif _ENABLED_KEY_RE.search(text):
+    # Корневой enabled — только до первой таблицы: в [<расширение>] может быть своя
+    # настройка с тем же именем.
+    table = _TABLE_RE.search(text)
+    cut = table.start() if table else len(text)
+    head, tail = text[:cut], text[cut:]
+    if _ENABLED_LINE_RE.search(head):
+        head = _ENABLED_LINE_RE.sub(lambda _: line, head, count=1)
+    elif _ENABLED_KEY_RE.search(head):
         raise ExtensionError(
             f"В {path} список enabled записан в несколько строк — его не переписать "
             f"автоматически. Запиши его одной строкой: {line}"
         )
     else:
-        table = re.search(r"^\[", text, re.MULTILINE)
-        cut = table.start() if table else len(text)
-        head = text[:cut]
         if head and not head.endswith("\n"):
             head += "\n"
-        text = head + line + "\n" + ("\n" + text[cut:] if table else "")
-    ws.write_atomic(path, text)
+        head += line + "\n" + ("\n" if tail else "")
+    updated = head + tail
+    _check_rewrite(path, text, updated, names)
+    ws.write_atomic(path, updated)
     return True
+
+
+def _check_rewrite(path: Path, before: str, after: str, names: list[str]) -> None:
+    """Новый ``config.toml`` разбирается и отличается от прежнего только списком ``enabled``:
+    иначе файл не пишется (неожиданная разметка не должна портить настройки)."""
+    try:
+        old, new = tomllib.loads(before), tomllib.loads(after)
+    except tomllib.TOMLDecodeError as exc:
+        raise ExtensionError(f"{path} не читается: {exc}") from exc
+    old.pop("enabled", None)
+    if new.pop("enabled", None) != names or new != old:
+        raise ExtensionError(
+            f"Не удалось безопасно изменить enabled в {path} — поправь его вручную: "
+            f"enabled = [{', '.join(json.dumps(item) for item in names)}]"
+        )
 
 
 def resolved_settings(extension: Extension, config: Config) -> dict[str, Any]:

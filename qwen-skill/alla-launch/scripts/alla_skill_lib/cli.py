@@ -1787,18 +1787,21 @@ def _with_report_hooks(paths: ws.RunPaths, body: str) -> str:
         hashlib.sha256("\n".join([digest, *current.problems]).encode("utf-8")).hexdigest()
         if current.problems else None
     )
+    changed = False
     if problems is not None and state.get("extension_problems") != problems:
         lines += ext.problem_lines(current.problems)
         state["extension_problems"] = problems
+        changed = True
     fired = dict(state.get("extension_reports") or {})
     pending = [name for name in names if fired.get(name) != digest]
     if pending:
         lines += ext.fire("after_report", paths, run, _report_data(paths, run, body), only=pending)
         state["extension_reports"] = {**fired, **dict.fromkeys(pending, digest)}
-    if not lines:
-        return body
-    ws.write_json(paths.state_json, state)
-    return f"{body}\n{ext.block(lines)}"
+        changed = True
+    # Отметку пишем и при пустом выводе: молчаливый хук тоже сработал и повторяться не должен.
+    if changed:
+        ws.write_json(paths.state_json, state)
+    return f"{body}\n{ext.block(lines)}" if lines else body
 
 
 def _report_data(paths: ws.RunPaths, run: dict[str, Any], body: str) -> dict[str, Any]:
