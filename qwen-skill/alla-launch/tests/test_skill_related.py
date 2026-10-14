@@ -205,7 +205,7 @@ def _step_split_run(project: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
     return run_dir, ids
 
 
-def test_related_problems_are_marked_in_report_brief_and_summary(
+def test_related_problems_are_merged_in_report_brief_and_summary(
     project: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
     run_dir, ids = _step_split_run(project, monkeypatch, capsys)
@@ -222,18 +222,28 @@ def test_related_problems_are_marked_in_report_brief_and_summary(
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: summary"), out
     summary_task = (run_dir / "summary_task.md").read_text(encoding="utf-8")
-    assert "--- Похоже, одна причина (агент сравнил разборы; пользователь не подтверждал) ---" \
-        in summary_task
-    assert "проблемы 1, 2 — покупатель в заказе не заполнен — 6 тестов" in summary_task
+    assert ("--- Объединённые проблемы (агент счёл одной причиной, сравнив разборы; пользователь "
+            "не подтверждал) ---\nПроблем после объединения: 1\n"
+            "проблема 1 и 2 — покупатель в заказе не заполнен — 6 тестов") in summary_task
 
     (run_dir / "summary.md").write_text("Итог прогона.", encoding="utf-8")
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: done"), out
-    assert "[похоже, та же причина, что у 2]" in out and "[похоже, та же причина, что у 1]" in out
+    assert "6 упавших тестов -> 1 проблема (2 до объединения похожих):" in out
+    assert "### 🔴 Требуют вашего внимания (1)" in out
+    assert "**Проблема 1 и 2** · 6 тестов · [объединил агент]" in out
+    assert "   Общая причина: [ПРИЛОЖЕНИЕ] покупатель в заказе не заполнен" in out
+    assert out.count("**Проблема ") == 1 and "похоже, та же причина" not in out
     report = _full_report(run_dir)
-    assert "### Похоже, одна причина (1)" in report
-    assert "- Проблемы 1, 2 · 6 тестов — покупатель в заказе не заполнен" in report
-    assert "- Похоже, та же причина, что у проблемы 2: покупатель в заказе не заполнен" in report
+    assert "В разборе: 6 упавших тестов → 1 проблема (2 до объединения похожих)" in report
+    assert "### Требуют вашего внимания (1)" in report
+    assert "**Проблема 1 и 2** — 6 тестов · объединил агент" in report
+    assert ("- Общая причина: возможная ошибка приложения — покупатель в заказе не заполнен"
+            in report)
+    assert "- Разбор каждой проблемы — в подробностях ниже: проблемы 1, 2" in report
+    assert "Похоже, одна причина" not in report
+    assert "### Проблема 1 — " in report and "### Проблема 2 — " in report
+    assert "- Агент счёл одной причиной с проблемой 2: покупатель в заказе не заполнен" in report
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     assert state["related"] == {"groups": 1, "problems": 2, "edges": {"near": 1},
                                 "confirmed_groups": 1, "confirmed_problems": 2}

@@ -136,7 +136,8 @@ def test_known_issue_is_grouped_through_cli_and_splits_after_reject(
     assert out.startswith("STATUS: done"), out
 
     numbers = ", ".join(str(int(file_id)) for file_id in offered)
-    assert f"**Проблемы {numbers}** · 6 тестов · [известная проблема: {entry_id}]" in out
+    title = " и ".join(str(int(file_id)) for file_id in offered)
+    assert f"**Проблема {title}** · 6 тестов · [известная проблема: {entry_id}]" in out
     assert f"Одна известная проблема: «{record['title']}»" in out
     report = _full_report(run_dir)
     assert "### Известные проблемы из базы знаний (1)" in report
@@ -153,7 +154,7 @@ def test_known_issue_is_grouped_through_cli_and_splits_after_reject(
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: done"), out
     left = ", ".join(str(int(file_id)) for file_id in rest)
-    assert f"**Проблемы {left}** · 4 теста · [известная проблема: {entry_id}]" in out
+    assert f"**Проблема {left.replace(', ', ' и ')}** · 4 теста · [известная проблема: {entry_id}]" in out
     assert f"**Проблема {int(first)}** · 2 теста" in out
     assert "[разбор опирался на отвергнутую запись базы знаний]" in out
     assert f"— проблемы {left} · 4 теста" in _full_report(run_dir)

@@ -184,12 +184,12 @@ LAST_ATTEMPT_PROPOSAL = (
     "будет отброшено, а в отчёте останется пометка."
 )
 LAST_ATTEMPT_RELATED = (
-    "Это последняя попытка: если и она не пройдёт проверку, похожие проблемы останутся "
-    "без пометки «одна причина»."
+    "Это последняя попытка: если и она не пройдёт проверку, похожие проблемы "
+    "не объединятся."
 )
 RELATED_DROPPED_NOTE = (
     "Похожие проблемы не сравнены: решение агента (related.md) не прошло проверку за "
-    f"{MAX_FIX_ATTEMPTS} попытки."
+    f"{MAX_FIX_ATTEMPTS} попытки — проблемы показаны по отдельности."
 )
 
 
@@ -208,7 +208,7 @@ def related_mismatch_note(paths: ws.RunPaths) -> str:
         "Сначала исправь файл по замечаниям выше — решения по проблемам сохрани. Только если "
         "файл уже соответствует справочнику, а проверка всё равно его отклоняет, — это неполадка "
         f"скилла: {record_problem(paths)}; тогда перепиши файл одной строкой «РАЗНЫЕ: …» со всеми "
-        "номерами проблем из групп задания — пометок «одна причина» не будет, но отчёт соберётся. "
+        "номерами проблем из групп задания — проблемы не объединятся, но отчёт соберётся. "
         "Затем next; без правки next не вызывай."
     )
 
@@ -896,7 +896,14 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     related = related_outcome or Related()
     if related_outcome is None:
         notes.append(RELATED_DROPPED_NOTE)
-    summary_data = build_summary_data(run, analyses, flagged, known, related)
+    fixes = {file_id: p for file_id, p in proposals.items() if p.is_fix}
+    states = {
+        file_id: applied_state(p, project_root, _proposal_files(paths, file_id))
+        for file_id, p in fixes.items()
+    }
+    # Проблемы с правкой агента в отчёте не объединяются: у каждой своя команда apply.
+    separate = {file_id for file_id, state in states.items() if state != "unknown"}
+    summary_data = build_summary_data(run, analyses, flagged, known, related, separate)
     summary_hash = hashlib.sha256(summary_data.encode("utf-8")).hexdigest()
     previous_hash = state.get("summary_data_hash")
     summary = ws.read_text(paths.summary) if paths.summary.is_file() else ""
@@ -917,11 +924,6 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
         paths.reports_dir, run_records(run, analyses, flagged, paths.root.name, known_refs)
     )
 
-    fixes = {file_id: p for file_id, p in proposals.items() if p.is_fix}
-    states = {
-        file_id: applied_state(p, project_root, _proposal_files(paths, file_id))
-        for file_id, p in fixes.items()
-    }
     console, full = render_report(
         run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed, known,
         related,

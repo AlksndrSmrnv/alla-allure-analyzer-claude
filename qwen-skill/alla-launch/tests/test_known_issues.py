@@ -19,7 +19,7 @@ from alla_skill_lib.report import (
     MAX_SUMMARY_LISTED,
     _brief_units,
     _problem,
-    _sort_key,
+    _units,
     build_summary_data,
     render_report,
 )
@@ -246,7 +246,7 @@ def test_brief_collapses_group_into_one_block(tmp_path: Path) -> None:
     console, _ = _render(run, analyses, paths, known)
     attention = _section(console, "Требуют вашего внимания")
     assert "### 🔴 Требуют вашего внимания (3)" in attention
-    assert "**Проблемы 1, 3, 4** · 10 тестов · [известная проблема: payment_db_pool_1a2b3c4d]" in attention
+    assert "**Проблема 1 и 3 и 4** · 10 тестов · [известная проблема: payment_db_pool_1a2b3c4d]" in attention
     assert "Одна известная проблема: «Пул соединений БД платежей исчерпан»" in attention
     assert "   База знаний:   [ПРИЛОЖЕНИЕ] Сервис платежей не отдаёт соединения из пула БД." in attention
     assert "   Что делать:    Увеличить пул payment-db" in attention
@@ -289,7 +289,7 @@ def test_brief_group_numbers_are_limited(tmp_path: Path) -> None:
     run, analyses, paths = _setup(tmp_path, [1] * 8, [_kb(APP)] * 8)
     known = _known(run, analyses, paths)
     console, _ = _render(run, analyses, paths, known)
-    assert "**Проблемы 1, 2, 3, 4, 5 и ещё 3** · 8 тестов" in console
+    assert "**Проблема 1 и 2 и 3 и 4 и 5 и ещё 3** · 8 тестов" in console
 
 
 def test_brief_size_does_not_grow_with_many_groups(tmp_path: Path) -> None:
@@ -309,7 +309,7 @@ def test_brief_size_does_not_grow_with_many_groups(tmp_path: Path) -> None:
         known = _known(run, analyses, paths)
         assert len(known.groups) == groups
         console, _ = _render(run, analyses, paths, known)
-        assert console.count("**Проблемы ") == MAX_BRIEF_ITEMS
+        assert console.count("**Проблема ") == MAX_BRIEF_ITEMS
         sizes.append(len(console))
     assert max(sizes) < 6_000
     assert abs(sizes[0] - sizes[1]) < 300
@@ -326,11 +326,9 @@ def test_brief_units_keep_section_order(tmp_path: Path) -> None:
     run, analyses, paths = _setup(tmp_path, [1, 5, 1], [_kb(APP), APP, _kb(APP)])
     known = _known(run, analyses, paths)
 
-    problems = sorted(
-        (_problem(e, analyses[e["file_id"]], set(), {}, {}, known) for e in run["clusters"]), key=_sort_key,
-    )
-    units = _brief_units("attention", problems)
-    assert [[p.number for p in unit] for unit in units] == [[2], [1, 3]]
+    problems = [_problem(e, analyses[e["file_id"]], set(), {}, {}, known) for e in run["clusters"]]
+    folds = _brief_units("attention", _units("attention", problems))
+    assert [[p.number for unit in fold for p in unit] for fold in folds] == [[2], [1, 3]]
 
 
 # --- сводка и история -----------------------------------------------------------------

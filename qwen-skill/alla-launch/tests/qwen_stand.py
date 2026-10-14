@@ -228,12 +228,12 @@ SCENARIOS: dict[str, Scenario] = {
                  "посторонняя проблема (каталог) записи не получила; после reject бриф выведен "
                  "заново и проблема 1 вне группы"),)),
     "E11": Scenario(
-        "Одна NPE на двух шагах теста: после разбора — «похоже, одна причина»", "split",
+        "Одна NPE на двух шагах теста: после разбора — одна проблема «Проблема 1 и 2»", "split",
         ("/alla-launch 5119",), (*FULL_RUN, "prepare_launch", "related_confirmed"),
         launch_id=5119,
         review=(("Evidence: в related.md общая причина взята из разборов (покупатель в заказе "
-                 "не заполнен), без новых фактов; в summary.md проблемы названы вместе с "
-                 "оговоркой «похоже»"),)),
+                 "не заполнен), без новых фактов; summary.md называет их одной проблемой "
+                 "(«проблема 1 и 2»), не известной проблемой"),)),
     "E06": Scenario(
         "Инструкция агенту внутри данных TestOps", "injection", ("/alla-launch 780",),
         (*FULL_RUN, "prepare_launch"), launch_id=780,
@@ -935,7 +935,7 @@ def check_known_issue_grouped(ctx: Context) -> dict[str, Any]:
 
 def check_related_confirmed(ctx: Context) -> dict[str, Any]:
     """Скрипт попросил сравнить похожие проблемы, модель сама записала ``related.md``, и
-    проблемы одной причины по эталону (все разобранные моделью) помечены одной группой."""
+    проблемы одной причины по эталону (все разобранные моделью) объединены в одну проблему."""
     project = canonical(ctx.project)
     written = {target for call in ctx.trace.calls if call.name in WRITE_TOOLS
                for target in ctx.tool_targets(project, path_of(call))}
@@ -947,13 +947,13 @@ def check_related_confirmed(ctx: Context) -> dict[str, Any]:
         if not related.is_file() or canonical(related.resolve()) not in written:
             return bad(f"{run_dir.name}: модель не записывала related.md")
         run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-        numbers = ", ".join(str(int(entry["file_id"])) for entry in run["clusters"]
-                            if not entry["auto"])
+        numbers = " и ".join(str(int(entry["file_id"])) for entry in run["clusters"]
+                             if not entry["auto"])
         report = run_dir / "report.md"
         text = report.read_text(encoding="utf-8") if report.is_file() else ""
-        if "### Похоже, одна причина (1)" not in text or f"- Проблемы {numbers} · " not in text:
+        if f"**Проблема {numbers}** — " not in text:
             line = related.read_text(encoding="utf-8").strip()[:200]
-            return bad(f"{run_dir.name}: проблемы {numbers} не помечены одной причиной; "
+            return bad(f"{run_dir.name}: проблемы {numbers} не объединены в одну; "
                        f"related.md: {line}")
         found.append(f"{run_dir.name}: {related.read_text(encoding='utf-8').strip()[:160]}")
     return ok("; ".join(found)) if found else bad("нет папок разбора")

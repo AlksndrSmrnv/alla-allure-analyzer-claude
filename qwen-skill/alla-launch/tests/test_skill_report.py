@@ -21,10 +21,13 @@ from alla_skill_lib.report import (
     MAX_BRIEF_ITEMS,
     MAX_SUMMARY_DETAILED,
     MAX_SUMMARY_LISTED,
+    build_summary_data,
     build_summary_task,
+    merged_count,
     render_green_report,
     render_report,
 )
+from alla_skill_lib.related import Related, RelatedGroup
 from alla_skill_lib.workspace import RunPaths
 
 APP = (
@@ -571,7 +574,10 @@ def test_report_file_keeps_full_text_and_all_steps(tmp_path: Path) -> None:
     top = full.split("\n---\n", 1)[0]
 
     assert LONG.strip() not in console  # в терминале — только начало каждого текста
-    assert all(len(line) <= 300 for line in console.splitlines() if line.startswith("  "))
+    name = " ".join(("тест с очень длинным названием " * 10).split())
+    assert f"   Например:      {name}" in console  # имя теста в терминале целиком
+    assert all(len(line) <= 300 for line in console.splitlines()
+               if line.startswith("  ") and name not in line)
     assert "…" not in full  # в файле нет ни одного сокращения
     text = _long_texts()
     assert f"- Что случилось: {' '.join(text['what'].split())}" in top  # оба предложения
@@ -748,3 +754,85 @@ def _long_analysis(category_line: str | None = None) -> str:
         f"ПРИЧИНА: {category_line or text['cause']}\n"
         f"КАК ИСПРАВИТЬ:\n{text['fix']}\n"
     )
+
+
+# --- объединённые проблемы («одна причина» по решению агента) ---------------------------
+
+
+def _related(*groups: tuple[list[int], str], run: dict[str, Any]) -> Related:
+    sizes = {entry["file_id"]: entry["member_count"] for entry in run["clusters"]}
+    return Related([
+        RelatedGroup([f"{n:02d}" for n in numbers], cause, sum(sizes[f"{n:02d}"] for n in numbers))
+        for numbers, cause in groups
+    ])
+
+
+def test_related_problems_become_one_item_and_one_problem_in_counts(tmp_path: Path) -> None:
+    run = _run([3, 2, 4])
+    related = _related(([1, 2], "в заказе не заполнен покупатель"), run=run)
+    console, full = _render(tmp_path, run, [APP, APP, ENV], related=related)
+
+    assert "9 упавших тестов -> 2 проблемы (3 до объединения похожих):" in console
+    attention = _section(console, "Требуют вашего внимания")
+    assert attention.startswith("### 🔴 Требуют вашего внимания (1)")
+    assert "**Проблема 1 и 2** · 5 тестов · [объединил агент]" in attention
+    assert "   Общая причина: [ПРИЛОЖЕНИЕ] в заказе не заполнен покупатель" in attention
+    assert "   Например:      test_1" in attention  # тест самой большой проблемы
+    assert attention.count("**Проблема ") == 1
+
+    assert "→ 2 проблемы (3 до объединения похожих)." in full
+    section = _section(full, "Требуют вашего внимания")
+    assert section.startswith("### Требуют вашего внимания (1)")
+    assert "**Проблема 1 и 2** — 5 тестов · объединил агент" in section
+    assert "- Общая причина: возможная ошибка приложения — в заказе не заполнен покупатель" in section
+    assert "- Что случилось (по разбору проблемы 1): Заказ не создаётся, сервер отвечает 500." in section
+    assert "- Что делать (по разбору проблемы 1):\n   1. Добавить проверку customer." in section
+    assert "- Тесты: [test_1]" in section and "[test_5]" in section
+    assert "- Разбор каждой проблемы — в подробностях ниже: проблемы 1, 2" in section
+    details = full.split("## Подробности по проблемам", 1)[1]
+    assert "### Проблема 1 — 3 теста" in details and "### Проблема 2 — 2 теста" in details
+    assert "- Агент счёл одной причиной с проблемой 1: в заказе не заполнен покупатель" in details
+
+
+def test_problems_with_an_agent_fix_are_not_merged(tmp_path: Path) -> None:
+    run = _run([2, 2, 2])
+    related = _related(([1, 2, 3], "ожидаемый код устарел"), run=run)
+    console, full = _render(tmp_path, run, [TEST, TEST, TEST_NO_CODE],
+                            proposals={"01": _proposal()}, related=related)
+
+    assert "-> 2 проблемы (3 до объединения похожих):" in console
+    agent = _section(console, "Агент может поправить сам")
+    assert "**Проблема 1** · 2 теста · [та же причина у проблем 2, 3 (объединил агент)]" in agent
+    manual = _section(console, "Автотест сломан, но править вручную")
+    assert ("**Проблема 2 и 3** · 4 теста · [объединил агент] · [та же причина у проблемы 1]"
+            in manual)
+    assert "   Почему не сам:" in manual
+    assert "- Та же причина, по мнению агента, и у проблемы 1" in _section(
+        full, "Автотест сломан, но править вручную")
+    assert merged_count(run, related, {"01"}) == 2
+    assert merged_count(run, related, set()) == 1
+
+
+def test_brief_with_merged_problems_keeps_its_ceiling(tmp_path: Path) -> None:
+    count = 400
+    run = _run([1] * count)
+    related = _related(*(([n, n + 1], "общая причина " * 30) for n in range(1, count, 2)), run=run)
+    console, full = _render(tmp_path, run, [APP] * count, related=related)
+
+    attention = _section(console, "Требуют вашего внимания")
+    assert attention.startswith(f"### 🔴 Требуют вашего внимания ({count // 2})")
+    assert attention.count("**Проблема ") == MAX_BRIEF_ITEMS
+    rest = count // 2 - MAX_BRIEF_ITEMS
+    assert f"- … и ещё {rest} проблем ({2 * rest} тестов)" in attention
+    assert len(console) < 4_000
+    assert full.count("объединил агент") == count // 2
+
+
+def test_summary_data_keeps_problems_with_an_agent_fix_apart(tmp_path: Path) -> None:
+    run = _run([2, 2, 2])
+    related = _related(([1, 2, 3], "ожидаемый код устарел"), run=run)
+    analyses = {entry["file_id"]: parse_analysis(TEST) for entry in run["clusters"]}
+    data = build_summary_data(run, analyses, set(), related=related, separate={"01"})
+    assert "Проблем после объединения: 2" in data
+    assert ("проблема 2 и 3 — ожидаемый код устарел — 6 тестов; та же причина у проблемы 1, у них "
+            "своя правка агента, в отчёте они отдельно") in data

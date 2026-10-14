@@ -190,13 +190,14 @@ def test_summary_task_names_a_known_issue_as_one_problem() -> None:
     assert "называй их одной проблемой с номерами из блока" in text
 
 
-def test_summary_task_names_related_problems_with_a_hedge() -> None:
-    """Пометка «похоже, одна причина» — вывод агента, не известная проблема."""
+def test_summary_task_names_merged_problems_as_one() -> None:
+    """Объединённые проблемы — одна проблема, как в отчёте, но не известная проблема; число
+    проблем — после объединения."""
     from alla_skill_lib.report import SUMMARY_TASK
 
     text = " ".join(SUMMARY_TASK.split())
-    assert "«Похоже, одна причина»" in text and "с оговоркой «похоже»" in text
-    assert "не известной проблемой" in text
+    assert "«Объединённые проблемы»" in text and "«проблема 4 и 9: …»" in text
+    assert "не известной проблемой" in text and "«Проблем после объединения»" in text
 
 
 def test_relate_task_keeps_its_directives() -> None:

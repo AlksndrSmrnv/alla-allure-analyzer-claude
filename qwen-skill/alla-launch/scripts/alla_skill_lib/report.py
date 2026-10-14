@@ -48,7 +48,6 @@ BRIEF_TEXT_CHARS = 160  # «что случилось»
 BRIEF_CAUSE_CHARS = 200  # «агент считает»
 BRIEF_STEP_CHARS = 140  # «что делать»
 BRIEF_REASON_CHARS = 160  # «почему агент не правил сам»
-BRIEF_TEST_NAME_CHARS = 60
 BRIEF_WARNING_CHARS = 140
 BRIEF_BAR_CELLS = 10  # полоска прошедших тестов: [####------]
 BRIEF_LABEL_WIDTH = 15  # подписи строк проблемы выровнены в колонку
@@ -64,7 +63,7 @@ MAX_SUMMARY_DETAILED = 10
 MAX_SUMMARY_LISTED = 40
 # Известные проблемы в данных сводки: самые большие группы строкой, остальные — одной строкой.
 MAX_SUMMARY_GROUPS = 10
-# Свёрнутая известная проблема в кратком разборе: номера проблем, дальше «и ещё N».
+# Свёрнутая известная или объединённая проблема в кратком разборе: номера, дальше «и ещё N».
 MAX_BRIEF_GROUP_NUMBERS = 5
 # Другие проблемы той же известной проблемы в карточке проблемы report.md, дальше «и ещё N».
 MAX_REPORT_GROUP_NUMBERS = 10
@@ -93,12 +92,14 @@ SUMMARY_TASK = """\
    прошла проверка на шаге «Выгрузить отчёт»», а не «отчёт не выгрузился»).
 3. С чего начать инженеру: 1–2 конкретных действия.
 Если в данных есть блок «Известные проблемы из базы знаний», проблемы из одной его строки —
-одна причина: называй их одной проблемой с номерами из блока («проблемы 3, 7 и 12 — одна
+одна причина: называй их одной проблемой с номерами из блока («проблема 3 и 7 и 12 — одна
 известная проблема: …»), а не разными сбоями.
-Если в данных есть блок «Похоже, одна причина», проблемы из одной его строки агент счёл одной
-причиной, сравнив разборы: называй их вместе и с оговоркой «похоже» («проблемы 4 и 9, похоже,
-одна причина: …»), но не известной проблемой — пользователь этого не подтверждал. Последняя
-строка этого блока «Кроме них, ещё N таких групп…» — разные причины, их не объединяй.
+Если в данных есть блок «Объединённые проблемы», проблемы из одной его строки агент счёл одной
+причиной, сравнив разборы, и отчёт показывает их одной проблемой: называй их так же, одной
+проблемой с номерами из строки («проблема 4 и 9: …»), но не известной проблемой —
+пользователь этого не подтверждал. Сколько всего проблем — бери из строки «Проблем после
+объединения», а не из шапки данных. Последняя строка этого блока «Кроме них, ещё N таких
+групп…» — разные причины, их между собой не объединяй.
 Проблема со строкой «СОГЛАСОВАННОСТЬ: разные проблемы» — не одна проблема: в её тестах,
 похоже, разные сбои. Так и скажи, назови их причины из этой строки и не выдавай одну из них
 за причину всей проблемы.
@@ -253,6 +254,7 @@ def build_summary_data(
     flagged: set[str],
     known: KnownIssues | None = None,
     related: Related | None = None,
+    separate: set[str] | None = None,
 ) -> str:
     """Общий блок данных для задания сводки и проверки её актуальности.
 
@@ -261,7 +263,8 @@ def build_summary_data(
     проблемы, следующие — одной строкой причины, остальные — одной сводной
     строкой по причинам: размер задания ограничен при любом числе проблем.
     «ЗАДАНИЕ» ядра (перечислять все проблемы) заменено своим: список проблем в
-    отчёте строит код.
+    отчёте строит код. ``separate`` — проблемы с правкой агента: в отчёте они не
+    объединяются (у каждой своя команда ``apply``), от этого зависит число проблем.
     """
     triage, clustering = load_models(run)
     assert clustering is not None
@@ -302,7 +305,7 @@ def build_summary_data(
         prompt.user_prompt,
         *(["", _summary_rest(rest, analyses, flagged, rejected)] if rest else []),
         *(["", *_summary_known(known)] if known and known.groups else []),
-        *(["", *_summary_related(related)] if related and related.groups else []),
+        *(["", *_summary_related(related, run, separate or set())] if related and related.groups else []),
     ])
 
 
@@ -406,14 +409,44 @@ def _summary_known(known: KnownIssues) -> list[str]:
     return lines
 
 
-def _summary_related(related: Related) -> list[str]:
-    """Похоже, одна причина: какие проблемы агент счёл одной причиной, сравнив разборы."""
-    lines = ["--- Похоже, одна причина (агент сравнил разборы; пользователь не подтверждал) ---"]
+def merged_count(run: dict[str, Any], related: Related, separate: set[str]) -> int:
+    """Число проблем в отчёте после объединения: проблемы одной группы — одна проблема.
+
+    Проблемы из ``separate`` (правка агента) не объединяются. Остальные проблемы группы
+    одной категории и попадают в один раздел отчёта — там они и становятся одним пунктом.
+    """
+    count = len(run["clusters"])
+    for group in related.groups:
+        merged = [file_id for file_id in group.file_ids if file_id not in separate]
+        count -= max(len(merged) - 1, 0)
+    return count
+
+
+def _summary_related(related: Related, run: dict[str, Any], separate: set[str]) -> list[str]:
+    """Объединённые проблемы: какие проблемы агент счёл одной причиной, сравнив разборы.
+
+    Проблемы с правкой агента (``separate``) отчёт не объединяет — строка называет их отдельно,
+    иначе сводка говорила бы об одной проблеме там, где отчёт показывает две.
+    """
+    sizes = {entry["file_id"]: int(entry["member_count"]) for entry in run["clusters"]}
+    lines = [
+        "--- Объединённые проблемы (агент счёл одной причиной, сравнив разборы; пользователь "
+        "не подтверждал) ---",
+        f"Проблем после объединения: {merged_count(run, related, separate)}",
+    ]
     for group in related.groups[:MAX_SUMMARY_GROUPS]:
+        merged = [file_id for file_id in group.file_ids if file_id not in separate]
+        apart = [file_id for file_id in group.file_ids if file_id in separate]
+        if len(merged) < 2:  # объединять в отчёте нечего — все с правкой агента
+            merged, apart = [], group.file_ids
+        size = sum(sizes[file_id] for file_id in group.file_ids)
+        title = (_merged_title(merged, MAX_SUMMARY_GROUP_NUMBERS).lower() + " — " if merged else
+                 f"{_numbers_phrase(apart)} (у каждой своя правка агента) — ")
         lines.append(
-            f"{_numbers_phrase(group.file_ids, MAX_SUMMARY_GROUP_NUMBERS)} — "
-            f"{_truncate(_one_line(group.cause), SUMMARY_LABEL_CHARS)} — {group.size} "
-            f"{_plural(group.size, 'тест', 'теста', 'тестов')}"
+            title + f"{_truncate(_one_line(group.cause), SUMMARY_LABEL_CHARS)} — {size} "
+            f"{_plural(size, 'тест', 'теста', 'тестов')}"
+            + (f"; та же причина {_at_problems(apart, MAX_SUMMARY_GROUP_NUMBERS)}, "
+               "у них своя правка агента, в отчёте они отдельно" if merged and apart else "")
         )
     rest = related.groups[MAX_SUMMARY_GROUPS:]
     if rest:
@@ -423,6 +456,16 @@ def _summary_related(related: Related) -> list[str]:
             f"({problems} {_plural(problems, 'проблема', 'проблемы', 'проблем')}), у каждой своя причина."
         )
     return lines
+
+
+def _merged_title(file_ids: list[str], limit: int | None = None) -> str:
+    """«Проблема 4 и 5 и 8»; с лимитом — «Проблема 1 и 3 и 4 и 7 и 9 и ещё 3»."""
+    numbers = [str(int(file_id)) for file_id in file_ids]
+    shown = numbers if limit is None else numbers[:limit]
+    text = "Проблема " + " и ".join(shown)
+    if len(numbers) > len(shown):
+        text += f" и ещё {len(numbers) - len(shown)}"
+    return text
 
 
 def _numbers_phrase(file_ids: list[str], limit: int | None = None) -> str:
@@ -470,7 +513,8 @@ def render_report(
     ``not_proposed`` — почему по проблеме «тест» правку не предлагали;
     ``known`` — подтверждённые известные проблемы (``known_issues``); без него ссылка
     разбора на запись базы знаний показывается как есть, без групп;
-    ``related`` — группы «похоже, одна причина» (``related.py``): только пометки.
+    ``related`` — группы «одна причина» (``related.py``): проблемы группы в одном разделе
+    показываются одним пунктом «Проблема 4 и 5 и 8» и считаются одной проблемой.
     """
     proposals = proposals or {}
     apply_states = apply_states or {}
@@ -486,11 +530,12 @@ def render_report(
     link = _report_link(paths)
 
     groups = [
-        (bucket, title, sorted((p for p in problems if p.bucket == bucket), key=_sort_key))
+        (bucket, title, _units(bucket, [p for p in problems if p.bucket == bucket]))
         for bucket, title, _ in SECTIONS
     ]
-    groups = [(bucket, title, group) for bucket, title, group in groups if group]
-    brief = _brief_header(run, groups)
+    groups = [(bucket, title, units) for bucket, title, units in groups if units]
+    count = sum(len(units) for _, _, units in groups)
+    brief = _brief_header(run, groups, count)
     summary = _plain_text(summary)
     brief += ["", "### Коротко", summary, "", "---"]
     for bucket, title, group in groups:
@@ -499,16 +544,13 @@ def render_report(
         brief += ["", "### Замечания", *_brief_lines(notes, "- ", "замечаний")]
     brief += ["", "---", "", FEEDBACK_INVITATION, "", link]
 
-    full = _header(run)
+    full = _header(run, count)
     full += ["", "### Коротко", summary]
     if known and known.groups:
         full += ["", *_known_section(known, problems)]
-    if related and related.groups:
-        full += ["", *_related_section(related)]
-    for bucket, title, hint in SECTIONS:
-        group = sorted((p for p in problems if p.bucket == bucket), key=_sort_key)
-        if group:
-            full += ["", *_section(title, hint, group, tests, reasons)]
+    hints = {bucket: hint for bucket, _, hint in SECTIONS}
+    for bucket, title, units in groups:
+        full += ["", *_section(title, hints[bucket], units, tests, reasons)]
     full += _passed_after_retry_section(run)
     if notes:
         full += ["", "### Замечания", *(f"- {note}" for note in notes)]
@@ -589,7 +631,48 @@ def _sort_key(problem: _Problem) -> tuple[int, int, int]:
     return (0 if likely_bug else 1, -problem.size, problem.number)
 
 
-def _header(run: dict[str, Any]) -> list[str]:
+def _units(bucket: str, group: list[_Problem]) -> list[list[_Problem]]:
+    """Пункты раздела: проблема или проблемы одной группы «одна причина» (``related``).
+
+    Проблемы группы в разделе становятся одним пунктом. В «Агент может поправить сам» не
+    объединяются: у каждой своя правка и своя команда ``apply``.
+    """
+    units: list[list[_Problem]] = []
+    placed: dict[str, list[_Problem]] = {}
+    for problem in sorted(group, key=_sort_key):
+        key = problem.related.file_ids[0] if problem.related is not None and bucket != AGENT else None
+        if key is not None and key in placed:
+            placed[key].append(problem)
+            continue
+        unit = [problem]
+        units.append(unit)
+        if key is not None:
+            placed[key] = unit
+    return sorted(units, key=lambda unit: (
+        min(_sort_key(p)[0] for p in unit), -_size(unit), min(p.number for p in unit),
+    ))
+
+
+def _size(unit: list[_Problem]) -> int:
+    return sum(p.size for p in unit)
+
+
+def _largest(unit: list[_Problem]) -> _Problem:
+    """Самая большая проблема пункта: её разбор и тест представляют объединённый пункт."""
+    return max(unit, key=lambda p: (p.size, -p.number))
+
+
+def _merged_scope(run: dict[str, Any], count: int | None) -> str:
+    """«-> 5 проблем (8 до объединения похожих)»: число проблем отчёта."""
+    total = len(run["clusters"])
+    problems = total if count is None else count
+    text = f"{problems} {_plural(problems, 'проблема', 'проблемы', 'проблем')}"
+    if problems < total:
+        text += f" ({total} до объединения похожих)"
+    return text
+
+
+def _header(run: dict[str, Any], count: int | None = None) -> list[str]:
     counts = run["counts"]
     title = f"## Разбор прогона #{run['launch_id']}"
     if run.get("launch_name"):
@@ -602,12 +685,11 @@ def _header(run: dict[str, Any]) -> list[str]:
     if counts.get("unknown"):
         stats += f", статус не определён {counts['unknown']}"
     lines = [title, f"TestOps: {run['launch_url']}", stats + "."]
-    problems = len(run["clusters"])
-    if problems:
+    if run["clusters"]:
         active = counts["active_failures"]
         scope = (
             f"В разборе: {active} {_plural(active, 'упавший тест', 'упавших теста', 'упавших тестов')}"
-            f" → {problems} {_plural(problems, 'проблема', 'проблемы', 'проблем')}"
+            f" → {_merged_scope(run, count)}"
         )
         lines.append(scope + _muted_note(counts) + ".")
     if passed := len(passed_after_retry(run)):
@@ -640,31 +722,70 @@ def _known_section(known: KnownIssues, problems: list[_Problem]) -> list[str]:
     return lines
 
 
-def _related_section(related: Related) -> list[str]:
-    """«Похоже, одна причина» в report.md: какие проблемы агент счёл одной причиной."""
-    lines = [
-        f"### Похоже, одна причина ({len(related.groups)})",
-        ("Агент сравнил разборы похожих проблем и считает, что у этих проблем, скорее всего, одна "
-         "причина: начните с одной из них — исправление может убрать и остальные. Это вывод агента, "
-         "а не запись базы знаний; ниже проблемы остаются под своими номерами."),
-    ]
-    for group in related.groups:
-        size = f"{group.size} {_plural(group.size, 'тест', 'теста', 'тестов')}"
-        lines += ["", f"- {_numbers_phrase(group.file_ids).capitalize()} · {size} — {_one_line(group.cause)}"]
-    return lines
-
-
 def _section(
     title: str,
     hint: str,
-    group: list[_Problem],
+    units: list[list[_Problem]],
     tests: _Tests,
     not_proposed: dict[str, str],
 ) -> list[str]:
-    lines = [f"### {title} ({len(group)})", hint]
-    for problem in group:
-        lines += ["", *_item(problem, tests, not_proposed)]
+    lines = [f"### {title} ({len(units)})", hint]
+    for unit in units:
+        item = _item(unit[0], tests, not_proposed) if len(unit) == 1 else _merged_item(unit, tests, not_proposed)
+        lines += ["", *item]
     return lines
+
+
+MERGED_TAG = "объединил агент"
+
+
+def _merged_item(unit: list[_Problem], tests: _Tests, not_proposed: dict[str, str]) -> list[str]:
+    """Проблемы одной причины в report.md: общая причина из решения агента, разбор и шаги
+    самой большой проблемы, места в коде и тесты всех. Разбор каждой — в подробностях."""
+    group = unit[0].related
+    assert group is not None
+    largest = _largest(unit)
+    analysis = largest.analysis
+    size = _size(unit)
+    numbers = [p.entry["file_id"] for p in sorted(unit, key=lambda p: p.number)]
+    unconfirmed = next((_unconfirmed(p) for p in unit if _unconfirmed(p)), "")
+    lines = [
+        f"**{_merged_title(numbers)}** — {size} {_plural(size, 'тест', 'теста', 'тестов')} · {MERGED_TAG}",
+        f"- Общая причина: {largest.label} — {_one_line(group.cause)}{unconfirmed}",
+    ]
+    # Текст — из разбора одной проблемы: подпись говорит, из какой (её тестов меньше, чем в пункте).
+    what = _one_line(analysis.what)
+    if what:
+        lines.append(f"- Что случилось (по разбору проблемы {largest.number}): {what}")
+    lines += _fix_lines(analysis, f"Что делать (по разбору проблемы {largest.number}):")
+    code = list(dict.fromkeys(line for p in unit for line in p.analysis.code))
+    if code:
+        lines.append("- Где в коде: " + "; ".join(code))
+    if largest.bucket == MANUAL:
+        lines.append(f"- Почему агент не правил сам: {_not_fixed_reason(largest, not_proposed)}")
+    others = _outside(group, unit)
+    if others:
+        lines.append(f"- Та же причина, по мнению агента, и {_at_problems(others, MAX_REPORT_GROUP_NUMBERS)}")
+    listed = _test_links([test for p in unit for test in tests.of_cluster(p.entry)], size)
+    if listed:
+        lines.append(f"- Тесты: {listed}")
+    lines.append(f"- Разбор каждой проблемы — в подробностях ниже: {_numbers_phrase(numbers)}")
+    return lines
+
+
+def _at_problems(file_ids: list[str], limit: int) -> str:
+    """«у проблемы 4» / «у проблем 4, 5 и ещё 2»."""
+    numbers = [str(int(file_id)) for file_id in file_ids]
+    text = ("у проблемы " if len(numbers) == 1 else "у проблем ") + ", ".join(numbers[:limit])
+    if len(numbers) > limit:
+        text += f" и ещё {len(numbers) - limit}"
+    return text
+
+
+def _outside(group: RelatedGroup, unit: list[_Problem]) -> list[str]:
+    """Проблемы группы, оставшиеся в другом пункте (например, с правкой агента)."""
+    inside = {p.entry["file_id"] for p in unit}
+    return [file_id for file_id in group.file_ids if file_id not in inside]
 
 
 def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> list[str]:
@@ -723,7 +844,8 @@ def _muted_note(counts: dict[str, Any]) -> str:
 
 def _brief_header(
     run: dict[str, Any],
-    groups: list[tuple[str, str, list[_Problem]]],
+    groups: list[tuple[str, str, list[list[_Problem]]]],
+    count: int,
 ) -> list[str]:
     """Шапка краткого разбора: полоска прошедших тестов, счётчики без нулей и обзор разделов."""
     counts = run["counts"]
@@ -743,20 +865,19 @@ def _brief_header(
     lines = [title, "", f"{_pass_bar(counts['passed'], total)} {stats}" if total else stats]
     if passed := len(passed_after_retry(run)):
         lines.append(f"Прошли после повтора: {passed} (список в полном разборе)")
-    problems = len(run["clusters"])
-    if problems:
+    if run["clusters"]:
         active = counts["active_failures"]
         scope = (
             f"{active} {_plural(active, 'упавший тест', 'упавших теста', 'упавших тестов')}"
-            f" -> {problems} {_plural(problems, 'проблема', 'проблемы', 'проблем')}"
+            f" -> {_merged_scope(run, count)}"
         )
         lines.append(scope + _muted_note(counts) + ":")
         width = max(len(name) for _, name in BRIEF_SECTIONS.values()) + 4
-        for bucket, _, group in groups:
+        for bucket, _, units in groups:
             icon, name = BRIEF_SECTIONS[bucket]
-            size = sum(p.size for p in group)
+            size = sum(_size(unit) for unit in units)
             lines.append(
-                f"   {icon} {name} {'.' * (width - len(name))} {len(group)} "
+                f"   {icon} {name} {'.' * (width - len(name))} {len(units)} "
                 f"({size} {_plural(size, 'тест', 'теста', 'тестов')})"
             )
     lines.append(f"TestOps: {run['launch_url']}")
@@ -779,21 +900,26 @@ def _pass_bar(passed: int, total: int) -> str:
 def _brief_section(
     bucket: str,
     title: str,
-    group: list[_Problem],
+    units: list[list[_Problem]],
     tests: _Tests,
     not_proposed: dict[str, str],
 ) -> list[str]:
     icon, _ = BRIEF_SECTIONS[bucket]
-    lines = [f"### {icon} {title} ({len(group)})"]
-    units = _brief_units(bucket, group)
-    for unit in units[:MAX_BRIEF_ITEMS]:
-        item = _brief_item(unit[0], tests, not_proposed) if len(unit) == 1 else _brief_known(unit, tests)
+    lines = [f"### {icon} {title} ({len(units)})"]
+    folds = _brief_units(bucket, units)
+    for fold in folds[:MAX_BRIEF_ITEMS]:
+        if len(fold) > 1:
+            item = _brief_known([unit[0] for unit in fold], tests)
+        elif len(fold[0]) > 1:
+            item = _brief_merged(fold[0], tests, not_proposed)
+        else:
+            item = _brief_item(fold[0][0], tests, not_proposed)
         lines += ["", *item]
-    rest = [problem for unit in units[MAX_BRIEF_ITEMS:] for problem in unit]
+    rest = [unit for fold in folds[MAX_BRIEF_ITEMS:] for unit in fold]
     if rest:
         # Без номеров: голый список номеров ничего не говорит, а при тысячах проблем
         # рос бы с каждым next. Сколько их и где смотреть — достаточно.
-        count = sum(p.size for p in rest)
+        count = sum(_size(unit) for unit in rest)
         lines += [
             "",
             (
@@ -805,24 +931,28 @@ def _brief_section(
     return lines
 
 
-def _brief_units(bucket: str, group: list[_Problem]) -> list[list[_Problem]]:
-    """Пункты раздела брифа: проблема или несколько проблем одной известной проблемы.
+def _brief_units(bucket: str, units: list[list[_Problem]]) -> list[list[list[_Problem]]]:
+    """Пункты раздела брифа: пункт отчёта или несколько проблем одной известной проблемы.
 
-    Проблемы одной группы в разделе сворачиваются в один пункт на месте первой из них.
+    Проблемы одной известной проблемы в разделе сворачиваются в один пункт на месте первой
+    из них; каждая остаётся проблемой в счётчиках. Объединённых пунктов это не касается:
+    у известной проблемы группы «одна причина» нет (``related.candidate_groups``).
     В «Агент может поправить сам» не сворачиваются: у каждой своя правка и своя команда.
     """
-    units: list[list[_Problem]] = []
-    placed: dict[tuple[str, str], list[_Problem]] = {}
-    for problem in group:
-        key = problem.group.record.key if problem.group is not None and bucket != AGENT else None
+    folds: list[list[list[_Problem]]] = []
+    placed: dict[tuple[str, str], list[list[_Problem]]] = {}
+    for unit in units:
+        problem = unit[0]
+        known = len(unit) == 1 and problem.group is not None and bucket != AGENT
+        key = problem.group.record.key if known and problem.group is not None else None
         if key is not None and key in placed:
-            placed[key].append(problem)
+            placed[key].append(unit)
             continue
-        unit = [problem]
-        units.append(unit)
+        fold = [unit]
+        folds.append(fold)
         if key is not None:
-            placed[key] = unit
-    return units
+            placed[key] = fold
+    return folds
 
 
 def _brief_known(unit: list[_Problem], tests: _Tests) -> list[str]:
@@ -830,10 +960,10 @@ def _brief_known(unit: list[_Problem], tests: _Tests) -> list[str]:
     first = unit[0]
     assert first.group is not None
     record = first.group.record
-    size = sum(p.size for p in unit)
-    numbers = _numbers_phrase([p.entry["file_id"] for p in unit], MAX_BRIEF_GROUP_NUMBERS)
+    size = _size(unit)
+    numbers = _merged_title([p.entry["file_id"] for p in unit], MAX_BRIEF_GROUP_NUMBERS)
     lines = [
-        (f"**{numbers[0].upper()}{numbers[1:]}** · {size} {_plural(size, 'тест', 'теста', 'тестов')} "
+        (f"**{numbers}** · {size} {_plural(size, 'тест', 'теста', 'тестов')} "
          f"· [известная проблема: {record.id}]"),
         _truncate(f"Одна известная проблема: «{_plain_line(_one_line(record.title))}»", BRIEF_TEXT_CHARS),
     ]
@@ -842,8 +972,45 @@ def _brief_known(unit: list[_Problem], tests: _Tests) -> list[str]:
     step = _one_line(record.first_step) or first.analysis.first_fix_step()
     if step:
         lines.append(_brief_field("Что делать:", _truncate(_plain_line(step), BRIEF_STEP_CHARS)))
-    largest = max(unit, key=lambda p: (p.size, -p.number))
+    return lines + _brief_example(_largest(unit), tests)
+
+
+def _brief_merged(unit: list[_Problem], tests: _Tests, not_proposed: dict[str, str]) -> list[str]:
+    """Проблемы одной причины в терминале: номера, общая причина из решения агента, шаг и
+    тест самой большой проблемы."""
+    group = unit[0].related
+    assert group is not None
+    largest = _largest(unit)
+    size = _size(unit)
+    numbers = [p.entry["file_id"] for p in sorted(unit, key=lambda p: p.number)]
+    tags = [MERGED_TAG, *_merged_tags(unit)]
+    others = _outside(group, unit)
+    if others:
+        tags.append(f"та же причина {_at_problems(others, MAX_BRIEF_GROUP_NUMBERS)}")
+    lines = [
+        # Все номера (группа — не больше MAX_RELATE_GROUP): по ним пользователь даёт обратную связь.
+        f"**{_merged_title(numbers)}** · {size} "
+        f"{_plural(size, 'тест', 'теста', 'тестов')}" + "".join(f" · [{tag}]" for tag in tags)
+    ]
+    what = first_sentence(_plain_line(_one_line(largest.analysis.what)))
+    if what:
+        lines.append(_truncate(what, BRIEF_TEXT_CHARS))
+    cause = _truncate(_plain_line(_one_line(group.cause)), BRIEF_CAUSE_CHARS)
+    lines.append(_brief_field("Общая причина:", f"[{largest.tag}] {cause}"))
+    step = largest.analysis.first_fix_step()
+    if step:
+        lines.append(_brief_field("Что делать:", _truncate(step, BRIEF_STEP_CHARS)))
+    if largest.bucket == MANUAL:
+        reason = _truncate(_one_line(_not_fixed_reason(largest, not_proposed)), BRIEF_REASON_CHARS)
+        lines.append(_brief_field("Почему не сам:", reason))
     return lines + _brief_example(largest, tests)
+
+
+def _merged_tags(unit: list[_Problem]) -> list[str]:
+    """Метки участников объединённого пункта без повторов; повтор — по самому частому."""
+    tags = [tag for p in unit for tag in _brief_tags(p, related=False, history=False)]
+    repeated = max(unit, key=lambda p: (p.entry.get("history") or {}).get("launches", 0))
+    return list(dict.fromkeys([*tags, *_history_tags(repeated)]))
 
 
 def _brief_lines(items: list[str], prefix: str, what: str) -> list[str]:
@@ -924,7 +1091,7 @@ def _brief_example(problem: _Problem, tests: _Tests) -> list[str]:
     members = tests.of_cluster(problem.entry)
     if not members:
         return []
-    name = _truncate(_one_line(str(members[0].get("name") or members[0]["test_result_id"])), BRIEF_TEST_NAME_CHARS)
+    name = _one_line(str(members[0].get("name") or members[0]["test_result_id"]))
     return [_brief_field("Например:" if problem.size > 1 else "Тест:", name)]
 
 
@@ -986,35 +1153,39 @@ def _evidence_lines(analysis: ClusterAnalysis, title: str, missing_title: str) -
     return lines
 
 
-def _brief_tags(problem: _Problem) -> list[str]:
+def _history_tags(problem: _Problem) -> list[str]:
+    history = problem.entry.get("history")
+    if not history:
+        return []
+    launches = history["launches"]
+    return [
+        f"повторяется: уже была в {launches} "
+        f"{_plural(launches, 'другом прогоне', 'других прогонах', 'других прогонах')}"
+    ]
+
+
+def _brief_tags(problem: _Problem, *, related: bool = True, history: bool = True) -> list[str]:
     tags: list[str] = []
     if not problem.flagged and problem.analysis.consistency_kind == "different":
         tags.append(MIXED_GROUP_NOTE)
     if not problem.flagged and problem.analysis.unconfirmed_by_log:
         tags.append("не подтверждено логом")
-    history = problem.entry.get("history")
     if history:
-        launches = history["launches"]
-        tags.append(
-            f"повторяется: уже была в {launches} "
-            f"{_plural(launches, 'другом прогоне', 'других прогонах', 'других прогонах')}"
-        )
+        tags += _history_tags(problem)
     if problem.known is not None:
         tags.append(f"известная проблема: {problem.known.id}")
     if problem.mismatch is not None:
         tags.append(f"расходится с базой знаний: {problem.mismatch.id}")
     if problem.rejected is not None:
         tags.append(REJECTED_TAG)
-    if problem.related is not None:
+    if related and problem.related is not None:
         others = _others(problem.related, problem.number)
-        shown = others[:MAX_BRIEF_GROUP_NUMBERS]
-        tail = f" и ещё {len(others) - len(shown)}" if len(others) > len(shown) else ""
-        tags.append(f"похоже, та же причина, что у {', '.join(shown)}{tail}")
+        tags.append(f"та же причина {_at_problems(others, MAX_BRIEF_GROUP_NUMBERS)} ({MERGED_TAG})")
     return tags
 
 
 def _others(group: RelatedGroup, number: int) -> list[str]:
-    return [str(int(file_id)) for file_id in group.file_ids if int(file_id) != number]
+    return [file_id for file_id in group.file_ids if int(file_id) != number]
 
 
 def _item_title(problem: _Problem) -> str:
@@ -1070,12 +1241,16 @@ def _history_lines(problem: _Problem) -> list[str]:
     lines += _known_lines(problem)
     if problem.related is not None:
         others = _others(problem.related, problem.number)
-        shown = others[:MAX_REPORT_GROUP_NUMBERS]
-        together = ("у проблемы " if len(others) == 1 else "у проблем ") + ", ".join(shown)
-        if len(others) > len(shown):
-            together += f" и ещё {len(others) - len(shown)} (все — в разделе «Похоже, одна причина»)"
-        lines.append(f"- Похоже, та же причина, что {together}: {_one_line(problem.related.cause)}")
+        lines.append(
+            f"- Агент счёл одной причиной с {_with_problems(others)}: {_one_line(problem.related.cause)}"
+        )
     return lines
+
+
+def _with_problems(file_ids: list[str]) -> str:
+    """«проблемой 4» / «проблемами 4, 5» (группа — не больше ``MAX_RELATE_GROUP`` проблем)."""
+    numbers = ", ".join(str(int(file_id)) for file_id in file_ids)
+    return ("проблемой " if len(file_ids) == 1 else "проблемами ") + numbers
 
 
 REJECTED_TAG = "разбор опирался на отвергнутую запись базы знаний"
