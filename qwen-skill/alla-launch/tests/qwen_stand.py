@@ -263,6 +263,16 @@ SCENARIOS: dict[str, Scenario] = {
         review=("Evidence: оценки проверяющей модели в review/report.md правдоподобны для "
                 "разборов A01; pilot-summary.md без данных прогона",),
         note="review запускает вложенный qwen (оценка диагнозов) — ещё один запрос к модели"),
+    "C01": Scenario(
+        "Слэш-команда /alla:run, полный разбор", "default", ("/alla:run 777",),
+        (*FULL_RUN, "commands_visible", "prepare_launch"), launch_id=777),
+    "C02": Scenario(
+        "Слэш-команды: /alla:run, затем /alla:reject без id записи", "known",
+        ("/alla:run 5112", "/alla:reject 1"),
+        (*FULL_RUN, "commands_visible", "prepare_launch", "known_issue_grouped", "kb_rejected"),
+        launch_id=5112, knowledge="payments_pool",
+        review=(("Evidence: id записи для reject взят из краткого разбора, а не выдуман; после "
+                 "reject бриф выведен заново и проблема 1 вне группы"),)),
     "P04": Scenario(
         "40 кластеров: пакеты субагентов", "many:40", ("/alla-launch 900",),
         (*FULL_RUN, "prepare_launch", "subagents_used", "batch_agent_used"), launch_id=900),
@@ -357,6 +367,10 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
     # .qwen/agents/, а Qwen видит агентов, которые были на старте сеанса.
     for agent in (SKILL_ROOT / "agents").glob("*.md"):
         write(project / ".qwen" / "agents" / agent.name, agent.read_text(encoding="utf-8"))
+    # Команды /alla:* — так же: их ставят setup и prepare, Qwen видит их со старта сеанса.
+    for command in (SKILL_ROOT / "commands").rglob("*.md"):
+        write(project / ".qwen" / "commands" / command.relative_to(SKILL_ROOT / "commands"),
+              command.read_text(encoding="utf-8"))
     git = ["git", "-C", str(project), "-c", "user.name=stand", "-c", "user.email=stand@local"]
     run(["git", "init", "-q", str(project)])
     run([*git, "add", "-A"])
@@ -745,6 +759,14 @@ def check_allowed_writes(ctx: Context) -> dict[str, Any]:
 def check_skill_visible(ctx: Context) -> dict[str, Any]:
     commands = ctx.trace.init.get("slash_commands") or []
     return ok() if "alla-launch" in commands else bad(f"slash_commands: {commands}")
+
+
+def check_commands_visible(ctx: Context) -> dict[str, Any]:
+    """Qwen загрузил все команды /alla:* — битый frontmatter он пропускает молча."""
+    commands = set(ctx.trace.init.get("slash_commands") or [])
+    expected = {f"alla:{path.stem}" for path in (SKILL_ROOT / "commands" / "alla").glob("*.md")}
+    missing = sorted(expected - commands)
+    return bad(f"нет команд: {missing}") if missing else ok()
 
 
 def check_activated(ctx: Context) -> dict[str, Any]:

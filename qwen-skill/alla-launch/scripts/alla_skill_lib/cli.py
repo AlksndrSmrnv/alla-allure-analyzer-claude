@@ -66,7 +66,6 @@ from alla_skill_lib.analysis_format import (
 from alla_skill_lib.batch_task import (
     BATCH_AGENT,
     MAX_VERIFY_ROUNDS,
-    install_batch_agent,
     render_batch_task,
 )
 from alla_skill_lib.cluster_task import (
@@ -108,6 +107,7 @@ from alla_skill_lib.proposals import (
     revert_proposal,
     validate_proposal,
 )
+from alla_skill_lib.qwen_files import install_batch_agent, install_commands
 from alla_skill_lib.related import (
     RELATED_FORMAT,
     Related,
@@ -451,6 +451,8 @@ def cmd_prepare(
     installed = install_batch_agent(project_root)
     if installed is not None:
         _progress(f"Установлен субагент пакетов {installed} (Qwen Code увидит его со следующего сеанса).")
+    if install_commands(project_root):
+        _progress("Установлены команды /alla:* (Qwen Code увидит их со следующего сеанса).")
     if not fresh:
         unfinished = ws.find_unfinished_run(reports_dir, launch_id)
         if unfinished is not None:

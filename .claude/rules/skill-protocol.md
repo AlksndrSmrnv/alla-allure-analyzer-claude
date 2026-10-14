@@ -12,6 +12,9 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/session_log.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/review.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/review_model.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/qwen_files.py"
+  - "qwen-skill/alla-launch/commands/**"
+  - "qwen-skill/alla-launch/tests/test_skill_commands.py"
   - "qwen-skill/alla-launch/tests/test_skill_protocol.py"
   - "qwen-skill/alla-launch/tests/test_skill_parallel.py"
   - "qwen-skill/alla-launch/tests/test_skill_flow.py"
@@ -39,6 +42,24 @@ paths:
 - `/alla-launch установи` (`SKILL.md`, «1. Старт») — модель выполняет `setup`, затем `check`, и
   без номера прогона ничего не разбирает; пустой `.env` — `check` отвечает `error`, модель
   просит пользователя вписать адрес и токен. Отдельной команды скрипта для этого нет.
+
+## Слэш-команды `/alla:*` (`commands/alla/`, `qwen_files.py`)
+
+- `commands/alla/*.md` — команды Qwen Code (`FileCommandLoader`: подпапка `alla/` даёт имя
+  `alla:<файл>`): `run`, `continue`, `apply`, `revert`, `remember`, `reject`, `review`,
+  `setup`. Frontmatter — `description`, `argument-hint` (у команд с аргументами, тогда в теле
+  `{{args}}`), `disable-model-invocation: true` (без него команду может вызвать сама модель).
+- Тело — короткая просьба «вызови скилл alla-launch (инструмент skill) и действуй по разделу
+  N»: шаги и правила не копируются, источник — `SKILL.md`. Папку разбора для `apply`,
+  `revert`, `remember`, `reject`, `review` команда не знает — правило в разделе `SKILL.md`
+  «Слэш-команды» (папка из сеанса, иначе `next` без аргументов; краткий разбор повторно не
+  выводить).
+- Qwen читает команды из `<project>/.qwen/commands/` при старте сеанса. Копируют их
+  `setup` (`alla_skill.install_commands`, Python 3.8, без библиотеки) и `prepare`
+  (`qwen_files.install_commands`, вместе с `install_batch_agent`): только новые и изменённые
+  файлы, чужие в `.qwen/commands/alla/` не удаляются. Две реализации сверяет
+  `test_skill_commands.py`; он же проверяет формат, набор и разделы `SKILL.md`.
+- Стенд кладёт команды в проект заранее (как со второго сеанса); сценарии `C01`, `C02`.
 
 ## Команды
 
@@ -95,7 +116,7 @@ paths:
 - `alla-batch` — свой субагент (`agents/alla-batch.md`, узкая роль, инструменты read_file,
   write_file, run_shell_command): встроенный `general-purpose` по своей системной подсказке
   осматривал проект (ls/find, чужие пакеты), и текстом prompt это не лечилось (стенд Qwen,
-  P04). `prepare` ставит его в `<project>/.qwen/agents/` (`batch_task.install_batch_agent`);
+  P04). `prepare` ставит его в `<project>/.qwen/agents/` (`qwen_files.install_batch_agent`);
   Qwen видит агентов со старта сеанса, поэтому инструкция `next` даёт запасной путь — без
   `subagent_type`. Qwen молча пропускает невалидный файл агента: формат охраняет
   `test_batch_agent_file_is_valid_for_qwen_and_narrow`.

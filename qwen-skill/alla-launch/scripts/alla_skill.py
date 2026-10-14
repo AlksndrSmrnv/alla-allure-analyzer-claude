@@ -166,6 +166,30 @@ def create_env_file() -> Path | None:
     return env_file
 
 
+def install_commands(project_dir: Path = PROJECT_DIR) -> list[Path]:
+    """Команды ``/alla:*`` в ``<проект>/.qwen/commands/alla/``; возвращает записанные файлы.
+
+    Та же логика, что ``qwen_files.install_commands``: здесь её не импортировать —
+    ``alla_skill_lib`` требует Python 3.11+.
+    """
+    target_dir = project_dir / ".qwen" / "commands" / "alla"
+    written: list[Path] = []
+    for source in sorted((SKILL_DIR / "commands" / "alla").glob("*.md")):
+        text = source.read_text(encoding="utf-8")
+        text = text if text.endswith("\n") else text + "\n"
+        target = target_dir / source.name
+        try:
+            if target.is_file() and target.read_text(encoding="utf-8") == text:
+                continue
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        except OSError as error:
+            print("Не удалось установить {}: {}".format(target, error), flush=True)
+            continue
+        written.append(target)
+    return written
+
+
 def use_existing_venv(explicit: str | None) -> bool:
     """Существующий ``.venv`` проекта годится: Python в нём запускается и он 3.11+."""
     version = python_version(str(venv_python()))
@@ -278,6 +302,11 @@ def setup(argv: Sequence[str]) -> int:
     if created is not None:
         print(
             "Создан {}: впиши ALLURE_ENDPOINT и ALLURE_TOKEN (токен в чат не пиши).".format(created)
+        )
+    if install_commands():
+        print(
+            "Установлены команды /alla:run, /alla:apply и другие в {}: Qwen Code покажет их "
+            "после перезапуска.".format(PROJECT_DIR / ".qwen" / "commands" / "alla")
         )
     return 0
 

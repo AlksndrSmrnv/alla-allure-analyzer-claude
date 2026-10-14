@@ -395,9 +395,9 @@ QWEN_TOOLS = {"read_file", "write_file", "edit", "run_shell_command", "glob", "g
 def test_batch_agent_file_is_valid_for_qwen_and_narrow() -> None:
     # Невалидный файл агента Qwen Code пропускает молча (подсказка короче 10 символов,
     # нет name/description) — тогда пакеты снова уходят general-purpose субагенту.
-    from alla_skill_lib import batch_task
+    from alla_skill_lib import batch_task, qwen_files
 
-    text = batch_task.batch_agent_source().read_text(encoding="utf-8")
+    text = qwen_files.batch_agent_source().read_text(encoding="utf-8")
     _, header, prompt = text.split("---\n", 2)
     fields = dict(line.split(":", 1) for line in header.splitlines() if not line.startswith(" "))
     assert fields["name"].strip() == batch_task.BATCH_AGENT
@@ -411,15 +411,15 @@ def test_batch_agent_file_is_valid_for_qwen_and_narrow() -> None:
 
 
 def test_install_batch_agent_writes_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from alla_skill_lib import batch_task
+    from alla_skill_lib import qwen_files
     from alla_skill_lib import workspace as ws
 
     monkeypatch.setattr(ws, "SKILL_DIR", Path(cli.__file__).resolve().parents[2])
-    target = batch_task.install_batch_agent(tmp_path)
+    target = qwen_files.install_batch_agent(tmp_path)
     assert target == tmp_path / ".qwen" / "agents" / "alla-batch.md"
-    assert target.read_text(encoding="utf-8") == batch_task.batch_agent_source().read_text(
+    assert target.read_text(encoding="utf-8") == qwen_files.batch_agent_source().read_text(
         encoding="utf-8")
-    assert batch_task.install_batch_agent(tmp_path) is None  # уже установлен — не пишет
+    assert qwen_files.install_batch_agent(tmp_path) is None  # уже установлен — не пишет
     target.write_text("старая версия", encoding="utf-8")
-    assert batch_task.install_batch_agent(tmp_path) == target  # устарел — обновляет
+    assert qwen_files.install_batch_agent(tmp_path) == target  # устарел — обновляет
 
