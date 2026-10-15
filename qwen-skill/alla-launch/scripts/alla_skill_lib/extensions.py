@@ -5,8 +5,8 @@
 заменяет встроенное). Включаются строкой ``enabled = [...]`` в
 ``<проект>/alla-extensions/config.toml``.
 
-На событие скилла (``after_apply``, ``after_revert``, ``after_report``) расширение
-отвечает хуком:
+На событие скилла (``after_apply``, ``after_revert``, ``after_report``, ``on_request`` — по
+просьбе пользователя) расширение отвечает хуком:
 
 * ``task`` — задание своему субагенту: скилл пишет контекст и задание в папку разбора, а
   в ответ команды добавляет блок «Расширения:» с точной инструкцией основному агенту;
@@ -35,10 +35,17 @@ from alla_skill_lib import workspace as ws
 from alla_skill_lib.analysis_format import parse_analysis
 from alla_skill_lib.batch_task import BATCH_AGENT
 from alla_skill_lib.proposals import parse_proposal
+from alla_skill_lib.sources import describe, load_registry
 
 API_VERSION = 1
-EVENTS = ("after_apply", "after_revert", "after_report")
-PROBLEM_EVENTS = ("after_apply", "after_revert")
+EVENTS = ("after_apply", "after_revert", "after_report", "on_request")
+PROBLEM_EVENTS = ("after_apply", "after_revert", "on_request")
+# Событие по просьбе пользователя (``extensions run``): вопрос confirm не нужен — он уже попросил.
+REQUEST_EVENT = "on_request"
+PARAM_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+PARAM_VALUE_LIMIT = 500
+MAX_SOURCES_CHARS = 60_000  # куски «Данных» проблемы в контексте расширения
+MAX_CONTEXT_TESTS = 20
 PROJECT_DIRNAME = "alla-extensions"
 CONFIG_FILE = "config.toml"
 MANIFEST_FILE = "extension.toml"
@@ -432,12 +439,62 @@ def out_dir(paths: ws.RunPaths, extension: Extension) -> Path:
     return paths.root / "extensions" / extension.name
 
 
+def parse_params(raw: list[str]) -> dict[str, list[str]]:
+    """``--param ключ=значение`` → ключ → значения по порядку (ключ может повторяться)."""
+    params: dict[str, list[str]] = {}
+    for item in raw:
+        key, sep, value = item.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not PARAM_KEY_RE.fullmatch(key):
+            raise ExtensionError(
+                f"--param {item!r}: нужен вид ключ=значение, ключ — латиница в нижнем регистре, "
+                "цифры и _"
+            )
+        if not value or len(value) > PARAM_VALUE_LIMIT or any(ord(char) < 32 for char in value):
+            raise ExtensionError(
+                f"--param {key}: значение — одна строка до {PARAM_VALUE_LIMIT} символов"
+            )
+        params.setdefault(key, []).append(value)
+    return params
+
+
+def problem_tests(run: dict[str, Any], entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Тесты проблемы (представитель первым): имя, полное имя, ссылка в TestOps."""
+    clustering = run.get("clustering") or {}
+    cluster: dict[str, Any] = next((item for item in clustering.get("clusters", [])
+                                    if item.get("cluster_id") == entry.get("cluster_id")), {})
+    representative = cluster.get("representative_test_id")
+    members = sorted(cluster.get("member_test_ids", []), key=lambda item: item != representative)
+    tests = {test.get("test_result_id"): test
+             for test in (run.get("triage") or {}).get("failed_tests", [])}
+    return [{"name": tests[test_id].get("name"), "full_name": tests[test_id].get("full_name"),
+             "link": tests[test_id].get("link")}
+            for test_id in members[:MAX_CONTEXT_TESTS] if test_id in tests]
+
+
+def problem_sources(paths: ws.RunPaths, entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Куски «Данных» задания проблемы (id ``S…``) — ровно то, что видела модель разбора."""
+    registry = load_registry(paths.sources(entry["file_id"])) or {}
+    result: list[dict[str, Any]] = []
+    budget = MAX_SOURCES_CHARS
+    for source_id, record in registry.items():
+        if budget <= 0:
+            break
+        text = str(record.get("text", ""))[:budget]
+        budget -= len(text)
+        result.append({"id": source_id, "kind": record.get("kind"), "title": describe(record),
+                       "test_name": record.get("test_name"), "text": text})
+    return result
+
+
 def problem_context(
     paths: ws.RunPaths,
     entry: dict[str, Any],
     record: dict[str, Any] | None,
+    run: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Данные проблемы для расширения: метка, разбор, предложение правки, запись apply."""
+    """Данные проблемы для расширения: метка, разбор, предложение правки, запись apply,
+    тесты и куски «Данных» задания."""
     file_id = entry["file_id"]
     analysis_path = paths.analysis(file_id)
     analysis = parse_analysis(ws.read_text(analysis_path)) if analysis_path.is_file() else None
@@ -459,6 +516,8 @@ def problem_context(
             "why": proposal.why if proposal else "",
         },
         "record": record,
+        "tests": problem_tests(run, entry) if run is not None else [],
+        "sources": problem_sources(paths, entry),
     }
 
 
@@ -522,12 +581,14 @@ def _fire_hook(
         "extension": extension.name,
         "launch_id": run.get("launch_id"),
         "launch_name": run.get("launch_name"),
+        "launch_created": run.get("launch_created"),
         "run_dir": str(paths.root),
         "project_root": str(run["project_root"]),
         "report_path": str(paths.report),
         "out_dir": str(directory),
         "stem": stem,
         "settings": settings,
+        "params": {},
         **data,
     }
     ws.write_json(context_file, context)
@@ -548,7 +609,7 @@ def _fire_hook(
         "типа субагентов — тот же вызов без subagent_type. Ответ субагента покажи пользователю "
         "как есть, кроме строк «Проблема скилла: …»."
     )
-    if settings.get("confirm"):
+    if settings.get("confirm") and hook.event != REQUEST_EVENT:
         question = hook.ask or f"запустить «{extension.title}»"
         return [f"- {label}: спроси пользователя: «{question}» Только после явного «да» {launch}"]
     return [f"- {label}: {launch}"]
@@ -591,6 +652,8 @@ def render_task(
         )
     for key, value in context["settings"].items():
         values[f"settings_{key.replace('-', '_')}"] = value
+    for key, items in (context.get("params") or {}).items():
+        values[f"param_{key}"] = ", ".join(items)
     text = template.read_text(encoding="utf-8")
     # Тексты разбора — одной строкой: перевод строки в них сломал бы разметку задания.
     return Template(text).safe_substitute({key: " ".join(str(value).split())

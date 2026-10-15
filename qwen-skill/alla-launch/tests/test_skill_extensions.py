@@ -589,3 +589,68 @@ def test_enable_keeps_keys_that_only_look_like_enabled(project: Path, capsys) ->
     code, out = ext_cli(project, capsys, "enable", "demo")
     assert code == 0 and ext.load_config(project).enabled == ("x", "demo")
     assert config.read_text(encoding="utf-8") == 'enabled = ["x", "demo"]\n"enabled.extra" = 1\n'
+
+
+REQUEST_MANIFEST = MANIFEST.replace("confirm = false", "confirm = true") + """
+[[hooks]]
+event = "on_request"
+task = "request.md"
+"""
+REQUEST_TASK = "Проблема $problem ($label), ревизия $param_ref, команда: $action_act\n"
+
+
+def test_on_request_runs_subagent_per_problem_with_params(
+    project: Path, testops: FakeTestOps, capsys
+) -> None:
+    make_demo(project, extension_toml=REQUEST_MANIFEST, request_md=REQUEST_TASK)
+    ext_cli(project, capsys, "enable", "demo")
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+
+    first, second = str(int(order)), str(int(login))
+    code, out = _run(["extensions", "run", "demo", first, second, first, "--run", str(run_dir),
+                      "--param", "ref=release/1.4", "--param", "ref=orders=v2"], capsys)
+    assert code == 0 and out.startswith("STATUS: ok"), out
+    # confirm = true не спрашивает: пользователь сам попросил; по пункту на проблему, без повторов.
+    assert "спроси пользователя" not in out
+    assert out.count("subagent_type «alla-demo»") == 2
+    folder = run_dir / "extensions" / "demo"
+    task = (folder / f"on_request-{order}.md").read_text(encoding="utf-8")
+    assert task.startswith(f"Проблема {first} (") and "ревизия release/1.4, orders=v2," in task
+    assert f"--context {folder / f'on_request-{order}.json'}" in task
+
+    context = json.loads((folder / f"on_request-{order}.json").read_text(encoding="utf-8"))
+    assert context["event"] == "on_request"
+    assert context["params"] == {"ref": ["release/1.4", "orders=v2"]}
+    assert context["launch_created"] == "2026-09-01T10:00:00+00:00"
+    problem = context["problem"]
+    assert problem["tests"] and problem["tests"][0]["full_name"].startswith("ru.company.orders.")
+    sources = {source["id"]: source for source in problem["sources"]}
+    assert "S1" in sources and sources["S1"]["title"].startswith("сообщение об ошибке")
+    assert any("customer is null" in source["text"] for source in sources.values())
+    assert (folder / f"on_request-{login}.md").is_file()
+
+
+def test_on_request_errors(project: Path, testops: FakeTestOps, capsys) -> None:
+    make_demo(project, extension_toml=REQUEST_MANIFEST, request_md=REQUEST_TASK)
+    ext_cli(project, capsys, "enable", "demo")
+    run_dir, _, _ = _prepare(project, capsys)
+    code, out = _run(["extensions", "run", "demo", "--run", str(run_dir)], capsys)
+    assert code == 1 and "Назови номер проблемы" in out
+    code, out = _run(["extensions", "run", "demo", "99", "--run", str(run_dir)], capsys)
+    assert code == 1 and "нет проблемы №99" in out
+    for bad in ("Ref=x", "ref", "ref=", "ref=a\tb"):
+        code, out = _run(["extensions", "run", "demo", "1", "--run", str(run_dir),
+                          "--param", bad], capsys)
+        assert code == 1 and "--param" in out, bad
+
+
+def test_params_need_on_request_hook(project: Path, testops: FakeTestOps, capsys) -> None:
+    make_demo(project)
+    ext_cli(project, capsys, "enable", "demo")
+    run_dir, _, _ = _prepare(project, capsys)
+    code, out = _run(["extensions", "run", "demo", "1", "--run", str(run_dir),
+                      "--param", "ref=x"], capsys)
+    assert code == 1 and "нет хука on_request" in out
+    code, out = _run(["extensions", "run", "demo", "1", "2", "--run", str(run_dir)], capsys)
+    assert code == 1 and "для одной проблемы" in out

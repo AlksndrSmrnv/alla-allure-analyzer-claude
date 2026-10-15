@@ -461,11 +461,14 @@ def _build_parser() -> argparse.ArgumentParser:
         toggle.add_argument("name", help="имя расширения")
     again = ext_commands.add_parser(
         "run", parents=[common],
-        help="повторить хук расширения: с номером проблемы — after_apply, без — after_report",
+        help="запустить расширение по просьбе пользователя (on_request) или повторить его хук: "
+             "с номером проблемы — after_apply, без — after_report",
     )
     again.add_argument("name", help="имя расширения")
-    again.add_argument("cluster", nargs="?", help="номер проблемы с применённой правкой")
+    again.add_argument("clusters", nargs="*", metavar="N", help="номера проблем")
     again.add_argument("--run", required=True, help="папка разбора")
+    again.add_argument("--param", action="append", default=[], metavar="КЛЮЧ=ЗНАЧЕНИЕ",
+                       help="параметр запроса для on_request (можно несколько)")
     action = ext_commands.add_parser(
         "action", parents=[common],
         help="выполнить действие расширения (из его задания); аргументы скрипта — после --",
@@ -1545,7 +1548,7 @@ def _apply(
     if result.changed:
         # Порядок как в SKILL.md (раздел 4): правка применена → расширения → предложить тест.
         hooks = ext.block(ext.fire("after_apply", paths, run, {
-            "problem": ext.problem_context(paths, entry, _load_apply_record(paths, file_id)),
+            "problem": ext.problem_context(paths, entry, _load_apply_record(paths, file_id), run),
         }))
         return "applied", "\n".join([
             result.text,
@@ -1610,7 +1613,7 @@ def _revert(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> t
     if result.status != "reverted":
         return result.status, result.text
     hooks = ext.block(ext.fire("after_revert", paths, run, {
-        "problem": ext.problem_context(paths, entry, record),
+        "problem": ext.problem_context(paths, entry, record, run),
     }))
     return result.status, result.text + ("\n" + hooks if hooks else "")
 
@@ -1654,7 +1657,9 @@ def cmd_extensions(args: argparse.Namespace, project_root: Path, reports_dir: Pa
         elif command in ("enable", "disable"):
             status, body = "ok", _extensions_toggle(project_root, args.name, command == "enable")
         elif command == "run":
-            status, body = "ok", _extensions_run(args.name, args.cluster, args.run, reports_dir)
+            status, body = "ok", _extensions_run(
+                args.name, args.clusters, args.run, reports_dir, ext.parse_params(args.param)
+            )
         else:
             status, body = ext.run_action(
                 project_root, reports_dir, args.name, args.action, args.context, args.extra
@@ -1740,12 +1745,27 @@ def _extensions_toggle(project_root: Path, name: str, on: bool) -> str:
     return "\n".join(lines)
 
 
-def _extensions_run(name: str, cluster: str | None, run_dir: str, reports_dir: Path) -> str:
-    """Повторить хук расширения (пользователь просит повторить его действие)."""
+def _extensions_run(
+    name: str,
+    clusters: list[str],
+    run_dir: str,
+    reports_dir: Path,
+    params: dict[str, list[str]],
+) -> str:
+    """Запустить расширение по просьбе пользователя (``on_request``) или повторить его хук."""
     paths = ws.resolve_run(run_dir, reports_dir)
     run = ws.read_json(paths.run_json)
     project_root = Path(run["project_root"])
-    ext.find_active(project_root, name)
+    extension, _ = ext.find_active(project_root, name)
+    if extension.hooks_for(ext.REQUEST_EVENT):
+        return _extensions_request(extension, clusters, paths, run, params)
+    if params:
+        raise ext.ExtensionError(
+            f"У расширения {name} нет хука {ext.REQUEST_EVENT} — параметры --param ему не передать."
+        )
+    if len(clusters) > 1:
+        raise ext.ExtensionError("Повтор хука — для одной проблемы за раз.")
+    cluster = clusters[0] if clusters else None
     if cluster is None:
         status, body = _next_step(paths, [])
         if status != "done":
@@ -1769,9 +1789,37 @@ def _extensions_run(name: str, cluster: str | None, run_dir: str, reports_dir: P
             )
         event = "after_apply"
         lines = ext.fire(event, paths, run, {
-            "problem": ext.problem_context(paths, entry, _load_apply_record(paths, file_id)),
+            "problem": ext.problem_context(paths, entry, _load_apply_record(paths, file_id), run),
         }, only={name})
     return ext.block(lines) or f"У расширения {name} нет хука на событие {event}."
+
+
+def _extensions_request(
+    extension: ext.Extension,
+    clusters: list[str],
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    params: dict[str, list[str]],
+) -> str:
+    """Событие ``on_request``: по пункту блока «Расширения:» на каждую названную проблему."""
+    if not clusters:
+        raise ext.ExtensionError(
+            f"Назови номер проблемы из отчёта: {ws.skill_command('extensions', 'run', extension.name, 'N', '--run', str(paths.root))}"
+        )
+    entries = []
+    for cluster in dict.fromkeys(clusters):
+        entry = find_entry(run, cluster)
+        if entry is None:
+            raise ext.ExtensionError(f"В разборе {paths.root} нет проблемы №{cluster}.")
+        entries.append(entry)
+    lines: list[str] = []
+    for entry in entries:
+        lines += ext.fire(ext.REQUEST_EVENT, paths, run, {
+            "problem": ext.problem_context(
+                paths, entry, _load_apply_record(paths, entry["file_id"]), run),
+            "params": params,
+        }, only={extension.name})
+    return ext.block(lines)
 
 
 def _install_extension_agents(project_root: Path) -> None:

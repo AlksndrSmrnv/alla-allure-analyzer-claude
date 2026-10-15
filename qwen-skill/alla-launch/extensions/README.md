@@ -43,7 +43,7 @@ project = "QA"
 confirm = false               # общий ключ: true — агент спросит пользователя перед субагентом
 
 [[hooks]]
-event = "after_report"        # after_apply | after_revert | after_report
+event = "after_report"        # after_apply | after_revert | after_report | on_request
 task = "task.md"              # задание субагенту (шаблон, см. ниже)
 ask = "Завести задачи в Jira?"  # вопрос пользователю, если confirm = true
 
@@ -69,20 +69,32 @@ create = "scripts/create.py"
 | `after_apply` | `apply --yes` записал правку автотеста | `problem` |
 | `after_revert` | `revert` вернул файл | `problem` (отметка применения — до отката) |
 | `after_report` | `next` ответил `done`; один раз на содержимое отчёта | `console` (краткий разбор), `problems` |
+| `on_request` | пользователь попросил: `extensions run <имя> N [N…] [--param ключ=значение…]` | `problem` (по одному событию на каждую N), `params` |
 
-Общие поля контекста: `api`, `event`, `extension`, `launch_id`, `launch_name`, `run_dir`,
+Общие поля контекста: `api`, `event`, `extension`, `launch_id`, `launch_name`,
+`launch_created` (время запуска прогона, ISO 8601 UTC, или `null`), `run_dir`,
 `project_root`, `report_path`, `out_dir` (папка расширения в разборе), `stem` (имя файлов
-события, например `after_apply-03`), `settings` (манифест + `config.toml`).
+события, например `after_apply-03`), `settings` (манифест + `config.toml`), `params`
+(параметры запроса `on_request`: ключ → список значений по порядку; у других событий — `{}`).
 
 `problem`: `number`, `file_id`, `label`, `category`, `cause`, `fix`, `analysis_path`,
 `proposal_path`, `patch_path` (показанный diff), `proposal` (`file`, `line`, `why`),
 `record` — отметка `apply`: `file`, `line`, `sha_before`, `sha_after` (SHA-256 файла до и
-после правки).
+после правки) или `null`, `tests` — тесты проблемы, представитель первым (`name`,
+`full_name`, `link`; до 20), `sources` — куски «Данных» задания проблемы, ровно то, что видела
+модель разбора: `id` (`S1`…, на них ссылаются цитаты разбора), `kind` (`message`, `trace`,
+`log`), `title` («лог app.log, строки 2–4»), `test_name`, `text` (всего до 60 000 символов).
 
 `problems` (у `after_report`): `number`, `label`, `tests`, `category`, `cause`.
 
-Повторить событие по просьбе пользователя: `extensions run <имя> N --run <папка>` —
-`after_apply` для применённой правки N, без N — `after_report`.
+`extensions run <имя> [N…] --run <папка> [--param ключ=значение…]`:
+
+- у расширения есть хук `on_request` — событие `on_request` для каждой названной проблемы
+  (номер обязателен). Это функция «по просьбе»: `/alla:<команда расширения> N` или просьба
+  словами. `confirm` здесь не спрашивается — пользователь уже попросил. `--param` можно
+  повторять, ключ — латиница в нижнем регистре, цифры и `_`; значение — одна строка;
+- хука `on_request` нет — повтор события: `after_apply` для применённой правки N, без N —
+  `after_report`.
 
 ## Хук `task`: задание субагенту
 
@@ -93,8 +105,9 @@ create = "scripts/create.py"
 
 Переменные шаблона (`$имя`, неизвестные остаются как есть): `$context`, `$out_dir`, `$stem`,
 `$run_dir`, `$project_root`, `$report_path`, `$launch_id`, `$problem`, `$label`, `$category`,
-`$cause`, `$fix`, `$file`, `$line`, `$why`, `$patch_path`, `$settings_<ключ>` и
-`$action_<действие>` — готовая команда скилла для действия (дефис в имени — `_`).
+`$cause`, `$fix`, `$file`, `$line`, `$why`, `$patch_path`, `$settings_<ключ>`,
+`$param_<ключ>` (значения параметра через запятую) и `$action_<действие>` — готовая команда
+скилла для действия (дефис в имени — `_`).
 
 Субагент (`agent.md`) — файл агента Qwen Code: `name: alla-<имя>`, `description`, список
 `tools`. Делайте роль узкой, как в `git-publish/agent.md`: прочитать задание, записать
