@@ -163,6 +163,12 @@ paths:
   Поведение после правки правил проверяй сценарием P04 стенда. Поиск файлов (glob, grep)
   запрещён тем же списком: модель искала код проекта сама (E07, E10); на стенде это ловит
   проверка `no_code_search`, а чтение кода не из «Где искать код автотеста» — `listed_code_only`.
+  Копия кода приложения расширения `sut-code` (`SUT_DIRNAME` = `.alla-sut/<репо>/trees/<sha>/`)
+  — исключение `listed_code_only`: её читает только субагент (`ToolCall.subagent`) и только
+  в деревьях ревизий (`sut_read_problem`). Искать по ней `glob`/`grep_search` нельзя
+  (`no_code_search`): поиск Qwen уважает `.gitignore` копии и молча вернул бы пусто
+  (исходники Qwen Code 0.25: ripgrep без `--no-ignore-vcs`; `read_file` смотрит только
+  `.qwenignore`), поэтому поиск — действие расширения `search`.
 - Один и тот же текст правил — `alla_skill_lib/agent_rules.py` (`EXECUTOR_RULES`): он
   подставляется в `clusters/NN.md`, `batches/N.md`, `relate_task.md`, `summary_task.md` и
   повторён в `SKILL.md`.

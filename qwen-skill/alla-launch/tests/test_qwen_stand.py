@@ -214,6 +214,33 @@ def test_only_listed_code_files_are_opened(tmp_path: Path, path: str, status: st
     assert CHECKS["listed_code_only"](ctx)["status"] == status
 
 
+SUT_FILE = ".alla-sut/orders/trees/a1b2c3d4e5f6/src/main/java/ru/company/OrderService.java"
+
+
+@pytest.mark.parametrize(("call", "subagent", "check", "status"), [
+    # Субагент sut-code читает дерево ревизии приложения — это его работа.
+    (("read_file", {"file_path": SUT_FILE}, ""), True, "listed_code_only", "pass"),
+    (("read_file", {"file_path": SUT_FILE}, ""), True, "allowed_reads", "pass"),
+    # Основной агент код приложения не читает: это делает только субагент расширения.
+    (("read_file", {"file_path": SUT_FILE}, ""), False, "listed_code_only", "fail"),
+    # Служебные файлы копии (bare-репозиторий) — не код ревизии.
+    (("read_file", {"file_path": ".alla-sut/orders/repo.git/config"}, ""), True,
+     "listed_code_only", "fail"),
+    # Поиск Qwen уважает .gitignore и в копии молча ничего не найдёт: поиск — действием.
+    (("grep_search", {"pattern": "customer", "path": ".alla-sut/orders/trees/a1b2c3d4e5f6"}, ""),
+     True, "no_code_search", "fail"),
+    (("glob", {"pattern": ".alla-sut/**/*.java"}, ""), True, "no_code_search", "fail"),
+])
+def test_app_code_copy_rules(tmp_path: Path, call: tuple[str, dict[str, Any], str],
+                             subagent: bool, check: str, status: str) -> None:
+    ctx = context(tmp_path, events(call, subagent=subagent))
+    for name in (SUT_FILE, ".alla-sut/orders/repo.git/config"):
+        (ctx.project / name).parent.mkdir(parents=True, exist_ok=True)
+        (ctx.project / name).write_text("x")
+    result = CHECKS[check](ctx)
+    assert result["status"] == status, result
+
+
 @pytest.mark.parametrize(("arguments", "check"), [
     # read_many_files: пути в «paths» и «include», а не в «path» (ревью Codex).
     ({"paths": ["src/**/*.java"]}, "no_code_search"),
