@@ -5,6 +5,7 @@ paths:
   - "qwen-skill/alla-launch/commands/alla/extensions.md"
   - "qwen-skill/alla-launch/tests/test_skill_extensions.py"
   - "qwen-skill/alla-launch/tests/test_ext_git_publish.py"
+  - "qwen-skill/alla-launch/tests/test_ext_sut_code.py"
 ---
 
 # Расширения скилла (`extensions.py`, `extensions/`)
@@ -93,6 +94,41 @@ paths:
 - `after_revert.py` только напоминает о ветке на сервере, ничего не удаляет.
 - Тесты — на настоящем git (`test_ext_git_publish.py`, изолированный `GIT_CONFIG_GLOBAL`);
   поведение модели — сценарий стенда `X01` (фикстура `test_bug`, bare-remote внутри проекта).
+
+## sut-code
+
+Разбор проблемы по коду тестируемого приложения по просьбе пользователя (`/alla:code N
+[ревизия] [ссылка]`, хук `on_request`, субагент `alla-sut-code`). Подсказка после отчёта —
+`scripts/hint.py` (`after_report`, проблемы «приложение»/«неизвестно» без `confirmed`).
+
+- Копия — `<проект>/.alla-sut/` со своим `.gitignore` (`*`): `<имя>-<sha1(url)[:6]>/repo.git` —
+  bare partial clone (`--filter=blob:none`, ветки в `refs/heads/*`), `trees/<sha12>` — `git
+  worktree --detach` (+ `<sha12>.ready`), `lock` — `fcntl` на fetch/worktree. Первый клон и
+  дерево ревизии — фоновая работа (`sutlib.py job`, `start_new_session`, `jobs/<имя>/done|failed`):
+  скрипт ждёт её `WAIT_BUDGET` (70 с), иначе `SutPending` — «повтори через пару минут»; клон
+  идёт во временную папку и переименовывается при успехе. `timeout = 110` в манифесте: Qwen
+  обрывает команду на 120 с (`SHELL_COMMAND_TIMEOUT_MS`, исходники Qwen Code 0.25).
+- Ссылки (`check_url`): https/http/ssh и `git@host:path`; без пароля в URL, без `::`, без
+  ведущего «-»; локальный путь — только `allow_local` (тесты, стенд). git — с
+  `protocol.ext.allow=never`, `GIT_TERMINAL_PROMPT=0`, ssh `BatchMode=yes`, если у инженера нет
+  своего `GIT_SSH_COMMAND`/`core.sshCommand`.
+- Ревизия (`prepare.choose_revision`): `--param ref=X` (или `имя=X` для одного репозитория) →
+  ветка, тег `X`/`vX`, коммит; иначе приблизительно — `rev-list -1 --before=<launch_created>`
+  основной ветки (`default_branch` или HEAD bare-копии). Версию из TestOps пока не читаем
+  (решение отложено, план `docs/plans/2026-10-15-sut-code-extension.md`).
+- `prepare` пишет `<stem>.sut.md` (ревизии и папки, места кадров стека всех языков с окнами
+  кода, `git grep -F` постоянных кусков текстов ошибок, куски `[S…]`) и `<stem>.sut-state` (не
+  `.json`: `extensions action` принимает контекстом любой `.json` папки расширения).
+- Поиск — действия `search` (`git grep -F -i`) и `files`: `grep_search`/`glob` Qwen копию не
+  видят. `switch` пересобирает данные на другой ревизии, `history` — `git log -L`/по файлу от
+  ревизии назад, `compare` — коммиты основной ветки после ревизии по файлу.
+- `check` (`RESULT_FORMAT`, повторён в `task.md` и README расширения): место и цитаты кода — в
+  файле ревизии ±3 строки, `[S…]` — в куске данных, коммиты ИСТОРИИ — в репозитории; попытки —
+  `<stem>.check-attempts`, третья принимается с `format_ok = false`. Итог — `result.json`
+  (вход будущего расширения дефектов), `report.md`, `finding.json` (контракт выводов, см.
+  ниже).
+- Тесты — `test_ext_sut_code.py` на настоящем git (репозиторий с тегом, веткой релиза,
+  коммитом с NPE и исправлением после даты прогона).
 
 ## Новое событие или поле
 
