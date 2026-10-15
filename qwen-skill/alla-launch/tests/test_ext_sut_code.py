@@ -522,3 +522,23 @@ def test_stand_scenario_x03_is_solvable_by_search(
     assert code == 0 and f"- {SUT_CONTROLLER}:" in out, out
     code, out = action(project, capsys, "history", context, SUT_CONTROLLER)
     assert "POST /orders отвечает 201 Created" in out, out
+
+
+def test_repeat_request_drops_the_previous_finding_and_accepts_full_paths(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str], sut: dict[str, Any]
+) -> None:
+    enable(project, capsys, repos=[sut["url"]], allow_local=True)
+    _, context, _ = request(project, capsys, "ref=origin/release/1.4")
+    code, out = action(project, capsys, "prepare", context)
+    assert code == 0 and "ветка release/1.4 — названа инженером" in out, out
+    tree = json.loads(sutlib.state_path(context).read_text(encoding="utf-8"))["trees"][0]["tree"]
+    # Место полным путём из файла данных — тоже место в ревизии.
+    text = ANALYSIS.format(sha=sut["bug"][:8], bug=sut["bug"][:8]).replace(
+        f"МЕСТО: {SERVICE}:10", f"МЕСТО: {tree}/{SERVICE}:10")
+    context.with_suffix(".txt").write_text(text, encoding="utf-8")
+    code, out = action(project, capsys, "check", context)
+    assert code == 0, out
+    assert context.with_suffix(".finding.json").is_file()
+    assert action(project, capsys, "prepare", context)[0] == 0  # новый запрос по той же проблеме
+    assert not context.with_suffix(".finding.json").exists()
+    assert not context.with_suffix(".txt").exists()

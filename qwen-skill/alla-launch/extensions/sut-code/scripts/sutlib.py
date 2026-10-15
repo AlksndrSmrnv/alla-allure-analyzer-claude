@@ -417,6 +417,8 @@ def ensure_clone(repo: Repo, deadline: float, allow_local: bool) -> bool:
     if tmp.is_dir() and not repo.git_dir.exists():
         tmp.rename(repo.git_dir)
     shutil.rmtree(job.folder, ignore_errors=True)
+    if not (repo.git_dir / "HEAD").is_file():
+        raise SutError(f"скачивание копии {repo.name} закончилось без копии — повтори запрос")
     (repo.folder / "fetched").write_text(str(int(time.time())), encoding="utf-8")
     return True
 
@@ -454,6 +456,7 @@ def check_ref_value(value: str) -> None:
 def resolve_ref(repo: Repo, value: str) -> tuple[str, str] | None:
     """Ветка, тег (``1.4.2`` → ``1.4.2`` или ``v1.4.2``) или коммит → (sha, что это)."""
     check_ref_value(value)
+    value = value.removeprefix("origin/")
     candidates = [(f"refs/heads/{value}", f"ветка {value}"),
                   (f"refs/tags/{value}", f"тег {value}"),
                   (f"refs/tags/v{value}", f"тег v{value}")]
@@ -598,6 +601,13 @@ def split_location(raw: str, state: dict[str, Any]) -> tuple[dict[str, Any], str
     names = {tree["repo"] for tree in state["trees"]}
     if not sep or repo not in names:
         repo, path = "", text
+    absolute = PurePosixPath(text.replace("\\", "/"))
+    for item in state["trees"]:
+        # Субагент может назвать файл полным путём из файла данных — это тоже место в ревизии.
+        root = PurePosixPath(str(item["tree"]).replace("\\", "/"))
+        if absolute.is_relative_to(root):
+            repo, path = item["repo"], absolute.relative_to(root).as_posix()
+            break
     tree = tree_of(state, repo or None)
     path = path.strip().lstrip("/")
     if not path:

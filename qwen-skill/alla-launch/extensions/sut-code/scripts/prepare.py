@@ -52,7 +52,15 @@ def choose_revision(repo: Repo, wanted: str | None, context: dict[str, Any],
     return sha, what + ". Если стенд был на другой версии — назови её", branch
 
 
+# Итоги прошлого запроса по этой проблеме: новый разбор пишется заново, а старый вывод не
+# должен подтвердиться вместо нового.
+STALE_SUFFIXES = (".txt", ".finding.json", ".result.json", ".report.md", ".check-attempts",
+                  ".sut-state", ".sut.md")
+
+
 def prepare(context: dict[str, Any], context_file: Path) -> list[str]:
+    for suffix in STALE_SUFFIXES:
+        context_file.with_name(context_file.stem + suffix).unlink(missing_ok=True)
     settings = context["settings"]
     allow_local = bool(settings.get("allow_local"))
     repos = sutlib.repos(context)
