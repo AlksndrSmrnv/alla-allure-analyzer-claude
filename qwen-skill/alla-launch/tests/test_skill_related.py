@@ -116,6 +116,14 @@ def test_different_categories_mixed_flagged_and_rejected_are_not_compared(tmp_pa
     assert groups == []
 
 
+def test_problems_with_a_confirmed_finding_are_not_compared(tmp_path: Path) -> None:
+    run = _run(3, near=((1, 2, "step"), (2, 3, "step")))
+    analyses = {file_id: _analysis() for file_id in ("01", "02", "03")}
+    assert [numbers for numbers, _ in _groups(run, analyses, tmp_path)] == [[1, 2, 3]]
+    assert [numbers for numbers, _ in _groups(run, analyses, tmp_path, confirmed={"02"})] == [[1, 3]]
+    assert _groups(run, analyses, tmp_path, confirmed={"01", "03"}) == []  # один — сравнивать не с кем
+
+
 def test_unknown_causes_are_compared_only_through_near_pairs(tmp_path: Path) -> None:
     unknown = _analysis("по данным причину не установить.", "Приложить лог сервиса заказов.",
                         category="неизвестно")

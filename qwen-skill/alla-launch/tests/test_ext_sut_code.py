@@ -452,12 +452,12 @@ def test_hint_after_report(project: Path, testops: FakeTestOps,
 
 
 def confirmed_run(project: Path, capsys: pytest.CaptureFixture[str], sut: dict[str, Any],
-                  analysis: str = ANALYSIS) -> tuple[Path, str]:
+                  analysis: str = ANALYSIS, order_analysis: str = VALID_ANALYSIS) -> tuple[Path, str]:
     """Разбор до done, вывод sut-code по проблеме с NPE проверен; (папка разбора, номер)."""
     enable(project, capsys, repos=[sut["url"]], allow_local=True)
     run_dir, run, _ = _prepare(project, capsys)
     order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
-    _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: LOGIN_ANALYSIS})
+    _finish(run_dir, capsys, {order: order_analysis, login: LOGIN_ANALYSIS})
     code, out = _run(["extensions", "run", "sut-code", str(int(order)), "--run", str(run_dir),
                       "--param", "ref=v1.4.2"], capsys)
     assert code == 0, out
@@ -505,6 +505,58 @@ def test_confirmed_finding_goes_to_kb_and_report(
     assert "- **Подтверждено инженером** (разбор по коду приложения, " in report
     assert f"   - Место: {SERVICE}:10 — throw при пустом customer" in report
     assert "   1. Вернуть проверку customer в OrderService.create и отвечать 400." in report
+
+
+# Разбор проблемы с NPE «окружением» со словами разбора проблемы входа: скрипт просит
+# сравнить их (связь по тексту причины и шага).
+ORDER_AS_LOGIN = (
+    "ЧТО СЛОМАЛОСЬ: Тест получил HTTP 500 вместо 200.\n"
+    "ПРИЧИНА: окружение — auth-service:8080 не принимает соединения.\n"
+    "НАБЛЮДЕНИЯ:\n- [S1] «expected: <200> but was: <500>»\n"
+    "КАК ИСПРАВИТЬ:\n1. Поднять auth-service на стенде.\n"
+)
+
+
+def test_confirmed_problem_is_not_compared_again(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str], sut: dict[str, Any]
+) -> None:
+    """remember --from-extension → next: подтверждённая проблема выходит из сравнения причин до
+    задания — next не просит сравнить её снова, и объединённого пункта в отчёте нет."""
+    enable(project, capsys, repos=[sut["url"]], allow_local=True)
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    for file_id, text in ((order, ORDER_AS_LOGIN), (login, LOGIN_ANALYSIS)):
+        (run_dir / "analyses" / f"{file_id}.md").write_text(text, encoding="utf-8")
+    out = _run(["next", str(run_dir)], capsys)[1]
+    assert out.startswith("STATUS: relate"), out
+    (run_dir / "related.md").write_text(
+        f"ОДНА ПРИЧИНА: {int(order)}, {int(login)} — auth-service не принимает соединения\n",
+        encoding="utf-8")
+    assert _run(["next", str(run_dir)], capsys)[1].startswith("STATUS: summary")
+    (run_dir / "summary.md").write_text("Итог прогона.", encoding="utf-8")
+    out = _run(["next", str(run_dir)], capsys)[1]
+    assert out.startswith("STATUS: done") and "[объединил агент]" in out, out
+
+    code, out = _run(["extensions", "run", "sut-code", str(int(order)), "--run", str(run_dir),
+                      "--param", "ref=v1.4.2"], capsys)
+    assert code == 0, out
+    context = run_dir / "extensions" / "sut-code" / f"on_request-{order}.json"
+    assert action(project, capsys, "prepare", context)[0] == 0
+    context.with_suffix(".txt").write_text(
+        ANALYSIS.format(sha=sut["bug"][:8], bug=sut["bug"][:8]), encoding="utf-8")
+    assert action(project, capsys, "check", context)[0] == 0
+    code, out = _run(["remember", str(int(order)), "--run", str(run_dir),
+                      "--from-extension", "sut-code"], capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+
+    out = _run(["next", str(run_dir)], capsys)[1]
+    assert not out.startswith("STATUS: relate"), out
+    if out.startswith("STATUS: summary"):
+        (run_dir / "summary.md").write_text("Итог прогона.", encoding="utf-8")
+        out = _run(["next", str(run_dir)], capsys)[1]
+    assert out.startswith("STATUS: done"), out
+    assert "[объединил агент]" not in out and "[подтверждено по коду]" in out
+    assert not (run_dir / "related.md").exists()
 
 
 @pytest.mark.parametrize(("analysis", "error"), [

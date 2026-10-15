@@ -962,7 +962,9 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
 
     known = known_issues(run, analyses, flagged, paths)
     notes += known.notes
-    related_outcome = _related_step(paths, state, run, analyses, flagged, known, project_root)
+    confirmed = load_confirmed(paths, run)
+    related_outcome = _related_step(paths, state, run, analyses, flagged, known, project_root,
+                                    set(confirmed))
     if isinstance(related_outcome, tuple):
         return related_outcome
     related = related_outcome or Related()
@@ -975,10 +977,6 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     }
     # Проблемы с правкой агента в отчёте не объединяются: у каждой своя команда apply.
     separate = {file_id for file_id, state in states.items() if state != "unknown"}
-    confirmed = load_confirmed(paths, run)
-    # Подтверждённая инженером причина важнее догадки агента «одна причина» — такие проблемы
-    # показываются отдельно, со своим выводом.
-    related = related.without(set(confirmed), run)
     summary_data = build_summary_data(run, analyses, flagged, known, related, separate, confirmed)
     summary_hash = hashlib.sha256(summary_data.encode("utf-8")).hexdigest()
     previous_hash = state.get("summary_data_hash")
@@ -1155,6 +1153,7 @@ def _related_step(
     flagged: set[str],
     known: KnownIssues,
     project_root: Path,
+    confirmed: set[str],
 ) -> tuple[str, str] | Related | None:
     """Шаг «похожие проблемы»: (статус, текст), подтверждённые группы или None (отброшено).
 
@@ -1162,7 +1161,9 @@ def _related_step(
     групп (``state.related_data_hash``): иначе ``related.md`` удаляется и просится заново.
     """
     current_kb = current_kb_matches(run, paths)
-    groups = candidate_groups(run, analyses, flagged, project_root, known, current_kb)
+    # Подтверждённые инженером проблемы не сравниваются: их причина известна (до задания —
+    # иначе после remember --from-extension next снова просил бы сравнить и их).
+    groups = candidate_groups(run, analyses, flagged, project_root, known, current_kb, confirmed)
     if not groups:
         paths.related.unlink(missing_ok=True)
         # Оба поля — независимо: иначе review показал бы числа исчезнувших групп.
@@ -1203,11 +1204,11 @@ def _related_step(
             f"Затем выполни: {paths.next_command()}",
         ])
     related = related_groups(decision, run)
-    confirmed = {"confirmed_groups": len(related.groups),
-                 "confirmed_problems": sum(len(group.file_ids) for group in related.groups)}
+    decided = {"confirmed_groups": len(related.groups),
+               "confirmed_problems": sum(len(group.file_ids) for group in related.groups)}
     stats = state.get("related") or {}
-    if any(stats.get(key) != value for key, value in confirmed.items()):
-        state["related"] = {**stats, **confirmed}
+    if any(stats.get(key) != value for key, value in decided.items()):
+        state["related"] = {**stats, **decided}
         ws.write_json(paths.state_json, state)
     return related
 
