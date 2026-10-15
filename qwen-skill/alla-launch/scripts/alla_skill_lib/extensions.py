@@ -482,6 +482,24 @@ def active(project_root: Path) -> Active:
     return result
 
 
+def command_conflict(extension: Extension, catalog: Catalog, config: Config) -> str | None:
+    """Команда расширения, которая уже есть у другого включённого расширения, — что сказать.
+
+    ``enable`` ставит расширение последним, а ``active`` отдаёт команду первому: включение
+    поверх занятой команды затёрло бы её файл и само осталось бы неактивным.
+    """
+    for other in config.enabled:
+        found = catalog.extensions.get(other)
+        if other == extension.name or found is None:
+            continue
+        taken = sorted(set(extension.commands) & set(found.commands))
+        if taken:
+            return (f"команда /alla:{taken[0]} уже есть у включённого расширения {other} — "
+                    f"выключи его ({ws.skill_command('extensions', 'disable', other)}) или "
+                    "переименуй команду")
+    return None
+
+
 def find_active(project_root: Path, name: str) -> tuple[Extension, dict[str, Any]]:
     current = active(project_root)
     for extension, settings in current.extensions:

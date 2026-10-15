@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -811,6 +812,39 @@ def test_problems_with_an_agent_fix_are_not_merged(tmp_path: Path) -> None:
         full, "Автотест сломан, но править вручную")
     assert merged_count(run, related, {"01"}) == 2
     assert merged_count(run, related, set()) == 1
+
+
+def test_confirmed_problem_leaves_its_merged_group(tmp_path: Path) -> None:
+    """Подтверждённый вывод расширения не прячется за объединённым пунктом: проблема выходит
+    из группы «одна причина» (``Related.without`` в ``next``) и показывает свой вывод."""
+    run = _run([3, 2, 2])
+    related = _related(([1, 2, 3], "в заказе не заполнен покупатель"), run=run)
+    confirmed = {"01": {"extension": "sut-code", "confirmed": "2026-10-15", "category": "приложение",
+                        "cause": "OrderService.create бросает NPE без customer",
+                        "fix": ["Вернуть проверку customer"], "details": []}}
+    left = related.without(set(confirmed), run)
+    assert [(group.file_ids, group.size) for group in left.groups] == [(["02", "03"], 4)]
+    assert related.without({"01", "02"}, run).groups == []  # остался один — группы нет
+
+    console, full = _render(tmp_path, run, [APP, APP, APP], related=left, confirmed=confirmed)
+    attention = _section(console, "Требуют вашего внимания")
+    assert "**Проблема 1** · 3 теста · [подтверждено по коду]" in attention
+    assert "Подтверждено:  [ПРИЛОЖЕНИЕ] OrderService.create бросает NPE без customer" in attention
+    assert "**Проблема 2 и 3** · 4 теста · [объединил агент]" in attention
+    assert ("- **Подтверждено инженером** (разбор по коду приложения, 2026-10-15): "
+            "возможная ошибка приложения — OrderService.create бросает NPE без customer"
+            in full)
+
+
+def test_confirmed_finding_without_details_is_saved(tmp_path: Path) -> None:
+    from datetime import date
+
+    from alla_skill_lib.confirmed import save_confirmed
+
+    finding = {"category": "приложение", "title": "NPE", "cause": "NPE без customer",
+               "fix": ["Вернуть проверку"]}
+    path = save_confirmed(RunPaths(tmp_path), "01", "sut-code", finding, "npe", date(2026, 10, 15))
+    assert json.loads(path.read_text(encoding="utf-8"))["details"] == []
 
 
 def test_brief_with_merged_problems_keeps_its_ceiling(tmp_path: Path) -> None:

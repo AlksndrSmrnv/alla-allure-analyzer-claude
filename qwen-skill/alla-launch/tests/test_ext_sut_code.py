@@ -400,6 +400,39 @@ def test_first_clone_runs_in_background(tmp_path: Path, sut: dict[str, Any]) -> 
     assert (tree / SERVICE).read_text(encoding="utf-8") == SERVICE_BUG
 
 
+def test_cleanup_keeps_trees_used_recently(tmp_path: Path, sut: dict[str, Any]) -> None:
+    """keep_trees — мягкий лимит: дерево, которым недавно пользовался другой запрос, остаётся."""
+    repo = sutlib.Repo("orders", sut["url"], tmp_path / ".alla-sut" / "orders-x")
+    sutlib.ensure_clone(repo, time.monotonic() + 30, allow_local=True)
+    old, busy, mine = (sutlib.ensure_tree(repo, sut[key], time.monotonic() + 30, allow_local=True)
+                       for key in ("first", "bug", "fix"))
+    stale = time.time() - sutlib.TREE_BUSY_SECONDS - 60
+    os.utime(sutlib.ready_mark(old), (stale, stale))
+    os.utime(sutlib.ready_mark(mine), None)  # самое свежее: keep = 1 оставит его и без in_use
+    sutlib.cleanup_trees(repo, 1, {mine})
+    assert not old.exists() and not sutlib.ready_mark(old).exists()
+    assert (busy / SERVICE).is_file() and (mine / SERVICE).is_file()
+
+
+def test_removed_tree_asks_for_prepare_and_switch_restores_it(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str], sut: dict[str, Any]
+) -> None:
+    enable(project, capsys, repos=[sut["url"]], allow_local=True)
+    _, context, _ = request(project, capsys, "ref=v1.4.2")
+    assert action(project, capsys, "prepare", context)[0] == 0
+    tree = Path(json.loads(sutlib.state_path(context).read_text(encoding="utf-8"))["trees"][0]["tree"])
+    mark = sutlib.ready_mark(tree)
+    os.utime(mark, (1, 1))
+    assert action(project, capsys, "files", context, "orderservice")[0] == 0
+    assert mark.stat().st_mtime > time.time() - 60  # действие отметило дерево как используемое
+
+    shutil.rmtree(tree)  # очистка копии другим запросом
+    code, out = action(project, capsys, "search", context, "customer is null")
+    assert code == 1 and "уже нет" in out and "prepare" in out, out
+    code, out = action(project, capsys, "switch", context, "main")
+    assert code == 0 and sut["fix"][:8] in out, out
+
+
 def test_failed_clone_is_reported(tmp_path: Path) -> None:
     repo = sutlib.Repo("ghost", str(tmp_path / "missing.git"), tmp_path / ".alla-sut" / "ghost-x")
     with pytest.raises(sutlib.SutError, match="не удалось"):

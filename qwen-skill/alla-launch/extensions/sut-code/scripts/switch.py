@@ -19,7 +19,7 @@ def switch(context: dict[str, Any], context_file: Path) -> list[str]:
     value = sutlib.action_args()
     if not value:
         raise SutError("на какую ревизию перейти? Ветка, тег или коммит — после «--»")
-    state = sutlib.load_state(context_file)
+    state = sutlib.load_state(context_file, need_trees=False)
     repo_name, sep, ref = value.partition("=")
     if not sep or repo_name not in {item["repo"] for item in state["trees"]}:
         repo_name, ref = "", value

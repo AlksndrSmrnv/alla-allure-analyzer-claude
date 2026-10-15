@@ -504,7 +504,7 @@ def approximate(repo: Repo, branch: str, launch_created: str | None) -> tuple[st
 def ensure_tree(repo: Repo, sha: str, deadline: float, allow_local: bool) -> Path:
     """Дерево ревизии (``git worktree --detach``); большое дерево создаётся в фоне."""
     path = repo.tree_path(sha)
-    ready = path.with_name(path.name + ".ready")
+    ready = ready_mark(path)
     if ready.is_file() and path.is_dir():
         os.utime(ready)
         return path
@@ -526,12 +526,24 @@ def ensure_tree(repo: Repo, sha: str, deadline: float, allow_local: bool) -> Pat
     return path
 
 
+# Каждое действие запроса отмечает своё дерево (``load_state``). Дерево, которым пользовались
+# за этот срок, может читать субагент другого запроса — очистка его не трогает: ``keep_trees``
+# — мягкий лимит, лишние деревья уйдут при следующей очистке.
+TREE_BUSY_SECONDS = 60 * 60
+
+
+def ready_mark(tree: Path) -> Path:
+    return tree.with_name(tree.name + ".ready")
+
+
 def cleanup_trees(repo: Repo, keep: int, in_use: set[Path]) -> None:
-    """Оставить ``keep`` последних деревьев (по последнему использованию) и те, что в работе."""
+    """Оставить ``keep`` последних деревьев (по последнему использованию), те, что в работе у
+    этого запроса, и те, которыми пользовались недавно (``TREE_BUSY_SECONDS``)."""
     marks = sorted(repo.trees.glob("*.ready"), key=lambda mark: mark.stat().st_mtime, reverse=True)
+    busy_since = time.time() - TREE_BUSY_SECONDS
     for mark in marks[max(keep, 1):]:
         path = mark.with_suffix("")
-        if path in in_use:
+        if path in in_use or mark.stat().st_mtime > busy_since:
             continue
         git(repo.git_dir, "worktree", "remove", "--force", str(path), check=False)
         shutil.rmtree(path, ignore_errors=True)
@@ -558,7 +570,12 @@ def data_path(context_file: Path) -> Path:
     return context_file.with_name(f"{context_file.stem}.sut.md")
 
 
-def load_state(context_file: Path) -> dict[str, Any]:
+def load_state(context_file: Path, *, need_trees: bool = True) -> dict[str, Any]:
+    """Выбранные деревья запроса; каждое отмечается как используемое (``cleanup_trees``).
+
+    Дерево удалено (очистка копии, ручное удаление) — ошибка «выполни prepare заново», а не
+    чтение пустой папки; ``switch`` (``need_trees=False``) дерево создаёт сам.
+    """
     path = state_path(context_file)
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
@@ -566,6 +583,15 @@ def load_state(context_file: Path) -> dict[str, Any]:
         state = None
     if not isinstance(state, dict) or not state.get("trees"):
         raise SutError("ревизии ещё не выбраны — сначала выполни действие prepare из задания")
+    for tree in state["trees"]:
+        folder = Path(tree["tree"])
+        mark = ready_mark(folder)
+        if folder.is_dir() and mark.is_file():
+            with contextlib.suppress(OSError):
+                os.utime(mark)
+        elif need_trees:
+            raise SutError(f"папки ревизии {tree['repo']} {str(tree['sha'])[:8]} уже нет (копию "
+                           "почистили) — выполни действие prepare из задания заново")
     return state
 
 

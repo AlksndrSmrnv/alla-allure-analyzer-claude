@@ -132,6 +132,23 @@ class Related:
     def group_of(self, file_id: str) -> RelatedGroup | None:
         return next((group for group in self.groups if file_id in group.file_ids), None)
 
+    def without(self, file_ids: set[str], run: dict[str, Any]) -> Related:
+        """Группы без этих проблем; группа, где осталось меньше двух, распадается.
+
+        Так из групп выходят проблемы с подтверждённым выводом расширения: их причину назвал
+        инженер, и объединённый пункт отчёта не должен прятать её за догадкой агента.
+        """
+        sizes = {entry["file_id"]: int(entry["member_count"]) for entry in run["clusters"]}
+        groups = []
+        for group in self.groups:
+            left = [file_id for file_id in group.file_ids if file_id not in file_ids]
+            if len(left) == len(group.file_ids):
+                groups.append(group)
+            elif len(left) >= 2:
+                groups.append(RelatedGroup(left, group.cause, sum(sizes[f] for f in left)))
+        groups.sort(key=lambda group: (-group.size, int(group.file_ids[0])))
+        return Related(groups)
+
 
 @dataclass
 class RelatedDecision:

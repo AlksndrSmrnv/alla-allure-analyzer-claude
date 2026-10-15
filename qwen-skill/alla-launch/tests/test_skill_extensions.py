@@ -716,3 +716,24 @@ def test_two_extensions_cannot_share_a_command(project: Path) -> None:
     current = ext.active(project)
     assert [extension.name for extension, _ in current.extensions] == ["demo"]
     assert "команда /alla:same уже есть у расширения demo" in current.problems[0]
+
+
+def test_enable_refuses_a_command_of_another_enabled_extension(project: Path, capsys) -> None:
+    for name in ("demo", "other"):
+        folder = project / ext.PROJECT_DIRNAME / name
+        (folder / "commands").mkdir(parents=True)
+        (folder / "commands" / "same.md").write_text(COMMAND + f"{name}\n", encoding="utf-8")
+        (folder / "extension.toml").write_text(
+            f'name = "{name}"\napi = 1\ncommands = ["commands/same.md"]\n\n[[hooks]]\n'
+            'event = "after_revert"\nscript = "hook.py"\n', encoding="utf-8")
+        (folder / "hook.py").write_text(HOOK, encoding="utf-8")
+    target = project / ".qwen" / "commands" / "alla" / "same.md"
+    assert ext_cli(project, capsys, "enable", "demo")[0] == 0
+
+    code, out = ext_cli(project, capsys, "enable", "other")
+    assert code == 1 and "Расширение other не включено" in out, out
+    assert "/alla:same уже есть у включённого расширения demo" in out
+    # Ни config.toml, ни файл команды первого расширения не тронуты.
+    assert ext.load_config(project).enabled == ("demo",)
+    assert target.read_text(encoding="utf-8") == COMMAND + "demo\n"
+    assert [extension.name for extension, _ in ext.active(project).extensions] == ["demo"]

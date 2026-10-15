@@ -98,7 +98,9 @@ def save_confirmed(
         "extension": extension,
         "confirmed": today.isoformat(),
         "kb_entry": record_id,
-        **{key: finding[key] for key in ("category", "title", "cause", "fix", "details")},
+        **{key: finding[key] for key in ("category", "title", "cause", "fix")},
+        # details по контракту необязательны (check_finding): нет — пустой список.
+        "details": finding.get("details", []),
     })
     return path
 

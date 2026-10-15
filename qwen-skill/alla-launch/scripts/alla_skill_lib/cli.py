@@ -976,6 +976,9 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     # Проблемы с правкой агента в отчёте не объединяются: у каждой своя команда apply.
     separate = {file_id for file_id, state in states.items() if state != "unknown"}
     confirmed = load_confirmed(paths, run)
+    # Подтверждённая инженером причина важнее догадки агента «одна причина» — такие проблемы
+    # показываются отдельно, со своим выводом.
+    related = related.without(set(confirmed), run)
     summary_data = build_summary_data(run, analyses, flagged, known, related, separate, confirmed)
     summary_hash = hashlib.sha256(summary_data.encode("utf-8")).hexdigest()
     previous_hash = state.get("summary_data_hash")
@@ -1732,7 +1735,11 @@ def _extensions_toggle(project_root: Path, name: str, on: bool) -> str:
                 f"Расширения {name} нет. Список: {ws.skill_command('extensions', 'list')}"
             )
         # Неверные настройки в config.toml видны сразу, а не при первом событии.
-        settings = ext.resolved_settings(extension, ext.load_config(project_root))
+        config = ext.load_config(project_root)
+        settings = ext.resolved_settings(extension, config)
+        conflict = ext.command_conflict(extension, catalog, config)
+        if conflict:  # до записи config.toml и файлов команд: чужая команда не затирается
+            raise ext.ExtensionError(f"Расширение {name} не включено: {conflict}")
     changed = ext.set_enabled(project_root, name, on)
     verb = "включено" if on else "выключено"
     lines = [
