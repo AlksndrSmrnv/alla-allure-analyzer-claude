@@ -82,6 +82,7 @@ from alla_skill_lib.cluster_task import (
     select_log_and_trace,
 )
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
+from alla_skill_lib.confirmed import load_confirmed
 from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
 from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, reject
 from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
@@ -302,7 +303,8 @@ def _dispatch(argv: list[str] | None) -> int:
         return cmd_clean(reports_dir, args.older_than_days, dry_run=args.dry_run)
     if args.command == "remember":
         return _cluster_command(args, reports_dir, lambda paths, run, entry: remember(
-            paths, run, entry, args.entry, date.today(), from_analysis=args.from_analysis
+            paths, run, entry, args.entry, date.today(), from_analysis=args.from_analysis,
+            from_extension=args.from_extension,
         ))
     if args.command == "reject":
         return _cluster_command(args, reports_dir, lambda paths, run, entry: reject(
@@ -421,10 +423,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="сохранить причину и рецепт из обратной связи в базу знаний проекта",
     )
     keep.add_argument("--entry", help="id существующей записи, которую нужно обновить")
-    keep.add_argument(
+    source = keep.add_mutually_exclusive_group()
+    source.add_argument(
         "--from-analysis",
         action="store_true",
         help="сохранить разбор модели как есть (пользователь подтвердил его без правок)",
+    )
+    source.add_argument(
+        "--from-extension", metavar="ИМЯ",
+        help="сохранить вывод расширения по проблеме (пользователь подтвердил его) — в базу "
+             "знаний и в отчёт",
     )
     drop = commands.add_parser(
         "reject", parents=[common, run_option],
@@ -967,7 +975,8 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     }
     # Проблемы с правкой агента в отчёте не объединяются: у каждой своя команда apply.
     separate = {file_id for file_id, state in states.items() if state != "unknown"}
-    summary_data = build_summary_data(run, analyses, flagged, known, related, separate)
+    confirmed = load_confirmed(paths, run)
+    summary_data = build_summary_data(run, analyses, flagged, known, related, separate, confirmed)
     summary_hash = hashlib.sha256(summary_data.encode("utf-8")).hexdigest()
     previous_hash = state.get("summary_data_hash")
     summary = ws.read_text(paths.summary) if paths.summary.is_file() else ""
@@ -990,7 +999,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
 
     console, full = render_report(
         run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed, known,
-        related,
+        related, confirmed,
     )
     ws.write_text(paths.report, full)
     # Уже применённую или неоднозначную правку повторно не предлагаем.
@@ -1896,15 +1905,18 @@ def _report_data(paths: ws.RunPaths, run: dict[str, Any], body: str) -> dict[str
     _, _, rest = body.partition(REPORT_BEGIN + "\n")
     console, _, _ = rest.partition("\n" + REPORT_END)
     problems = []
+    confirmed = load_confirmed(paths, run)
     for entry in run["clusters"]:
         path = paths.analysis(entry["file_id"])
         analysis = parse_analysis(ws.read_text(path)) if path.is_file() else None
+        sure = confirmed.get(entry["file_id"])
         problems.append({
             "number": int(entry["file_id"]),
             "label": " ".join(str(entry.get("label", "")).split()),
             "tests": entry.get("member_count"),
-            "category": analysis.category if analysis else None,
-            "cause": analysis.cause if analysis else "",
+            "category": sure["category"] if sure else analysis.category if analysis else None,
+            "cause": sure["cause"] if sure else analysis.cause if analysis else "",
+            "confirmed": sure is not None,
         })
     return {"console": console, "problems": problems}
 

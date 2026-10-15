@@ -67,7 +67,7 @@ paths:
 `verify N [N…] --run DIR`, `skip N --run DIR`, `check`, `clean`,
 `review [run_dir | --run DIR] [--no-model]`,
 `apply N --run DIR [--yes --diff ХЭШ] [--repeat]`, `revert N --run DIR`,
-`remember N --run DIR [--entry ID] [--from-analysis]`, `reject N <id> --run DIR`,
+`remember N --run DIR [--entry ID] [--from-analysis | --from-extension ИМЯ]`, `reject N <id> --run DIR`,
 `extensions [list|enable|disable|run|action]` (`skill-extensions.md`).
 
 - Где в синтаксисе есть `--run DIR`, он обязателен: `.last_run` после нового `prepare`

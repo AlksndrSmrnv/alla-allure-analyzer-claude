@@ -407,3 +407,90 @@ def test_hint_after_report(project: Path, testops: FakeTestOps,
     number = int(order)
     assert f"причину может показать код приложения — разобрать по коду: /alla:code {number}" in out
     assert "repos = [\"<ссылка>\"]" in out
+
+
+def confirmed_run(project: Path, capsys: pytest.CaptureFixture[str], sut: dict[str, Any],
+                  analysis: str = ANALYSIS) -> tuple[Path, str]:
+    """Разбор до done, вывод sut-code по проблеме с NPE проверен; (папка разбора, номер)."""
+    enable(project, capsys, repos=[sut["url"]], allow_local=True)
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: LOGIN_ANALYSIS})
+    code, out = _run(["extensions", "run", "sut-code", str(int(order)), "--run", str(run_dir),
+                      "--param", "ref=v1.4.2"], capsys)
+    assert code == 0, out
+    context = run_dir / "extensions" / "sut-code" / f"on_request-{order}.json"
+    assert action(project, capsys, "prepare", context)[0] == 0
+    context.with_suffix(".txt").write_text(
+        analysis.format(sha=sut["bug"][:8], bug=sut["bug"][:8]), encoding="utf-8")
+    action(project, capsys, "check", context)
+    return run_dir, order
+
+
+def test_confirmed_finding_goes_to_kb_and_report(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str], sut: dict[str, Any]
+) -> None:
+    run_dir, order = confirmed_run(project, capsys, sut)
+    number = str(int(order))
+    code, out = _run(["remember", number, "--run", str(run_dir), "--from-extension", "sut-code"],
+                     capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    assert "Вывод добавлен в отчёт у проблемы" in out and "next" in out
+
+    record_path = next((project / "alla-kb").glob("*.json"))
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["category"] == "service"
+    assert record["title"] == "OrderService.create падает с NPE при запросе без customer"
+    assert record["resolution_steps"] == [
+        "Вернуть проверку customer в OrderService.create и отвечать 400."]
+    assert record["sut-code"]["commit"] == sut["bug"][:12]
+    assert record["sut-code"]["location"] == f"{SERVICE}:10"
+    confirmed = json.loads((run_dir / "confirmed" / f"{order}.json").read_text(encoding="utf-8"))
+    assert confirmed["extension"] == "sut-code" and confirmed["kb_entry"] == record["id"]
+
+    out = _run(["next", str(run_dir)], capsys)[1]
+    if out.startswith("STATUS: summary"):  # подтверждённый вывод — новые данные сводки
+        assert "подтверждено инженером по коду приложения: приложение" in \
+            (run_dir / "summary_task.md").read_text(encoding="utf-8")
+        (run_dir / "summary.md").write_text("Итог прогона.", encoding="utf-8")
+        out = _run(["next", str(run_dir)], capsys)[1]
+    assert out.startswith("STATUS: done"), out
+    assert "[подтверждено по коду]" in out
+    assert "Подтверждено:  [ПРИЛОЖЕНИЕ] OrderService.create бросает NPE" in out
+    # Подсказка после отчёта больше не предлагает подтверждённую проблему.
+    assert f"/alla:code {number} " not in out
+    report = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert "- **Подтверждено инженером** (разбор по коду приложения, " in report
+    assert f"   - Место: {SERVICE}:10 — throw при пустом customer" in report
+    assert "   1. Вернуть проверку customer в OrderService.create и отвечать 400." in report
+
+
+@pytest.mark.parametrize(("analysis", "error"), [
+    (ANALYSIS.replace("ВЫВОД: приложение", "ВЫВОД: неизвестно"), "сохранить можно только"),
+    (ANALYSIS.replace("[S3]", "[S9]"), "не прошёл его проверку формата"),
+])
+def test_unsuitable_finding_is_not_saved(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str], sut: dict[str, Any],
+    analysis: str, error: str,
+) -> None:
+    run_dir, order = confirmed_run(project, capsys, sut, analysis)
+    context = run_dir / "extensions" / "sut-code" / f"on_request-{order}.json"
+    for _ in range(2):  # неверный формат принимается только с третьей попытки
+        action(project, capsys, "check", context)
+    code, out = _run(["remember", str(int(order)), "--run", str(run_dir),
+                      "--from-extension", "sut-code"], capsys)
+    assert code == 1 and error in out and "remember не повторяй" in out, out
+    assert not (run_dir / "confirmed").exists() and not list((project / "alla-kb").glob("*.json"))
+
+
+def test_remember_without_finding(project: Path, testops: FakeTestOps,
+                                  capsys: pytest.CaptureFixture[str]) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order = next(entry["file_id"] for entry in run["clusters"] if not entry["auto"])
+    code, out = _run(["remember", str(int(order)), "--run", str(run_dir),
+                      "--from-extension", "sut-code"], capsys)
+    assert code == 1 and "нет вывода по проблеме" in out
+    with pytest.raises(SystemExit):
+        cli.main(["remember", "1", "--run", str(run_dir), "--from-extension", "sut-code",
+                  "--from-analysis"])
+    assert "not allowed with argument" in capsys.readouterr().out

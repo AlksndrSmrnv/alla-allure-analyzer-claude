@@ -150,6 +150,14 @@ class RunPaths:
     def feedback(self, file_id: str) -> Path:
         return self.root / "feedback" / f"{file_id}.md"
 
+    def extension_dir(self, name: str) -> Path:
+        """Папка расширения в разборе: контексты, задания и итоги его хуков."""
+        return self.root / "extensions" / name
+
+    def confirmed(self, file_id: str) -> Path:
+        """Вывод расширения, который пользователь подтвердил (``remember --from-extension``)."""
+        return self.root / "confirmed" / f"{file_id}.json"
+
     def next_command(self) -> str:
         return skill_command("next", str(self.root))
 

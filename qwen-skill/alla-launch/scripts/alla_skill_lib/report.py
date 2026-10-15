@@ -188,6 +188,8 @@ class _Problem:
     rejected: KnownRecord | None = None
     # Группа «похоже, одна причина» (решение модели после сравнения разборов).
     related: RelatedGroup | None = None
+    # Вывод расширения, который подтвердил пользователь (``confirmed/NN.json``).
+    confirmed: dict[str, Any] | None = None
 
     @property
     def applied(self) -> bool:
@@ -203,6 +205,8 @@ class _Problem:
 
     @property
     def label(self) -> str:
+        if self.confirmed is not None:
+            return CATEGORY_LABELS[self.confirmed["category"]]
         if self.flagged or self.analysis.category is None:
             return FLAGGED_LABEL
         return CATEGORY_LABELS[self.analysis.category]
@@ -210,6 +214,8 @@ class _Problem:
     @property
     def tag(self) -> str:
         """Категория ASCII-меткой для краткого разбора."""
+        if self.confirmed is not None:
+            return CATEGORY_TAGS[self.confirmed["category"]]
         if self.flagged or self.analysis.category is None:
             return FLAGGED_TAG
         return CATEGORY_TAGS[self.analysis.category]
@@ -255,6 +261,7 @@ def build_summary_data(
     known: KnownIssues | None = None,
     related: Related | None = None,
     separate: set[str] | None = None,
+    confirmed: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """Общий блок данных для задания сводки и проверки её актуальности.
 
@@ -281,7 +288,8 @@ def build_summary_data(
                 analyses[entry["file_id"]],
                 entry["file_id"] in flagged,
                 entry["file_id"] in detailed,
-            ) + (f"\n({REJECTED_SUMMARY_NOTE})" if entry["file_id"] in rejected else ""),
+            ) + (f"\n({REJECTED_SUMMARY_NOTE})" if entry["file_id"] in rejected else "")
+            + _confirmed_summary((confirmed or {}).get(entry["file_id"])),
         )
         for entry in listed
     }
@@ -485,6 +493,17 @@ def _numbers_phrase(file_ids: list[str], limit: int | None = None) -> str:
     return text
 
 
+CONFIRMED_SUMMARY_NOTE = "подтверждено инженером по коду приложения"
+
+
+def _confirmed_summary(confirmed: dict[str, Any] | None) -> str:
+    """Подтверждённый вывод в данных сводки: он важнее разбора модели и меняет хэш сводки."""
+    if confirmed is None:
+        return ""
+    cause = _truncate(_one_line(str(confirmed["cause"])), SUMMARY_SHORT_CAUSE_CHARS)
+    return f"\n({CONFIRMED_SUMMARY_NOTE}: {confirmed['category']} — {cause})"
+
+
 def _summary_text(analysis: ClusterAnalysis, flagged: bool, detailed: bool) -> str:
     if flagged:  # формат нарушен — разделов нет, берём начало текста как есть
         limit = MAX_FLAGGED_SUMMARY_CHARS if detailed else SUMMARY_SHORT_CAUSE_CHARS
@@ -512,6 +531,7 @@ def render_report(
     not_proposed: dict[str, str] | None = None,
     known: KnownIssues | None = None,
     related: Related | None = None,
+    confirmed: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
     """Вернуть (краткий текст для консоли, полный текст report.md).
 
@@ -521,13 +541,16 @@ def render_report(
     ``known`` — подтверждённые известные проблемы (``known_issues``); без него ссылка
     разбора на запись базы знаний показывается как есть, без групп;
     ``related`` — группы «одна причина» (``related.py``): проблемы группы в одном разделе
-    показываются одним пунктом «Проблема 4 и 5 и 8» и считаются одной проблемой.
+    показываются одним пунктом «Проблема 4 и 5 и 8» и считаются одной проблемой;
+    ``confirmed`` — выводы расширений, подтверждённые пользователем (``confirmed.py``): их
+    категория важнее разбора модели.
     """
     proposals = proposals or {}
     apply_states = apply_states or {}
     tests = _Tests.of(run)
     problems = [
-        _problem(entry, analyses[entry["file_id"]], flagged, proposals, apply_states, known)
+        _problem(entry, analyses[entry["file_id"]], flagged, proposals, apply_states, known,
+                 (confirmed or {}).get(entry["file_id"]))
         for entry in run["clusters"]
     ]
     if related is not None:
@@ -599,6 +622,7 @@ def _problem(
     proposals: dict[str, Proposal],
     apply_states: dict[str, str],
     known: KnownIssues | None = None,
+    confirmed: dict[str, Any] | None = None,
 ) -> _Problem:
     file_id = entry["file_id"]
     is_flagged = file_id in flagged
@@ -607,6 +631,9 @@ def _problem(
     if proposal is not None and proposal.is_fix and not is_flagged:
         # Состояние неизвестно: apply её не применит, обещать «агент поправит» нельзя.
         bucket = MANUAL if state == "unknown" else AGENT
+    elif confirmed is not None:
+        # Пользователь подтвердил вывод расширения: раздел — по его категории.
+        bucket = {"приложение": ATTENTION, "тест": MANUAL}.get(confirmed["category"], ENVIRONMENT)
     elif (is_flagged or analysis.category in (None, "приложение", "неизвестно")
           or analysis.consistency_kind == "different"):
         bucket = ATTENTION
@@ -621,13 +648,15 @@ def _problem(
             mismatch=known.mismatched.get(file_id),
             group=known.group_of(file_id),
             rejected=known.rejected.get(file_id),
+            confirmed=confirmed,
         )
     # Без проверки по базе знаний (вызов без known): ссылка разбора как есть.
     ref = None if is_flagged or not analysis.kb_ref else KnownRecord(
         kb_dir="", id=analysis.kb_ref, title=analysis.kb_ref, category=None, description="",
         first_step="", verified=False,
     )
-    return _Problem(entry, analysis, is_flagged, proposal, state, bucket, known=ref)
+    return _Problem(entry, analysis, is_flagged, proposal, state, bucket, known=ref,
+                    confirmed=confirmed)
 
 
 def _sort_key(problem: _Problem) -> tuple[int, int, int]:
@@ -807,6 +836,7 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
         lines.append(f"- {_opinion_label(problem)} {_opinion(problem, _reason(problem))}{_unconfirmed(problem)}")
         lines += _consistency_lines(analysis, "- ")
         lines += _evidence_lines(analysis, "- Наблюдения:", "- Не хватает: ")
+    lines += _confirmed_lines(problem)
     if problem.bucket == AGENT and problem.proposal is not None:
         lines += [
             f"- Обратите внимание: {warning}"
@@ -827,6 +857,28 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
     if listed:
         lines.append(f"- Тесты: {listed}")
     lines += _history_lines(problem)
+    return lines
+
+
+CONFIRMED_TAG = "подтверждено по коду"
+CONFIRMED_SOURCES = {"sut-code": "разбор по коду приложения"}
+
+
+def _confirmed_lines(problem: _Problem) -> list[str]:
+    """Подтверждённый пользователем вывод расширения: причина, детали и шаги."""
+    confirmed = problem.confirmed
+    if confirmed is None:
+        return []
+    source = CONFIRMED_SOURCES.get(str(confirmed.get("extension")),
+                                  f"расширение {confirmed.get('extension')}")
+    when = f", {confirmed['confirmed']}" if confirmed.get("confirmed") else ""
+    lines = [f"- **Подтверждено инженером** ({source}{when}): "
+             f"{CATEGORY_LABELS[confirmed['category']]} — {_one_line(str(confirmed['cause']))}"]
+    lines += [f"   - {_one_line(str(row))}" for row in confirmed.get("details", [])]
+    steps = [_one_line(str(step)) for step in confirmed.get("fix", []) if str(step).strip()]
+    if steps:
+        lines += ["- Как исправить (подтверждено):",
+                  *(f"   {number}. {step}" for number, step in enumerate(steps, start=1))]
     return lines
 
 
@@ -1040,7 +1092,7 @@ def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) 
     size = f"{problem.size} {_plural(problem.size, 'тест', 'теста', 'тестов')}"
     tags = "".join(f" · [{tag}]" for tag in _brief_tags(problem))
     lines = [f"**Проблема {problem.number}** · {size}{tags}"]
-    if problem.flagged:
+    if problem.flagged and problem.confirmed is None:
         text = f"[{problem.tag}] разбор не прошёл проверку формата, текст — в report.md"
         lines.append(_brief_field("Агент считает:", text))
         return lines + _brief_example(problem, tests)
@@ -1049,6 +1101,16 @@ def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) 
     what = first_sentence(_plain_line(_one_line(analysis.what)))
     if what:
         lines.append(_truncate(what, BRIEF_TEXT_CHARS))
+    if problem.confirmed is not None:
+        cause = _truncate(_one_line(str(problem.confirmed["cause"])), BRIEF_CAUSE_CHARS)
+        lines.append(_brief_field("Подтверждено:", f"[{problem.tag}] {cause}"))
+        steps = [str(step) for step in problem.confirmed.get("fix", []) if str(step).strip()]
+        if steps:
+            lines.append(_brief_field("Что делать:", _truncate(_one_line(steps[0]), BRIEF_STEP_CHARS)))
+        if problem.bucket == MANUAL:
+            reason = _truncate(_one_line(_not_fixed_reason(problem, not_proposed)), BRIEF_REASON_CHARS)
+            lines.append(_brief_field("Почему не сам:", reason))
+        return lines + _brief_example(problem, tests)
     reason = _truncate(_one_line(_reason(problem)), BRIEF_CAUSE_CHARS) or problem.label
     lines.append(_brief_field(_opinion_label(problem), f"[{problem.tag}] {reason}"))
     proposal = problem.proposal
@@ -1172,7 +1234,7 @@ def _history_tags(problem: _Problem) -> list[str]:
 
 
 def _brief_tags(problem: _Problem, *, related: bool = True, history: bool = True) -> list[str]:
-    tags: list[str] = []
+    tags: list[str] = [CONFIRMED_TAG] if problem.confirmed is not None else []
     if not problem.flagged and problem.analysis.consistency_kind == "different":
         tags.append(MIXED_GROUP_NOTE)
     if not problem.flagged and problem.analysis.unconfirmed_by_log:
@@ -1217,6 +1279,8 @@ def _not_fixed_reason(problem: _Problem, not_proposed: dict[str, str]) -> str:
     reason = not_proposed.get(problem.entry["file_id"])
     if reason:
         return reason
+    if problem.confirmed is not None:
+        return "причину подтвердил инженер по коду приложения — правку автотеста агент не готовил"
     if not problem.analysis.code:
         return "в разборе нет ссылки на строку кода автотеста — агенту негде править"
     return "правка не предлагалась"
