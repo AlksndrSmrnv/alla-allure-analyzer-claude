@@ -45,6 +45,7 @@ FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
     "retries": lambda: _retries_launch(),
     "known": lambda: _known_launch(),
     "split": lambda: _split_launch(),
+    "shared": lambda: _shared_launch(),
     "test_bug": test_bug_launch,
 }
 
@@ -82,9 +83,17 @@ def _split_launch() -> LaunchFixture:
     return step_split_one_cause().fixture
 
 
+def _shared_launch() -> LaunchFixture:
+    """Общий лог сервиса с ошибками разных операций у всех тестов; у теста без запроса id
+    операции неизвестен (корпус эталона, L01)."""
+    from eval.corpus_dev import shared_service_log
+
+    return shared_service_log().fixture
+
+
 def build_fixture(spec: str) -> LaunchFixture:
     """``default`` | ``green`` | ``info_only`` | ``injection`` | ``scant`` | ``mixed`` |
-    ``retries`` | ``known`` | ``split`` | ``test_bug`` | ``many:<число>``."""
+    ``retries`` | ``known`` | ``split`` | ``shared`` | ``test_bug`` | ``many:<число>``."""
     name, _, arg = spec.partition(":")
     if name == "many":
         return many_launch(int(arg or 40))

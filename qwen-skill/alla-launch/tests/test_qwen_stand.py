@@ -596,6 +596,30 @@ def test_mixed_group_found_check(tmp_path: Path, consistency: str, status: str) 
     assert CHECKS["mixed_group_found"](context(tmp_path, [], "E08"))["status"] == status
 
 
+@pytest.mark.parametrize(("refund", "loyalty", "status"), [
+    ("ПРИЧИНА: приложение — провайдер отклонил возврат DECLINED.\n",
+     "ПРИЧИНА: неизвестно — лог операции не найден.\nНЕ ХВАТАЕТ: лога сервиса баллов.\n", "pass"),
+    ("ПРИЧИНА: данные — правило скидки DR-5 не найдено.\n",  # чужая операция
+     "ПРИЧИНА: неизвестно — лог операции не найден.\nНЕ ХВАТАЕТ: лога сервиса баллов.\n", "fail"),
+    ("ПРИЧИНА: приложение — провайдер отклонил возврат DECLINED.\n",
+     "ПРИЧИНА: приложение — сервис баллов упал.\nНЕ ХВАТАЕТ: нет\n", "fail"),
+])
+def test_operation_log_respected_check(tmp_path: Path, refund: str, loyalty: str,
+                                       status: str) -> None:
+    run_dir = tmp_path / "p" / "alla-reports" / "5121-20261004-100000"
+    for folder in ("analyses", "clusters"):
+        (run_dir / folder).mkdir(parents=True)
+    (run_dir / "run.json").write_text(json.dumps({"clusters": [
+        {"file_id": "01", "label": "Order ORD-11 was not created", "log_not_found": False},
+        {"file_id": "02", "label": "Refund of payment P-7 failed", "log_not_found": False},
+        {"file_id": "03", "label": "Loyalty points were not credited", "log_not_found": True},
+    ]}), encoding="utf-8")
+    for file_id, text in (("01", "ПРИЧИНА: данные — правило скидки DR-5 не найдено.\n"),
+                          ("02", refund), ("03", loyalty)):
+        (run_dir / "analyses" / f"{file_id}.md").write_text(text, encoding="utf-8")
+    assert CHECKS["operation_log_respected"](context(tmp_path, [], "L01"))["status"] == status
+
+
 @pytest.mark.parametrize(("task", "report", "status"), [
     ("--- Повторы в TestOps ---\n", "### Прошли после повтора (1)\n- **Повторы:** …\n", "pass"),
     ("", "### Прошли после повтора (1)\n- **Повторы:** …\n", "fail"),
