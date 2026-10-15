@@ -99,6 +99,8 @@ class Extension:
     agent: Path | None = None
     timeout: int = DEFAULT_TIMEOUT
     overrides_bundled: bool = False
+    # Слэш-команды Qwen расширения: имя → файл; ставятся в .qwen/commands/alla/<имя>.md.
+    commands: dict[str, Path] = field(default_factory=dict)
 
     @property
     def agent_name(self) -> str:
@@ -226,6 +228,7 @@ def load_manifest(folder: Path, *, bundled: bool) -> Extension:
         actions[action] = _file(folder, script, f"actions.{action}")
     if not hooks and not actions:
         raise ExtensionError("нет ни хуков [[hooks]], ни действий [actions] — расширение ничего не делает")
+    commands = _commands(folder, data.get("commands", []))
     return Extension(
         name=name,
         title=str(data.get("title") or name),
@@ -237,7 +240,55 @@ def load_manifest(folder: Path, *, bundled: bool) -> Extension:
         settings=settings,
         agent=agent,
         timeout=timeout,
+        commands=commands,
     )
+
+
+def skill_command_names() -> frozenset[str]:
+    """Слэш-команды самого скилла (``/alla:run``…): расширение их не заменяет. Набор берётся из
+    папки скилла рядом с этим модулем: он часть кода скилла, а не установки."""
+    source = Path(__file__).resolve().parents[2] / "commands" / "alla"
+    return frozenset(path.stem for path in source.glob("*.md"))
+
+
+def _commands(folder: Path, raw: Any) -> dict[str, Path]:
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        raise ExtensionError("commands — список путей к файлам команд Qwen (commands/<имя>.md)")
+    reserved = skill_command_names()
+    commands: dict[str, Path] = {}
+    for item in raw:
+        path = _file(folder, item, "commands")
+        name = path.stem
+        if path.suffix != ".md" or not NAME_RE.fullmatch(name):
+            raise ExtensionError(
+                f"команда {item}: файл <имя>.md, имя — латиница в нижнем регистре, цифры и дефис"
+            )
+        if name in reserved or name in commands:
+            raise ExtensionError(f"команда /alla:{name} уже есть у скилла — выбери другое имя")
+        _check_command(path)
+        commands[name] = path
+    return commands
+
+
+def _check_command(path: Path) -> None:
+    """Файл команды Qwen: заголовок с description и запретом вызова моделью (как /alla:*)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ExtensionError(f"{path.name} не читается: {exc}") from exc
+    parts = text.split("---\n", 2)
+    if len(parts) != 3 or parts[0].strip():
+        raise ExtensionError(f"команда {path.name}: нет заголовка --- description … ---")
+    header = parts[1]
+    if not re.search(r"^description:\s*\S", header, re.MULTILINE):
+        raise ExtensionError(f"команда {path.name}: нет description")
+    if not re.search(r"^disable-model-invocation:\s*true\s*$", header, re.MULTILINE):
+        raise ExtensionError(
+            f"команда {path.name}: нужен disable-model-invocation: true — команду вызывает только "
+            "пользователь"
+        )
+    if len(parts[2].strip()) < 10:
+        raise ExtensionError(f"команда {path.name}: пустой текст команды")
 
 
 def _valid_setting(value: Any) -> bool:
@@ -408,16 +459,26 @@ def active(project_root: Path) -> Active:
     except Exception as exc:  # prepare, next и apply не должны падать из-за папки расширений
         result.problems.append(f"расширения не прочитаны: {type(exc).__name__}: {exc}")
         return result
+    commands: dict[str, str] = {}
     for name in config.enabled:
         extension = catalog.extensions.get(name)
         if extension is None:
             reason = catalog.errors.get(name, "не найдено")
             result.problems.append(f"расширение {name} включено, но не работает: {reason}")
             continue
+        taken = sorted(command for command in extension.commands if command in commands)
+        if taken:
+            result.problems.append(
+                f"расширение {name}: команда /alla:{taken[0]} уже есть у расширения "
+                f"{commands[taken[0]]} — выключи одно из них"
+            )
+            continue
         try:
             result.extensions.append((extension, resolved_settings(extension, config)))
         except ExtensionError as exc:
             result.problems.append(f"расширение {name}: {exc}")
+            continue
+        commands.update(dict.fromkeys(extension.commands, name))
     return result
 
 

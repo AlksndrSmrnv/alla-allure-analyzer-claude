@@ -654,3 +654,65 @@ def test_params_need_on_request_hook(project: Path, testops: FakeTestOps, capsys
     assert code == 1 and "нет хука on_request" in out
     code, out = _run(["extensions", "run", "demo", "1", "2", "--run", str(run_dir)], capsys)
     assert code == 1 and "для одной проблемы" in out
+
+
+COMMAND = (
+    "---\ndescription: Демо-команда расширения\nargument-hint: <номер проблемы>\n"
+    "disable-model-invocation: true\n---\nВызови скилл alla-launch и запусти demo для {{args}}.\n"
+)
+
+
+def test_extension_commands_are_installed_and_removed(
+    project: Path, testops: FakeTestOps, capsys
+) -> None:
+    manifest = MANIFEST.replace('timeout = 5\n', 'timeout = 5\ncommands = ["commands/demo-run.md"]\n')
+    folder = make_demo(project, extension_toml=manifest)
+    (folder / "commands").mkdir()
+    (folder / "commands" / "demo-run.md").write_text(COMMAND, encoding="utf-8")
+    target = project / ".qwen" / "commands" / "alla" / "demo-run.md"
+
+    assert "Команда: /alla:demo-run." in ext_cli(project, capsys)[1]
+    code, out = ext_cli(project, capsys, "enable", "demo")
+    assert code == 0 and "Команды /alla:demo-run установлены" in out
+    assert target.read_text(encoding="utf-8") == COMMAND
+    target.unlink()
+    _prepare(project, capsys)  # prepare возвращает удалённую команду, как субагента
+    assert target.is_file()
+
+    code, out = ext_cli(project, capsys, "disable", "demo")
+    assert code == 0 and not target.exists()
+    ext_cli(project, capsys, "enable", "demo")
+    target.write_text(COMMAND + "своё\n", encoding="utf-8")
+    assert "изменены вручную — не удаляю" in ext_cli(project, capsys, "disable", "demo")[1]
+    assert target.is_file()
+
+
+@pytest.mark.parametrize(("name", "text", "error"), [
+    ("run.md", COMMAND, "уже есть у скилла"),
+    ("Demo.md", COMMAND, "латиница в нижнем регистре"),
+    ("demo-run.md", COMMAND.replace("disable-model-invocation: true\n", ""),
+     "disable-model-invocation"),
+    ("demo-run.md", COMMAND.replace("description: Демо-команда расширения\n", ""), "нет description"),
+    ("demo-run.md", "просто текст\n", "нет заголовка"),
+])
+def test_extension_command_errors(project: Path, name: str, text: str, error: str) -> None:
+    manifest = MANIFEST.replace('timeout = 5\n', f'timeout = 5\ncommands = ["commands/{name}"]\n')
+    folder = make_demo(project, extension_toml=manifest)
+    (folder / "commands").mkdir()
+    (folder / "commands" / name).write_text(text, encoding="utf-8")
+    assert error in ext.discover(project).errors["demo"]
+
+
+def test_two_extensions_cannot_share_a_command(project: Path) -> None:
+    for name in ("demo", "other"):
+        folder = project / ext.PROJECT_DIRNAME / name
+        (folder / "commands").mkdir(parents=True)
+        (folder / "commands" / "same.md").write_text(COMMAND, encoding="utf-8")
+        (folder / "extension.toml").write_text(
+            f'name = "{name}"\napi = 1\ncommands = ["commands/same.md"]\n\n[[hooks]]\n'
+            'event = "after_revert"\nscript = "hook.py"\n', encoding="utf-8")
+        (folder / "hook.py").write_text(HOOK, encoding="utf-8")
+        ext.set_enabled(project, name, True)
+    current = ext.active(project)
+    assert [extension.name for extension, _ in current.extensions] == ["demo"]
+    assert "команда /alla:same уже есть у расширения demo" in current.problems[0]

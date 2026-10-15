@@ -120,7 +120,9 @@ from alla_skill_lib.qwen_files import (
     install_batch_agent,
     install_commands,
     install_extension_agent,
+    install_extension_command,
     remove_extension_agent,
+    remove_extension_command,
 )
 from alla_skill_lib.related import (
     RELATED_FORMAT,
@@ -1687,7 +1689,8 @@ def _extensions_list(project_root: Path) -> str:
         if extension.overrides_bundled:
             origin += ", заменяет встроенное"
         about = f". {extension.description}" if extension.description else ""
-        lines.append(f"- {name} — {state} ({origin}): {extension.title}{about}")
+        commands = "".join(f" Команда: /alla:{command}." for command in extension.commands)
+        lines.append(f"- {name} — {state} ({origin}): {extension.title}{about}{commands}")
     for name, error in sorted(catalog.errors.items()):
         lines.append(f"- {name} — не работает: {error}")
     for name in sorted(enabled - set(catalog.extensions) - set(catalog.errors)):
@@ -1735,6 +1738,20 @@ def _extensions_toggle(project_root: Path, name: str, on: bool) -> str:
             lines.append(
                 f"Файл субагента .qwen/agents/{extension.agent_name}.md изменён вручную — не удаляю."
             )
+    if extension is not None and extension.commands:
+        names = ", ".join(f"/alla:{name}" for name in extension.commands)
+        if on:
+            for name, source in extension.commands.items():
+                install_extension_command(project_root, source, name)
+            lines.append(
+                f"Команды {names} установлены в .qwen/commands/alla/: Qwen Code увидит их после "
+                "перезапуска сеанса."
+            )
+        else:
+            kept = [f"/alla:{name}" for name, source in extension.commands.items()
+                    if remove_extension_command(project_root, source, name) == "kept"]
+            if kept:
+                lines.append(f"Команды {', '.join(kept)} изменены вручную — не удаляю.")
     if on and settings:
         lines.append(
             f"Настройки (меняются в таблице [{name}] файла {ext.CONFIG_FILE}): "
@@ -1823,14 +1840,21 @@ def _extensions_request(
 
 
 def _install_extension_agents(project_root: Path) -> None:
+    """Субагенты и слэш-команды включённых расширений — в ``.qwen/`` проекта."""
     for extension, _ in ext.active(project_root).extensions:
-        if extension.agent is None:
-            continue
-        if install_extension_agent(project_root, extension.agent, extension.agent_name):
+        if extension.agent is not None and install_extension_agent(
+            project_root, extension.agent, extension.agent_name
+        ):
             _progress(
                 f"Установлен субагент расширения {extension.agent_name} (Qwen Code увидит его со "
                 "следующего сеанса)."
             )
+        for name, source in extension.commands.items():
+            if install_extension_command(project_root, source, name):
+                _progress(
+                    f"Установлена команда /alla:{name} расширения {extension.name} (Qwen Code "
+                    "увидит её со следующего сеанса)."
+                )
 
 
 def _with_report_hooks(paths: ws.RunPaths, body: str) -> str:

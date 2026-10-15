@@ -1,4 +1,4 @@
-"""Файлы скилла, которые Qwen Code ищет в проекте: субагент пакетов и слэш-команды ``/alla:*``.
+"""Файлы скилла, которые Qwen Code ищет в проекте: субагенты и слэш-команды ``/alla:*``.
 
 Qwen Code читает агентов из ``<проект>/.qwen/agents/`` и команды из
 ``<проект>/.qwen/commands/`` при старте сеанса, а скилл лежит в ``.qwen/skills/`` —
@@ -88,7 +88,28 @@ def install_extension_agent(project_root: Path, source: Path, agent_name: str) -
 def remove_extension_agent(project_root: Path, source: Path | None, agent_name: str) -> str:
     """Убрать субагента выключенного расширения: ``removed`` | ``absent`` | ``kept`` (файл
     правили руками — не наш, не удаляем)."""
-    target = extension_agent_target(project_root, agent_name)
+    return _remove_ours(extension_agent_target(project_root, agent_name), source)
+
+
+def extension_command_target(project_root: Path, name: str) -> Path:
+    return project_root / ".qwen" / "commands" / COMMANDS_NAMESPACE / f"{name}.md"
+
+
+def install_extension_command(project_root: Path, source: Path, name: str) -> Path | None:
+    """Положить слэш-команду расширения в ``.qwen/commands/alla/<имя>.md`` (``/alla:<имя>``).
+
+    Qwen увидит её со следующего сеанса. Возвращает путь, если файл записан.
+    """
+    target = extension_command_target(project_root, name)
+    return target if _install(source, target) else None
+
+
+def remove_extension_command(project_root: Path, source: Path, name: str) -> str:
+    """Убрать команду выключенного расширения, только если файл — наш (как у субагента)."""
+    return _remove_ours(extension_command_target(project_root, name), source)
+
+
+def _remove_ours(target: Path, source: Path | None) -> str:
     if not target.is_file():
         return "absent"
     try:

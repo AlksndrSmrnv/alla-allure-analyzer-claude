@@ -68,6 +68,12 @@ paths:
 - Агенты включённых расширений ставит `enable` и каждый `prepare`
   (`qwen_files.install_extension_agent`); `disable` убирает файл, только если он совпадает с
   нашим.
+- Слэш-команды расширения — `commands = ["commands/<имя>.md"]` в манифесте
+  (`_commands`/`_check_command`: `.md`, имя по `NAME_RE`, `description`,
+  `disable-model-invocation: true`, не пустой текст). Имена команд скилла заняты
+  (`skill_command_names` — из папки рядом с модулем, не из `ws.SKILL_DIR`), одна команда у двух
+  включённых расширений — второе в `Active.problems`. Ставятся тем же путём, что агенты:
+  `enable`/`prepare` → `.qwen/commands/alla/<имя>.md`, `disable` — убрать, если файл наш.
 - Модель работу расширения не делает: субагент запускает только команду скилла из задания
   (правило «из shell только команды скилла» не ослаблено). `session_rules.WRITABLE_RE`
   разрешает субагенту только `extensions/<имя>/*.txt` (сообщение коммита).
