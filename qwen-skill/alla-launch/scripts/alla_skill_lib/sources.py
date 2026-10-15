@@ -116,5 +116,8 @@ def check_entry_analysis(
     analysis.sources_lost = with_sources and sources is None
     errors = validate_analysis(analysis, project_root, offered, observed=with_sources,
                                sources=sources, examples=example_blocks(entry),
-                               log_not_found=bool(entry.get("log_not_found")))
+                               log_not_found=bool(entry.get("log_not_found")),
+                               exact_kb={match["id"]: match.get("category")
+                                         for match in entry.get("kb", [])
+                                         if match.get("origin") == "exact"})
     return analysis, errors

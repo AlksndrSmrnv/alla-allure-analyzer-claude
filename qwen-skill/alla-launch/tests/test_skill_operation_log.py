@@ -124,3 +124,51 @@ def test_task_variant_for_a_missing_operation_log() -> None:
     assert f"Начни с «{LOG_NOT_FOUND}, анализ построен по ошибке теста»" in task
     assert "Лог операции этого теста не найден — в «НЕ ХВАТАЕТ» назови его" in task
     assert "лога приложения в данных нет" not in task
+
+
+_APP = ("ЧТО СЛОМАЛОСЬ: Заказ не создан: сервис ответил 500.\n"
+        "ПРИЧИНА: {category} — сервис заказов падает на пустом покупателе.\n"
+        "НАБЛЮДЕНИЯ:\n{observations}"
+        "НЕ ХВАТАЕТ: нет\nКАК ИСПРАВИТЬ:\n1. Заполнить покупателя в заказе.\n{kb}")
+_SOURCES = {
+    "S1": {"kind": "message", "text": "expected: <200> but was: <500>"},
+    "S2": {"kind": "log", "section": "HTTP", "text": "HTTP статус: 500\nerror: customer is null"},
+    "S3": {"kind": "log", "section": "лог", "text": "ERROR NullPointerException: customer is null"},
+}
+
+
+def _category_errors(category: str, observations: str, kb: str = "",
+                     exact_kb: dict[str, str] | None = None) -> list[str]:
+    text = _APP.format(category=category, observations=observations, kb=kb)
+    return validate_analysis(parse_analysis(text), Path("."), frozenset(exact_kb or {}),
+                             observed=True, sources=_SOURCES, exact_kb=exact_kb)
+
+
+@pytest.mark.parametrize("category", ["приложение", "данные"])
+def test_app_and_data_need_a_quote_from_the_operation_log(category: str) -> None:
+    from_message = "- [S1] «expected: <200> but was: <500>»\n"
+    from_http = "- [S2] «error: customer is null»\n"
+    from_log = "- [S3] «NullPointerException: customer is null»\n"
+    error = f"категорию «{category}» подтверждают только цитата из лога операции"
+
+    assert any(error in item for item in _category_errors(category, from_message))
+    # Ответ HTTP — то, что увидел тест, а не лог сервиса.
+    assert any(error in item for item in _category_errors(category, from_http))
+    assert _category_errors(category, from_message + from_log) == []
+    # Точная (подтверждённая) запись базы знаний той же категории тоже подтверждает.
+    assert _category_errors(category, from_message, "БАЗА ЗНАНИЙ: orders_npe_1a2b\n",
+                            {"orders_npe_1a2b": category}) == []
+    other = "данные" if category == "приложение" else "приложение"
+    assert any(error in item for item in _category_errors(
+        category, from_message, "БАЗА ЗНАНИЙ: orders_npe_1a2b\n", {"orders_npe_1a2b": other}))
+
+
+@pytest.mark.parametrize("category", ["тест", "окружение"])
+def test_other_categories_do_not_need_the_log(category: str) -> None:
+    assert _category_errors(category, "- [S1] «expected: <200> but was: <500>»\n") == []
+
+
+def test_lost_registry_does_not_block_the_category() -> None:
+    text = _APP.format(category="приложение", kb="",
+                       observations="- [S1] «expected: <200> but was: <500>»\n")
+    assert validate_analysis(parse_analysis(text), Path("."), observed=True, sources=None) == []

@@ -177,7 +177,16 @@ def test_protocol_lists_every_status_the_code_prints() -> None:
 # --- примеры справочников против настоящих парсеров --------------------------------
 
 
-_DATA_HEADER_RE = re.compile(r"^--- \[(?P<id>S\d+) · [^\n]*\] ---$", re.MULTILINE)
+_DATA_HEADER_RE = re.compile(r"^--- \[(?P<id>S\d+) · (?P<what>[^\n]*)\] ---$", re.MULTILINE)
+
+
+def _source_kind(what: str) -> dict[str, str]:
+    """Вид куска по заголовку, как в реестре: сообщение, трейс или лог со своей секцией."""
+    if what.startswith("сообщение об ошибке"):
+        return {"kind": "message"}
+    if what.startswith("стек-трейс"):
+        return {"kind": "trace"}
+    return {"kind": "log", "section": what.split(" ", 1)[0]}
 
 
 def _example_sources(name: str | None = None) -> dict[str, dict[str, str]]:
@@ -195,7 +204,8 @@ def _example_sources(name: str | None = None) -> dict[str, dict[str, str]]:
         # — не текст куска.
         lines = [line for line in body[header.end() + 1:end].split("\n")
                  if not _EXAMPLE_LINE_RE.match(line)]
-        sources[header.group("id")] = {"text": "\n".join(lines).strip("\n")}
+        sources[header.group("id")] = {"text": "\n".join(lines).strip("\n"),
+                                       **_source_kind(header.group("what"))}
     return sources
 
 

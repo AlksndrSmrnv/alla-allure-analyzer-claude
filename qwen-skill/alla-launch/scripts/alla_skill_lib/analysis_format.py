@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Any
@@ -462,6 +463,7 @@ def validate_analysis(
     sources: dict[str, dict[str, Any]] | None = None,
     examples: int = 1,
     log_not_found: bool = False,
+    exact_kb: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Список проблем формата (пусто — анализ принят).
 
@@ -471,7 +473,9 @@ def validate_analysis(
     это неполадка скилла, а не разбора — ошибкой не считается, отчёт помечает такие
     цитаты непроверенными), а при категории «неизвестно» — содержательный «НЕ ХВАТАЕТ».
     ``log_not_found`` — лога в задании нет, потому что в общем логе не нашлось записей
-    операции теста: «НЕ ХВАТАЕТ» должен назвать лог.
+    операции теста: «НЕ ХВАТАЕТ» должен назвать лог. ``exact_kb`` — точные записи базы
+    знаний кластера (id → категория): «приложение» и «данные» подтверждает цитата из лога
+    операции теста или ссылка на точную запись той же категории (:func:`category_errors`).
     """
     errors: list[str] = []
     if not analysis.what:
@@ -492,6 +496,7 @@ def validate_analysis(
             errors.extend(consistency_errors(analysis))
         if log_not_found and "лог" not in analysis.missing_text.lower():
             errors.append(LOG_NOT_FOUND_ERROR)
+        errors.extend(category_errors(analysis, sources, exact_kb or {}))
     errors.extend(code_ref_errors(analysis, project_root))
     if analysis.kb_ref and analysis.kb_ref not in offered_kb:
         offered = ", ".join(sorted(offered_kb)) or "в задании записей не было"
@@ -502,6 +507,15 @@ def validate_analysis(
     return errors
 
 
+# Категории, которые называют сбой в сервисе: без строки его лога это версия, а не причина.
+LOG_CONFIRMED_CATEGORIES = ("приложение", "данные")
+LOG_SECTIONS = frozenset({"лог", "журнал"})  # HTTP — ответ, который видел тест, а не лог
+CATEGORY_UNCONFIRMED_ERROR = (
+    "категорию «{category}» подтверждают только цитата из лога операции этого теста (кусок "
+    "«лог …» или «журнал …» в НАБЛЮДЕНИЯХ) или точная запись базы знаний той же категории "
+    "(«БАЗА ЗНАНИЙ: <id>»); в разборе нет ни того, ни другого — поставь «неизвестно», а "
+    "чего не хватает (лог сервиса за время теста) — в «НЕ ХВАТАЕТ:»"
+)
 LOG_NOT_FOUND_ERROR = (
     "лог операции этого теста не найден (пометка в «Данных») — в «НЕ ХВАТАЕТ:» назови его: "
     "лог сервиса за время теста с записями его операции"
@@ -533,6 +547,36 @@ def quote_parts(quote: str) -> list[str]:
     """Части цитаты между «…» без пробелов и знаков препинания по краям."""
     parts = (normalize_quote_text(part).strip(" .,;:") for part in _ELLIPSIS_RE.split(quote))
     return [part for part in parts if part]
+
+
+def confirmed_by_log(analysis: ClusterAnalysis, sources: dict[str, dict[str, Any]]) -> bool:
+    """Хоть одна цитата — из куска лога (``лог``/``журнал``; HTTP-ответ — не лог)."""
+    for observation in analysis.observations:
+        record = sources.get(observation.source_id) or {}
+        if record.get("kind") == "log" and (record.get("section") or "лог") in LOG_SECTIONS:
+            return True
+    return False
+
+
+def category_errors(
+    analysis: ClusterAnalysis,
+    sources: dict[str, dict[str, Any]] | None,
+    exact_kb: Mapping[str, str],
+) -> list[str]:
+    """«приложение» и «данные» — только по логу операции теста или точной записи базы знаний.
+
+    Без них такая категория — правдоподобная версия: сообщение теста говорит, что он
+    увидел, а не что сломалось в сервисе. Реестра нет (``sources`` — ``None``) — цитаты не
+    сверить, разбор принимается (неполадка скилла, модель её не исправит).
+    """
+    category = analysis.category
+    if sources is None or category not in LOG_CONFIRMED_CATEGORIES:
+        return []
+    if confirmed_by_log(analysis, sources):
+        return []
+    if analysis.kb_ref and exact_kb.get(analysis.kb_ref) == category:
+        return []
+    return [CATEGORY_UNCONFIRMED_ERROR.format(category=category)]
 
 
 def consistency_errors(analysis: ClusterAnalysis) -> list[str]:

@@ -34,7 +34,7 @@ from alla_skill_lib.related import (
 NPE = (
     "ЧТО СЛОМАЛОСЬ: Заказ не создан: сервис ответил 500.\n"
     "ПРИЧИНА: приложение — {cause}\n"
-    "НАБЛЮДЕНИЯ:\n- [S1] «{quote}»\n"
+    "НАБЛЮДЕНИЯ:\n- {observation}\n"
     "КАК ИСПРАВИТЬ:\n1. {step}\n"
 )
 CUSTOMER = "сервис заказов падает с NullPointerException: покупатель в заказе не заполнен."
@@ -43,7 +43,8 @@ CUSTOMER_STEP = "Проверить заполнение покупателя в
 
 def _analysis(cause: str = CUSTOMER, step: str = CUSTOMER_STEP, *, extra: str = "",
               category: str = "приложение") -> Any:
-    text = NPE.format(cause=cause, quote="expected: <200> but was: <500>", step=step) + extra
+    text = NPE.format(cause=cause, observation="[S1] «expected: <200> but was: <500>»",
+                      step=step) + extra
     return parse_analysis(text.replace("приложение —", f"{category} —", 1))
 
 
@@ -186,9 +187,14 @@ def test_invalid_decision_names_the_problem(tmp_path: Path, text: str, error: st
 # --- шаг relate в next ---------------------------------------------------------------------
 
 
-def _quote(run_dir: Path, file_id: str) -> str:
+def _observation(run_dir: Path, file_id: str) -> str:
+    """Строка наблюдения: из лога, если он есть в задании (иначе «приложение» не примут)."""
     sources = json.loads((run_dir / "evidence" / f"{file_id}.sources.json").read_text("utf-8"))
-    return str(sources["S1"]["text"].splitlines()[0][:60])
+    source_id = next((key for key, record in sources.items()
+                      if record.get("kind") == "log" and record.get("section") in ("лог", "журнал")),
+                     "S1")
+    line = next(line for line in sources[source_id]["text"].splitlines() if line.strip())
+    return f"[{source_id}] «{line.strip()[:60]}»"
 
 
 def _step_split_run(project: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
@@ -200,7 +206,7 @@ def _step_split_run(project: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
     assert len(ids) == 2
     assert [pair["reason"] for pair in run["clustering"]["near_pairs"]] == ["step"]
     for file_id in ids:
-        text = NPE.format(cause=CUSTOMER, quote=_quote(run_dir, file_id), step=CUSTOMER_STEP)
+        text = NPE.format(cause=CUSTOMER, observation=_observation(run_dir, file_id), step=CUSTOMER_STEP)
         (run_dir / "analyses" / f"{file_id}.md").write_text(text, encoding="utf-8")
     return run_dir, ids
 
@@ -257,7 +263,7 @@ def test_changed_analysis_asks_to_compare_again(
     answer_related(run_dir)
     assert _next(run_dir, capsys).startswith("STATUS: summary")
 
-    text = NPE.format(cause="сервис заказов теряет скидку в корзине.", quote=_quote(run_dir, ids[1]),
+    text = NPE.format(cause="сервис заказов теряет скидку в корзине.", observation=_observation(run_dir, ids[1]),
                       step="Проверить расчёт скидки в CartService.")
     (run_dir / "analyses" / f"{ids[1]}.md").write_text(text, encoding="utf-8")
     assert _next(run_dir, capsys).startswith("STATUS: relate")  # данные групп другие
@@ -288,7 +294,7 @@ def test_no_candidates_means_no_relate_step(
     project: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
     run_dir, ids = _step_split_run(project, monkeypatch, capsys)
-    text = NPE.format(cause="сервис заказов теряет скидку в корзине.", quote=_quote(run_dir, ids[1]),
+    text = NPE.format(cause="сервис заказов теряет скидку в корзине.", observation=_observation(run_dir, ids[1]),
                       step="Проверить расчёт скидки в CartService.")
     (run_dir / "analyses" / f"{ids[1]}.md").write_text(
         text.replace("приложение —", "окружение —"), encoding="utf-8")
@@ -315,7 +321,7 @@ def test_vanished_candidates_clear_both_hash_and_stats(
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     assert state["related_data_hash"] and state["related"]["confirmed_groups"] == 1
 
-    text = NPE.format(cause="сервис заказов теряет скидку в корзине.", quote=_quote(run_dir, ids[1]),
+    text = NPE.format(cause="сервис заказов теряет скидку в корзине.", observation=_observation(run_dir, ids[1]),
                       step="Проверить расчёт скидки в CartService.")
     (run_dir / "analyses" / f"{ids[1]}.md").write_text(
         text.replace("приложение —", "окружение —"), encoding="utf-8")

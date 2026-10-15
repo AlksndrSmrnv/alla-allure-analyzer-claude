@@ -19,7 +19,7 @@ from alla_skill_lib.retries import (
 )
 from alla_skill_lib.workspace import RunPaths
 from test_skill_flow import _finish, _full_report, _prepare
-from test_skill_queue_flow import APP_ANALYSIS, _quote
+from test_skill_queue_flow import APP_ANALYSIS, _observation
 from test_skill_report import APP, ENV, _render, _run, _section
 
 SAME = {"status": "failed", "message": "Total 0", "same_as_final": True}
@@ -181,7 +181,9 @@ def test_retries_reach_the_report_through_cli(
     project: Path, retries_testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
 ) -> None:
     run_dir, run, _ = _prepare(project, capsys, launch_id=5111)
-    analyses = {entry["file_id"]: APP_ANALYSIS.replace("{quote}", _quote(run_dir, entry["file_id"]))
+    # Логов в прогоне нет: «приложение» без лога не примут — категория здесь не важна.
+    analyses = {entry["file_id"]: APP_ANALYSIS.replace("{observation}", _observation(
+        run_dir, entry["file_id"])).replace("приложение —", "окружение —")
                 for entry in run["clusters"] if not entry["auto"]}
 
     out = _finish(run_dir, capsys, analyses)

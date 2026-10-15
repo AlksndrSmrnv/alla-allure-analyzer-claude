@@ -30,7 +30,7 @@ APP_ANALYSIS = (
     "ПРИЧИНА: приложение — пул соединений БД платежей исчерпан.\n"
     "\n"
     "НАБЛЮДЕНИЯ:\n"
-    "- [S1] «{quote}»\n"
+    "- {observation}\n"
     "\n"
     "КАК ИСПРАВИТЬ:\n"
     "1. Проверить пул соединений payment-db.\n"
@@ -48,6 +48,16 @@ def small_batches_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
 def _quote(run_dir: Path, file_id: str) -> str:
     sources = json.loads((run_dir / "evidence" / f"{file_id}.sources.json").read_text("utf-8"))
     return str(sources["S1"]["text"].splitlines()[0][:60])
+
+
+def _observation(run_dir: Path, file_id: str) -> str:
+    """Строка наблюдения: из лога, если он есть в задании (иначе «приложение» не примут)."""
+    sources = json.loads((run_dir / "evidence" / f"{file_id}.sources.json").read_text("utf-8"))
+    source_id = next((key for key, record in sources.items()
+                      if record.get("kind") == "log" and record.get("section") in ("лог", "журнал")),
+                     "S1")
+    line = next(line for line in sources[source_id]["text"].splitlines() if line.strip())
+    return f"[{source_id}] «{line.strip()[:60]}»"
 
 
 def _write(run_dir: Path, file_id: str, text: str) -> None:
@@ -124,9 +134,9 @@ def test_known_issue_is_grouped_through_cli_and_splits_after_reject(
     assert len(ids) == 4 and len(offered) == 3
     [other] = [file_id for file_id in ids if file_id not in offered]
     for file_id in offered:
-        _write(run_dir, file_id, APP_ANALYSIS.replace("{quote}", _quote(run_dir, file_id))
+        _write(run_dir, file_id, APP_ANALYSIS.replace("{observation}", _observation(run_dir, file_id))
                + f"БАЗА ЗНАНИЙ: {entry_id}\n")
-    _write(run_dir, other, APP_ANALYSIS.replace("{quote}", _quote(run_dir, other))
+    _write(run_dir, other, APP_ANALYSIS.replace("{observation}", _observation(run_dir, other))
            .replace("пул соединений БД платежей исчерпан", "цена товара в каталоге пустая"))
     out = _next(run_dir, capsys)
     # Проблемы с подтверждённой записью не сравниваются — у посторонней пары нет.

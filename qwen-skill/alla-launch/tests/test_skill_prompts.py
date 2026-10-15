@@ -83,13 +83,26 @@ def test_symptom_only_task_says_no_log_in_data_and_does_not_invent_it() -> None:
     assert "содержимое лога не выдумывай" in task
     assert "с учётом «Шага теста»" in task
     assert "первый шаг" not in task  # про лог в шагах говорить нечего
-    # Только код 5xx без лога: 500 — «приложение», а 502/503/504 отдаёт прокси или
-    # балансировщик — «окружение» (стенд E09: 503 без лога, эталон «окружение»).
+    # Только код 5xx без лога: 502/503/504 — «окружение» (стенд E09: 503 без лога, эталон
+    # «окружение»), а 500 — «неизвестно»: что сломалось в сервисе, без его лога не
+    # подтвердить (ревью: категория ставилась по правдоподобной версии).
     text = " ".join(task.split())
-    assert "500 и другие 5xx — «приложение», а 502, 503 и 504 — «окружение»" in text
+    assert "502, 503 и 504 — «окружение»" in text
+    assert "500 и другие 5xx — «неизвестно»: что сломалось в сервисе, без его лога не " \
+           "подтвердить" in text
     assert "и лог балансировщика" in text
     # 503 отдаёт и сам сервер (RFC 9110 §15.6.4): источник ответа не утверждать (ревью Codex).
     assert "не утверждай этого" in text and "их отдаёт прокси" not in text
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_app_and_data_causes_need_the_operation_log(variant: str) -> None:
+    for has_kb in (False, True):
+        cause_line = next(line for line in _task(variant, has_kb=has_kb).splitlines()
+                          if line.startswith("ПРИЧИНА:"))
+        assert ("«приложение» и «данные» — только если причину подтверждает цитата из лога "
+                "операции этого теста") in cause_line
+        assert ("точная запись базы знаний" in cause_line) is has_kb
 
 
 @pytest.mark.parametrize("variant", VARIANTS)

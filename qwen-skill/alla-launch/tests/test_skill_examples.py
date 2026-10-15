@@ -22,9 +22,12 @@ from eval.cassette import replay
 from eval.corpus_dev import same_assertion_two_npes
 
 HEAD = ("ЧТО СЛОМАЛОСЬ: Тесты получили 500.\nПРИЧИНА: приложение — сервис падает.\n"
-        "НАБЛЮДЕНИЯ:\n- [S1] «expected: <200> but was: <500>»\n")
+        "НАБЛЮДЕНИЯ:\n- [S2] «HikariPool-1 - Connection is not available»\n"
+        "- [S1] «expected: <200> but was: <500>»\n")
 TAIL = "КАК ИСПРАВИТЬ:\n1. Починить сервис.\n"
-SOURCES = {"S1": {"kind": "message", "text": "expected: <200> but was: <500>"}}
+SOURCES = {"S1": {"kind": "message", "text": "expected: <200> but was: <500>"},
+           "S2": {"kind": "log", "section": "лог",
+                  "text": "ERROR HikariPool-1 - Connection is not available"}}
 
 
 def _errors(consistency: str, examples: int = 2) -> list[str]:
