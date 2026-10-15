@@ -36,8 +36,9 @@ LINE_WINDOW = 5
 RELATE_FIELD_CHARS = 220
 RELATED_CAUSE_CHARS = 200
 
-NEAR, CODE, TEXT = "near", "code", "text"
-EDGE_KINDS = (NEAR, CODE, TEXT)
+NEAR, CODE, KB, TEXT = "near", "code", "kb", "text"
+EDGE_KINDS = (NEAR, CODE, KB, TEXT)
+KB_ORIGINS = {"exact": "точное совпадение", "fingerprint": "признак найден в данных"}
 # Что развело близкие кластеры (``NearPair.reason``) — словами для задания: это довод и за
 # разные причины, модель должна его видеть.
 NEAR_WHY = {
@@ -65,7 +66,9 @@ RELATE_TASK = f"""\
 Похожий текст ошибки — ещё не одна причина. Строка «почему сравниваются» говорит, чем
 данные различаются: разные ошибки в логе, хосты или элементы страницы — довод за
 {DIFFERENT}; разные шаги теста сами по себе не довод — одна ошибка сервиса бывает из разных
-тестов. Проблемы из строки «{SAME}» отчёт покажет одной проблемой, и ошибочное объединение
+тестов. Строка «БАЗА ЗНАНИЙ» — записи базы знаний проекта, которые подходят данным
+проблемы: одна и та же запись у проблем и разборы с ней согласны — довод за {SAME}; разным
+проблемам подходят разные записи — довод за {DIFFERENT}. Проблемы из строки «{SAME}» отчёт покажет одной проблемой, и ошибочное объединение
 спрячет отдельный сбой. Объединяй, только если разборы называют одну и ту же причину и одно
 исправление; сомневаешься — {DIFFERENT}.
 Запиши в файл только строки такого вида, по строке на решение:
@@ -97,7 +100,7 @@ class Edge:
 
     first: str
     second: str
-    kind: str  # near | code | text
+    kind: str  # near | code | kb | text
     why: str
 
 
@@ -156,8 +159,9 @@ def candidate_groups(
     отверг для этой проблемы (причина не подтверждена), и не с подтверждённой записью
     (``known.refs``: причина уже известна и показана блоком известных проблем — иначе одна
     проблема попала бы в оба блока сводки). Связь — близкая пара кластеров (почти одинаковый
-    текст ошибки), одно место в «КОД» или похожие причина и первый шаг; у категории
-    «неизвестно» — только близкая пара: её причины пишутся одними словами. Группа — компонента связности, не больше ``MAX_RELATE_GROUP`` крупнейших
+    текст ошибки), одно место в «КОД», общая запись базы знаний (она узнаёт ошибку по данным
+    кластера) или похожие причина и первый шаг; у категории «неизвестно» — только близкая пара
+    и запись базы знаний: её причины пишутся одними словами. Группа — компонента связности, не больше ``MAX_RELATE_GROUP`` крупнейших
     проблем; групп — не больше ``MAX_RELATE_GROUPS``, крупные первыми.
     """
     entries = {entry["file_id"]: entry for entry in run["clusters"]}
@@ -186,18 +190,25 @@ def candidate_groups(
                 and comparable(a, b):
             add(a, b, NEAR, NEAR_WHY.get(str(pair.get("reason")), NEAR_WHY["score"]))
 
-    known_cause = [file_id for file_id in eligible if analyses[file_id].category != "неизвестно"]
+    known_cause = {file_id for file_id in eligible if analyses[file_id].category != "неизвестно"}
     locations = {file_id: code_locations(analyses[file_id], project_root) for file_id in known_cause}
     words = {file_id: _words(analyses[file_id]) for file_id in known_cause}
     idf = _idf(words.values())
-    for index, a in enumerate(known_cause):
-        for b in known_cause[index + 1:]:
+    records = {file_id: kb_records(entries[file_id]) for file_id in eligible}
+    for index, a in enumerate(eligible):
+        for b in eligible[index + 1:]:
             if not comparable(a, b):
                 continue
-            place = _same_place(locations[a], locations[b])
+            both_known = a in known_cause and b in known_cause
+            place = _same_place(locations[a], locations[b]) if both_known else ""
+            shared = _shared_record(records[a], records[b])
             if place:
                 add(a, b, CODE, f"одно место в коде: {place}")
-            elif _similar(words[a], words[b], idf):
+            elif shared is not None:
+                # Запись узнаёт ошибку по данным, а не по словам разбора: связь и у «неизвестно».
+                add(a, b, KB, f"обеим подходит запись базы знаний {shared['id']} "
+                              f"«{_clip(str(shared.get('title') or ''), 80)}»")
+            elif both_known and _similar(words[a], words[b], idf):
                 add(a, b, TEXT, "похожие причина и первый шаг исправления")
 
     groups = []
@@ -214,6 +225,18 @@ def candidate_groups(
         int(group.file_ids[0]),
     ))
     return groups[:MAX_RELATE_GROUPS]
+
+
+def kb_records(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Записи базы знаний, которые задание предлагало проблеме (снимок ``entry["kb"]``).
+
+    Проблемы, чей разбор опирался на отвергнутую запись, в кандидаты не входят."""
+    return list(entry.get("kb") or [])
+
+
+def _shared_record(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> dict[str, Any] | None:
+    ids = {match.get("id") for match in b}
+    return next((match for match in a if match.get("id") in ids), None)
 
 
 def _words(analysis: ClusterAnalysis) -> set[str]:
@@ -303,6 +326,10 @@ def relate_data(
             if step:
                 lines.append(f"ПЕРВЫЙ ШАГ ИСПРАВЛЕНИЯ: {_clip(step)}")
             lines += [f"КОД: {_clip(line)}" for line in analysis.code[:2]]
+            lines += [f"БАЗА ЗНАНИЙ: {match.get('id')} «{_clip(str(match.get('title') or ''), 80)}» "
+                      f"({match.get('category')}; "
+                      f"{KB_ORIGINS.get(str(match.get('origin')), 'признак найден в данных')})"
+                      for match in kb_records(entry)[:3]]
     return "\n".join(lines).strip("\n")
 
 

@@ -28,6 +28,7 @@ from alla_skill_lib.related import (
     candidate_stats,
     parse_related,
     related_groups,
+    relate_data,
     validate_related,
 )
 
@@ -121,6 +122,40 @@ def test_unknown_causes_are_compared_only_through_near_pairs(tmp_path: Path) -> 
     analyses = {"01": unknown, "02": unknown, "03": unknown}
     assert _groups(_run(3), analyses, tmp_path) == []
     assert _groups(_run(3, near=((2, 3, "score"),)), analyses, tmp_path) == [([2, 3], ["near"])]
+
+
+def _with_kb(run: dict[str, Any], records: dict[int, list[str]]) -> dict[str, Any]:
+    for entry in run["clusters"]:
+        entry["kb"] = [{"id": record, "title": f"Запись {record}", "category": "приложение",
+                        "origin": "fingerprint"} for record in records.get(int(entry["file_id"]), [])]
+    return run
+
+
+def test_shared_kb_record_links_problems_even_with_unknown_cause(tmp_path: Path) -> None:
+    """Запись узнаёт ошибку по данным кластера, а не по словам разбора: общая запись — повод
+    сравнить, и у «неизвестно» тоже."""
+    analyses = {"01": _analysis(), "02": _analysis("сервис заказов не принял заказ.", "Повторить."),
+                "03": _analysis("каталог не опубликован.", "Опубликовать прайс-лист.")}
+    run = _with_kb(_run(3), {1: ["orders_npe_1a2b"], 2: ["orders_npe_1a2b"], 3: ["catalog_9f"]})
+    [group] = candidate_groups(run, analyses, set(), tmp_path)
+    assert group.file_ids == ["01", "02"]
+    assert [(edge.kind, edge.why) for edge in group.edges] == [
+        ("kb", "обеим подходит запись базы знаний orders_npe_1a2b «Запись orders_npe_1a2b»")]
+
+    unknown = _analysis("по данным причину не установить.", "Приложить лог.", category="неизвестно")
+    assert _groups(_with_kb(_run(2), {1: ["pool_1"], 2: ["pool_1"]}),
+                   {"01": unknown, "02": unknown}, tmp_path) == [([1, 2], ["kb"])]
+
+
+def test_relate_data_shows_kb_records_of_each_problem(tmp_path: Path) -> None:
+    analyses = {"01": _analysis(), "02": _analysis()}
+    run = _with_kb(_run(2), {1: ["orders_npe_1a2b"], 2: ["pool_1"]})
+    run["clusters"][1]["kb"][0]["origin"] = "exact"
+    groups = candidate_groups(run, analyses, set(), tmp_path)
+    data = relate_data(run, groups, analyses)
+    assert ("БАЗА ЗНАНИЙ: orders_npe_1a2b «Запись orders_npe_1a2b» (приложение; признак найден "
+            "в данных)") in data
+    assert "БАЗА ЗНАНИЙ: pool_1 «Запись pool_1» (приложение; точное совпадение)" in data
 
 
 def test_problems_with_a_confirmed_kb_record_are_not_compared(tmp_path: Path) -> None:
