@@ -124,11 +124,11 @@ def test_unknown_causes_are_compared_only_through_near_pairs(tmp_path: Path) -> 
     assert _groups(_run(3, near=((2, 3, "score"),)), analyses, tmp_path) == [([2, 3], ["near"])]
 
 
-def _with_kb(run: dict[str, Any], records: dict[int, list[str]]) -> dict[str, Any]:
-    for entry in run["clusters"]:
-        entry["kb"] = [{"id": record, "title": f"Запись {record}", "category": "приложение",
-                        "origin": "fingerprint"} for record in records.get(int(entry["file_id"]), [])]
-    return run
+def _kb(records: dict[int, list[str]], kb_dir: str = "kb") -> dict[str, list[dict[str, Any]]]:
+    """Записи, подходящие проблемам сейчас (как ``current_kb_matches``)."""
+    return {f"{n:02d}": [{"id": record, "title": f"Запись {record}", "category": "приложение",
+                          "origin": "fingerprint", "kb_dir": kb_dir, "kb_label": kb_dir}
+                         for record in ids] for n, ids in records.items()}
 
 
 def test_shared_kb_record_links_problems_even_with_unknown_cause(tmp_path: Path) -> None:
@@ -136,23 +136,38 @@ def test_shared_kb_record_links_problems_even_with_unknown_cause(tmp_path: Path)
     сравнить, и у «неизвестно» тоже."""
     analyses = {"01": _analysis(), "02": _analysis("сервис заказов не принял заказ.", "Повторить."),
                 "03": _analysis("каталог не опубликован.", "Опубликовать прайс-лист.")}
-    run = _with_kb(_run(3), {1: ["orders_npe_1a2b"], 2: ["orders_npe_1a2b"], 3: ["catalog_9f"]})
-    [group] = candidate_groups(run, analyses, set(), tmp_path)
+    kb = _kb({1: ["orders_npe_1a2b"], 2: ["orders_npe_1a2b"], 3: ["catalog_9f"]})
+    [group] = candidate_groups(_run(3), analyses, set(), tmp_path, kb=kb)
     assert group.file_ids == ["01", "02"]
     assert [(edge.kind, edge.why) for edge in group.edges] == [
         ("kb", "обеим подходит запись базы знаний orders_npe_1a2b «Запись orders_npe_1a2b»")]
 
     unknown = _analysis("по данным причину не установить.", "Приложить лог.", category="неизвестно")
-    assert _groups(_with_kb(_run(2), {1: ["pool_1"], 2: ["pool_1"]}),
-                   {"01": unknown, "02": unknown}, tmp_path) == [([1, 2], ["kb"])]
+    assert _groups(_run(2), {"01": unknown, "02": unknown}, tmp_path,
+                   kb=_kb({1: ["pool_1"], 2: ["pool_1"]})) == [([1, 2], ["kb"])]
+
+
+def test_same_id_in_different_module_kbs_is_not_a_shared_record(tmp_path: Path) -> None:
+    """У каждого модуля своя база знаний: orders/alla-kb/pool и payments/alla-kb/pool — разные."""
+    unknown = _analysis("по данным причину не установить.", "Приложить лог.", category="неизвестно")
+    kb = {**_kb({1: ["pool_1"]}, "orders/alla-kb"), **_kb({2: ["pool_1"]}, "payments/alla-kb")}
+    assert _groups(_run(2), {"01": unknown, "02": unknown}, tmp_path, kb=kb) == []
+
+    # В одной группе (по близкой паре) записи разных модулей подписаны папкой.
+    run = _run(2, near=((1, 2, "step"),))
+    groups = candidate_groups(run, {"01": unknown, "02": unknown}, set(), tmp_path, kb=kb)
+    data = relate_data(run, groups, {"01": unknown, "02": unknown}, kb)
+    assert "БАЗА ЗНАНИЙ: pool_1 «Запись pool_1» (orders/alla-kb; приложение;" in data
+    assert "БАЗА ЗНАНИЙ: pool_1 «Запись pool_1» (payments/alla-kb; приложение;" in data
 
 
 def test_relate_data_shows_kb_records_of_each_problem(tmp_path: Path) -> None:
     analyses = {"01": _analysis(), "02": _analysis()}
-    run = _with_kb(_run(2), {1: ["orders_npe_1a2b"], 2: ["pool_1"]})
-    run["clusters"][1]["kb"][0]["origin"] = "exact"
-    groups = candidate_groups(run, analyses, set(), tmp_path)
-    data = relate_data(run, groups, analyses)
+    kb = _kb({1: ["orders_npe_1a2b"], 2: ["pool_1"]})
+    kb["02"][0]["origin"] = "exact"
+    run = _run(2)
+    groups = candidate_groups(run, analyses, set(), tmp_path, kb=kb)
+    data = relate_data(run, groups, analyses, kb)
     assert ("БАЗА ЗНАНИЙ: orders_npe_1a2b «Запись orders_npe_1a2b» (приложение; признак найден "
             "в данных)") in data
     assert "БАЗА ЗНАНИЙ: pool_1 «Запись pool_1» (приложение; точное совпадение)" in data

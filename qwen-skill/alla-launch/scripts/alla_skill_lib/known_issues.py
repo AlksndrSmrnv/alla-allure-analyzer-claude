@@ -25,6 +25,7 @@ from alla_skill_lib.kb import (
     KBRecord,
     ProjectKB,
     kb_label,
+    match_cluster,
     normalize_fp,
     record_matches,
 )
@@ -171,6 +172,33 @@ def _load(
             cache[key] = None
             notes.append(f"База знаний: запись {kb.label}/{entry_id}.json не читается — {exc}")
     return cache[key]
+
+
+def current_kb_matches(run: dict[str, Any], paths: ws.RunPaths) -> dict[str, list[dict[str, Any]]]:
+    """Записи базы знаний, которые подходят кластеру **сейчас**: file_id → снимки.
+
+    Тот же ``match_cluster``, что в ``prepare``, но по текущим файлам: запись, отвергнутая
+    для кластера (``reject``) после разбора, — даже если разбор на неё не ссылался — уже не
+    подходит. Снимок дополнен ``kb_dir`` и ``kb_label``: id уникален только внутри папки
+    базы знаний модуля. Папки нет (разбор открыт не там) — записей нет: проверить нечем.
+    """
+    project_root = Path(str(run.get("project_root") or "."))
+    cache: dict[str, list[KBRecord]] = {}
+    result: dict[str, list[dict[str, Any]]] = {}
+    for entry in run["clusters"]:
+        kb_dir = str(entry.get("kb_dir") or "")
+        if entry.get("auto") or not kb_dir or not Path(kb_dir).is_dir():
+            continue
+        if kb_dir not in cache:
+            cache[kb_dir], _warnings = ProjectKB(
+                Path(kb_dir), kb_label(project_root, Path(kb_dir))).load()
+        evidence = paths.evidence(entry["file_id"])
+        text = ws.read_text(evidence) if evidence.is_file() else ""
+        label = kb_label(project_root, Path(kb_dir))
+        result[entry["file_id"]] = [
+            {**match, "kb_dir": kb_dir, "kb_label": label}
+            for match in match_cluster(cache[kb_dir], entry.get("signature"), text)]
+    return result
 
 
 def _matches(record: KBRecord, entry: dict[str, Any], paths: ws.RunPaths) -> bool:

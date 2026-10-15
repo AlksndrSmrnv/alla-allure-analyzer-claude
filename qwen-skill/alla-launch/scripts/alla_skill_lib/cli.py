@@ -85,7 +85,12 @@ from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
 from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
 from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, reject
 from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
-from alla_skill_lib.known_issues import KnownIssues, KnownRecord, known_issues
+from alla_skill_lib.known_issues import (
+    KnownIssues,
+    KnownRecord,
+    current_kb_matches,
+    known_issues,
+)
 from alla_skill_lib.kb import (
     KBRecord,
     ProjectKB,
@@ -1131,7 +1136,8 @@ def _related_step(
     Нет кандидатов — шага нет. Решение модели действует, пока не изменились данные
     групп (``state.related_data_hash``): иначе ``related.md`` удаляется и просится заново.
     """
-    groups = candidate_groups(run, analyses, flagged, project_root, known)
+    current_kb = current_kb_matches(run, paths)
+    groups = candidate_groups(run, analyses, flagged, project_root, known, current_kb)
     if not groups:
         paths.related.unlink(missing_ok=True)
         # Оба поля — независимо: иначе review показал бы числа исчезнувших групп.
@@ -1139,7 +1145,7 @@ def _related_step(
         if any(value is not None for value in stale):
             ws.write_json(paths.state_json, state)
         return Related()
-    data = relate_data(run, groups, analyses)
+    data = relate_data(run, groups, analyses, current_kb)
     digest = hashlib.sha256(data.encode("utf-8")).hexdigest()
     if state.get("related_data_hash") != digest:
         paths.related.unlink(missing_ok=True)

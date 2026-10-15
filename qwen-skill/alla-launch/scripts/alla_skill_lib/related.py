@@ -153,6 +153,7 @@ def candidate_groups(
     flagged: set[str],
     project_root: Path,
     known: KnownIssues | None = None,
+    kb: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[CandidateGroup]:
     """Группы проблем, которые стоит сравнить после разбора.
 
@@ -164,7 +165,9 @@ def candidate_groups(
     текст ошибки), одно место в «КОД», общая запись базы знаний (она узнаёт ошибку по данным
     кластера) или похожие причина и первый шаг; у категории «неизвестно» — только близкая пара
     и запись базы знаний: её причины пишутся одними словами. Группа — компонента связности, не больше ``MAX_RELATE_GROUP`` крупнейших
-    проблем; групп — не больше ``MAX_RELATE_GROUPS``, крупные первыми.
+    проблем; групп — не больше ``MAX_RELATE_GROUPS``, крупные первыми. ``kb`` — записи базы
+    знаний, подходящие кластерам сейчас (``known_issues.current_kb_matches``); без него связей
+    по базе знаний нет.
     """
     entries = {entry["file_id"]: entry for entry in run["clusters"]}
     eligible = [
@@ -196,7 +199,7 @@ def candidate_groups(
     locations = {file_id: code_locations(analyses[file_id], project_root) for file_id in known_cause}
     words = {file_id: _words(analyses[file_id]) for file_id in known_cause}
     idf = _idf(words.values())
-    records = {file_id: kb_records(entries[file_id]) for file_id in eligible}
+    records = {file_id: (kb or {}).get(file_id, []) for file_id in eligible}
     for index, a in enumerate(eligible):
         for b in eligible[index + 1:]:
             if not comparable(a, b):
@@ -229,24 +232,23 @@ def candidate_groups(
     return groups[:MAX_RELATE_GROUPS]
 
 
-def kb_records(entry: dict[str, Any]) -> list[dict[str, Any]]:
-    """Записи базы знаний, которые задание предлагало проблеме (снимок ``entry["kb"]``).
-
-    Проблемы, чей разбор опирался на отвергнутую запись, в кандидаты не входят."""
-    return list(entry.get("kb") or [])
+def _kb_key(match: dict[str, Any]) -> tuple[str, str]:
+    """Запись — папка базы знаний модуля и id: у модулей свои записи с одинаковыми id."""
+    return str(match.get("kb_dir") or ""), str(match.get("id"))
 
 
-def _kb_line(match: dict[str, Any]) -> str:
+def _kb_line(match: dict[str, Any], *, with_module: bool) -> str:
     origin = KB_ORIGINS.get(str(match.get("origin")), KB_ORIGINS["fingerprint"])
+    where = f"{match.get('kb_label')}; " if with_module and match.get("kb_label") else ""
     line = (f"БАЗА ЗНАНИЙ: {match.get('id')} «{_clip(str(match.get('title') or ''), 80)}» "
-            f"({match.get('category')}; {origin})")
+            f"({where}{match.get('category')}; {origin})")
     cause = " ".join(str(match.get("description") or "").split())
     return f"{line} — причина записи: {_clip(cause, 160)}" if cause else line
 
 
 def _shared_record(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> dict[str, Any] | None:
-    ids = {match.get("id") for match in b}
-    return next((match for match in a if match.get("id") in ids), None)
+    keys = {_kb_key(match) for match in b}
+    return next((match for match in a if _kb_key(match) in keys), None)
 
 
 def _words(analysis: ClusterAnalysis) -> set[str]:
@@ -314,7 +316,8 @@ def candidate_stats(groups: list[CandidateGroup]) -> dict[str, Any]:
 
 
 def relate_data(
-    run: dict[str, Any], groups: list[CandidateGroup], analyses: dict[str, ClusterAnalysis]
+    run: dict[str, Any], groups: list[CandidateGroup], analyses: dict[str, ClusterAnalysis],
+    kb: dict[str, list[dict[str, Any]]] | None = None,
 ) -> str:
     """Блок «Группы» задания; его SHA-256 — ``state.related_data_hash``."""
     entries = {entry["file_id"]: entry for entry in run["clusters"]}
@@ -323,6 +326,9 @@ def relate_data(
         numbers = ", ".join(str(int(file_id)) for file_id in group.file_ids)
         lines += ["", f"--- Группа {number}: проблемы {numbers} ---", "Почему сравниваются:"]
         lines += [f"- {int(edge.first)} и {int(edge.second)}: {edge.why}" for edge in group.edges]
+        # Записи из разных папок базы знаний (модулей) — разные, даже с одним id: назвать папку.
+        with_module = len({str(match.get("kb_dir") or "") for file_id in group.file_ids
+                           for match in (kb or {}).get(file_id, [])}) > 1
         for file_id in group.file_ids:
             entry, analysis = entries[file_id], analyses[file_id]
             tests = int(entry["member_count"])
@@ -336,7 +342,8 @@ def relate_data(
             if step:
                 lines.append(f"ПЕРВЫЙ ШАГ ИСПРАВЛЕНИЯ: {_clip(step)}")
             lines += [f"КОД: {_clip(line)}" for line in analysis.code[:2]]
-            lines += [_kb_line(match) for match in kb_records(entry)]
+            records = (kb or {}).get(file_id, [])
+            lines += [_kb_line(match, with_module=with_module) for match in records]
     return "\n".join(lines).strip("\n")
 
 

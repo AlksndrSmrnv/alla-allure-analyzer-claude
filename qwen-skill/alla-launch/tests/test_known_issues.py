@@ -11,7 +11,7 @@ import skill_fixtures  # noqa: F401  # scripts/ в sys.path — раньше all
 from alla_skill_lib.analysis_format import parse_analysis
 from alla_skill_lib.history import run_records
 from alla_skill_lib.kb import KBRecord, ProjectKB
-from alla_skill_lib.known_issues import KnownIssues, known_issues
+from alla_skill_lib.known_issues import KnownIssues, current_kb_matches, known_issues
 from alla_skill_lib.report import (
     MAX_BRIEF_ITEMS,
     MAX_REPORT_GROUP_NUMBERS,
@@ -102,6 +102,22 @@ def test_problems_with_one_confirmed_record_form_one_group(tmp_path: Path) -> No
     assert set(known.refs) == {"01", "02", "03"}
     assert known.groups[0].record.category == "приложение"
     assert known.groups[0].record.first_step == "Увеличить пул payment-db"
+
+
+def test_current_matches_drop_a_record_rejected_without_a_reference(tmp_path: Path) -> None:
+    """Сравнение похожих проблем берёт записи по текущим файлам: ``reject`` записи, на которую
+    разбор не ссылался («БАЗА ЗНАНИЙ: нет»), убирает её сразу (ревью Codex)."""
+    record = _record()
+    run, _analyses, paths = _setup(tmp_path, [3, 2], [APP, APP], records=[record])
+    current = current_kb_matches(run, paths)
+    assert [match["id"] for match in current["01"]] == [ENTRY]
+    assert current["01"][0]["kb_dir"] == run["clusters"][0]["kb_dir"]
+    assert current["01"][0]["kb_label"] == "alla-kb"
+
+    record.reject("v7:sig2")
+    ProjectKB(Path(run["kb_dir"])).save(record)
+    current = current_kb_matches(run, paths)
+    assert [match["id"] for match in current["01"]] == [ENTRY] and current["02"] == []
 
 
 def test_reject_removes_a_problem_from_the_group_and_its_tag(tmp_path: Path) -> None:
