@@ -239,6 +239,11 @@ def _quotes_service_log(prompt: ClusterAnalysisPrompt) -> bool:
                for source in prompt.sources)
 
 
+def _has_symptom(prompt: ClusterAnalysisPrompt) -> bool:
+    """Что увидел тест: сообщение, трейс или ответ HTTP (он — не лог сервиса)."""
+    return prompt.has_symptom or (prompt.has_log and not _quotes_service_log(prompt))
+
+
 def has_evidence(cluster: FailureCluster, log_snippet: str | None) -> bool:
     """Есть ли у кластера хоть какой-то текст ошибки для анализа."""
     return bool(
@@ -464,8 +469,8 @@ def build_cluster_task_with_sources(
     log_not_found = not _quotes_service_log(prompt) and representative is not None \
         and log_note_for(representative) is not None
     task = build_task_text(
-        has_symptom=prompt.has_symptom,
-        has_log=prompt.has_log,
+        has_symptom=_has_symptom(prompt),
+        has_log=_quotes_service_log(prompt),
         low_evidence=bool(cluster.example_step_path) and evidence_chars < LOW_EVIDENCE_CHARS,
         has_kb=bool(kb_matches),
         log_not_found=log_not_found,
@@ -521,8 +526,8 @@ def _examples_task(
     log_not_found = not _quotes_service_log(prompt) and any(
         example.log_note for example in prompt_examples)
     task = build_task_text(
-        has_symptom=prompt.has_symptom,
-        has_log=prompt.has_log,
+        has_symptom=_has_symptom(prompt),
+        has_log=_quotes_service_log(prompt),
         low_evidence=bool(cluster.example_step_path) and evidence_chars < LOW_EVIDENCE_CHARS,
         has_kb=bool(kb_matches),
         examples=len(examples),

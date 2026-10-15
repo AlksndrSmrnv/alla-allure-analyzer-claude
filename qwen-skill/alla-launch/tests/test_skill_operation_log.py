@@ -194,5 +194,26 @@ def test_http_response_does_not_replace_the_operation_log() -> None:
 
     assert task.log_not_found
     assert "HTTP статус: 500" in task.text and f"[{LOG_NOT_FOUND}: в service.log" in task.text
-    assert "Лог операции этого теста не найден — в «НЕ ХВАТАЕТ» назови его" in " ".join(
-        task.text.split())
+    text = " ".join(task.text.split())
+    assert "Лог операции этого теста не найден — в «НЕ ХВАТАЕТ» назови его" in text
+    # Вариант задания — «лога нет»: HTTP-ответ — симптом, а не лог сервиса.
+    assert f"Начни с «{LOG_NOT_FOUND}, анализ построен по ошибке теста»" in text
+    assert "500 и другие 5xx — «неизвестно»" in text
+
+
+def test_http_response_alone_is_a_symptom_not_an_application_log() -> None:
+    test = FailedTestSummary(
+        test_result_id=1, name="createOrder", status="failed",
+        log_snippet="--- [HTTP: Response] ---\nHTTP статус: 500\nerror: Internal Server Error")
+    cluster = FailureCluster(
+        cluster_id="c", label="Тест: createOrder", signature=ClusterSignature(),
+        member_test_ids=[1], member_count=1, representative_test_id=1,
+        examples=[ClusterExample(role="typical", test_result_id=1)])
+    task = build_cluster_task_with_sources(
+        cluster=cluster, position=1, total=1, launch_id=1, answer_path="/a.md",
+        next_command="next", tests_by_id={1: test}, log_snippet=test.log_snippet,
+        full_trace=None, frames=[], hints=[], settings=Settings())
+
+    text = " ".join(task.text.split())
+    assert "анализ построен по логу приложения" not in text
+    assert "лога приложения в данных нет" in text and not task.log_not_found

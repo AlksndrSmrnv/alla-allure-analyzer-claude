@@ -40,8 +40,11 @@ paths:
   или «журнал»; HTTP-ответ лог не заменяет — ревью Codex) — после лога пометка
   `[лог операции не найден: …]` (`log_note_for`; id неизвестен — так и сказано). В задании
   нет кусков «лог»/«журнал» ни у одного примера (`_quotes_service_log`) — флаг
-  `log_not_found`; без лога совсем — ещё и вариант задания «лог операции не найден»
-  (`build_task_text(log_not_found=True)`; `_LOG_NOT_FOUND_MISSING` — при любом флаге), в записи кластера `log_not_found: true`, и
+  `log_not_found` и вариант задания «лог операции не найден» (`build_task_text(
+  log_not_found=True)`, `_LOG_NOT_FOUND_MISSING`). Вариант задания выбирается по кускам
+  записей сервиса (`has_log = _quotes_service_log`), HTTP-ответ — симптом (`_has_symptom`):
+  иначе при одном HTTP-ответе задание велело разбирать «лог приложения» (ревью Codex). В
+  записи кластера `log_not_found: true`, и
   `validate_analysis(log_not_found=True)` не примет «НЕ ХВАТАЕТ» без слова «лог»
   (`LOG_NOT_FOUND_ERROR`).
 - Примеры (шаг 4): больше одного примера у кластера (`example_tests`; ни у одного нет лога, а
