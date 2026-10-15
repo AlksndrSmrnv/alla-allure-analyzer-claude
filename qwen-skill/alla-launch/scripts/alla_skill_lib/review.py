@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections import Counter
 from collections.abc import Mapping
 from datetime import datetime
@@ -58,11 +59,14 @@ RULE_TITLES = {
     "allowed_writes": "писал только свои файлы разбора",
     "report_verbatim": "вывел краткий разбор дословно, без блока проблем скилла",
 }
+_TRACEBACK_RE = re.compile(r"^Traceback \(most recent call last\):", re.MULTILINE)
 # Причины оценки хода: код (идёт в сводку для разработчика) → текст для человека.
 REASONS = {
     "not_done": "разбор не дошёл до отчёта (STATUS: done)",
     "status_error": "команда скилла ответила STATUS: error",
-    "traceback": "команда скилла упала без STATUS (traceback)",
+    "exception": "команда скилла упала с исключением (traceback в выводе)",
+    "no_status": "команда скилла оборвалась без строки STATUS (тайм-аут, прерывание или пустой "
+                 "вывод)",
     "missing_analyses": "есть кластеры без разбора",
     "rule": "нарушено правило исполнителя",
     "format_broken": "разбор принят с пометкой «формат нарушен»",
@@ -73,7 +77,7 @@ REASONS = {
     "tool_errors": "ошибки инструментов (чтение несуществующего файла и т. п.)",
     "no_journal": "журнал сеанса Qwen не найден — правила не проверены",
 }
-FAILING_REASONS = {"not_done", "status_error", "traceback"}
+FAILING_REASONS = {"not_done", "status_error", "exception", "no_status"}
 # Причины, которые сами по себе не делают ход «с замечаниями»: пояснения к оценке.
 INFO_REASONS = {"no_journal", "fix_attempts"}
 
@@ -233,7 +237,8 @@ def _journal_facts(log: SessionLog, project_root: Path, paths: ws.RunPaths) -> d
         rules["report_verbatim"] = {"status": "n/a", "evidence": "разбор не дошёл до done"}
     commands = skill_commands(log.calls)
     status_errors = []
-    tracebacks = []
+    exceptions: list[dict[str, str]] = []
+    no_status: list[dict[str, str]] = []
     for call in commands:
         status = skill_status(call)
         if status == "error":
@@ -241,8 +246,11 @@ def _journal_facts(log: SessionLog, project_root: Path, paths: ws.RunPaths) -> d
             status_errors.append({"command": skill_subcommand(call),
                                   "text": lines[0][:300] if lines else ""})
         elif status is None:
+            # Без STATUS: исключение скрипта (в выводе traceback) или обрыв — тайм-аут
+            # инструмента, прерывание, пустой вывод. Стектрейса у обрыва нет.
             tail = [line for line in call.result.splitlines() if line.strip()][-1:] or [""]
-            tracebacks.append({"command": skill_subcommand(call), "text": tail[0][:300]})
+            item = {"command": skill_subcommand(call), "text": tail[0][:300]}
+            (exceptions if _TRACEBACK_RE.search(call.result) else no_status).append(item)
     # Ответы команд скилла считаются по STATUS выше; здесь — прочие сбои инструментов.
     skill_ids = {id(call) for call in commands}
     tool_errors = Counter(call.name for call in log.calls if call.is_error and id(call) not in skill_ids)
@@ -262,7 +270,8 @@ def _journal_facts(log: SessionLog, project_root: Path, paths: ws.RunPaths) -> d
         "subagents": log.subagents,
         "skill_commands": dict(sorted(statuses.items())),
         "status_errors": status_errors,
-        "tracebacks": tracebacks,
+        "exceptions": exceptions,
+        "no_status": no_status,
         "tool_errors": dict(sorted(tool_errors.items())),
         "rules": rules,
         "skill_problems": log.skill_problems,
@@ -325,8 +334,10 @@ def process_reasons(facts: Mapping[str, Any]) -> list[tuple[str, str]]:
     if journal["found"]:
         for item in journal["status_errors"]:
             reasons.append(("status_error", f"{item['command']}: {item['text']}"))
-        for item in journal["tracebacks"]:
-            reasons.append(("traceback", f"{item['command']}: {item['text']}"))
+        for item in journal["exceptions"]:
+            reasons.append(("exception", f"{item['command']}: {item['text']}"))
+        for item in journal["no_status"]:
+            reasons.append(("no_status", f"{item['command']}: {item['text']}"))
     if process["missing_analyses"]:
         reasons.append(("missing_analyses", _numbers(process["missing_analyses"])))
     if journal["found"]:
@@ -457,7 +468,9 @@ def render_report(facts: Mapping[str, Any]) -> str:
     items: list[str] = []
     if journal["found"]:
         items += [f"- `{e['command']}` → STATUS: error: {e['text']}" for e in journal["status_errors"]]
-        items += [f"- `{e['command']}` упала без STATUS: {e['text']}" for e in journal["tracebacks"]]
+        items += [f"- `{e['command']}` упала с исключением: {e['text']}" for e in journal["exceptions"]]
+        items += [f"- `{e['command']}` оборвалась без STATUS: {e['text'] or 'вывода нет'}"
+                  for e in journal["no_status"]]
         items += [f"- ошибки инструмента {k}: {v}" for k, v in journal["tool_errors"].items()]
     # Пункт из файла многострочный: поля «Где:», «Произошло:»… — вложенными строками.
     items += ["- модель записала: " + text.replace("\n", "\n  ") for text in skill_problems(facts)]
@@ -589,7 +602,8 @@ def render_pilot_summary(facts: Mapping[str, Any]) -> str:
                 "- команды скилла: " + (", ".join(f"{k} ×{v}" for k, v in journal["skill_commands"].items()) or "нет"),
                 f"- STATUS: error: {len(journal['status_errors'])} "
                 + _commands(journal["status_errors"]),
-                f"- без STATUS (traceback): {len(journal['tracebacks'])} " + _commands(journal["tracebacks"]),
+                f"- исключение: {len(journal['exceptions'])} " + _commands(journal["exceptions"]),
+                f"- обрыв без STATUS: {len(journal['no_status'])} " + _commands(journal["no_status"]),
                 "- ошибки инструментов: " + (", ".join(f"{k} ×{v}" for k, v in journal["tool_errors"].items()) or "нет"),
                 "",
                 "## Правила исполнителя", ""]
@@ -685,7 +699,7 @@ def render_console(facts: Mapping[str, Any], report: Path, summary: Path) -> str
         checked = sum(1 for result in rules if result["status"] in ("pass", "fail"))
         usage = journal["usage"]
         lines.append(f"Правила исполнителя: соблюдено {kept} из {checked}; сбоев команд: "
-                     f"{len(journal['status_errors']) + len(journal['tracebacks'])}.")
+                     f"{len(journal['status_errors']) + len(journal['exceptions']) + len(journal['no_status'])}.")
         lines.append(f"Время: {_duration(journal['duration_seconds'])}, токенов: {usage['total']}.")
     lines.append(f"Проблем скилла записано: {len(skill_problems(facts))}.")
     lines.append(f"Разобрано моделью: {quality['analysed']}; «неизвестно»: {quality['unknown']}; "

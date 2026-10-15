@@ -88,6 +88,7 @@ def test_review_finds_rule_violations_and_failures(
     j.call("glob", {"pattern": "**/OrderTest.java"}, "Found 1 file")
     j.skill(f"verify 01 --run {run_dir}", f"STATUS: error\nНе найден файл разбора {run_dir}")
     j.skill(f"next {run_dir}", f"Traceback (most recent call last):\nKeyError: 'x' {run_dir}")
+    j.skill(f"next {run_dir}", "")  # тайм-аут инструмента: ни STATUS, ни traceback
     j.call("read_file", {"file_path": str(project / "missing.txt")}, "File not found", error=True)
     j.skill(f"next {run_dir}", done)
     j.text("Отчёт готов: две проблемы.")  # пересказ вместо отчёта
@@ -101,7 +102,7 @@ def test_review_finds_rule_violations_and_failures(
     facts = json.loads((run_dir / "review" / "facts.json").read_text(encoding="utf-8"))
     assert facts["grades"]["process"] == review.PROCESS_FAILED
     codes = {code for code, _ in facts["grades"]["process_reasons"]}
-    assert {"status_error", "traceback", "rule:no_code_search", "rule:report_verbatim",
+    assert {"status_error", "exception", "no_status", "rule:no_code_search", "rule:report_verbatim",
             "skill_problems", "tool_errors"} <= codes
     assert facts["journal"]["tool_errors"] == {"read_file": 1}
     assert facts["process"]["skill_problems"] == ["verify не видит файл"]
@@ -109,6 +110,11 @@ def test_review_finds_rule_violations_and_failures(
         encoding="utf-8")
     summary = (run_dir / "review" / "pilot-summary.md").read_text(encoding="utf-8")
     assert "- status_error ×1" in summary and "- no_code_search: fail" in summary
+    assert "- exception ×1" in summary and "- no_status ×1" in summary
+    report_text = (run_dir / "review" / "report.md").read_text(encoding="utf-8")
+    assert "`next` упала с исключением: KeyError" in report_text
+    assert "`next` оборвалась без STATUS: вывода нет" in report_text
+    assert "traceback)" not in report_text
 
 
 def test_review_without_journal(project: Path, testops: FakeTestOps, capsys,

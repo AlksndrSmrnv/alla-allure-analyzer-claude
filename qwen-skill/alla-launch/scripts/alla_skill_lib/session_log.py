@@ -397,7 +397,7 @@ def _skill_problems(log: SessionLog) -> list[str]:
 
 
 def skill_status(call: ToolCall) -> str | None:
-    """Статус ответа команды скилла; None — ответа без ``STATUS:`` (traceback и т. п.)."""
+    """Статус ответа команды скилла; None — ответа без ``STATUS:`` (исключение скрипта, тайм-аут, обрыв)."""
     match = _STATUS_RE.search(call.result)
     return match.group(1) if match else None
 

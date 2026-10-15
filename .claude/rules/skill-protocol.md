@@ -222,7 +222,8 @@ paths:
   `session_rules.py` для стенда и `review`; стенд оборачивает их под прежними именами.
   Меняя правило, проверь оба: `test_qwen_stand.py` и `test_skill_session_log.py`.
 - Оценка хода — коды причин `review.REASONS` (`sources_lost` — потерян реестр источников); `сбой` — `not_done`, `status_error`,
-  `traceback`; `no_journal` и `fix_attempts` оценку не снижают. Пороги качества —
+  `exception` (в выводе команды traceback), `no_status` (ни STATUS, ни traceback: тайм-аут
+  инструмента, прерывание, пустой вывод — стектрейса там нет); `no_journal` и `fix_attempts` оценку не снижают. Пороги качества —
   `GOOD_CONFIRMED_SHARE`, `GOOD_MAX_CATEGORY_DISAGREE`, `FAIR_CONFIRMED_SHARE`; доли — от числа
   запрошенных проблем (невозвращённая оценка — не подтверждение), «хорошо» — только при полном
   ответе. Меняя пороги или причины, правь таблицу в `setup.md`.
