@@ -66,9 +66,11 @@ RELATE_TASK = f"""\
 Похожий текст ошибки — ещё не одна причина. Строка «почему сравниваются» говорит, чем
 данные различаются: разные ошибки в логе, хосты или элементы страницы — довод за
 {DIFFERENT}; разные шаги теста сами по себе не довод — одна ошибка сервиса бывает из разных
-тестов. Строка «БАЗА ЗНАНИЙ» — записи базы знаний проекта, которые подходят данным
-проблемы: одна и та же запись у проблем и разборы с ней согласны — довод за {SAME}; разным
-проблемам подходят разные записи — довод за {DIFFERENT}. Проблемы из строки «{SAME}» отчёт покажет одной проблемой, и ошибочное объединение
+тестов. Строка «БАЗА ЗНАНИЙ» — запись базы знаний проекта, которая подходит данным
+проблемы (признак записи нашёлся в её данных — это не похожесть текста ошибки): одна и та
+же запись у проблем — довод за {SAME}, если их разборы не называют разных причин; у
+проблем только разные записи — довод за {DIFFERENT}. Общую причину тогда можно взять из
+причины этой записи. Проблемы из строки «{SAME}» отчёт покажет одной проблемой, и ошибочное объединение
 спрячет отдельный сбой. Объединяй, только если разборы называют одну и ту же причину и одно
 исправление; сомневаешься — {DIFFERENT}.
 Запиши в файл только строки такого вида, по строке на решение:
@@ -234,6 +236,14 @@ def kb_records(entry: dict[str, Any]) -> list[dict[str, Any]]:
     return list(entry.get("kb") or [])
 
 
+def _kb_line(match: dict[str, Any]) -> str:
+    origin = KB_ORIGINS.get(str(match.get("origin")), KB_ORIGINS["fingerprint"])
+    line = (f"БАЗА ЗНАНИЙ: {match.get('id')} «{_clip(str(match.get('title') or ''), 80)}» "
+            f"({match.get('category')}; {origin})")
+    cause = " ".join(str(match.get("description") or "").split())
+    return f"{line} — причина записи: {_clip(cause, 160)}" if cause else line
+
+
 def _shared_record(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> dict[str, Any] | None:
     ids = {match.get("id") for match in b}
     return next((match for match in a if match.get("id") in ids), None)
@@ -326,10 +336,7 @@ def relate_data(
             if step:
                 lines.append(f"ПЕРВЫЙ ШАГ ИСПРАВЛЕНИЯ: {_clip(step)}")
             lines += [f"КОД: {_clip(line)}" for line in analysis.code[:2]]
-            lines += [f"БАЗА ЗНАНИЙ: {match.get('id')} «{_clip(str(match.get('title') or ''), 80)}» "
-                      f"({match.get('category')}; "
-                      f"{KB_ORIGINS.get(str(match.get('origin')), 'признак найден в данных')})"
-                      for match in kb_records(entry)[:3]]
+            lines += [_kb_line(match) for match in kb_records(entry)]
     return "\n".join(lines).strip("\n")
 
 
