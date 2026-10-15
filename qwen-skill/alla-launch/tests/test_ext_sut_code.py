@@ -204,6 +204,12 @@ def test_prepare_without_ref_is_approximate_by_launch_date(
     # Прогон запущен 2026-09-01: в main тогда был коммит с NPE, исправление — позже.
     assert f"{sut['bug'][:8]} — приблизительно: ветка main на момент запуска прогона" in out
     assert "нет ревизии «2.0»" in out and "назови её" in out
+    context.with_suffix(".txt").write_text(
+        ANALYSIS.format(sha=sut["bug"][:8], bug=sut["bug"][:8]), encoding="utf-8")
+    code, out = action(project, capsys, "check", context)
+    # Подмену версии и приблизительную ревизию пользователь видит до подтверждения.
+    assert code == 0 and "Внимание: в orders нет ревизии «2.0»" in out, out
+    assert "Внимание: версия приложения выбрана приблизительно" in out
 
 
 def test_actions_search_files_history_compare_switch(
@@ -249,7 +255,10 @@ def test_check_accepts_valid_analysis_and_writes_finding(
     code, out = action(project, capsys, "check", context)
     assert code == 0 and out.startswith("STATUS: ok"), out
     assert "приложение: OrderService.create бросает NPE" in out
-    assert out.rstrip().endswith("Подтверди вывод («да, верно») — сохраню его в отчёт и базу знаний.")
+    assert out.rstrip().endswith("Подтверди вывод («да, верно») — сохраню его в отчёт и базу "
+                                 "знаний; «нет» — не сохраню.")
+    assert f"Ревизия: {Path(sut['url']).stem} v1.4.2 ({sut['bug'][:8]}) — тег v1.4.2 — названа инженером" in out
+    assert "Внимание:" not in out
 
     finding = json.loads(context.with_suffix(".finding.json").read_text(encoding="utf-8"))
     assert finding["problem"] == int(order) and finding["format_ok"] is True

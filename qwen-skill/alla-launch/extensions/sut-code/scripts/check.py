@@ -248,8 +248,11 @@ def where(item: dict[str, Any], one: bool) -> str:
             else f"{item['repo']}:{item['path']}:{item['line']}")
 
 
-def details(result: Result, one: bool) -> list[str]:
-    rows = [f"Ревизия: {result.revision}"]
+def details(result: Result, one: bool, state: dict[str, Any]) -> list[str]:
+    # Ревизию берём из выбора скрипта, а не со слов субагента: «как выбрана» (названа инженером
+    # или приблизительно) пользователь должен видеть до подтверждения.
+    rows = [f"Ревизия: {tree['repo']} {tree['ref']} ({tree['sha'][:8]}) — {tree['how']}"
+            for tree in state["trees"]]
     if result.location:
         what = f" — {result.location['what']}" if result.location.get("what") else ""
         rows.append(f"Место: {where(result.location, one)}{what}")
@@ -292,7 +295,7 @@ def save(context: dict[str, Any], context_file: Path, state: dict[str, Any], res
     }
     (out / f"{stem}.result.json").write_text(json.dumps(full, ensure_ascii=False, indent=2) + "\n",
                                             encoding="utf-8")
-    rows = details(result, one)
+    rows = details(result, one, state)
     finding = {
         "extension": context.get("extension", "sut-code"),
         "problem": problem.get("number"),
@@ -357,6 +360,10 @@ def check(context: dict[str, Any], context_file: Path) -> list[str]:
              *rows]
     if result.steps:
         lines.append("Как исправить: " + " ".join(result.steps))
+    lines += [f"Внимание: {note}" for note in state.get("notes", [])]
+    if any(tree["how"].startswith("приблизительно") for tree in state["trees"]):
+        lines.append(f"Внимание: версия приложения выбрана приблизительно — если стенд был на "
+                     f"другой, назови её: /alla:code {problem.get('number')} <ветка или тег>.")
     lines.append(f"Полный разбор: {report}")
     if not format_ok:
         lines.append("Разбор не прошёл проверку формата (" + "; ".join(errors[:3])
@@ -364,7 +371,8 @@ def check(context: dict[str, Any], context_file: Path) -> list[str]:
     elif result.category in ("", "неизвестно"):
         lines.append("Причина в коде не найдена — сохранять в отчёт и базу знаний нечего.")
     else:
-        lines.append("Подтверди вывод («да, верно») — сохраню его в отчёт и базу знаний.")
+        lines.append("Подтверди вывод («да, верно») — сохраню его в отчёт и базу знаний; "
+                     "«нет» — не сохраню.")
     return lines
 
 

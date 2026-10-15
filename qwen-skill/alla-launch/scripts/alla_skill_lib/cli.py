@@ -1427,6 +1427,9 @@ def _done_body(
             f"  файл обратной связи: {paths.root / 'feedback'}/NN.md",
             f"  {ws.skill_command('remember', 'N', '--run', run)}",
             f"  разбор подтверждён как есть: {ws.skill_command('remember', 'N', '--run', run, '--from-analysis')}",
+            "  вывод расширения подтверждён (ответ субагента расширения по проблеме N просил "
+            "подтвердить, пользователь согласился) — вместо --from-analysis: "
+            f"{ws.skill_command('remember', 'N', '--run', run, '--from-extension', '<имя расширения>')}",
             f"  известная проблема не подходит: {ws.skill_command('reject', 'N', '<id>', '--run', run)}",
         ]
     return "\n".join(lines)

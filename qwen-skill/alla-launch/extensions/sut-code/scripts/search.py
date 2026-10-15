@@ -30,8 +30,10 @@ def search(context: dict[str, Any], context_file: Path) -> list[str]:
             rows.append(f"- {where}:{line}: {code}")
     if not rows:
         return [f"«{text}» в коде выбранных ревизий не найден."]
-    head = [f"«{text}» найден (первые {LIMIT}; файлы читай в папке ревизии из данных):"]
-    return head + rows[:LIMIT]
+    head = [f"«{text}» найден (первые {LIMIT}):"]
+    folders = [f"Полный путь для read_file — папка ревизии + путь: {tree['tree']}/"
+               + ("" if one else f" ({tree['repo']})") for tree in state["trees"]]
+    return head + rows[:LIMIT] + folders
 
 
 if __name__ == "__main__":

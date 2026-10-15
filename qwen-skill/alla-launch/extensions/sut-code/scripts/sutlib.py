@@ -581,7 +581,7 @@ def tree_of(state: dict[str, Any], repo: str | None) -> dict[str, Any]:
             return dict(trees[0])
         raise SutError(
             "репозиториев несколько — укажи, в каком: " + ", ".join(t["repo"] for t in trees)
-            + " (вид «репозиторий:путь»)"
+            + " (путь — «репозиторий:путь», ревизия для switch — «репозиторий=ревизия»)"
         )
     for tree in trees:
         if tree["repo"] == repo:
