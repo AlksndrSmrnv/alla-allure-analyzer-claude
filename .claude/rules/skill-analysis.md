@@ -42,8 +42,9 @@ paths:
   нет кусков «лог»/«журнал» ни у одного примера (`_quotes_service_log`) — флаг
   `log_not_found` и вариант задания «лог операции не найден» (`build_task_text(
   log_not_found=True)`, `_LOG_NOT_FOUND_MISSING`). Вариант задания выбирается по кускам
-  записей сервиса (`has_log = _quotes_service_log`), HTTP-ответ — симптом (`_has_symptom`):
-  иначе при одном HTTP-ответе задание велело разбирать «лог приложения» (ревью Codex). В
+  записей сервиса (`has_log = _quotes_service_log`), HTTP-ответ — симптом (`_has_symptom`,
+  и рядом с записями сервиса — тогда «симптом + лог»): иначе при одном HTTP-ответе задание
+  велело разбирать «лог приложения» (ревью Codex). В
   записи кластера `log_not_found: true`, и
   `validate_analysis(log_not_found=True)` не примет «НЕ ХВАТАЕТ» без слова «лог»
   (`LOG_NOT_FOUND_ERROR`).

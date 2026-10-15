@@ -240,8 +240,11 @@ def _quotes_service_log(prompt: ClusterAnalysisPrompt) -> bool:
 
 
 def _has_symptom(prompt: ClusterAnalysisPrompt) -> bool:
-    """Что увидел тест: сообщение, трейс или ответ HTTP (он — не лог сервиса)."""
-    return prompt.has_symptom or (prompt.has_log and not _quotes_service_log(prompt))
+    """Что увидел тест: сообщение, трейс или ответ HTTP (он — не лог сервиса; учитывается и
+    рядом с записями сервиса — тогда вариант «симптом + лог»)."""
+    return prompt.has_symptom or any(
+        source.kind == "log" and (source.section or "лог") not in SERVICE_LOG_SECTIONS
+        for source in prompt.sources)
 
 
 def has_evidence(cluster: FailureCluster, log_snippet: str | None) -> bool:

@@ -217,3 +217,24 @@ def test_http_response_alone_is_a_symptom_not_an_application_log() -> None:
     text = " ".join(task.text.split())
     assert "анализ построен по логу приложения" not in text
     assert "лога приложения в данных нет" in text and not task.log_not_found
+
+
+def test_http_response_beside_a_service_log_is_the_symptom() -> None:
+    """Сообщения и трейса нет: HTTP-код — симптом, лог сервиса — причина, их надо связать."""
+    test = FailedTestSummary(
+        test_result_id=1, name="createOrder", status="failed",
+        log_snippet=("--- [файл: service.log] ---\n[строка 3]\n"
+                     "2026-10-03 10:00:00 [operUID=op-1] ERROR NullPointerException: customer\n\n"
+                     "--- [HTTP: Response] ---\nHTTP статус: 500"))
+    cluster = FailureCluster(
+        cluster_id="c", label="Тест: createOrder", signature=ClusterSignature(),
+        member_test_ids=[1], member_count=1, representative_test_id=1,
+        examples=[ClusterExample(role="typical", test_result_id=1)])
+    task = build_cluster_task_with_sources(
+        cluster=cluster, position=1, total=1, launch_id=1, answer_path="/a.md",
+        next_command="next", tests_by_id={1: test}, log_snippet=test.log_snippet,
+        full_trace=None, frames=[], hints=[], settings=Settings())
+
+    text = " ".join(task.text.split())
+    assert "Первое — симптом из ошибки или трейса" in text  # вариант «симптом + лог»
+    assert "сообщения об ошибке и стек-трейса нет, анализ построен по логу" not in text
