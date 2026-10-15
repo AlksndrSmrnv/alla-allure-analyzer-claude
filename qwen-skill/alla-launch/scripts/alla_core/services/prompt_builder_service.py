@@ -41,6 +41,7 @@ DEFAULT_TRACE_MAX_CHARS = 400
 DEFAULT_LOG_MAX_CHARS = 8000
 
 DATA_HEADING = "## Данные"
+OPERATION_LABEL = "Операция теста"
 _TRUNCATION_SUFFIX = "...[обрезано]"
 
 
@@ -162,6 +163,8 @@ def build_cluster_analysis_prompt(
     log_test: str | None = None,
     message_test_id: int | None = None,
     log_test_id: int | None = None,
+    operation: str | None = None,
+    log_note: str | None = None,
 ) -> ClusterAnalysisPrompt:
     """Собрать данные одного кластера.
 
@@ -173,6 +176,9 @@ def build_cluster_analysis_prompt(
     ``S2`` трейс, дальше фрагменты лога (блоки отбора) с вложением и строками
     источника; ``message_test`` / ``log_test`` — чьи это данные. Куски возвращаются
     в ``sources`` ровно с тем текстом, что попал в задание.
+
+    ``operation`` — id операции теста (строка «Операция теста»); ``log_note`` — почему
+    лога нет (лог операции не найден), идёт на месте лога без id куска.
     """
     parts: list[str] = [
         DATA_HEADING,
@@ -187,6 +193,8 @@ def build_cluster_analysis_prompt(
     block_test = message_test or log_test
     if source_ids and block_test:
         parts.append(f"Данные теста: {block_test}")
+    if operation:
+        parts.append(f"{OPERATION_LABEL}: {operation}")
 
     def add_source(kind: str, text: str, test: str | None, **where: str | None) -> None:
         test_id = log_test_id if kind == "log" else message_test_id
@@ -237,6 +245,8 @@ def build_cluster_analysis_prompt(
                 )
         else:
             parts.append(f"\n--- Фрагмент лога ---\n{log_text}")
+    elif log_note:
+        parts.append(f"\n{log_note}")
 
     return ClusterAnalysisPrompt(
         user_prompt="\n".join(parts),
@@ -261,6 +271,8 @@ class PromptExample:
     # Трейс без кадров JDK и фреймворков — вместо полного, если тот не влезает в долю
     # лимита: обрезка с начала оставляла строку исключения и кадры JUnit без кадра теста.
     short_trace: str | None = None
+    operation: str | None = None  # id операции теста: строка «Операция теста»
+    log_note: str | None = None  # почему лога нет: лог операции не найден
 
 
 def build_cluster_examples_prompt(
@@ -290,6 +302,8 @@ def build_cluster_examples_prompt(
         parts.append(f"Шаг теста: {examples[0].step}")
     if not multi and examples:
         parts.append(f"Данные теста: {examples[0].test_name}")
+        if examples[0].operation:
+            parts.append(f"{OPERATION_LABEL}: {examples[0].operation}")
     if multi:
         roles = ", ".join(example.role for example in examples)
         rest = ("" if cluster.member_count <= len(examples) else
@@ -315,6 +329,8 @@ def build_cluster_examples_prompt(
                          f"{_clip_label(example.test_name)}")
             if example.step:
                 parts.append(f"Шаг теста: {example.step}")
+            if example.operation:
+                parts.append(f"{OPERATION_LABEL}: {example.operation}")
         same_message = (number > 1 and first is not None and bool(example.message)
                         and example.message == first.message)
         if same_message:
@@ -347,6 +363,8 @@ def build_cluster_examples_prompt(
                     attachment=header.group("name") if header else None,
                     lines=mark[1:-1] if mark else None,
                 )
+        elif example.log_note:
+            parts.append(f"\n{example.log_note}")
     return ClusterAnalysisPrompt(
         user_prompt="\n".join(parts),
         message_chars=chars["message"],

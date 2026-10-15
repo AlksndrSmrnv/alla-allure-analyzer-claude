@@ -461,6 +461,7 @@ def validate_analysis(
     observed: bool = False,
     sources: dict[str, dict[str, Any]] | None = None,
     examples: int = 1,
+    log_not_found: bool = False,
 ) -> list[str]:
     """Список проблем формата (пусто — анализ принят).
 
@@ -469,6 +470,8 @@ def validate_analysis(
     (реестр кластера; ``None`` — реестр не найден или повреждён: цитаты не сверить, но
     это неполадка скилла, а не разбора — ошибкой не считается, отчёт помечает такие
     цитаты непроверенными), а при категории «неизвестно» — содержательный «НЕ ХВАТАЕТ».
+    ``log_not_found`` — лога в задании нет, потому что в общем логе не нашлось записей
+    операции теста: «НЕ ХВАТАЕТ» должен назвать лог.
     """
     errors: list[str] = []
     if not analysis.what:
@@ -487,6 +490,8 @@ def validate_analysis(
         errors.extend(observation_errors(analysis, sources))
         if examples > 1:
             errors.extend(consistency_errors(analysis))
+        if log_not_found and "лог" not in analysis.missing_text.lower():
+            errors.append(LOG_NOT_FOUND_ERROR)
     errors.extend(code_ref_errors(analysis, project_root))
     if analysis.kb_ref and analysis.kb_ref not in offered_kb:
         offered = ", ".join(sorted(offered_kb)) or "в задании записей не было"
@@ -497,6 +502,10 @@ def validate_analysis(
     return errors
 
 
+LOG_NOT_FOUND_ERROR = (
+    "лог операции этого теста не найден (пометка в «Данных») — в «НЕ ХВАТАЕТ:» назови его: "
+    "лог сервиса за время теста с записями его операции"
+)
 MIN_QUOTE_CHARS = 8  # значимых символов (буквы и цифры) в цитате наблюдения
 _ELLIPSIS_RE = re.compile(r"…|\.{3,}")
 _QUOTE_NORMALIZE = str.maketrans({char: '"' for char in "«»“”„‘’`'"})

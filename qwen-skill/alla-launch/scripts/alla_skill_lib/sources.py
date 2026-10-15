@@ -115,5 +115,6 @@ def check_entry_analysis(
     analysis.sources = sources
     analysis.sources_lost = with_sources and sources is None
     errors = validate_analysis(analysis, project_root, offered, observed=with_sources,
-                               sources=sources, examples=example_blocks(entry))
+                               sources=sources, examples=example_blocks(entry),
+                               log_not_found=bool(entry.get("log_not_found")))
     return analysis, errors

@@ -88,7 +88,7 @@ _OBSERVATIONS_NOTE = (
     "НАБЛЮДЕНИЯ — 1–3 строки: в скобках id куска «Данных» (S1, S2, S3… — бери из "
     "заголовка куска «--- [S… · …] ---»), в кавычках — дословная цитата именно из этого "
     "куска, не короче 8 букв и цифр, одной строкой; пропуск внутри строки — «…». "
-    "Цитируй только куски с таким заголовком: кадры стека, шаг теста{kb_block}, "
+    "Цитируй только куски с таким заголовком: кадры стека, шаг теста, операцию теста{kb_block}, "
     "повторы, список тестов и пометки «[… пропущено …]» не цитируй. Первой ставь строку, на "
     "которой держится причина{first}{kb_cause}. Пояснение после цитаты — через «—» или без "
     "него. Скрипт "
@@ -104,6 +104,10 @@ _MISSING_NOTE = (
     "НЕ ХВАТАЕТ — каких данных нет, чтобы подтвердить причину, и какая проверка различит "
     "версии; если всего хватает — «нет». При категории «неизвестно» — обязательно по "
     "существу."
+)
+_LOG_NOT_FOUND_MISSING = (
+    " Лог операции этого теста не найден — в «НЕ ХВАТАЕТ» назови его: лог сервиса за время "
+    "теста с записями его операции (id — из строки «Операция теста», если она есть)."
 )
 CONSISTENCY_LINE = (
     "СОГЛАСОВАННОСТЬ: одна причина | разные проблемы — <чем отличаются примеры> | "
@@ -187,6 +191,27 @@ def select_log_source(
         if member and member.log_snippet and member.log_snippet.strip():
             return member
     return None
+
+
+LOG_NOT_FOUND = "лог операции не найден"
+
+
+def log_note_for(test: FailedTestSummary) -> str | None:
+    """Пометка вместо лога: общий лог был, а ошибок операции этого теста в нём нет.
+
+    Ядро берёт из лога с id операций только записи своей операции (``core.md``);
+    чужих в данных нет, и модель должна видеть, что лог искали, а не что его не было.
+    """
+    if not test.operation_logs or (test.log_snippet and test.log_snippet.strip()):
+        return None
+    names = ", ".join(test.operation_logs)
+    others = (f"ошибки других операций ({test.foreign_log_events}) не показаны"
+              if test.foreign_log_events else "записи других операций не показаны")
+    if test.operation_ids:
+        return (f"[{LOG_NOT_FOUND}: в {names} нет ошибок операции этого теста "
+                f"({', '.join(test.operation_ids)}); {others}]")
+    return (f"[{LOG_NOT_FOUND}: id операции теста (operUID, rqUID… в запросе или сообщении) "
+            f"неизвестен, а в {names} записи с id операций — чьи они, не понять; {others}]")
 
 
 def has_evidence(cluster: FailureCluster, log_snippet: str | None) -> bool:
@@ -295,6 +320,9 @@ class ClusterTask:
     sources: tuple[PromptSource, ...]
     examples: list[dict[str, Any]]  # чьи данные видела модель: роль и тест
     blocks: int = 1  # сколько примеров в задании отдельными блоками
+    # Лога в задании нет, а у показанного теста был общий лог без записей его операции:
+    # в «НЕ ХВАТАЕТ» нужен лог операции (``validate_analysis``).
+    log_not_found: bool = False
 
 
 EXAMPLE_ROLES = {
@@ -328,11 +356,12 @@ def example_tests(
     tests_by_id: dict[int, FailedTestSummary],
 ) -> list[tuple[str, FailedTestSummary]]:
     """Примеры кластера с тестами. Ни у одного нет лога, а у участника есть — он добавляется
-    примером «с логом приложения», как раньше лог брался у другого участника."""
+    отдельным примером «с логом приложения», со своим сообщением и своей операцией: лог
+    другого теста под сообщением представителя выглядел бы логом его операции."""
     found = [(example.role, tests_by_id[example.test_result_id]) for example in cluster.examples
              if example.test_result_id in tests_by_id]
-    if len(found) > 1 and not any(test.log_snippet and test.log_snippet.strip()
-                                  for _role, test in found):
+    if found and not any(test.log_snippet and test.log_snippet.strip()
+                         for _role, test in found):
         source = select_log_source(cluster, tests_by_id)
         if source is not None:
             found.append(("log", source))
@@ -403,13 +432,18 @@ def build_cluster_task_with_sources(
         log_test=log_test.name if log_test else None,
         message_test_id=representative.test_result_id if representative else None,
         log_test_id=log_test.test_result_id if log_test else None,
+        operation=representative.correlation_hint if representative else None,
+        log_note=log_note_for(representative) if representative and not log_snippet else None,
     )
     evidence_chars = prompt.message_chars + prompt.trace_chars + prompt.log_chars
+    log_not_found = not prompt.has_log and representative is not None \
+        and log_note_for(representative) is not None
     task = build_task_text(
         has_symptom=prompt.has_symptom,
         has_log=prompt.has_log,
         low_evidence=bool(cluster.example_step_path) and evidence_chars < LOW_EVIDENCE_CHARS,
         has_kb=bool(kb_matches),
+        log_not_found=log_not_found,
     )
     shown = []
     if representative is not None:
@@ -417,7 +451,8 @@ def build_cluster_task_with_sources(
     if log_test is not None and log_test is not representative:
         shown.append({"role": "log", "test_result_id": log_test.test_result_id})
     return _assemble(cluster, prompt, task, tests_by_id, frames, hints, kb_matches, recurrence,
-                     (position, total, launch_id, answer_path, next_command), shown, blocks=1)
+                     (position, total, launch_id, answer_path, next_command), shown, blocks=1,
+                     log_not_found=log_not_found)
 
 
 def _examples_task(
@@ -449,6 +484,7 @@ def _examples_task(
             trace=test.status_trace, log=log,
             short_trace=short_trace(test.status_trace,
                                     max(1, int(settings.llm_prompt_trace_max_chars * share))),
+            operation=test.correlation_hint, log_note=None if log else log_note_for(test),
         ))
     prompt = build_cluster_examples_prompt(
         cluster, prompt_examples,
@@ -457,16 +493,18 @@ def _examples_task(
         log_max_chars=settings.llm_prompt_log_max_chars,
     )
     evidence_chars = prompt.message_chars + prompt.trace_chars + prompt.log_chars
+    log_not_found = not prompt.has_log and any(example.log_note for example in prompt_examples)
     task = build_task_text(
         has_symptom=prompt.has_symptom,
         has_log=prompt.has_log,
         low_evidence=bool(cluster.example_step_path) and evidence_chars < LOW_EVIDENCE_CHARS,
         has_kb=bool(kb_matches),
         examples=len(examples),
+        log_not_found=log_not_found,
     )
     shown = [{"role": role, "test_result_id": test.test_result_id} for role, test in examples]
     return _assemble(cluster, prompt, task, tests_by_id, frames, hints, kb_matches, recurrence,
-                     head, shown, blocks=len(examples))
+                     head, shown, blocks=len(examples), log_not_found=log_not_found)
 
 
 def _assemble(
@@ -482,6 +520,7 @@ def _assemble(
     shown: list[dict[str, Any]],
     *,
     blocks: int,
+    log_not_found: bool = False,
 ) -> ClusterTask:
     position, total, launch_id, answer_path, next_command = head
     sections = [
@@ -502,8 +541,6 @@ def _assemble(
         prompt.user_prompt,
         "",
     ]
-    if cluster.example_correlation:
-        sections += ["--- Корреляция запроса ---", cluster.example_correlation, ""]
     if kb_matches:
         sections += [*render_kb_section(kb_matches), ""]
     if recurrence:
@@ -530,11 +567,12 @@ def _assemble(
     else:
         sections.append(CODE_NOT_FOUND_NOTE)
     sections += ["", "## Задание", task, "", reference_line(ANALYSIS_FORMAT_REF)]
-    return ClusterTask("\n".join(sections) + "\n", prompt.sources, shown, blocks)
+    return ClusterTask("\n".join(sections) + "\n", prompt.sources, shown, blocks, log_not_found)
 
 
 def build_task_text(
     *, has_symptom: bool, has_log: bool, low_evidence: bool, has_kb: bool, examples: int = 1,
+    log_not_found: bool = False,
 ) -> str:
     """Блок «Задание»: формат ответа и подсказки под то, что есть в данных.
 
@@ -575,6 +613,10 @@ def build_task_text(
         )
     else:
         what = (
+            f"1–2 предложения по ошибке и трейсу. Начни с «{LOG_NOT_FOUND}, анализ построен "
+            "по ошибке теста». В логе были только записи других операций, в данных их нет: "
+            "не пиши, что лог пуст или без ошибок, и ошибок других тестов не додумывай."
+        ) if log_not_found else (
             "1–2 предложения по ошибке и трейсу. Начни с «лога приложения в данных нет, "
             "анализ построен по ошибке теста». Был ли лог и что в нём — неизвестно: "
             "не пиши, что лог пуст или без ошибок, и содержимое лога не выдумывай."
@@ -613,7 +655,7 @@ def build_task_text(
                                   kb_block=_KB_BLOCK if has_kb else "",
                                   kb_cause=_KB_CAUSE if has_kb else ""),
         "",
-        _MISSING_NOTE,
+        _MISSING_NOTE + (_LOG_NOT_FOUND_MISSING if log_not_found else ""),
         "",
         *([_CONSISTENCY_NOTE, ""] if examples > 1 else []),
         _STEPS_NOTE.format(log_detail=_LOG_DETAIL if has_log else ""),

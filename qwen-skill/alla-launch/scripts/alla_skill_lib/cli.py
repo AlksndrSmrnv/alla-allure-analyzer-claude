@@ -693,6 +693,7 @@ def _write_run(
             # Чьи данные видела модель; при нескольких блоках нужна «СОГЛАСОВАННОСТЬ».
             entry["examples"] = task.examples
             entry["example_blocks"] = task.blocks
+            entry["log_not_found"] = task.log_not_found
         except Exception as exc:  # один битый кластер не должен ронять весь prepare
             logger.exception("Не удалось подготовить кластер %s", file_id)
             local_warnings.append(
