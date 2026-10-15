@@ -797,6 +797,29 @@ class TestOperationLog:
         assert provider.downloads == [1, 2]
 
     @pytest.mark.asyncio
+    async def test_stderr_without_timestamps_is_a_log_too(self):
+        """Traceback и исключения без времени — тоже лог: их id не свои, ошибки — с отбором."""
+        stderr = (
+            b"Traceback (most recent call last):\n"
+            b'  File "/app/orders.py", line 12, in create\n'
+            b"    reserve(order)\n"
+            b"RuntimeError: reservation failed operUID=op-other-2\n"
+            b"java.lang.IllegalStateException: own failure operUID=op-own-1\n"
+            b"\tat c.e.Orders.create(Orders.java:10)\n"
+        )
+        log = AttachmentMeta(id=1, name="stderr.txt", type="text/plain")
+        request = AttachmentMeta(id=2, name="Request", type="application/json")
+        summary, _ = await self._enrich([
+            (log, stderr),
+            (request, b'{"headers": {"operUID": "op-own-1"}}'),
+        ])
+
+        snippet = summary.log_snippet or ""
+        assert "own failure" in snippet and "reservation failed" not in snippet
+        assert summary.operation_ids == ["operUID=op-own-1"]
+        assert summary.operation_logs == ["stderr.txt"] and summary.foreign_log_events == 1
+
+    @pytest.mark.asyncio
     async def test_journal_keeps_only_own_entries(self):
         import json as _json
 

@@ -172,3 +172,27 @@ def test_lost_registry_does_not_block_the_category() -> None:
     text = _APP.format(category="приложение", kb="",
                        observations="- [S1] «expected: <200> but was: <500>»\n")
     assert validate_analysis(parse_analysis(text), Path("."), observed=True, sources=None) == []
+
+
+def test_http_response_does_not_replace_the_operation_log() -> None:
+    """Ответ с ошибкой 500 — то, что видел тест: пометка и требование к «НЕ ХВАТАЕТ» остаются."""
+    test = FailedTestSummary(
+        test_result_id=1, name="createOrder", status="failed",
+        status_message="Order ORD-1 was not created: status code 500",
+        correlation_hint="operUID=op-1", operation_ids=["operUID=op-1"],
+        operation_logs=["service.log"], foreign_log_events=2,
+        log_snippet="--- [HTTP: Response] ---\nHTTP статус: 500\nerror: Internal Server Error")
+    cluster = FailureCluster(
+        cluster_id="c", label="Order was not created", signature=ClusterSignature(),
+        member_test_ids=[1], member_count=1, representative_test_id=1,
+        example_message=test.status_message,
+        examples=[ClusterExample(role="typical", test_result_id=1)])
+    task = build_cluster_task_with_sources(
+        cluster=cluster, position=1, total=1, launch_id=1, answer_path="/a.md",
+        next_command="next", tests_by_id={1: test}, log_snippet=test.log_snippet,
+        full_trace=None, frames=[], hints=[], settings=Settings())
+
+    assert task.log_not_found
+    assert "HTTP статус: 500" in task.text and f"[{LOG_NOT_FOUND}: в service.log" in task.text
+    assert "Лог операции этого теста не найден — в «НЕ ХВАТАЕТ» назови его" in " ".join(
+        task.text.split())

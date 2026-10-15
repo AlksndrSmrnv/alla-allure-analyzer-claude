@@ -390,11 +390,12 @@ def _marked_event(event: LogEvent, repeats: list[tuple[int, int]]) -> str:
 
 
 def is_log_text(text: str) -> bool:
-    """Текст — лог: есть хоть одна запись, начало которой распознаётся (время, уровень…).
+    """Текст — лог: есть хоть одна запись, которую распознаёт :func:`iter_events` (время,
+    уровень, klog…), Traceback или исключение со стеком — вывод stderr бывает без времени.
 
     Запрос и ответ HTTP, JSON-документ, XML — не лог: id операций в них — свои id теста.
     """
-    return any(event.kind == "level" for event in iter_events(text))
+    return any(event.kind != "plain" for event in iter_events(text))
 
 
 def render_error_blocks(text: str) -> str:

@@ -60,8 +60,10 @@ paths:
   `_CANONICAL_CORRELATION_KEYS`: operUID, rqUID, requestId, correlationId, traceId) — **все**
   значения (`log_utils.operation_ids`) из сообщения и трейса и из вложений, которые не лог
   (`attachment_handlers.log_operation_ids` → `None`: запрос и ответ HTTP, JSON, XML, HTML).
-  Лог — журнал `StructuredErrorLogHandler` или текст, где `iter_events` распознаёт хоть одну
-  запись (`log_events.is_log_text`). Лог **с id операций** (общий лог сервиса) в первом
+  Лог — журнал `StructuredErrorLogHandler` или текст, где `iter_events` распознаёт хоть одно
+  событие не `plain` (`log_events.is_log_text`): запись со временем или уровнем, а также
+  Traceback и исключение со стеком — вывод stderr без времени тоже лог (ревью Codex: иначе
+  его id попадали в свои, а ошибки — без отбора). Лог **с id операций** (общий лог сервиса) в первом
   проходе откладывается (байты не держим), во втором скачивается заново и отбирается по своим
   id (`AttachmentContext.operation_ids`): события-ошибки (`ErrorBlocksHandler`, отбор **до**
   свёртки повторов — `repeat_key` не различает id, и первым вхождением осталась бы чужая

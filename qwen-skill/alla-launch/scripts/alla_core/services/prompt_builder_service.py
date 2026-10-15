@@ -177,8 +177,8 @@ def build_cluster_analysis_prompt(
     источника; ``message_test`` / ``log_test`` — чьи это данные. Куски возвращаются
     в ``sources`` ровно с тем текстом, что попал в задание.
 
-    ``operation`` — id операции теста (строка «Операция теста»); ``log_note`` — почему
-    лога нет (лог операции не найден), идёт на месте лога без id куска.
+    ``operation`` — id операции теста (строка «Операция теста»); ``log_note`` — лог
+    операции не найден (HTTP-ответ его не заменяет), идёт после лога без id куска.
     """
     parts: list[str] = [
         DATA_HEADING,
@@ -245,7 +245,7 @@ def build_cluster_analysis_prompt(
                 )
         else:
             parts.append(f"\n--- Фрагмент лога ---\n{log_text}")
-    elif log_note:
+    if log_note:  # и после HTTP-секций: ответ сервиса не его лог
         parts.append(f"\n{log_note}")
 
     return ClusterAnalysisPrompt(
@@ -272,7 +272,7 @@ class PromptExample:
     # лимита: обрезка с начала оставляла строку исключения и кадры JUnit без кадра теста.
     short_trace: str | None = None
     operation: str | None = None  # id операции теста: строка «Операция теста»
-    log_note: str | None = None  # почему лога нет: лог операции не найден
+    log_note: str | None = None  # лог операции не найден (и когда есть только HTTP-ответ)
 
 
 def build_cluster_examples_prompt(
@@ -363,7 +363,7 @@ def build_cluster_examples_prompt(
                     attachment=header.group("name") if header else None,
                     lines=mark[1:-1] if mark else None,
                 )
-        elif example.log_note:
+        if example.log_note:
             parts.append(f"\n{example.log_note}")
     return ClusterAnalysisPrompt(
         user_prompt="\n".join(parts),

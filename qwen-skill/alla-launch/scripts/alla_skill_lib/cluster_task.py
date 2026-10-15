@@ -204,6 +204,14 @@ def select_log_source(
 
 
 LOG_NOT_FOUND = "лог операции не найден"
+# Записи сервиса — секции «файл» и «журнал»; HTTP — ответ, который видел тест, а не его лог.
+_SERVICE_LOG_RE = re.compile(r"^--- \[(?:файл|журнал): .+\] ---$", re.MULTILINE)
+SERVICE_LOG_SECTIONS = frozenset({"лог", "журнал"})  # подписи секций в реестре источников
+
+
+def has_service_log(snippet: str | None) -> bool:
+    """В логе теста есть записи сервиса, а не только HTTP-сигналы ответа."""
+    return bool(snippet and _SERVICE_LOG_RE.search(snippet))
 
 
 def log_note_for(test: FailedTestSummary) -> str | None:
@@ -211,8 +219,9 @@ def log_note_for(test: FailedTestSummary) -> str | None:
 
     Ядро берёт из лога с id операций только записи своей операции (``core.md``);
     чужих в данных нет, и модель должна видеть, что лог искали, а не что его не было.
+    HTTP-ответ лог сервиса не заменяет: при одной HTTP-секции пометка остаётся.
     """
-    if not test.operation_logs or (test.log_snippet and test.log_snippet.strip()):
+    if not test.operation_logs or has_service_log(test.log_snippet):
         return None
     names = ", ".join(test.operation_logs)
     others = (f"ошибки других операций ({test.foreign_log_events}) не показаны"
@@ -222,6 +231,12 @@ def log_note_for(test: FailedTestSummary) -> str | None:
                 f"({', '.join(test.operation_ids)}); {others}]")
     return (f"[{LOG_NOT_FOUND}: id операции теста (operUID, rqUID… в запросе или сообщении) "
             f"неизвестен, а в {names} записи с id операций — чьи они, не понять; {others}]")
+
+
+def _quotes_service_log(prompt: ClusterAnalysisPrompt) -> bool:
+    """В задании есть кусок записей сервиса (не HTTP): лог операции хоть у кого-то найден."""
+    return any(source.kind == "log" and (source.section or "лог") in SERVICE_LOG_SECTIONS
+               for source in prompt.sources)
 
 
 def has_evidence(cluster: FailureCluster, log_snippet: str | None) -> bool:
@@ -443,10 +458,10 @@ def build_cluster_task_with_sources(
         message_test_id=representative.test_result_id if representative else None,
         log_test_id=log_test.test_result_id if log_test else None,
         operation=representative.correlation_hint if representative else None,
-        log_note=log_note_for(representative) if representative and not log_snippet else None,
+        log_note=log_note_for(representative) if representative else None,
     )
     evidence_chars = prompt.message_chars + prompt.trace_chars + prompt.log_chars
-    log_not_found = not prompt.has_log and representative is not None \
+    log_not_found = not _quotes_service_log(prompt) and representative is not None \
         and log_note_for(representative) is not None
     task = build_task_text(
         has_symptom=prompt.has_symptom,
@@ -494,7 +509,7 @@ def _examples_task(
             trace=test.status_trace, log=log,
             short_trace=short_trace(test.status_trace,
                                     max(1, int(settings.llm_prompt_trace_max_chars * share))),
-            operation=test.correlation_hint, log_note=None if log else log_note_for(test),
+            operation=test.correlation_hint, log_note=log_note_for(test),
         ))
     prompt = build_cluster_examples_prompt(
         cluster, prompt_examples,
@@ -503,7 +518,8 @@ def _examples_task(
         log_max_chars=settings.llm_prompt_log_max_chars,
     )
     evidence_chars = prompt.message_chars + prompt.trace_chars + prompt.log_chars
-    log_not_found = not prompt.has_log and any(example.log_note for example in prompt_examples)
+    log_not_found = not _quotes_service_log(prompt) and any(
+        example.log_note for example in prompt_examples)
     task = build_task_text(
         has_symptom=prompt.has_symptom,
         has_log=prompt.has_log,
