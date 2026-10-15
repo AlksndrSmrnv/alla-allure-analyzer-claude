@@ -67,7 +67,6 @@ from alla_core.models.clustering import (
 from alla_core.models.testops import FailedTestSummary
 from alla_core.utils.log_events import SOURCE_MARK_RE, strip_source_marks
 from alla_core.utils.log_focus import strip_log_selection_metadata
-from alla_core.utils.log_utils import extract_correlation_from_log
 from alla_core.utils.message_resources import MessageResources, message_resources
 from alla_core.utils.step_paths import normalize_step_path
 from alla_core.utils.text_normalization import (
@@ -500,36 +499,16 @@ class _LogErrorGate:
         return held
 
 
-def _get_failure_correlation(failure: FailedTestSummary) -> str | None:
-    """Вернуть одну опорную correlation-строку для конкретного падения."""
-    if failure.correlation_hint:
-        return failure.correlation_hint
-    return extract_correlation_from_log(failure.log_snippet)
-
-
 def _select_cluster_correlation(
     representative: FailedTestSummary,
-    group_failures: list[FailedTestSummary],
-    member_ids: list[int],
 ) -> tuple[str, int] | None:
-    """Выбрать одну correlation-строку на кластер вместе с тестом-источником.
+    """Операция представителя кластера: его ``correlation_hint`` и id теста.
 
-    Приоритет:
-    1. representative test
-    2. остальные members по возрастанию test_result_id
+    Другого участника не подставляем: операция другого теста — не операция
+    представителя, а его сообщение и трейс показываются под этой строкой.
     """
-    representative_correlation = _get_failure_correlation(representative)
-    if representative_correlation is not None:
-        return representative_correlation, representative.test_result_id
-
-    failures_by_id = {failure.test_result_id: failure for failure in group_failures}
-    for test_id in member_ids:
-        if test_id == representative.test_result_id:
-            continue
-        failure = failures_by_id[test_id]
-        correlation = _get_failure_correlation(failure)
-        if correlation is not None:
-            return correlation, failure.test_result_id
+    if representative.correlation_hint:
+        return representative.correlation_hint, representative.test_result_id
     return None
 
 
@@ -1090,11 +1069,7 @@ class ClusteringService:
         )
 
         label = self._generate_label(representative)
-        correlation_selection = _select_cluster_correlation(
-            representative,
-            group_failures,
-            member_ids,
-        )
+        correlation_selection = _select_cluster_correlation(representative)
         example_correlation: str | None = None
         example_correlation_test_id: int | None = None
         if correlation_selection is not None:

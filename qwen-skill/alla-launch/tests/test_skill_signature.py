@@ -213,7 +213,7 @@ class _Journal:
 def test_error_record_survives_the_log_selection_of_a_big_journal() -> None:
     def entry(index: int, level: str, message: str) -> dict[str, Any]:
         return {"deploymentUnit": "billing-prod", "tenantCode": "t", "logLevel": level,
-                "message": message, "rqUID": f"req-{index}", "details": {"attempt": index}}
+                "message": message, "details": {"attempt": index}}
 
     def signature(message: str) -> tuple[str | None, str | None]:
         items = [entry(i, "INFO", f"heartbeat {i} " + "x" * 80) for i in range(200)]

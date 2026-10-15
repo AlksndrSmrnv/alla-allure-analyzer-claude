@@ -122,7 +122,7 @@ def test_next_and_verify_reject_a_quote_from_another_source(
 ) -> None:
     run_dir, run, _ = _prepare(project, capsys)
     order = run["clusters"][0]["file_id"]
-    assert run["schema"] == 3 and not run["clusters"][0]["auto"]
+    assert run["schema"] == ws.RUN_SCHEMA and not run["clusters"][0]["auto"]
     wrong = VALID_ANALYSIS.replace("- [S3] «java.lang.NullPointerException",
                                    "- [S1] «java.lang.NullPointerException")
     (run_dir / "analyses" / f"{order}.md").write_text(wrong, encoding="utf-8")

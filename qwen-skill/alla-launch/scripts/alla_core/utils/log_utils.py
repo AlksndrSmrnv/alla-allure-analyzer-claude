@@ -99,6 +99,12 @@ _CORR_ID_XML_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Число без кавычек в JSON (``"operUID": 239482348``) — тоже id операции.
+_CORR_ID_JSON_NUMBER_RE = re.compile(
+    rf"\"(?P<key>{_KEY_ALTERNATION})\"\s*:\s*(?P<value>\d{{4,64}})\b",
+    re.IGNORECASE,
+)
+
 
 def _is_placeholder_value(value: str) -> bool:
     return value.strip().lower() in _PLACEHOLDER_VALUES
@@ -159,6 +165,40 @@ def extract_correlation_pairs_from_text(text: str) -> dict[str, str]:
         pairs[raw_key] = value
         seen_keys.add(key_lower)
     return pairs
+
+
+def operation_ids(text: str) -> frozenset[tuple[str, str]]:
+    """Все id операций в тексте: пары (каноничный ключ, значение), без плейсхолдеров.
+
+    В отличие от :func:`extract_correlation_pairs_from_text` берёт **все** значения
+    каждого ключа: в общем логе сервиса их много, и по ним блок лога сверяется с
+    операцией теста (:func:`operation_values`).
+    """
+    if not text:
+        return frozenset()
+    found: set[tuple[str, str]] = set()
+    for regex in (_CORR_ID_JSON_RE, _CORR_ID_JSON_NUMBER_RE, _CORR_ID_KV_RE, _CORR_ID_XML_RE):
+        for match in regex.finditer(text):
+            value = match.group("value").strip()
+            if not value or _is_placeholder_value(value):
+                continue
+            key = _CANONICAL_CORRELATION_KEYS.get(match.group("key").lower(), match.group("key"))
+            found.add((key, value))
+    return frozenset(found)
+
+
+def operation_values(pairs: frozenset[tuple[str, str]] | set[tuple[str, str]]) -> frozenset[str]:
+    """Значения id для сверки: регистр не важен, ключ — нет (один id в разных полях)."""
+    return frozenset(value.lower() for _key, value in pairs)
+
+
+def format_operation_ids(pairs: frozenset[tuple[str, str]] | set[tuple[str, str]]) -> str | None:
+    """Строка ``operUID=a, operUID=b, rqUID=c`` — все id операции теста для показа."""
+    if not pairs:
+        return None
+    ordered = sorted(pairs, key=lambda pair: (
+        _CORRELATION_KEY_PRIORITY.get(pair[0].lower(), 100), pair[0].lower(), pair[1]))
+    return ", ".join(f"{key}={value}" for key, value in ordered)
 
 
 def extract_correlation_pairs_from_json(
@@ -267,17 +307,3 @@ def parse_log_sections(
             sections.append((label, body))
     return sections
 
-
-def extract_correlation_from_log(log_snippet: str | None) -> str | None:
-    """Извлечь первую доступную correlation-строку из HTTP-секций лога."""
-    if not log_snippet:
-        return None
-
-    for label, body in parse_log_sections(log_snippet):
-        if not label.startswith("HTTP:"):
-            continue
-        for line in body.splitlines():
-            pairs = parse_correlation_line(line)
-            if pairs:
-                return format_correlation_pairs(pairs)
-    return None

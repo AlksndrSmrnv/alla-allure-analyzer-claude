@@ -1474,6 +1474,11 @@ _JAVA_FORMATS: list[tuple[str, str, str, str, str, tuple[str, str, str], list[st
      ("subscriptions.log", LONG_MDC_LOG, "text/plain"),
      ["Renewal of SUB-301 failed: payment method PM-88 expired in 09/2026"]),
 ]
+# В MDC лога — id запроса: из такого лога берутся только записи операции теста, а её id —
+# из вложения-запроса (core.md, «Сбор данных»).
+_JAVA_REQUESTS = {
+    "java-long-mdc": [("Request", '{"headers": {"requestId": "r-77"}}', "application/json")],
+}
 
 
 def java_log_formats() -> Case:
@@ -1486,7 +1491,8 @@ def java_log_formats() -> Case:
                 group, cause=cause, category=category, name=f"{service} {method}",
                 full_name=f"{test_class}.{method}", message=message,
                 trace=_assert_trace(message, test_class, method, 30 + index * 10),
-                step=f"Проверить {service}", logs=[attachment], evidence=evidence,
+                step=f"Проверить {service}", logs=[attachment, *_JAVA_REQUESTS.get(group, [])],
+                evidence=evidence,
             )
     return builder.build("java_log_formats")
 
@@ -1582,6 +1588,83 @@ def big_launch() -> Case:
     return builder.build("big_launch", heavy=True)
 
 
+# ---------------------------------------------------------------------------
+# Общий лог сервиса: ошибки нескольких операций в одном вложении
+# ---------------------------------------------------------------------------
+
+def _service_line(time: str, thread: str, oper: str, level: str, text: str) -> str:
+    return f"2026-10-03 11:{time} [{thread}] [operUID={oper}] {level} {text}\n"
+
+
+SHARED_SERVICE_LOG = (
+    _service_line("00:00.100", "exec-1", "op-ord-1001", "INFO ",
+                  "c.e.orders.OrderController - Create order ORD-11")
+    + _service_line("00:00.180", "exec-1", "op-ord-1001", "ERROR",
+                    "c.e.orders.DiscountService - Discount rule DR-5 not found for order ORD-11")
+    + _service_line("00:01.050", "exec-2", "op-pay-2001", "INFO ",
+                    "c.e.payments.RefundController - Refund payment P-7")
+    + _service_line("00:01.120", "exec-2", "op-pay-2001", "ERROR",
+                    "c.e.payments.ProviderClient - Payment provider returned DECLINED for refund "
+                    "of P-7")
+    + _service_line("00:02.000", "exec-3", "op-ord-1002", "ERROR",
+                    "c.e.orders.DiscountService - Discount rule DR-5 not found for order ORD-12")
+    + _service_line("00:02.400", "exec-4", "op-pay-2002", "ERROR",
+                    "c.e.payments.ProviderClient - Payment provider returned DECLINED for refund "
+                    "of P-8")
+    + _service_line("00:03.000", "exec-5", "op-misc-9001", "INFO ",
+                    "c.e.health.HealthController - Health check OK")
+)
+
+
+def _request(oper: str, path: str) -> tuple[str, str, str]:
+    """Вложение-запрос теста: в заголовках — id его операции."""
+    body = (f'{{"method": "POST", "url": "https://shop.test{path}", '
+            f'"headers": {{"operUID": "{oper}", "Content-Type": "application/json"}}}}')
+    return ("Request", body, "application/json")
+
+
+def shared_service_log() -> Case:
+    """Один и тот же лог сервиса приложен ко всем тестам; в нём ошибки разных операций.
+
+    Своя операция теста — по ``operUID`` из вложения-запроса. Разные падения (заказ без
+    правила скидки и отказ провайдера при возврате) — две проблемы, хотя их логи
+    одинаковые. У теста без запроса id операции неизвестен: чужие ошибки лога ему не
+    принадлежат, своей группы у него нет.
+    """
+    builder = LaunchBuilder(5121, "Shop regression")
+    tests = [
+        ("orders-discount", "orders-discount-rule-missing", "данные", "createOrder",
+         "ru.company.shop.OrderTest", "Order ORD-11 was not created: status code 500",
+         "op-ord-1001", "/orders", "Discount rule DR-5 not found for order ORD-11"),
+        ("orders-discount", "orders-discount-rule-missing", "данные", "createOrderWithCoupon",
+         "ru.company.shop.OrderTest", "Order ORD-12 was not created: status code 500",
+         "op-ord-1002", "/orders", "Discount rule DR-5 not found for order ORD-12"),
+        ("refund-declined", "refund-provider-declined", "приложение", "refundPayment",
+         "ru.company.shop.RefundTest", "Refund of payment P-7 failed: status code 502",
+         "op-pay-2001", "/refunds", "Payment provider returned DECLINED for refund of P-7"),
+        ("refund-declined", "refund-provider-declined", "приложение", "refundPartially",
+         "ru.company.shop.RefundTest", "Refund of payment P-8 failed: status code 502",
+         "op-pay-2002", "/refunds", "Payment provider returned DECLINED for refund of P-8"),
+    ]
+    for index, (group, cause, category, method, test_class, message, oper, path,
+                evidence) in enumerate(tests):
+        builder.add_failure(
+            group, cause=cause, category=category, name=method,
+            full_name=f"{test_class}.{method}", message=message,
+            trace=_assert_trace(message, test_class, method, 20 + index * 6),
+            log=SHARED_SERVICE_LOG, log_name="shop-service.log",
+            logs=[_request(oper, path)], evidence=[evidence],
+        )
+    loyalty = "Loyalty points were not credited for order ORD-31"
+    builder.add_failure(
+        "loyalty-unknown", cause=None, category="неизвестно", name="creditLoyaltyPoints",
+        full_name="ru.company.shop.LoyaltyTest.creditLoyaltyPoints", message=loyalty,
+        trace=_assert_trace(loyalty, "ru.company.shop.LoyaltyTest", "creditLoyaltyPoints", 15),
+        log=SHARED_SERVICE_LOG, log_name="shop-service.log",
+    )
+    return builder.build("shared_service_log")
+
+
 CASES: dict[str, Callable[[], Case]] = {
     "log_formats": log_formats,
     "log_traps": log_traps,
@@ -1609,5 +1692,6 @@ CASES: dict[str, Callable[[], Case]] = {
     "go_log_formats": go_log_formats,
     "java_log_formats": java_log_formats,
     "log_level_controls": log_level_controls,
+    "shared_service_log": shared_service_log,
     "big_launch": big_launch,
 }

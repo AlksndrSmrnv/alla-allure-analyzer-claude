@@ -189,6 +189,12 @@ class FailedTestSummary(BaseModel):
     # пометки «[строки a–b]» в начале блоков. В run.json не хранится (решение — шаг 3).
     log_attachments: list[LogAttachmentRef] = Field(default_factory=list, exclude=True)
     correlation_hint: str | None = None
+    # Операция теста (``key=value``): id из сообщения, трейса и вложений-запросов. Из
+    # общего лога сервиса с id операций берутся только её записи; ``operation_logs`` —
+    # такие логи, ``foreign_log_events`` — сколько записей других операций отброшено.
+    operation_ids: list[str] = Field(default_factory=list)
+    operation_logs: list[str] = Field(default_factory=list)
+    foreign_log_events: int = 0
     failed_step_path: str | None = None
     # Попытки до финального результата (шаг 5): последние MAX_ATTEMPTS_PER_TEST по
     # порядку; ``attempts_omitted`` — сколько более ранних не показано. В сигнатуре и

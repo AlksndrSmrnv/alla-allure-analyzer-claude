@@ -56,6 +56,24 @@ paths:
   `GET /api/testresult/{id}`.
 - Логи — из processable attachments: text, JSON, XML, NDJSON и unknown text-like. Binary
   пропускаются.
+- **Операция теста.** Свои id теста (`operation_ids`, `key=value`; ключи — реестр
+  `_CANONICAL_CORRELATION_KEYS`: operUID, rqUID, requestId, correlationId, traceId) — **все**
+  значения (`log_utils.operation_ids`) из сообщения и трейса и из вложений, которые не лог
+  (`attachment_handlers.log_operation_ids` → `None`: запрос и ответ HTTP, JSON, XML, HTML).
+  Лог — журнал `StructuredErrorLogHandler` или текст, где `iter_events` распознаёт хоть одну
+  запись (`log_events.is_log_text`). Лог **с id операций** (общий лог сервиса) в первом
+  проходе откладывается (байты не держим), во втором скачивается заново и отбирается по своим
+  id (`AttachmentContext.operation_ids`): события-ошибки (`ErrorBlocksHandler`, отбор **до**
+  свёртки повторов — `repeat_key` не различает id, и первым вхождением осталась бы чужая
+  ошибка), записи журнала, HTTP-сигналы (только из записей своей операции любого уровня).
+  Запись без id в таком логе — не своя. Своих id нет — из такого лога ничего. Лог **без id**
+  операций — как раньше: сверить не с чем. Итог: `operation_logs` (подписи отобранных логов),
+  `foreign_log_events` (отброшено записей других операций), `correlation_hint` — свои id
+  (`format_operation_ids`), а не первый id любого вложения. Причина (ревью): общий лог давал
+  цитаты из чужих операций и одинаковые логи разным падениям — log override склеивал их
+  (эталон `shared_service_log`: до правки 5 тестов трёх групп в одном кластере).
+- Корреляция кластера (`example_correlation`) — только представителя: операция другого
+  участника под сообщением представителя была бы чужой.
 - Текстовый лог делится на события (`utils/log_events.py`): запись начинается строкой со
   временем (ISO, `dd.MM.yyyy`, `yyyy/MM/dd`, `HH:mm:ss.SSS`, syslog, JUL, в `[]`), logfmt
   `time=`, заголовком klog/glog `E1003 10:00:00.123456 12 file.go:42]` (уровень — первая

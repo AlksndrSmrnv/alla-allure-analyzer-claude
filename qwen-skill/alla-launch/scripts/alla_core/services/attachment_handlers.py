@@ -22,10 +22,17 @@ from typing import Any, Protocol, runtime_checkable
 import ijson
 
 from alla_core.models.testops import AttachmentMeta
-from alla_core.utils.log_events import render_error_blocks
+from alla_core.utils.log_events import (
+    error_events,
+    is_log_text,
+    iter_events,
+    render_event_blocks,
+)
 from alla_core.utils.log_utils import (
     extract_correlation_pairs_from_json,
     format_correlation_pairs,
+    operation_ids,
+    operation_values,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +46,9 @@ class AttachmentContext:
     content: bytes
     detected_type: str
     decoded_text: str | None = None
+    # Значения id операции теста (``operation_values``): вложение — общий лог с id
+    # операций, из него берутся только записи этой операции. ``None`` — не отбирать.
+    operation_ids: frozenset[str] | None = None
 
 
 @dataclass
@@ -49,6 +59,8 @@ class HandlerResult:
     label: str
     correlation_hint: str | None = None
     consumed: bool = True
+    # Сколько записей других операций отброшено отбором по ``operation_ids``.
+    foreign: int = 0
 
 
 @runtime_checkable
@@ -189,6 +201,15 @@ class StructuredErrorLogHandler:
         items = _find_journal_array(ctx.content, ctx.decoded_text)
         if items is None:
             return None
+        foreign = 0
+        if ctx.operation_ids is not None:
+            own = [entry for entry in items if belongs_to_operation(_entry_text(entry), ctx.operation_ids)]
+            foreign = len(items) - len(own)
+            if not own:
+                # Журнал разобран, но своих записей нет: другие handler-ы не должны
+                # читать его целиком.
+                return HandlerResult(section="", label=self.label, consumed=True, foreign=foreign)
+            items = own
 
         # Содержимое отдаём как pretty-printed JSON: структура и порядок полей
         # сохраняются как в исходном файле, читать и парсить (в т.ч. LLM)
@@ -207,6 +228,7 @@ class StructuredErrorLogHandler:
             label=self.label,
             correlation_hint=correlation_hint,
             consumed=True,
+            foreign=foreign,
         )
 
 
@@ -233,14 +255,24 @@ class ErrorBlocksHandler:
             return None
         if ctx.decoded_text is None:
             return None
-        blocks = render_error_blocks(ctx.decoded_text)
+        events = list(error_events(ctx.decoded_text))
+        foreign = 0
+        if ctx.operation_ids is not None:
+            ids = ctx.operation_ids
+            own = [event for event in events if belongs_to_operation(event.text, ids)]
+            foreign = len(events) - len(own)
+            events = own
+        blocks = render_event_blocks(events)
         if not blocks.strip():
+            if foreign:
+                return HandlerResult(section="", label=self.label, consumed=False, foreign=foreign)
             return None
         return HandlerResult(
             section=blocks,
             label=self.label,
             correlation_hint=None,
             consumed=False,
+            foreign=foreign,
         )
 
 
@@ -262,11 +294,20 @@ class HttpSignalsHandler:
             return None
         from alla_core.services.log_extraction_service import _extract_http_artifacts
 
-        http_info, correlation_hint = _extract_http_artifacts(
-            ctx.content,
-            ctx.detected_type,
-            text=ctx.decoded_text,
-        )
+        if ctx.operation_ids is not None:
+            # Общий лог: HTTP-сигналы только из записей своей операции (любого уровня),
+            # иначе «Корреляция» и поля ошибки пришли бы из чужого запроса.
+            ids = ctx.operation_ids
+            text = "\n".join(event.text for event in iter_events(ctx.decoded_text or "")
+                             if belongs_to_operation(event.text, ids))
+            http_info, correlation_hint = _extract_http_artifacts(
+                text.encode("utf-8"), "text", text=text)
+        else:
+            http_info, correlation_hint = _extract_http_artifacts(
+                ctx.content,
+                ctx.detected_type,
+                text=ctx.decoded_text,
+            )
         if not http_info.strip():
             # Корреляция могла остаться даже если HTTP-секция пустая —
             # сервис её подхватит из correlation_hint всё равно.
@@ -284,6 +325,41 @@ class HttpSignalsHandler:
             correlation_hint=correlation_hint,
             consumed=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# Операция теста
+# ---------------------------------------------------------------------------
+
+
+def belongs_to_operation(text: str, ids: frozenset[str]) -> bool:
+    """Запись лога — операции теста: в ней есть хоть один её id."""
+    return bool(ids) and bool(operation_values(operation_ids(text)) & ids)
+
+
+def _entry_text(entry: Any) -> str:
+    try:
+        return json.dumps(entry, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(entry)
+
+
+def log_operation_ids(ctx: AttachmentContext) -> frozenset[tuple[str, str]] | None:
+    """id операций в логе-вложении; ``None`` — вложение не лог (запрос, ответ, документ).
+
+    Лог — журнал структурированных записей или текст, где распознаётся хоть одна запись
+    (:func:`is_log_text`). Пустое множество — лог без id операций: сверить его не с чем,
+    он остаётся как есть.
+    """
+    if ctx.detected_type == "binary" or ctx.decoded_text is None:
+        return None
+    if ctx.detected_type in ("json", "text"):
+        items = _find_journal_array(ctx.content, ctx.decoded_text)
+        if items is not None:
+            return operation_ids(ctx.decoded_text)
+    if not is_log_text(ctx.decoded_text):
+        return None
+    return operation_ids(ctx.decoded_text)
 
 
 # ---------------------------------------------------------------------------

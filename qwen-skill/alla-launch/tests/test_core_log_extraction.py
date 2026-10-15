@@ -441,6 +441,8 @@ class TestLogExtractionServiceIntegration:
         provider = FakeAttachmentProvider([att], {2: content})
         service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
         summary = make_summary()
+        # В логе есть id операции: он берётся, только если это операция теста.
+        summary.status_message = "Request RqUID=mixed-id failed"
 
         with _fake_magic("text/plain"):
             await service.enrich_with_logs([summary])
@@ -583,7 +585,7 @@ class TestLogExtractionServiceIntegration:
         assert summary.correlation_hint == "rqUID=abc-xyz"
 
     @pytest.mark.asyncio
-    async def test_enrich_prefers_attachment_correlation_over_status_trace(self):
+    async def test_enrich_collects_own_ids_from_trace_and_response(self):
         content = b"OperUID=op-a\nHTTP/1.1 500 Internal Server Error"
         att = AttachmentMeta(id=41, name="response.txt", type="text/plain")
         provider = FakeAttachmentProvider([att], {41: content})
@@ -594,7 +596,10 @@ class TestLogExtractionServiceIntegration:
         with _fake_magic("text/plain"):
             await service.enrich_with_logs([summary])
 
-        assert summary.correlation_hint == "operUID=op-a"
+        # Ответ — не лог: его id и id трейса — операции самого теста.
+        assert summary.correlation_hint == "operUID=op-a, operUID=op-b"
+        assert summary.operation_ids == ["operUID=op-a", "operUID=op-b"]
+        assert summary.operation_logs == []
 
     @pytest.mark.asyncio
     async def test_enrich_keeps_none_when_both_sources_empty(self):
@@ -627,7 +632,6 @@ class TestLogExtractionServiceIntegration:
                 "message": "Failed to charge order #123",
                 "logLevel": "ERROR",
                 "errorCode": "BILL_15",
-                "rqUID": "req-abc-1",
             },
             {
                 "deploymentUnit": "notification-prod",
@@ -660,8 +664,9 @@ class TestLogExtractionServiceIntegration:
         # Тело секции — pretty-printed JSON, roundtrip даёт исходный массив.
         body = summary.log_snippet.split("--- [журнал: journal_dump.txt] ---\n", 1)[1]
         assert _json.loads(body) == items
-        # correlation hint извлечён из rqUID
-        assert summary.correlation_hint == "rqUID=req-abc-1"
+        # id операций в журнале нет — сверять не с чем, журнал целиком.
+        assert summary.correlation_hint is None
+        assert summary.operation_logs == []
 
     @pytest.mark.asyncio
     async def test_log_snippet_is_truncated_when_exceeds_max_chars(self):
@@ -694,6 +699,123 @@ class TestLogExtractionServiceIntegration:
         assert summary.log_selection_truncated is True
         _, _, marker = summary.log_snippet.partition("\n\n[... обрезано")
         assert marker.endswith("...]")
+
+
+_SHARED_LOG = (
+    b"2026-10-03 11:00:00.100 [exec-1] [operUID=op-own-1] INFO  Create order ORD-11\n"
+    b"2026-10-03 11:00:00.150 [exec-2] [operUID=op-other-2] ERROR Order ORD-90 failed: "
+    b"stock reservation timeout\n"
+    b"2026-10-03 11:00:00.180 [exec-1] [operUID=op-own-1] ERROR Order ORD-11 failed: "
+    b"stock reservation timeout\n"
+    b"\tat c.e.orders.Stock.reserve(Stock.java:42)\n"
+    b"2026-10-03 11:00:00.200 [exec-3] [operUID=op-other-3] ERROR Payment provider "
+    b"returned DECLINED\n"
+    b"2026-10-03 11:00:00.250 [exec-3] ERROR Health check failed without operation\n"
+    b'2026-10-03 11:00:00.300 [exec-2] [operUID=op-other-2] INFO  HTTP/1.1 503 '
+    b'"error": "foreign upstream"\n'
+)
+
+
+class _CountingProvider(FakeAttachmentProvider):
+    def __init__(self, attachments: list[AttachmentMeta], content_map: dict[int, bytes]):
+        super().__init__(attachments, content_map)
+        self.downloads: list[int] = []
+
+    async def get_attachment_content(self, attachment_id: int) -> bytes:
+        self.downloads.append(attachment_id)
+        return await super().get_attachment_content(attachment_id)
+
+
+class TestOperationLog:
+    """Общий лог сервиса: блоки только операции теста (id из запроса и сообщения)."""
+
+    @staticmethod
+    async def _enrich(attachments: list[tuple[AttachmentMeta, bytes]],
+                      message: str | None = None) -> tuple[FailedTestSummary, _CountingProvider]:
+        provider = _CountingProvider([att for att, _ in attachments],
+                                     {att.id: content for att, content in attachments
+                                      if att.id is not None})
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        summary = make_summary()
+        summary.status_message = message
+        with patch("alla_core.services.log_extraction_service._MAGIC_AVAILABLE", False):
+            await service.enrich_with_logs([summary])
+        return summary, provider
+
+    @pytest.mark.asyncio
+    async def test_keeps_only_own_operation_and_its_repeat(self):
+        log = AttachmentMeta(id=1, name="service.log", type="text/plain")
+        request = AttachmentMeta(id=2, name="Request", type="application/json")
+        summary, provider = await self._enrich([
+            (log, _SHARED_LOG),
+            (request, b'{"headers": {"operUID": "op-own-1"}, "url": "/orders"}'),
+        ])
+
+        snippet = summary.log_snippet or ""
+        # Повтор свёрнут бы в первое вхождение — чужое; отбор идёт до свёртки.
+        assert "Order ORD-11 failed" in snippet and "Stock.java:42" in snippet
+        assert "ORD-90" not in snippet and "DECLINED" not in snippet
+        assert "without operation" not in snippet
+        assert "foreign upstream" not in snippet and "op-other" not in snippet
+        assert summary.foreign_log_events == 3
+        assert summary.operation_ids == ["operUID=op-own-1"]
+        assert summary.operation_logs == ["service.log"]
+        assert summary.correlation_hint == "operUID=op-own-1"
+        # Общий лог — второй раз, когда свои id уже известны.
+        assert provider.downloads == [1, 2, 1]
+
+    @pytest.mark.asyncio
+    async def test_own_id_from_the_message(self):
+        log = AttachmentMeta(id=1, name="service.log", type="text/plain")
+        summary, _ = await self._enrich([(log, _SHARED_LOG)],
+                                        message="Order failed, operUID=op-own-1")
+
+        assert "Order ORD-11 failed" in (summary.log_snippet or "")
+        assert "ORD-90" not in (summary.log_snippet or "")
+
+    @pytest.mark.asyncio
+    async def test_unknown_own_operation_takes_nothing_from_a_shared_log(self):
+        log = AttachmentMeta(id=1, name="service.log", type="text/plain")
+        summary, _ = await self._enrich([(log, _SHARED_LOG)])
+
+        assert summary.log_snippet is None
+        assert summary.foreign_log_events == 4
+        assert summary.operation_ids == [] and summary.operation_logs == ["service.log"]
+        assert summary.correlation_hint is None
+
+    @pytest.mark.asyncio
+    async def test_log_without_operation_ids_is_kept_as_is(self):
+        log = AttachmentMeta(id=1, name="test.log", type="text/plain")
+        request = AttachmentMeta(id=2, name="Request", type="application/json")
+        summary, provider = await self._enrich([
+            (log, b"2026-10-03 11:00:00.180 [main] ERROR Stock reservation timeout\n"),
+            (request, b'{"headers": {"operUID": "op-own-1"}}'),
+        ])
+
+        assert "Stock reservation timeout" in (summary.log_snippet or "")
+        assert summary.operation_logs == [] and summary.foreign_log_events == 0
+        assert provider.downloads == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_journal_keeps_only_own_entries(self):
+        import json as _json
+
+        items = [
+            {"deploymentUnit": "orders", "tenantCode": "t", "rqUID": "req-own",
+             "logLevel": "ERROR", "message": "own failure"},
+            {"deploymentUnit": "orders", "tenantCode": "t", "rqUID": "req-other",
+             "logLevel": "ERROR", "message": "foreign failure"},
+        ]
+        journal = AttachmentMeta(id=1, name="journal.json", type="application/json")
+        request = AttachmentMeta(id=2, name="Request", type="application/json")
+        summary, _ = await self._enrich([
+            (journal, _json.dumps(items).encode()),
+            (request, b'{"rqUID": "req-own"}'),
+        ])
+
+        snippet = summary.log_snippet or ""
+        assert "own failure" in snippet and "foreign failure" not in snippet
+        assert summary.foreign_log_events == 1
 
 
 class TestDetailsAttachmentAugmentation:

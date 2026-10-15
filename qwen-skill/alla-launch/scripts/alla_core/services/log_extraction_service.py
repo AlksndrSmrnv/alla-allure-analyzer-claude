@@ -24,6 +24,7 @@ from alla_core.services.attachment_handlers import (
     AttachmentContext,
     AttachmentHandler,
     default_handlers,
+    log_operation_ids,
 )
 from alla_core.utils.log_events import error_events
 from alla_core.utils.log_focus import StreamingLogSelector, selection_error_text
@@ -31,6 +32,9 @@ from alla_core.utils.log_utils import (
     extract_correlation_pairs_from_json,
     extract_correlation_pairs_from_text,
     format_correlation_pairs,
+    format_operation_ids,
+    operation_ids,
+    operation_values,
 )
 
 logger = logging.getLogger(__name__)
@@ -644,12 +648,16 @@ class LogExtractionService:
                 _apply_status_details_correlation_fallback(summary, summary.correlation_hint),
             )
             summary.log_selection_truncated = False
+            summary.foreign_log_events = 0
             processable = [
                 att for att in all_attachments
                 if att not in details_atts and self._is_processable_attachment(att)
             ]
             labels = _unique_labels(processable)
             if not processable:
+                summary.operation_ids = sorted(
+                    f"{key}={value}" for key, value in operation_ids("\n".join(
+                        part for part in (summary.status_message, summary.status_trace) if part)))
                 summary.correlation_hint = _apply_status_details_correlation_fallback(
                     summary,
                     None,
@@ -663,10 +671,17 @@ class LogExtractionService:
             selector = StreamingLogSelector(summary.log_selection_error, budget)
             section_count = 0
             correlation_hint: str | None = None
+            # Свои id операции теста: из сообщения и трейса и из вложений, которые не лог
+            # (запрос и ответ). Общий лог сервиса с id операций откладывается до конца:
+            # из него берутся только записи своей операции, а свои id известны, лишь когда
+            # просмотрены все вложения.
+            own_ids = set(operation_ids("\n".join(
+                part for part in (summary.status_message, summary.status_trace) if part)))
+            operation_logs: list[AttachmentMeta] = []
 
-            for att in processable:
-                if att.id is None:
-                    continue
+            async def process(att: AttachmentMeta, ids: frozenset[str] | None) -> None:
+                nonlocal section_count, correlation_hint
+                assert att.id is not None
                 async with semaphore:
                     try:
                         content_bytes = await self._provider.get_attachment_content(att.id)
@@ -678,14 +693,14 @@ class LogExtractionService:
                             summary.test_result_id,
                             exc,
                         )
-                        continue
+                        return
 
                 att_name = labels[att.id] if att.id in labels else _attachment_label(att)
                 fallback_mime = (att.type or att.content_type or "").lower()
                 detected_type = _detect_content_type(content_bytes, fallback_mime=fallback_mime)
 
                 if detected_type == "binary":
-                    continue
+                    return
 
                 # Декодируем текст один раз для тех handlers, которым он нужен.
                 # JSON/XML/text — все с большой вероятностью текст; декод дешёвый
@@ -697,9 +712,17 @@ class LogExtractionService:
                     content=content_bytes,
                     detected_type=detected_type,
                     decoded_text=decoded_text,
+                    operation_ids=ids,
                 )
 
                 try:
+                    if ids is None:
+                        found = log_operation_ids(ctx)
+                        if found is None:
+                            own_ids.update(operation_ids(decoded_text or ""))
+                        elif found:
+                            operation_logs.append(att)
+                            return
                     for handler in self._handlers:
                         try:
                             result = handler.handle(ctx)
@@ -715,7 +738,8 @@ class LogExtractionService:
                             continue
                         if result is None:
                             continue
-                        if result.correlation_hint and correlation_hint is None:
+                        summary.foreign_log_events += result.foreign
+                        if result.correlation_hint and correlation_hint is None and ids is None:
                             correlation_hint = result.correlation_hint
                         if result.section.strip():
                             selector.add_section(
@@ -737,6 +761,20 @@ class LogExtractionService:
                     content_bytes = b""
                     decoded_text = None
                     result = None  # HandlerResult.section тоже может держать полный лог.
+
+            for att in processable:
+                if att.id is not None:
+                    await process(att, None)
+            # Второй проход: общий лог скачивается заново (байты первого прохода не
+            # держим) и отбирается по своим id; своих id нет — из него ничего.
+            own_values = operation_values(own_ids)
+            for att in operation_logs:
+                await process(att, own_values)
+            summary.operation_ids = sorted(f"{key}={value}" for key, value in own_ids)
+            summary.operation_logs = [labels.get(att.id or -1, _attachment_label(att))
+                                      for att in operation_logs]
+            if own_ids:
+                correlation_hint = format_operation_ids(own_ids)
 
             correlation_hint = _apply_status_details_correlation_fallback(
                 summary,

@@ -560,7 +560,9 @@ def test_cluster_uses_representative_correlation_hint() -> None:
     assert report.clusters[0].example_correlation_test_id == 70
 
 
-def test_cluster_falls_back_to_member_correlation_when_representative_has_none() -> None:
+def test_cluster_does_not_borrow_another_members_correlation() -> None:
+    """Операция другого участника — не операция представителя: его сообщение и трейс
+    показываются под этой строкой, подмена дала бы чужую операцию."""
     failures = [
         _failure(
             72,
@@ -571,18 +573,6 @@ def test_cluster_falls_back_to_member_correlation_when_representative_has_none()
             status_message="Gateway timeout while saving order",
             correlation_hint="operUID=op-73, rqUID=req-73",
         ),
-    ]
-
-    service = ClusteringService(ClusteringConfig(similarity_threshold=0.60))
-    report = service.cluster_failures(launch_id=1, failures=failures)
-
-    assert report.cluster_count == 1
-    assert report.clusters[0].example_correlation == "operUID=op-73, rqUID=req-73"
-    assert report.clusters[0].example_correlation_test_id == 73
-
-
-def test_cluster_reads_correlation_from_old_http_log_sections() -> None:
-    failures = [
         _failure(
             74,
             status_message="Gateway timeout while saving order",
@@ -597,8 +587,9 @@ def test_cluster_reads_correlation_from_old_http_log_sections() -> None:
     report = service.cluster_failures(launch_id=1, failures=failures)
 
     assert report.cluster_count == 1
-    assert report.clusters[0].example_correlation == "operUID=op-74, rqUID=req-74"
-    assert report.clusters[0].example_correlation_test_id == 74
+    assert report.clusters[0].representative_test_id == 72
+    assert report.clusters[0].example_correlation is None
+    assert report.clusters[0].example_correlation_test_id is None
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,6 @@ import pytest
 
 from skill_fixtures import without_libmagic  # noqa: F401
 from alla_core.utils.log_utils import (
-    extract_correlation_from_log,
     extract_correlation_pairs_from_json,
     extract_correlation_pairs_from_text,
     parse_correlation_line,
@@ -106,34 +105,6 @@ def test_parse_correlation_line_does_not_truncate_long_values() -> None:
     line = f"Корреляция: traceId={long_value}"
 
     assert parse_correlation_line(line) == {"traceId": long_value}
-
-
-def test_extract_correlation_from_log_reads_first_http_section() -> None:
-    log_snippet = (
-        "--- [файл: app.log] ---\n"
-        "2026-03-31 [ERROR] Connection refused\n"
-        "\n"
-        "--- [HTTP: request.json] ---\n"
-        "Корреляция: rqUID=req-1, OperUID=op-1\n"
-        "\n"
-        "--- [HTTP: response.json] ---\n"
-        "Корреляция: OperUID=op-2, rqUID=req-2\n"
-        "HTTP статус: 503\n"
-        "error: Service unavailable"
-    )
-
-    assert extract_correlation_from_log(log_snippet) == "operUID=op-1, rqUID=req-1"
-
-
-def test_extract_correlation_from_log_skips_placeholder_line() -> None:
-    log_snippet = (
-        "--- [HTTP: response.json] ---\n"
-        "Корреляция: operUID=String, rqUID=String\n"
-        "Корреляция: rqUID=real-id-12345\n"
-        "HTTP статус: 503"
-    )
-
-    assert extract_correlation_from_log(log_snippet) == "rqUID=real-id-12345"
 
 
 def test_extract_correlation_pairs_from_text_json_format() -> None:

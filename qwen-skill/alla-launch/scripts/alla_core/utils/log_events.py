@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -389,6 +389,14 @@ def _marked_event(event: LogEvent, repeats: list[tuple[int, int]]) -> str:
     return "\n".join(out)
 
 
+def is_log_text(text: str) -> bool:
+    """Текст — лог: есть хоть одна запись, начало которой распознаётся (время, уровень…).
+
+    Запрос и ответ HTTP, JSON-документ, XML — не лог: id операций в них — свои id теста.
+    """
+    return any(event.kind == "level" for event in iter_events(text))
+
+
 def render_error_blocks(text: str) -> str:
     """Ошибки лога блоками через пустую строку; каждый абзац — с пометкой строк.
 
@@ -396,9 +404,18 @@ def render_error_blocks(text: str) -> str:
     кодами ошибок — :func:`numeric_codes`) сворачиваются в первое вхождение с
     перечнем мест.
     """
+    return render_event_blocks(error_events(text))
+
+
+def render_event_blocks(events: Iterable[LogEvent]) -> str:
+    """Блоки :func:`render_error_blocks` из уже отобранных событий-ошибок.
+
+    Отбор по операции теста идёт **до** свёртки: ``repeat_key`` не различает id, и
+    первым вхождением повтора иначе осталась бы ошибка чужой операции.
+    """
     first_events: dict[str, LogEvent] = {}
     places: dict[str, list[tuple[int, int]]] = {}
-    for event in error_events(text):
+    for event in events:
         # Коды ошибок различают события, хотя normalize_text сводит числа к <NUM>.
         key = repeat_key(event.text)
         first_events.setdefault(key, event)
