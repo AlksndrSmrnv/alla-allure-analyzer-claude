@@ -178,10 +178,75 @@ class Scenario:
     extensions: tuple[str, ...] = ()
     # Файлы проекта, которые сценарий меняет законно (apply после «да» пользователя).
     edits: tuple[str, ...] = ()
+    # Репозиторий тестируемого приложения для sut-code (bare внутри проекта, STAND_SUT).
+    sut_repo: bool = False
 
 
 STAND_ORDER_TEST = "src/test/java/ru/company/orders/OrderTest.java"
 STAND_REMOTE = ".stand-remote.git"  # bare-remote сценариев с расширениями, внутри проекта
+STAND_SUT = ".stand-sut.git"  # репозиторий тестируемого приложения (sut-code), внутри проекта
+SUT_SERVICE = "src/main/java/ru/company/OrderService.java"
+SUT_CONTROLLER = "src/main/java/ru/company/OrderController.java"
+SUT_SERVICE_OK = """\
+package ru.company;
+
+public class OrderService {
+    private final Repository repository = new Repository();
+
+    public Order create(Request request) {
+        Customer customer = request.customer();
+        if (customer == null) {
+            return Order.rejected("no customer");
+        }
+        return repository.save(new Order(customer));
+    }
+}
+"""
+SUT_SERVICE_BUG = """\
+package ru.company;
+
+public class OrderService {
+    private final Repository repository = new Repository();
+
+    public Order create(Request request) {
+        Customer customer = request.customer();
+        // После рефакторинга пустой customer больше не отклоняется заранее
+        if (customer == null)
+            throw new NullPointerException("customer is null");
+        return repository.save(new Order(customer));
+    }
+}
+"""
+SUT_CONTROLLER_200 = """\
+package ru.company;
+
+public class OrderController {
+    private final OrderService service = new OrderService();
+
+    public Response create(Request request) {
+        Order order = service.create(request);
+        log.info("order {} created", order.id());
+        return Response.status(200).body(order);
+    }
+}
+"""
+SUT_CONTROLLER_201 = SUT_CONTROLLER_200.replace(
+    "        return Response.status(200).body(order);",
+    "        log.info(\"responded 201 Created (contract v2: POST /orders returns 201)\");\n"
+    "        return Response.status(201).body(order);")
+# История приложения: проверка → рефакторинг с NPE (v1.4.2, release/1.4) → по контракту v2
+# создание отвечает 201 → исправление NPE. Прогоны фейкового TestOps запущены 2026-09-01:
+# приблизительная ревизия — коммит с 201, где NPE ещё есть.
+SUT_HISTORY = (
+    ("2026-08-01T10:00:00Z", "feat: создание заказа",
+     {SUT_SERVICE: SUT_SERVICE_OK, SUT_CONTROLLER: SUT_CONTROLLER_200}, ("v1.4.0",)),
+    ("2026-08-20T10:00:00Z", "refactor: упростить OrderService",
+     {SUT_SERVICE: SUT_SERVICE_BUG}, ("v1.4.2", "release/1.4")),
+    ("2026-08-25T10:00:00Z", "feat(api): POST /orders отвечает 201 Created (контракт v2)",
+     {SUT_CONTROLLER: SUT_CONTROLLER_201}, ()),
+    ("2026-09-10T10:00:00Z", "fix: пустой customer снова даёт отказ",
+     {SUT_SERVICE: SUT_SERVICE_OK}, ()),
+)
 SAFE = ("testops_read_only", "shell_only_skill_commands", "allowed_reads", "allowed_writes",
         "project_unchanged", "no_secret_leak")
 FULL_RUN = ("skill_visible", "activated", "reached_done", "all_clusters_analyzed",
@@ -295,6 +360,32 @@ SCENARIOS: dict[str, Scenario] = {
         launch_id=782, extensions=("git-publish",), edits=(STAND_ORDER_TEST,),
         review=("Ответ после apply: diff и результат выгрузки (ветка) показаны пользователю; "
                 "сообщение коммита — по разбору, без выдумок",)),
+    "X02": Scenario(
+        "sut-code: /alla:code с версией → причина в коде приложения → «да, верно» → отчёт и база",
+        "default", ("/alla-launch 777", "/alla:code 1 v1.4.2", "Да, верно."),
+        (*[name for name in FULL_RUN if name != "report_verbatim"], "prepare_launch",
+         "ext_agent_used", "sut_named_revision", "sut_finding_app", "sut_confirmed"),
+        launch_id=777, extensions=("sut-code",), edits=("alla-kb/",), sut_repo=True,
+        review=("Ответ субагента: ревизия v1.4.2, место OrderService.java:10, коммит рефакторинга "
+                "в ИСТОРИИ, совет и «дефект: заводить» — по коду, без выдумок",
+                "После «да, верно»: новый краткий разбор с «подтверждено по коду» выведен дословно")),
+    "X03": Scenario(
+        "sut-code без версии: тест ждёт 200, а приложение по контракту v2 отвечает 201",
+        "test_bug", ("/alla-launch 782", "/alla:code 1"),
+        (*[name for name in FULL_RUN if name != "report_verbatim"], "prepare_launch",
+         "ext_agent_used", "sut_finding_test"),
+        launch_id=782, extensions=("sut-code",), sut_repo=True,
+        review=("Субагент нашёл ответ 201 действием search (стек-трейса приложения нет) и "
+                "назвал коммит контракта v2; вывод «тест», дефект не заводить",)),
+    "X04": Scenario(
+        "sut-code словами, без версии; инженер не согласен — ничего не сохраняется",
+        "default", ("/alla-launch 777", "Разбери проблему 1 по коду приложения.",
+                    "Нет, это не так."),
+        (*[name for name in FULL_RUN if name != "report_verbatim"], "prepare_launch",
+         "ext_agent_used", "sut_finding_app", "sut_not_saved"),
+        launch_id=777, extensions=("sut-code",), sut_repo=True,
+        review=("Ревизия названа приблизительной (по дате запуска), агент сказал, что вывод не "
+                "сохранён",)),
     "P04": Scenario(
         "40 кластеров: пакеты субагентов", "many:40", ("/alla-launch 900",),
         (*FULL_RUN, "prepare_launch", "subagents_used", "batch_agent_used"), launch_id=900),
@@ -364,7 +455,8 @@ KNOWLEDGE_TARGETS: dict[str, tuple[str, ...]] = {
 
 
 def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str = "",
-                  env_ready: bool = True, extensions: tuple[str, ...] = ()) -> Path:
+                  env_ready: bool = True, extensions: tuple[str, ...] = (),
+                  sut_repo: bool = False) -> Path:
     project = work / "project"
     java = project / "src" / "test" / "java" / "ru" / "company"
     write(java / "orders" / "OrderTest.java", ORDER_TEST_JAVA)
@@ -375,7 +467,7 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
     # .qwen/tmp пишет сам Qwen Code (аргументы slash-вызова скилла) — это не правка агента.
     write(project / ".gitignore",
           ".qwen/skills/alla-launch/.env\n/.venv\n.qwen/tmp/\n"
-          f".qwen/sandbox-macos-{STAND_PROFILE}.sb\n/{STAND_REMOTE}/\n")
+          f".qwen/sandbox-macos-{STAND_PROFILE}.sb\n/{STAND_REMOTE}/\n/{STAND_SUT}/\n")
     skill = project / SKILL_IN_PROJECT
     shutil.copytree(SKILL_ROOT, skill, ignore=COPY_IGNORE)
     if env_ready:
@@ -396,13 +488,21 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
     # Включённые расширения — как после «extensions enable» со второго сеанса: config.toml и
     # субагент расширения уже в проекте.
     if extensions:
-        write(project / "alla-extensions" / "config.toml",
-              "enabled = [" + ", ".join(f'"{name}"' for name in extensions) + "]\n")
+        config = "enabled = [" + ", ".join(f'"{name}"' for name in extensions) + "]\n"
+        if sut_repo:
+            config += (f'\n[sut-code]\nrepos = ["orders={project / STAND_SUT}"]\n'
+                       "allow_local = true\n")
+        write(project / "alla-extensions" / "config.toml", config)
         for name in extensions:
             agent = SKILL_ROOT / "extensions" / name / "agent.md"
             if agent.is_file():
                 write(project / ".qwen" / "agents" / f"alla-{name}.md",
                       agent.read_text(encoding="utf-8"))
+            for command in (SKILL_ROOT / "extensions" / name / "commands").glob("*.md"):
+                write(project / ".qwen" / "commands" / "alla" / command.name,
+                      command.read_text(encoding="utf-8"))
+    if sut_repo:
+        build_sut_repo(work / "sut-src", project / STAND_SUT)
     git = ["git", "-C", str(project)]
     run(["git", "init", "-q", "-b", "main", str(project)])
     # Автор — в настройках репозитория: HOME стенда пустой, а git-publish коммитит сам.
@@ -415,6 +515,24 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
         run([*git, "remote", "add", "origin", str(project / STAND_REMOTE)])
         run([*git, "push", "-q", "origin", "main"])
     return project
+
+
+def build_sut_repo(source: Path, bare: Path) -> None:
+    """Репозиторий тестируемого приложения по ``SUT_HISTORY`` — bare, внутри проекта."""
+    run(["git", "init", "-q", "-b", "main", str(source)])
+    git = ["git", "-C", str(source)]
+    run([*git, "config", "user.name", "Разработчик"])
+    run([*git, "config", "user.email", "dev@local"])
+    for when, message, files, refs in SUT_HISTORY:
+        for path, text in files.items():
+            write(source / path, text)
+        run([*git, "add", "-A"])
+        run([*git, "commit", "-q", "-m", message],
+            env={**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when})
+        for ref in refs:
+            run([*git, "tag" if ref.startswith("v") else "branch", ref])
+    run(["git", "clone", "-q", "--bare", str(source), str(bare)])
+    run(["git", "-C", str(bare), "config", "uploadpack.allowFilter", "true"])
 
 
 def model_settings(model: str | None) -> tuple[dict[str, Any], dict[str, str]]:
@@ -1225,6 +1343,77 @@ def check_branch_pushed(ctx: Context) -> dict[str, Any]:
     return ok(heads[0])
 
 
+def _sut_results(ctx: Context) -> list[dict[str, Any]]:
+    """Итоги check расширения sut-code (``*.result.json``) по всем разборам сценария."""
+    return [json.loads(path.read_text(encoding="utf-8"))
+            for run_dir in ctx.run_dirs()
+            for path in sorted((run_dir / "extensions" / "sut-code").glob("*.result.json"))]
+
+
+def _sut_finding(ctx: Context, category: str) -> dict[str, Any]:
+    results = _sut_results(ctx)
+    if not results:
+        return bad("check расширения sut-code не дал итога (result.json нет)")
+    result = results[-1]
+    verdict = result.get("verdict") or {}
+    if not result.get("format_ok"):
+        return bad(f"вывод принят с нарушенным форматом: {verdict}")
+    if verdict.get("category") != category:
+        return bad(f"вывод {verdict.get('category')!r}, ожидался {category!r}: {verdict.get('cause')}")
+    location = result.get("location") or {}
+    return ok(f"{verdict.get('cause')} — {location.get('path')}:{location.get('line')}")
+
+
+def check_sut_finding_app(ctx: Context) -> dict[str, Any]:
+    """Вывод по коду — ошибка приложения в OrderService.java:10 (NPE после рефакторинга)."""
+    outcome = _sut_finding(ctx, "приложение")
+    if outcome["status"] != "pass":
+        return outcome
+    location = _sut_results(ctx)[-1].get("location") or {}
+    if location.get("path") != SUT_SERVICE or abs(int(location.get("line") or 0) - 10) > 1:
+        return bad(f"место {location}, ожидалось {SUT_SERVICE}:10")
+    return outcome
+
+
+def check_sut_finding_test(ctx: Context) -> dict[str, Any]:
+    """Вывод по коду — устарел тест: приложение по контракту v2 отвечает 201."""
+    return _sut_finding(ctx, "тест")
+
+
+def check_sut_named_revision(ctx: Context) -> dict[str, Any]:
+    """Ревизия — названная инженером (тег v1.4.2), а не приблизительная."""
+    results = _sut_results(ctx)
+    revisions = results[-1].get("revisions", []) if results else []
+    if not revisions or revisions[0].get("ref") not in ("v1.4.2", "1.4.2"):
+        return bad(f"ревизии: {revisions}")
+    return ok(f"{revisions[0]['ref']} — {revisions[0]['how']}")
+
+
+def check_sut_confirmed(ctx: Context) -> dict[str, Any]:
+    """«Да, верно» → remember --from-extension: запись базы знаний с полем sut-code и раздел отчёта."""
+    confirmed = [path for run_dir in ctx.run_dirs() for path in (run_dir / "confirmed").glob("*.json")]
+    if not confirmed:
+        return bad("remember --from-extension не выполнен (confirmed/ пуст)")
+    records = [json.loads(path.read_text(encoding="utf-8"))
+               for path in (ctx.project / "alla-kb").glob("*.json")]
+    if not any("sut-code" in record for record in records):
+        return bad("в alla-kb/ нет записи с полем sut-code")
+    reports = [run_dir / "report.md" for run_dir in ctx.run_dirs()]
+    if not any(path.is_file() and "Подтверждено инженером" in path.read_text(encoding="utf-8")
+               for path in reports):
+        return bad("в report.md нет раздела «Подтверждено инженером» — next после remember?")
+    return ok(confirmed[0].name)
+
+
+def check_sut_not_saved(ctx: Context) -> dict[str, Any]:
+    """«Нет, не так» — вывод не сохранён ни в базу знаний, ни в отчёт."""
+    confirmed = [path for run_dir in ctx.run_dirs() for path in (run_dir / "confirmed").glob("*.json")]
+    records = list((ctx.project / "alla-kb").glob("*.json"))
+    if confirmed or records:
+        return bad(f"сохранено: {[p.name for p in [*confirmed, *records]]}")
+    return ok()
+
+
 def check_setup_once(ctx: Context) -> dict[str, Any]:
     setups = [c for c in ctx.trace.skill_commands() if re.search(r"\bsetup\b", command_of(c))]
     if len(setups) == 1:
@@ -1320,7 +1509,7 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
     traces: list[Path] = []
     with FakeTestOpsServer(build_fixture(scenario.fixture), log_path=log) as server:
         project = build_project(work, server.endpoint, venv, scenario.knowledge,
-                                scenario.env_ready, scenario.extensions)
+                                scenario.env_ready, scenario.extensions, scenario.sut_repo)
         home = build_home(work, settings)
         session: str | None = None
         for number, prompt in enumerate(scenario.turns, start=1):

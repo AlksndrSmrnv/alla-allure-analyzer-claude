@@ -82,6 +82,15 @@ Runner не вызывает Qwen, setup, живой TestOps или API-backed �
 .venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case E06 --repeat 3 --api-log --output /tmp/alla-stand-002
 ```
 
+Сценарии расширений: X01 — git-publish (bare-remote `.stand-remote.git` внутри проекта),
+X02–X04 — sut-code: bare-репозиторий приложения `.stand-sut.git` внутри проекта
+(`SUT_HISTORY`: проверка → NPE в `v1.4.2` → ответ 201 по контракту v2 → исправление NPE после
+даты прогона), `[sut-code] repos` и `allow_local` в `config.toml`, `/alla:code` уже в
+`.qwen/commands/alla/`. X02 — версия названа, «да, верно» → база знаний и отчёт; X03 — без
+версии, стека приложения нет, причина находится действием `search`, вывод «тест»; X04 —
+словами, «нет, не так» → ничего не сохраняется. Офлайн-решаемость X03 охраняет
+`test_ext_sut_code.py::test_stand_scenario_x03_is_solvable_by_search`.
+
 Для каждого сценария стенд:
 
 - поднимает `tests/fake_testops_server.py` на 127.0.0.1 — те же `FakeTestOps` и fixtures,

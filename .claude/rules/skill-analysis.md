@@ -5,6 +5,7 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/analysis_format.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/code_hints.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/report.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/confirmed.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/known_issues.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/related.py"
   - "qwen-skill/alla-launch/scripts/alla_core/services/prompt_builder_service.py"

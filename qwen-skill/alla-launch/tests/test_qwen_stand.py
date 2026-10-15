@@ -19,6 +19,7 @@ from qwen_stand import (
     KNOWLEDGE,
     KNOWLEDGE_TARGETS,
     SCENARIOS,
+    STAND_SUT,
     Context,
     build_project,
     parse_traces,
@@ -74,6 +75,24 @@ def test_build_project_is_committed_and_hides_env(tmp_path: Path) -> None:
     assert ".venv" not in tracked
     assert not any(name.endswith(".env") for name in tracked)
 
+
+
+def test_sut_scenarios_get_the_app_repository(tmp_path: Path) -> None:
+    """X02–X04: bare-репозиторий приложения внутри проекта, sut-code включён с ним, /alla:code
+    установлена; проект после этого чистый (копия .alla-sut/ сама себя исключает из git)."""
+    project = build_project(tmp_path, "http://127.0.0.1:1", venv=None,
+                            extensions=("sut-code",), sut_repo=True)
+    bare = project / STAND_SUT
+    refs = subprocess.run(["git", "-C", str(bare), "for-each-ref", "--format=%(refname:short)"],
+                          capture_output=True, text=True, check=True).stdout.split()
+    assert {"main", "release/1.4", "v1.4.0", "v1.4.2"} <= set(refs)
+    config = (project / "alla-extensions" / "config.toml").read_text(encoding="utf-8")
+    assert f'repos = ["orders={bare}"]' in config and "allow_local = true" in config
+    assert (project / ".qwen" / "commands" / "alla" / "code.md").is_file()
+    assert (project / ".qwen" / "agents" / "alla-sut-code.md").is_file()
+    status = subprocess.run(["git", "-C", str(project), "status", "--porcelain"],
+                            capture_output=True, text=True, check=True).stdout
+    assert status == ""
 
 
 def test_install_scenario_project_has_no_env(tmp_path: Path) -> None:

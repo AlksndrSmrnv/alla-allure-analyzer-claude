@@ -494,3 +494,31 @@ def test_remember_without_finding(project: Path, testops: FakeTestOps,
         cli.main(["remember", "1", "--run", str(run_dir), "--from-extension", "sut-code",
                   "--from-analysis"])
     assert "not allowed with argument" in capsys.readouterr().out
+
+
+def test_stand_scenario_x03_is_solvable_by_search(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Стенд X03 без модели: стека приложения нет, приблизительная ревизия — коммит контракта
+    v2 (до запуска прогона), и строку лога «responded 201 Created» находит действие search."""
+    from qwen_stand import SUT_CONTROLLER, build_sut_repo
+    from skill_fake_testops import test_bug_launch
+
+    testops.fixture = test_bug_launch()
+    bare = tmp_path / "stand-sut.git"
+    build_sut_repo(tmp_path / "sut-src", bare)
+    enable(project, capsys, repos=[f"orders={bare}"], allow_local=True)
+    run_dir, run, _ = _prepare(project, capsys, launch_id=782)
+    order = run["clusters"][0]["file_id"]
+    code, out = _run(["extensions", "run", "sut-code", str(int(order)), "--run", str(run_dir)],
+                     capsys)
+    assert code == 0, out
+    context = run_dir / "extensions" / "sut-code" / f"on_request-{order}.json"
+    code, out = action(project, capsys, "prepare", context)
+    assert code == 0 and "приблизительно: ветка main на момент запуска прогона" in out, out
+    data = sutlib.data_path(context).read_text(encoding="utf-8")
+    assert "Кадров стека с файлами этого приложения в данных нет." in data
+    code, out = action(project, capsys, "search", context, "responded 201 Created")
+    assert code == 0 and f"- {SUT_CONTROLLER}:" in out, out
+    code, out = action(project, capsys, "history", context, SUT_CONTROLLER)
+    assert "POST /orders отвечает 201 Created" in out, out
