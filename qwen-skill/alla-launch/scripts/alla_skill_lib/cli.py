@@ -35,7 +35,7 @@ import shutil
 import sys
 import time
 from collections.abc import Iterator
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -718,6 +718,7 @@ def _write_run(
         "launch_id": triage.launch_id,
         "launch_name": triage.launch_name,
         "launch_url": f"{settings.endpoint.rstrip('/')}/launch/{triage.launch_id}",
+        "launch_created": _launch_created(triage.launch_created_ms),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "project_root": str(project_root),
         "kb_dir": str(kb_dir),
@@ -743,6 +744,13 @@ def _write_run(
     }
     ws.write_json(paths.run_json, run)
     return run
+
+
+def _launch_created(created_ms: int | None) -> str | None:
+    """Время запуска прогона из TestOps (миллисекунды эпохи) — ISO 8601 в UTC."""
+    if created_ms is None:
+        return None
+    return datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc).isoformat(timespec="seconds")
 
 
 def _member_full_names(

@@ -216,6 +216,7 @@ class TriageReport(BaseModel):
     launch_id: int
     launch_name: str | None = None
     project_id: int | None = None
+    launch_created_ms: int | None = None
     total_results: int
     passed_count: int = 0
     failed_count: int = 0

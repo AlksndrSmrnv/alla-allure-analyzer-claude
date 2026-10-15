@@ -29,6 +29,10 @@ paths:
 `TriageService` → `LogExtractionService` → `ClusteringService`, склеены в
 `alla_skill_lib/pipeline.py`.
 
+- `TriageReport.launch_created_ms` — `createdDate` прогона (`GET /api/launch/{id}`); `prepare`
+  пишет его в `run.json` как `launch_created` (ISO 8601, UTC). Нужен расширениям: `sut-code`
+  по нему выбирает ревизию приложения, если инженер её не назвал.
+
 - `hidden` results исключаются из статистики и анализа как retry/non-final, но до фильтрации
   связываются с финальными (`services/retry_linking.py`, шаг 5). Ключ один на прогон:
   `historyId`, затем `historyKey` (есть значение хотя бы у одной hidden-попытки), иначе

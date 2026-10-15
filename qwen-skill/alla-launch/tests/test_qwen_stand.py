@@ -527,7 +527,7 @@ def _scant_run(tmp_path: Path, analysis: str | None, attempts: int = 0, *,
                skipped: bool = False, written_by_model: bool = True) -> Context:
     run_dir = tmp_path / "p" / "alla-reports" / "781-20261004-100000"
     (run_dir / "analyses").mkdir(parents=True)
-    (run_dir / "run.json").write_text(json.dumps({"schema": 4, "clusters": [
+    (run_dir / "run.json").write_text(json.dumps({"schema": 5, "clusters": [
         {"file_id": "01", "auto": False}]}), encoding="utf-8")
     state: dict[str, Any] = {"attempts": {"01": {"count": attempts}} if attempts else {}}
     if skipped:
