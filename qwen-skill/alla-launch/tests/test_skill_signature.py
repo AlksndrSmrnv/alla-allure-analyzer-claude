@@ -246,6 +246,25 @@ def test_brackets_in_a_log_line_and_quotes_in_the_message_keep_the_number() -> N
             != _signature(message("10002"), ASSERT_TRACE, ""))
 
 
+def test_compound_error_codes_keep_signatures_apart() -> None:
+    def log(code: str) -> str:
+        return ("2026-10-16 10:00:01 [INFO] c.e.Client - Response "
+                f'{{"errorCode":"{code}","errorMessage":"rejected by gateway"}}\n')
+
+    assert (_signature(ASSERT_500, ASSERT_TRACE, log("10001.1"))
+            != _signature(ASSERT_500, ASSERT_TRACE, log("10002.1")))
+
+
+def test_code_only_line_of_a_multiline_info_response_names_the_cause() -> None:
+    def log(code: int) -> str:
+        return f'2026-10-16 10:00:01 [INFO] c.e.Client - Response:\n{{\n  "errorCode": {code}\n}}\n'
+
+    six = _signature(ASSERT_500, ASSERT_TRACE, log(6))
+
+    assert six != _signature(ASSERT_500, ASSERT_TRACE, log(12))
+    assert six != _signature(ASSERT_500, ASSERT_TRACE, "")
+
+
 def test_journal_info_record_with_error_fields_is_an_error() -> None:
     def journal(message: str) -> str:
         return _journal({"logLevel": "INFO", "message": "POST /transfers"},

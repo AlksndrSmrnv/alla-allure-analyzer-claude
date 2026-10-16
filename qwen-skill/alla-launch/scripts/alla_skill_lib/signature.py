@@ -117,8 +117,9 @@ _WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_$.:-]*")
 # JSON и ``key="…"``: ``"account":"40817810000000000301"`` — ID, как ``account=4081…``.
 # Скобки защищают и в логе (``[10001]``, ``<10001>``).
 _LOG_QUOTED_NUMBER_RE = re.compile(r"(?<![<\[])\b\d{4,}\b(?![>\]])")
-# Код поля ошибки ответа, который мягкий вид стирает: число из 4+ цифр, как у numeric_codes.
-_LONG_CODE_VALUE_RE = re.compile(r"-?\d{4,}")
+# Код поля ошибки ответа, который мягкий вид стирает: в нём есть число из 4+ цифр, как у
+# numeric_codes, — и целиком (``10001``), и частью составного (``10001.1``, ``ERR-10001``).
+_LONG_CODE_VALUE_RE = re.compile(r"\d{4,}")
 
 
 # ---------------------------------------------------------------------------
@@ -262,13 +263,14 @@ def _soft_log(line: str) -> str:
     """Мягкий вид строки лога: ещё и без длинных чисел в кавычках (:data:`_LOG_QUOTED_NUMBER_RE`).
 
     Код в кавычках (``"errorCode":"10001"``) так тоже уходит в ``<NUM>`` — его держит отпечаток:
-    к ``numeric_codes`` добавляются числовые коды полей ошибки ответа из 4+ цифр
+    к ``numeric_codes`` добавляются коды полей ошибки ответа, где есть число из 4+ цифр —
+    и составные: ``10001.1`` и ``10002.1`` иначе оба стали бы ``<NUM>.1``
     (``error_field_codes``: имени ``errorcode`` у ``numeric_codes`` нет). Короткий код
     (``"errorCode":6``) остаётся в тексте строки, и отпечаток его не повторяет.
     """
     normalized = _LOG_QUOTED_NUMBER_RE.sub("<NUM>", normalize_text(replace_thread_names(line)))
     field_codes = [code for code in error_field_codes(line)
-                   if _LONG_CODE_VALUE_RE.fullmatch(code.partition("=")[2])]
+                   if _LONG_CODE_VALUE_RE.search(code.partition("=")[2])]
     codes = list(dict.fromkeys(numeric_codes(line) + field_codes))
     return _with_codes(_collapse(normalized), codes)
 
@@ -409,16 +411,20 @@ def _log_anchor(log: str) -> _LogAnchor:
         for event in iter_events(body):
             # Строки события до строки уровня включительно: у JUL причина — во второй
             # строке («ALERT: database unavailable»), под заголовком «дата класс метод».
-            # У записи другого уровня заголовок — строки с полями ошибки ответа
-            # («"errorMessage":"счет закрыт"»): «error» внутри имени поля _ERROR_HINT_RE не видит.
+            # У записи другого уровня ошибка — строки с полями ошибки ответа: «error» внутри
+            # имени поля _ERROR_HINT_RE не видит, а двух латинских слов в них может не быть
+            # (``"errorCode": 6`` тела ответа, ``"errorMessage": "счет закрыт"``).
+            heading: set[str] = set()
+            fields: set[str] = set()
             if event.level in ERROR_LEVELS:
                 heading = set(_error_lines("\n".join(event.lines[:event.level_line + 1])))
             else:
-                heading = {line for line in _error_lines(event.text) if has_error_fields(line)}
+                fields = {line for line in _error_lines(event.text) if has_error_fields(line)}
             for line in _error_lines(event.text):
                 if _CAUSE_HINT_RE.search(line):
                     causes.append(line)
-                elif (line in heading or _ERROR_HINT_RE.search(line)) and _has_signal_words(line):
+                elif line in fields or ((line in heading or _ERROR_HINT_RE.search(line))
+                                        and _has_signal_words(line)):
                     errors.append(line)
                 else:
                     plain.append(line)

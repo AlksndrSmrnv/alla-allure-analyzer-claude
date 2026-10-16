@@ -412,6 +412,15 @@ def test_info_record_with_error_fields_does_not_swallow_the_next_exception() -> 
         (1, "level"), (2, "exception")]
 
 
+def test_response_inside_a_json_string_field_is_read() -> None:
+    record = '{"level":"INFO","message":"Response {\\"errorCode\\":6,\\"errorMessage\\":\\"closed\\"}"}'
+
+    event, = error_events(record + "\n")
+
+    assert event.text == record
+    assert not list(error_events('{"level":"INFO","message":"Response {\\"errorCode\\":0}"}\n'))
+
+
 def test_has_error_fields_reads_quoted_values_whole() -> None:
     assert has_error_fields('"errorMessage": "say \\"no\\""')
     assert not has_error_fields('"errorMessage": {"text": null}')

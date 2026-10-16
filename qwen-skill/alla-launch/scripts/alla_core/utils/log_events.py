@@ -112,6 +112,8 @@ _ERROR_FIELD_RE = re.compile(
 )
 _ERROR_FIELD_XML_RE = re.compile(
     rf"<(?:[\w-]+:)?(?P<key>{_ERROR_FIELD_KEY})>(?P<value>[^<]*)</", re.IGNORECASE)
+# Ответ внутри строкового поля JSON-записи: ``"message":"Response {\\"errorCode\\":6}"``.
+_ESCAPED_QUOTE_RE = re.compile(r'\\+"')
 _SUCCESS_VALUES = frozenset({"", "null", "none", "nil", "ok", "success", "false"})
 _ZEROS_RE = re.compile(r"0+(?:\.0+)?")
 
@@ -164,6 +166,9 @@ def _error_fields(text: str) -> Iterator[tuple[str, str]]:
     lowered = text.lower()
     if "err" not in lowered and "fault" not in lowered:
         return
+    # Экранированные кавычки ответа внутри строки JSON-записи — как обычные: иначе
+    # ``\\"errorCode\\":6`` не читается как поле.
+    text = _ESCAPED_QUOTE_RE.sub('"', text)
     for regex in (_ERROR_FIELD_RE, _ERROR_FIELD_XML_RE):
         for match in regex.finditer(text):
             value = match.group("value")
