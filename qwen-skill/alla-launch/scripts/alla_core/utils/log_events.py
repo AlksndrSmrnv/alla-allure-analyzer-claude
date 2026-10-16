@@ -115,6 +115,7 @@ _ERROR_FIELD_XML_RE = re.compile(
 # Ответ внутри строкового поля JSON-записи: ``"message":"Response {\\"errorCode\\":6}"``.
 # Снимается один уровень экранирования за раз (``\\"`` → ``"``, ``\\\\`` → ``\\``).
 _ESCAPE_RE = re.compile(r'\\(["\\])')
+_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 _MAX_NESTING = 3
 _SUCCESS_VALUES = frozenset({"", "null", "none", "nil", "ok", "success", "false"})
 _ZEROS_RE = re.compile(r"0+(?:\.0+)?")
@@ -163,28 +164,32 @@ class LogEvent:
         return max(0, index - len(self.rendered) + 1)
 
 
-def _error_fields(text: str) -> Iterator[tuple[str, str]]:
-    """Поля ошибки ответа ``(имя, значение)`` с непустым значением, а не «успехом»."""
+def _error_fields(text: str, depth: int = 0) -> Iterator[tuple[str, str]]:
+    """Поля ошибки ответа ``(имя, значение)`` с непустым значением, а не «успехом».
+
+    Ответ внутри строки JSON-записи экранирован (``"message":"Response {\\"errorCode\\":6}"``) и
+    полем на этом уровне не читается: он читается в строковом значении, где снят один уровень
+    экранирования, — и так до :data:`_MAX_NESTING` уровней. Вниз идёт только содержимое строк,
+    а не весь текст: прочитанное поле этого уровня (``"errorCode":"RULE\\"6"``) второй раз, уже
+    обрезанным на снятой кавычке, не читается.
+    """
     lowered = text.lower()
     if "err" not in lowered and "fault" not in lowered:
         return
-    # Ответ внутри строки JSON-записи экранирован: ``\\"errorCode\\":6`` полем не читается.
-    # Каждый уровень вложенности читается по тексту, где снят ровно один уровень сверх
-    # предыдущего: экранирование внутри значений этого уровня остаётся (``"errMsg":"\\"account\\"
-    # not found"`` на верхнем уровне — не пустое значение). Поле верхнего уровня на следующем
-    # читается неверно (значение обрывается на снятой кавычке), но его уже прочитал свой.
-    for _level in range(_MAX_NESTING + 1):
-        for regex in (_ERROR_FIELD_RE, _ERROR_FIELD_XML_RE):
-            for match in regex.finditer(text):
-                value = match.group("value")
-                if value.startswith('"'):
-                    value = value[1:-1]
-                value = value.strip()
-                if value.lower() not in _SUCCESS_VALUES and not _ZEROS_RE.fullmatch(value):
-                    yield match.group("key"), value
-        if '\\"' not in text:
-            return
-        text = _ESCAPE_RE.sub(r"\1", text)
+    for regex in (_ERROR_FIELD_RE, _ERROR_FIELD_XML_RE):
+        for match in regex.finditer(text):
+            value = match.group("value")
+            if value.startswith('"'):
+                value = _ESCAPE_RE.sub(r"\1", value[1:-1])
+            value = value.strip()
+            if value.lower() not in _SUCCESS_VALUES and not _ZEROS_RE.fullmatch(value):
+                yield match.group("key"), value
+    if depth == _MAX_NESTING or '\\"' not in text:
+        return
+    for string in _STRING_RE.finditer(text):
+        inner = string.group(1)
+        if '\\"' in inner:
+            yield from _error_fields(_ESCAPE_RE.sub(r"\1", inner), depth + 1)
 
 
 def has_error_fields(text: str) -> bool:

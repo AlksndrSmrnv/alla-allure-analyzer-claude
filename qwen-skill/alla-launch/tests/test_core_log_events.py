@@ -431,6 +431,14 @@ def test_escaped_quotes_inside_an_error_value_keep_it(record: str) -> None:
     assert event.text == record
 
 
+def test_a_read_field_is_not_read_again_cut_at_its_escaped_quote() -> None:
+    def codes(code: str) -> list[str]:
+        return error_field_codes(f'{{"level":"INFO","errorCode":"RULE\\"{code}"}}')
+
+    assert (codes("6"), codes("12")) == (['errorcode=rule"6'], ['errorcode=rule"12'])
+    assert error_field_codes('{"message":"Response {\\"errorCode\\":6}"}') == ["errorcode=6"]
+
+
 def test_has_error_fields_reads_quoted_values_whole() -> None:
     assert has_error_fields('"errorMessage": "say \\"no\\""')
     assert not has_error_fields('"errorMessage": {"text": null}')
