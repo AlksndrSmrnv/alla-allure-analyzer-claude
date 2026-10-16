@@ -1,5 +1,6 @@
 """Утилиты для анализа лог-фрагментов."""
 
+import functools
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -167,22 +168,47 @@ def extract_correlation_pairs_from_text(text: str) -> dict[str, str]:
     return pairs
 
 
-def operation_ids(text: str) -> frozenset[tuple[str, str]]:
+@functools.lru_cache(maxsize=8)
+def _operation_regexes(
+    extra_keys: tuple[str, ...],
+) -> tuple[dict[str, str], tuple[re.Pattern[str], ...]]:
+    """Ключи показа и регекспы id операции: реестр и ключи проекта (``ALLURE_OPERATION_ID_KEYS``)."""
+    if not extra_keys:
+        return _CANONICAL_CORRELATION_KEYS, (
+            _CORR_ID_JSON_RE, _CORR_ID_JSON_NUMBER_RE, _CORR_ID_KV_RE, _CORR_ID_XML_RE)
+    display = dict(_CANONICAL_CORRELATION_KEYS)
+    for key in extra_keys:
+        display.setdefault(key.lower(), key)
+    keys = "|".join(re.escape(key) for key in display)
+    return display, (
+        re.compile(rf"\"(?P<key>{keys})\"\s*:\s*\"(?P<value>{_CORRELATION_VALUE_PATTERN})\"",
+                   re.IGNORECASE),
+        re.compile(rf"\"(?P<key>{keys})\"\s*:\s*(?P<value>\d{{4,64}})\b", re.IGNORECASE),
+        re.compile(rf"\b(?P<key>{keys})\b\s*[=:]\s*\"?(?P<value>{_CORRELATION_VALUE_PATTERN})",
+                   re.IGNORECASE),
+        re.compile(rf"<(?P<key>{keys})>(?P<value>{_CORRELATION_VALUE_PATTERN})</(?:{keys})>",
+                   re.IGNORECASE),
+    )
+
+
+def operation_ids(text: str, extra_keys: tuple[str, ...] = ()) -> frozenset[tuple[str, str]]:
     """Все id операций в тексте: пары (каноничный ключ, значение), без плейсхолдеров.
 
     В отличие от :func:`extract_correlation_pairs_from_text` берёт **все** значения
     каждого ключа: в общем логе сервиса их много, и по ним блок лога сверяется с
-    операцией теста (:func:`operation_values`).
+    операцией теста (:func:`operation_values`). ``extra_keys`` — ключи проекта к реестру
+    (``ufsBusinessId``), показываются как написаны.
     """
     if not text:
         return frozenset()
+    display, regexes = _operation_regexes(extra_keys)
     found: set[tuple[str, str]] = set()
-    for regex in (_CORR_ID_JSON_RE, _CORR_ID_JSON_NUMBER_RE, _CORR_ID_KV_RE, _CORR_ID_XML_RE):
+    for regex in regexes:
         for match in regex.finditer(text):
             value = match.group("value").strip()
             if not value or _is_placeholder_value(value):
                 continue
-            key = _CANONICAL_CORRELATION_KEYS.get(match.group("key").lower(), match.group("key"))
+            key = display.get(match.group("key").lower(), match.group("key"))
             found.add((key, value))
     return frozenset(found)
 

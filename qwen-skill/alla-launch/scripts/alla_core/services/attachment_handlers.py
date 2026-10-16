@@ -49,6 +49,8 @@ class AttachmentContext:
     # Значения id операции теста (``operation_values``): вложение — общий лог с id
     # операций, из него берутся только записи этой операции. ``None`` — не отбирать.
     operation_ids: frozenset[str] | None = None
+    # Ключи id операции проекта (``ALLURE_OPERATION_ID_KEYS``) к реестру ``log_utils``.
+    operation_keys: tuple[str, ...] = ()
 
 
 @dataclass
@@ -203,7 +205,8 @@ class StructuredErrorLogHandler:
             return None
         foreign = 0
         if ctx.operation_ids is not None:
-            own = [entry for entry in items if belongs_to_operation(_entry_text(entry), ctx.operation_ids)]
+            own = [entry for entry in items
+                   if belongs_to_operation(_entry_text(entry), ctx.operation_ids, ctx.operation_keys)]
             foreign = len(items) - len(own)
             if not own:
                 # Журнал разобран, но своих записей нет: другие handler-ы не должны
@@ -259,7 +262,8 @@ class ErrorBlocksHandler:
         foreign = 0
         if ctx.operation_ids is not None:
             ids = ctx.operation_ids
-            own = [event for event in events if belongs_to_operation(event.text, ids)]
+            own = [event for event in events
+                   if belongs_to_operation(event.text, ids, ctx.operation_keys)]
             foreign = len(events) - len(own)
             events = own
         blocks = render_event_blocks(events)
@@ -299,7 +303,7 @@ class HttpSignalsHandler:
             # иначе «Корреляция» и поля ошибки пришли бы из чужого запроса.
             ids = ctx.operation_ids
             text = "\n".join(event.text for event in iter_events(ctx.decoded_text or "")
-                             if belongs_to_operation(event.text, ids))
+                             if belongs_to_operation(event.text, ids, ctx.operation_keys))
             http_info, correlation_hint = _extract_http_artifacts(
                 text.encode("utf-8"), "text", text=text)
         else:
@@ -332,9 +336,9 @@ class HttpSignalsHandler:
 # ---------------------------------------------------------------------------
 
 
-def belongs_to_operation(text: str, ids: frozenset[str]) -> bool:
-    """Запись лога — операции теста: в ней есть хоть один её id."""
-    return bool(ids) and bool(operation_values(operation_ids(text)) & ids)
+def belongs_to_operation(text: str, ids: frozenset[str], keys: tuple[str, ...] = ()) -> bool:
+    """Запись лога — операции теста: в ней есть хоть один её id (ключи реестра и ``keys``)."""
+    return bool(ids) and bool(operation_values(operation_ids(text, keys)) & ids)
 
 
 def _entry_text(entry: Any) -> str:
@@ -356,10 +360,10 @@ def log_operation_ids(ctx: AttachmentContext) -> frozenset[tuple[str, str]] | No
     if ctx.detected_type in ("json", "text"):
         items = _find_journal_array(ctx.content, ctx.decoded_text)
         if items is not None:
-            return operation_ids(ctx.decoded_text)
+            return operation_ids(ctx.decoded_text, ctx.operation_keys)
     if not is_log_text(ctx.decoded_text):
         return None
-    return operation_ids(ctx.decoded_text)
+    return operation_ids(ctx.decoded_text, ctx.operation_keys)
 
 
 # ---------------------------------------------------------------------------

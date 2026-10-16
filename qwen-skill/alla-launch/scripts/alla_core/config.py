@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,9 @@ class Settings:
     retry_max_detail_requests: int = 200
     images_per_problem: int = 3
     images_max_bytes: int = 5 * 1024 * 1024
+    # Ключи id операции проекта через запятую (``ufsBusinessId,ufsRqUID``) — к реестру
+    # ``log_utils._CANONICAL_CORRELATION_KEYS``: по ним из общего лога берутся записи операции.
+    operation_id_keys: str = ""
 
     @classmethod
     def load(
@@ -70,6 +74,16 @@ class Settings:
         settings.validate()
         return settings
 
+    @property
+    def operation_keys(self) -> tuple[str, ...]:
+        """Ключи ``operation_id_keys`` без пустых и повторов (регистр не важен), как написаны."""
+        keys: dict[str, str] = {}
+        for raw in self.operation_id_keys.split(","):
+            key = raw.strip()
+            if key:
+                keys.setdefault(key.lower(), key)
+        return tuple(keys.values())
+
     def validate(self) -> None:
         endpoint = self.endpoint.strip()
         if not endpoint:
@@ -83,6 +97,12 @@ class Settings:
             )
         if not self.token.strip():
             raise ConfigurationError("Не задан ALLURE_TOKEN — API-токен Allure TestOps")
+        for key in self.operation_keys:
+            if not _OPERATION_KEY_RE.fullmatch(key):
+                raise ConfigurationError(
+                    f"{ENV_PREFIX}OPERATION_ID_KEYS: «{key}» — не имя поля; "
+                    "ключи через запятую, например ufsBusinessId,ufsRqUID"
+                )
         for name, (low, high) in BOUNDS.items():
             value = getattr(self, name)
             if (low is not None and value < low) or (high is not None and value > high):
@@ -91,6 +111,8 @@ class Settings:
                     f"{ENV_PREFIX}{name.upper()}: допустимо {allowed}, получено {value}"
                 )
 
+
+_OPERATION_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
 
 # Допустимые границы (ge, le) значений настроек.
 # Например, параллелизм 0 навсегда подвесит asyncio.Semaphore в триаже и логах.

@@ -581,6 +581,17 @@ def test_settings_errors(environ: dict[str, str], message: str) -> None:
         Settings.load(None, environ=environ)
 
 
+def test_settings_operation_id_keys() -> None:
+    base = {"ALLURE_ENDPOINT": "https://a", "ALLURE_TOKEN": "t"}
+
+    assert Settings.load(None, environ=base).operation_keys == ()
+    settings = Settings.load(None, environ={
+        **base, "ALLURE_OPERATION_ID_KEYS": " ufsBusinessId, ,ufsRqUID,UFSBUSINESSID"})
+    assert settings.operation_keys == ("ufsBusinessId", "ufsRqUID")
+    with pytest.raises(ConfigurationError, match="ALLURE_OPERATION_ID_KEYS: «ufs business id»"):
+        Settings.load(None, environ={**base, "ALLURE_OPERATION_ID_KEYS": "ufs business id"})
+
+
 @pytest.mark.parametrize("module", ["alla_skill_lib.workspace", "alla_skill"])
 def test_detect_project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module: str) -> None:
     """Точка входа (3.8+) ищет корень проекта для .venv так же, как библиотека скилла."""

@@ -76,6 +76,7 @@ async def collect_launch(
                 LogExtractionConfig(
                     concurrency=settings.logs_concurrency,
                     max_snippet_chars=settings.logs_max_snippet_chars,
+                    operation_id_keys=settings.operation_keys,
                 ),
             )
             try:

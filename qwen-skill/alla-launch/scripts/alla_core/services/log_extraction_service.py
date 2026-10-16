@@ -437,9 +437,12 @@ class LogExtractionConfig:
         *,
         concurrency: int = 5,
         max_snippet_chars: int = 64 * 1024,
+        operation_id_keys: tuple[str, ...] = (),
     ) -> None:
         self.concurrency = concurrency
         self.max_snippet_chars = max_snippet_chars
+        # Ключи id операции проекта (``ALLURE_OPERATION_ID_KEYS``) к реестру ``log_utils``.
+        self.operation_id_keys = operation_id_keys
 
 
 _PROCESSABLE_MIME_EXACT = frozenset({
@@ -652,6 +655,7 @@ class LogExtractionService:
             )
             summary.log_selection_truncated = False
             summary.foreign_log_events = 0
+            keys = self._config.operation_id_keys
             # Изображения без MIME (``screenshot.png``) фильтр MIME пропустил бы: в логи они не
             # идут, а скачивает их только скилл, и только выбранные (``image_attachments``).
             processable = [
@@ -663,7 +667,8 @@ class LogExtractionService:
             if not processable:
                 summary.operation_ids = sorted(
                     f"{key}={value}" for key, value in operation_ids("\n".join(
-                        part for part in (summary.status_message, summary.status_trace) if part)))
+                        part for part in (summary.status_message, summary.status_trace) if part),
+                        keys))
                 summary.correlation_hint = _apply_status_details_correlation_fallback(
                     summary,
                     None,
@@ -682,7 +687,7 @@ class LogExtractionService:
             # из него берутся только записи своей операции, а свои id известны, лишь когда
             # просмотрены все вложения.
             own_ids = set(operation_ids("\n".join(
-                part for part in (summary.status_message, summary.status_trace) if part)))
+                part for part in (summary.status_message, summary.status_trace) if part), keys))
             operation_logs: list[AttachmentMeta] = []
 
             async def process(att: AttachmentMeta, ids: frozenset[str] | None) -> None:
@@ -719,13 +724,14 @@ class LogExtractionService:
                     detected_type=detected_type,
                     decoded_text=decoded_text,
                     operation_ids=ids,
+                    operation_keys=keys,
                 )
 
                 try:
                     if ids is None:
                         found = log_operation_ids(ctx)
                         if found is None:
-                            own_ids.update(operation_ids(decoded_text or ""))
+                            own_ids.update(operation_ids(decoded_text or "", keys))
                         elif found:
                             operation_logs.append(att)
                             return

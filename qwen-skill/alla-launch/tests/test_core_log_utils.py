@@ -6,6 +6,7 @@ from skill_fixtures import without_libmagic  # noqa: F401
 from alla_core.utils.log_utils import (
     extract_correlation_pairs_from_json,
     extract_correlation_pairs_from_text,
+    operation_ids,
     parse_correlation_line,
     parse_log_sections,
 )
@@ -224,3 +225,23 @@ def test_extract_correlation_pairs_from_json_ignores_non_scalar_values() -> None
     obj = {"RqUID": {"value": "nested"}, "OperUID": ["op-1"], "traceId": "tr-1"}
 
     assert extract_correlation_pairs_from_json(obj) == {"traceId": "tr-1"}
+
+
+UFS_TEXT = (
+    '{"ufsBusinessId": "b-301"} {"UFSBUSINESSID": 1234567} ufsBusinessId=b-302 '
+    "<ufsBusinessId>b-303</ufsBusinessId> operUID=op-1"
+)
+
+
+def test_operation_ids_take_project_keys_in_every_format() -> None:
+    assert operation_ids(UFS_TEXT, ("ufsBusinessId",)) == {
+        ("ufsBusinessId", "b-301"), ("ufsBusinessId", "1234567"), ("ufsBusinessId", "b-302"),
+        ("ufsBusinessId", "b-303"), ("operUID", "op-1")}
+
+
+def test_operation_ids_without_project_keys_take_only_the_registry() -> None:
+    assert operation_ids(UFS_TEXT) == {("operUID", "op-1")}
+
+
+def test_project_key_is_matched_whole() -> None:
+    assert operation_ids("myUfsBusinessIdX=b-1 ufsBusinessId2=b-2", ("ufsBusinessId",)) == set()

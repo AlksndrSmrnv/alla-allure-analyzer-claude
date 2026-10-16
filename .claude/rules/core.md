@@ -73,7 +73,11 @@ paths:
   `screenshot.png` без типа, и картинки всех падений скачивались как логи — даже при
   `ALLURE_IMAGES_PER_PROBLEM=0`.
 - **Операция теста.** Свои id теста (`operation_ids`, `key=value`; ключи — реестр
-  `_CANONICAL_CORRELATION_KEYS`: operUID, rqUID, requestId, correlationId, traceId) — **все**
+  `_CANONICAL_CORRELATION_KEYS`: operUID, rqUID, requestId, correlationId, traceId, и ключи
+  проекта `ALLURE_OPERATION_ID_KEYS` — `Settings.operation_keys` →
+  `LogExtractionConfig.operation_id_keys` → `AttachmentContext.operation_keys`; регекспы —
+  `log_utils._operation_regexes`, показ ключа — как в настройке; реальный прогон: `ufsBusinessId`
+  не из реестра, записи своей операции не находились) — **все**
   значения (`log_utils.operation_ids`) из сообщения и трейса и из вложений, которые не лог
   (`attachment_handlers.log_operation_ids` → `None`: запрос и ответ HTTP, JSON, XML, HTML).
   Лог — журнал `StructuredErrorLogHandler` или текст, где `iter_events` распознаёт хоть одно
@@ -84,7 +88,9 @@ paths:
   id (`AttachmentContext.operation_ids`): события-ошибки (`ErrorBlocksHandler`, отбор **до**
   свёртки повторов — `repeat_key` не различает id, и первым вхождением осталась бы чужая
   ошибка), записи журнала, HTTP-сигналы (только из записей своей операции любого уровня).
-  Запись без id в таком логе — не своя. Своих id нет — из такого лога ничего. Лог **без id**
+  Запись без id в таком логе — не своя. Своих id нет — из такого лога ничего. Ключи проекта —
+  только для id операции: строки `Корреляция:` секции HTTP и `extract_correlation_pairs_*` —
+  по реестру, свои id и так попадают в `correlation_hint` (`format_operation_ids`). Лог **без id**
   операций — как раньше: сверить не с чем. Итог: `operation_logs` (подписи отобранных логов),
   `foreign_log_events` (отброшено записей других операций), `correlation_hint` — свои id
   (`format_operation_ids`), а не первый id любого вложения. Причина (ревью): общий лог давал
@@ -337,6 +343,7 @@ paths:
 | `ALLURE_RETRY_MAX_DETAIL_REQUESTS` | нет | `200` | Потолок `GET /api/testresult/{id}` за ошибками попыток на прогон; `0` — не запрашивать |
 | `ALLURE_IMAGES_PER_PROBLEM` | нет | `3` | Скриншотов на проблему в задании (0–3); `0` — не скачивать |
 | `ALLURE_IMAGES_MAX_BYTES` | нет | `5242880` | Потолок одного скриншота (64 КБ – 20 МБ) |
+| `ALLURE_OPERATION_ID_KEYS` | нет | `""` | Ключи id операции проекта через запятую (`ufsBusinessId`), к реестру; имя — `[A-Za-z][A-Za-z0-9_.-]{0,63}`, иначе `ConfigurationError` |
 
 ## Тесты ядра
 

@@ -731,11 +731,13 @@ class TestOperationLog:
 
     @staticmethod
     async def _enrich(attachments: list[tuple[AttachmentMeta, bytes]],
-                      message: str | None = None) -> tuple[FailedTestSummary, _CountingProvider]:
+                      message: str | None = None,
+                      keys: tuple[str, ...] = ()) -> tuple[FailedTestSummary, _CountingProvider]:
         provider = _CountingProvider([att for att, _ in attachments],
                                      {att.id: content for att, content in attachments
                                       if att.id is not None})
-        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
+        service = LogExtractionService(provider, LogExtractionConfig(concurrency=1,
+                                                                     operation_id_keys=keys))
         summary = make_summary()
         summary.status_message = message
         with patch("alla_core.services.log_extraction_service._MAGIC_AVAILABLE", False):
@@ -763,6 +765,35 @@ class TestOperationLog:
         assert summary.correlation_hint == "operUID=op-own-1"
         # Общий лог — второй раз, когда свои id уже известны.
         assert provider.downloads == [1, 2, 1]
+
+    @pytest.mark.asyncio
+    async def test_project_key_and_an_info_business_error(self):
+        """Реальный прогон: id операции — ``ufsBusinessId``, ошибка ответа — на уровне INFO."""
+        log = AttachmentMeta(id=1, name="transfer.log", type="text/plain")
+        request = AttachmentMeta(id=2, name="Request", type="application/json")
+        content = (
+            '2026-10-16 10:00:00.100 [INFO] [ufsBusinessId=b-own-1] Transfer accepted\n'
+            '2026-10-16 10:00:00.150 [INFO] [ufsBusinessId=b-own-1] Response '
+            '{"errorCode":6 , "errorMessage":"счет закрыт"}\n'
+            '2026-10-16 10:00:00.200 [INFO] [ufsBusinessId=b-other-2] Response '
+            '{"errorCode":12, "errorMessage":"недостаточно средств"}\n'
+        ).encode()
+        attachments = [(log, content),
+                       (request, b'{"body": {"ufsBusinessId": "b-own-1"}, "url": "/transfers"}')]
+
+        summary, _ = await self._enrich(attachments, keys=("ufsBusinessId",))
+
+        snippet = summary.log_snippet or ""
+        assert '"errorMessage":"счет закрыт"' in snippet
+        assert "недостаточно средств" not in snippet and "b-other-2" not in snippet
+        assert summary.operation_ids == ["ufsBusinessId=b-own-1"]
+        assert summary.operation_logs == ["transfer.log"] and summary.foreign_log_events == 1
+        assert summary.correlation_hint == "ufsBusinessId=b-own-1"
+
+        # Без настройки лог — без id операции: берётся как есть, обе ошибки.
+        summary, _ = await self._enrich(attachments)
+        assert "недостаточно средств" in (summary.log_snippet or "")
+        assert summary.operation_logs == []
 
     @pytest.mark.asyncio
     async def test_own_id_from_the_message(self):
