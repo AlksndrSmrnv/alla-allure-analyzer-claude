@@ -113,7 +113,9 @@ _ERROR_FIELD_RE = re.compile(
 _ERROR_FIELD_XML_RE = re.compile(
     rf"<(?:[\w-]+:)?(?P<key>{_ERROR_FIELD_KEY})>(?P<value>[^<]*)</", re.IGNORECASE)
 # Ответ внутри строкового поля JSON-записи: ``"message":"Response {\\"errorCode\\":6}"``.
-_ESCAPED_QUOTE_RE = re.compile(r'\\+"')
+# Снимается один уровень экранирования за раз (``\\"`` → ``"``, ``\\\\`` → ``\\``).
+_ESCAPE_RE = re.compile(r'\\(["\\])')
+_MAX_NESTING = 3
 _SUCCESS_VALUES = frozenset({"", "null", "none", "nil", "ok", "success", "false"})
 _ZEROS_RE = re.compile(r"0+(?:\.0+)?")
 
@@ -166,17 +168,23 @@ def _error_fields(text: str) -> Iterator[tuple[str, str]]:
     lowered = text.lower()
     if "err" not in lowered and "fault" not in lowered:
         return
-    # Экранированные кавычки ответа внутри строки JSON-записи — как обычные: иначе
-    # ``\\"errorCode\\":6`` не читается как поле.
-    text = _ESCAPED_QUOTE_RE.sub('"', text)
-    for regex in (_ERROR_FIELD_RE, _ERROR_FIELD_XML_RE):
-        for match in regex.finditer(text):
-            value = match.group("value")
-            if value.startswith('"'):
-                value = value[1:-1]
-            value = value.strip()
-            if value.lower() not in _SUCCESS_VALUES and not _ZEROS_RE.fullmatch(value):
-                yield match.group("key"), value
+    # Ответ внутри строки JSON-записи экранирован: ``\\"errorCode\\":6`` полем не читается.
+    # Каждый уровень вложенности читается по тексту, где снят ровно один уровень сверх
+    # предыдущего: экранирование внутри значений этого уровня остаётся (``"errMsg":"\\"account\\"
+    # not found"`` на верхнем уровне — не пустое значение). Поле верхнего уровня на следующем
+    # читается неверно (значение обрывается на снятой кавычке), но его уже прочитал свой.
+    for _level in range(_MAX_NESTING + 1):
+        for regex in (_ERROR_FIELD_RE, _ERROR_FIELD_XML_RE):
+            for match in regex.finditer(text):
+                value = match.group("value")
+                if value.startswith('"'):
+                    value = value[1:-1]
+                value = value.strip()
+                if value.lower() not in _SUCCESS_VALUES and not _ZEROS_RE.fullmatch(value):
+                    yield match.group("key"), value
+        if '\\"' not in text:
+            return
+        text = _ESCAPE_RE.sub(r"\1", text)
 
 
 def has_error_fields(text: str) -> bool:

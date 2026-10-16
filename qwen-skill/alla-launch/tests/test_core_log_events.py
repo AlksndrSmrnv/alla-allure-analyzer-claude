@@ -421,6 +421,16 @@ def test_response_inside_a_json_string_field_is_read() -> None:
     assert not list(error_events('{"level":"INFO","message":"Response {\\"errorCode\\":0}"}\n'))
 
 
+@pytest.mark.parametrize("record", [
+    '{"level":"INFO","errMsg":"\\"account\\" not found"}',
+    '{"level":"INFO","message":"Response {\\"errMsg\\":\\"\\\\\\"account\\\\\\" not found\\"}"}',
+])
+def test_escaped_quotes_inside_an_error_value_keep_it(record: str) -> None:
+    event, = error_events(record + "\n")
+
+    assert event.text == record
+
+
 def test_has_error_fields_reads_quoted_values_whole() -> None:
     assert has_error_fields('"errorMessage": "say \\"no\\""')
     assert not has_error_fields('"errorMessage": {"text": null}')
