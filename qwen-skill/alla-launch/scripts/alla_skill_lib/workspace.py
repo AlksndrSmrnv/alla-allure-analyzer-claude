@@ -28,7 +28,7 @@ RESUME_WINDOW_HOURS = 24  # неоконченный разбор того же 
 # формат (5: ``launch_created`` — время запуска прогона, подтверждённые выводы расширений
 # ``confirmed/``; 4: лог только операции теста — ``operation_ids``, ``operation_logs``,
 # ``foreign_log_events`` у тестов; 3: наблюдения с реестром источников, примеры, повторы).
-RUN_SCHEMA = 5
+RUN_SCHEMA = 6
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +127,10 @@ class RunPaths:
 
     def evidence(self, file_id: str) -> Path:
         return self.root / "evidence" / f"{file_id}.txt"
+
+    def images(self, file_id: str) -> Path:
+        """Скриншоты из вложений тестов-примеров кластера: их открывает модель (``images.py``)."""
+        return self.root / "images" / file_id
 
     def sources(self, file_id: str) -> Path:
         """Реестр источников задания кластера (``S1``, ``S2``…), см. ``sources.py``."""

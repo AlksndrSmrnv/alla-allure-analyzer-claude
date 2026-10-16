@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from alla_core.clients.auth import AllureAuthManager
 from alla_core.clients.testops_client import AllureTestOpsClient
@@ -23,6 +24,8 @@ from alla_core.services.log_extraction_service import (
 from alla_core.services.retry_linking import retry_warnings
 from alla_core.services.triage_service import TriageService
 
+from alla_skill_lib.images import StagedImage, fetch_images, plan_images
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,17 +36,22 @@ class LaunchData:
     triage: TriageReport
     clustering: ClusteringReport | None
     warnings: list[str] = field(default_factory=list)
+    # Скриншоты тестов-примеров во временной папке: id результата → файл.
+    images: dict[int, StagedImage] = field(default_factory=dict)
 
 
 async def collect_launch(
     launch_id: int,
     settings: Settings,
     progress: Callable[[str], None] | None = None,
+    images_dir: Path | None = None,
 ) -> LaunchData:
     """Получить результаты прогона из TestOps, обогатить логами и кластеризовать.
 
     ``progress`` получает короткие строки о стадиях: выгрузка большого прогона
-    идёт минуты, и без них не понять, что скрипт жив.
+    идёт минуты, и без них не понять, что скрипт жив. ``images_dir`` — временная папка
+    для скриншотов тестов-примеров (они скачиваются после кластеризации: нужны только
+    тестам, чьи данные увидит модель); ``None`` — скриншоты не скачиваются.
     """
     say = progress or (lambda message: None)
     auth = AllureAuthManager(
@@ -76,13 +84,19 @@ async def collect_launch(
                 logger.warning("Логи из вложений не получены: %s", exc)
                 warnings.append(f"Логи из вложений не получены: {exc}")
 
-    if triage.failed_tests:
-        say(f"Кластеризую {len(triage.failed_tests)} падений…")
-    return LaunchData(
-        triage=triage,
-        clustering=cluster_failures(launch_id, triage, settings),
-        warnings=warnings,
-    )
+        if triage.failed_tests:
+            say(f"Кластеризую {len(triage.failed_tests)} падений…")
+        clustering = cluster_failures(launch_id, triage, settings)
+        images: dict[int, StagedImage] = {}
+        plan = plan_images(clustering.clusters, {
+            test.test_result_id: test for test in triage.failed_tests
+        }, settings.images_per_problem) if clustering is not None and images_dir else []
+        if plan and images_dir is not None:
+            say(f"Скачиваю скриншоты тестов-примеров: {len(plan)}…")
+            images = await fetch_images(client, plan, images_dir,
+                                        max_bytes=settings.images_max_bytes,
+                                        concurrency=settings.logs_concurrency)
+    return LaunchData(triage=triage, clustering=clustering, warnings=warnings, images=images)
 
 
 def cluster_failures(

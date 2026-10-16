@@ -32,6 +32,7 @@ from skill_fake_testops import (  # noqa: E402
     injection_launch,
     many_launch,
     scant_launch,
+    screenshot_launch,
     test_bug_launch,
 )
 
@@ -47,6 +48,8 @@ FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
     "split": lambda: _split_launch(),
     "shared": lambda: _shared_launch(),
     "test_bug": test_bug_launch,
+    "screenshot": lambda: screenshot_launch(
+        png=(Path(__file__).parent / "fixtures" / "images" / "cookie_banner.png").read_bytes()),
 }
 
 
@@ -93,7 +96,8 @@ def _shared_launch() -> LaunchFixture:
 
 def build_fixture(spec: str) -> LaunchFixture:
     """``default`` | ``green`` | ``info_only`` | ``injection`` | ``scant`` | ``mixed`` |
-    ``retries`` | ``known`` | ``split`` | ``shared`` | ``test_bug`` | ``many:<число>``."""
+    ``retries`` | ``known`` | ``split`` | ``shared`` | ``test_bug`` | ``screenshot`` |
+    ``many:<число>``."""
     name, _, arg = spec.partition(":")
     if name == "many":
         return many_launch(int(arg or 40))

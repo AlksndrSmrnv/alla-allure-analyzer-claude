@@ -108,6 +108,22 @@ class LogAttachmentRef(BaseModel):
     name: str
 
 
+class ImageAttachmentRef(BaseModel):
+    """Вложение-изображение теста (скриншот): метаданные без содержимого.
+
+    ``step`` — имя шага дерева исполнения, к которому оно приложено (``None`` — шаг
+    неизвестен или вложение у самого теста); ``failed_step`` — шаг упал (или изображение
+    внутри упавшего шага).
+    """
+
+    id: int
+    name: str
+    mime: str | None = None
+    size: int | None = None
+    step: str | None = None
+    failed_step: bool = False
+
+
 class AttemptSummary(BaseModel):
     """Скрытая (``hidden``) попытка того же выполнения теста, что и финальный результат.
 
@@ -188,6 +204,9 @@ class FailedTestSummary(BaseModel):
     # Происхождение секций лога: id вложения по имени из заголовка. Строки источника —
     # пометки «[строки a–b]» в начале блоков. В run.json не хранится (решение — шаг 3).
     log_attachments: list[LogAttachmentRef] = Field(default_factory=list, exclude=True)
+    # Вложения-изображения (скриншоты): не скачиваются при извлечении логов, скилл берёт
+    # по одному на тест-пример кластера. В run.json не хранятся.
+    image_attachments: list[ImageAttachmentRef] = Field(default_factory=list, exclude=True)
     correlation_hint: str | None = None
     # Операция теста (``key=value``): id из сообщения, трейса и вложений-запросов. Из
     # общего лога сервиса с id операций берутся только её записи; ``operation_logs`` —

@@ -263,19 +263,22 @@ class AllureTestOpsClient:
     async def get_attachment_content(
         self,
         attachment_id: int,
+        *,
+        max_bytes: int | None = None,
     ) -> bytes:
         """Скачать бинарное содержимое аттачмента.
 
         ``GET /api/testresult/attachment/{id}/content``
 
-        Контент стримится чанками и обрезается на ``logs_max_attachment_bytes``,
-        чтобы под не падал с OOM при больших логах.
+        Контент стримится чанками и обрезается на ``max_bytes`` (по умолчанию
+        ``logs_max_attachment_bytes``), чтобы под не падал с OOM при больших логах.
+        У изображений свой потолок (``images_max_bytes``).
         """
         logger.debug("Скачивание аттачмента %d", attachment_id)
         return await self._request_raw(
             "GET",
             f"{self.ATTACHMENT_ENDPOINT}/{attachment_id}/content",
-            max_bytes=self._max_attachment_bytes,
+            max_bytes=self._max_attachment_bytes if max_bytes is None else max_bytes,
         )
 
     # --- Внутренний HTTP ---

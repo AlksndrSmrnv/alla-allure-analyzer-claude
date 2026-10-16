@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import math
+import struct
+import zlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -163,6 +165,59 @@ def test_bug_launch(launch_id: int = 782) -> LaunchFixture:
         }]},
         attachments={201: [{"id": 9101, "name": "app.log", "type": "text/plain"}]},
         contents={9101: log.encode("utf-8")},
+    )
+
+
+def tiny_png(width: int = 2, height: int = 2) -> bytes:
+    """Настоящий PNG (белый квадрат) без Pillow: сигнатура, IHDR, IDAT, IEND."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+    raw = b"".join(b"\x00" + b"\xff\xff\xff" * width for _ in range(height))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+PAY_MESSAGE = "Timeout 5000ms: element #pay-button is not visible"
+PAY_TRACE = (
+    "com.codeborne.selenide.ex.ElementNotFound: Element not found {#pay-button}\n"
+    "\tat ru.company.shop.PayTest.payOrder(PayTest.java:21)\n"
+)
+
+
+def screenshot_launch(launch_id: int = 791, png: bytes | None = None) -> LaunchFixture:
+    """UI-тест не нашёл кнопку; к упавшему шагу приложен скриншот (сценарий V01).
+
+    У теста ещё скриншот начала теста (раньше, меньший id), SVG-иконка и исходник страницы —
+    модели достаётся только скриншот упавшего шага.
+    """
+    return LaunchFixture(
+        launch={"id": launch_id, "name": "Shop UI", "projectId": 5, "createdDate": LAUNCH_CREATED_MS},
+        results=[
+            {
+                "id": 401,
+                "name": "payOrder",
+                "fullName": "ru.company.shop.PayTest.payOrder",
+                "status": "failed",
+                "statusDetails": {"message": PAY_MESSAGE, "trace": PAY_TRACE},
+            },
+            {"id": 402, "name": "openCatalog", "status": "passed"},
+        ],
+        executions={401: [
+            {"name": "Открыть корзину", "status": "passed",
+             "attachments": [{"id": 9400, "name": "cart.png", "type": "image/png"}]},
+            {"name": "Оплатить заказ", "status": "failed",
+             "statusDetails": {"message": PAY_MESSAGE},
+             "attachments": [{"id": 9401, "name": "screenshot.png", "type": "image/png"}]},
+        ]},
+        attachments={401: [
+            {"id": 9400, "name": "cart.png", "type": "image/png", "size": 70},
+            {"id": 9401, "name": "screenshot.png", "type": "image/png"},
+            {"id": 9402, "name": "logo.svg", "type": "image/svg+xml"},
+        ]},
+        contents={9400: tiny_png(), 9401: png if png is not None else tiny_png(3, 3),
+                  9402: b"<svg xmlns='http://www.w3.org/2000/svg'/>"},
     )
 
 

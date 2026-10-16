@@ -24,6 +24,7 @@ from qwen_stand import (
     build_project,
     parse_traces,
 )
+from alla_skill_lib.workspace import RUN_SCHEMA
 from skill_fake_testops import INJECTED_INSTRUCTION, TOKEN
 
 
@@ -573,7 +574,7 @@ def _scant_run(tmp_path: Path, analysis: str | None, attempts: int = 0, *,
                skipped: bool = False, written_by_model: bool = True) -> Context:
     run_dir = tmp_path / "p" / "alla-reports" / "781-20261004-100000"
     (run_dir / "analyses").mkdir(parents=True)
-    (run_dir / "run.json").write_text(json.dumps({"schema": 5, "clusters": [
+    (run_dir / "run.json").write_text(json.dumps({"schema": RUN_SCHEMA, "clusters": [
         {"file_id": "01", "auto": False}]}), encoding="utf-8")
     state: dict[str, Any] = {"attempts": {"01": {"count": attempts}} if attempts else {}}
     if skipped:
@@ -883,3 +884,42 @@ def test_x01_project_has_extension_and_remote(tmp_path: Path) -> None:
     status = subprocess.run(["git", "-C", str(project), "status", "--porcelain"],
                             capture_output=True, text=True, check=True).stdout
     assert status == ""
+
+
+def _screenshot_run(tmp_path: Path, analysis: str, *, opened: bool) -> Context:
+    run_dir = tmp_path / "p" / "alla-reports" / "791-20261016-100000"
+    (run_dir / "analyses").mkdir(parents=True)
+    (run_dir / "images" / "01").mkdir(parents=True)
+    image = run_dir / "images" / "01" / "401.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    (run_dir / "run.json").write_text(json.dumps({"schema": RUN_SCHEMA, "clusters": [
+        {"file_id": "01", "auto": False, "images": [
+            {"source_id": "S3", "file": "images/01/401.png", "test_result_id": 401,
+             "name": "screenshot.png", "step": "Оплатить заказ"}]}]}), encoding="utf-8")
+    (run_dir / "analyses" / "01.md").write_text(analysis, encoding="utf-8")
+    events_ = events(("read_file", {"absolute_path": str(image)}, "ok")) if opened else []
+    return context(tmp_path, events_, "V01")
+
+
+COOKIE = ("ЧТО СЛОМАЛОСЬ: Кнопку оплаты закрывает окно cookie.\n"
+          "ПРИЧИНА: тест — тест не закрывает окно cookie.\n"
+          "НАБЛЮДЕНИЯ:\n- [S3] «Мы используем cookie» — окно поверх формы\n"
+          "НЕ ХВАТАЕТ: нет\nКАК ИСПРАВИТЬ:\n1. Принять cookie в начале теста.\n")
+
+
+def test_screenshot_checks(tmp_path: Path) -> None:
+    good = _screenshot_run(tmp_path / "a", COOKIE, opened=True)
+    assert CHECKS["screenshot_opened"](good)["status"] == "pass"
+    assert CHECKS["screenshot_cited"](good)["status"] == "pass"
+    unopened = _screenshot_run(tmp_path / "b", COOKIE, opened=False)
+    assert CHECKS["screenshot_opened"](unopened)["status"] == "fail"
+    app = _screenshot_run(tmp_path / "c", COOKIE.replace("ПРИЧИНА: тест", "ПРИЧИНА: приложение"),
+                          opened=True)
+    assert CHECKS["screenshot_cited"](app)["status"] == "fail"
+    uncited = _screenshot_run(tmp_path / "d", COOKIE.replace("[S3]", "[S1]"), opened=True)
+    assert CHECKS["screenshot_cited"](uncited)["status"] == "fail"
+
+
+def test_screenshot_fixture_serves_the_real_picture() -> None:
+    fixture = build_fixture("screenshot")
+    assert fixture.contents[9401].startswith(b"\x89PNG") and len(fixture.contents[9401]) > 10_000

@@ -57,6 +57,7 @@ from alla_skill_lib.session_rules import (  # noqa: E402
     command_of,
     ok,
     path_of,
+    read_args,
     shell_target,
     tool_targets,
 )
@@ -146,6 +147,10 @@ STAND_SOURCES: dict[str, str] = {
         ("checkoutWithBonus", 37,
          "assertEquals(200, checkout.submit(cart().withBonus(500)).statusCode());"),
         ("checkoutGuest", 44, "assertEquals(200, checkout.submit(guestCart()).statusCode());"),
+    )),
+    # V01 (screenshot): кнопка оплаты под окном cookie — тест его не закрывает
+    "shop/PayTest.java": java_source("ru.company.shop", "PayTest", _tests(
+        ("payOrder", 21, "open(\"/checkout\");\n$(\"#pay-button\").shouldBe(visible).click();"),
     )),
     "ui/PaymentPage.java": java_source("ru.company.ui", "PaymentPage", [
         ("public SelenideElement status()", 22,
@@ -386,6 +391,11 @@ SCENARIOS: dict[str, Scenario] = {
         launch_id=777, extensions=("sut-code",), sut_repo=True,
         review=("Ревизия названа приблизительной (по дате запуска), агент сказал, что вывод не "
                 "сохранён",)),
+    "V01": Scenario(
+        "Скриншот: окно cookie перекрывает кнопку оплаты", "screenshot", ("/alla-launch 791",),
+        (*FULL_RUN, "prepare_launch", "screenshot_opened", "screenshot_cited"), launch_id=791,
+        review=("Evidence: причина названа по скриншоту (окно cookie поверх формы), текст "
+                "цитаты действительно виден на картинке; категория «тест», шаг — закрыть окно",)),
     "P04": Scenario(
         "40 кластеров: пакеты субагентов", "many:40", ("/alla-launch 900",),
         (*FULL_RUN, "prepare_launch", "subagents_used", "batch_agent_used"), launch_id=900),
@@ -1063,6 +1073,48 @@ def check_mixed_group_found(ctx: Context) -> dict[str, Any]:
 
 # Строки ошибок операций из общего лога L01: у каждой проблемы — только своя.
 OPERATION_MARKERS = {"orders": ("DR-5",), "refund": ("DECLINED",)}
+
+
+def _image_entries(ctx: Context) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
+    """(папка разбора, запись кластера, скриншот) — по ``images`` в run.json."""
+    found = []
+    for run_dir in ctx.run_dirs():
+        run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        found += [(run_dir, entry, image) for entry in run["clusters"]
+                  for image in entry.get("images", [])]
+    return found
+
+
+def check_screenshot_opened(ctx: Context) -> dict[str, Any]:
+    """Каждый скриншот из задания модель открыла read_file (сам файл, а не поиск)."""
+    entries = _image_entries(ctx)
+    if not entries:
+        return bad("в заданиях нет скриншотов")
+    project = canonical(ctx.project)
+    opened = {target for call in ctx.trace.calls if call.name in {"read_file", "read_many_files"}
+              for raw in read_args(call)[0] for target in ctx.tool_targets(project, raw)}
+    missing = [image["file"] for run_dir, _entry, image in entries
+               if canonical((run_dir / image["file"]).resolve()) not in opened]
+    return bad(f"не открыты: {', '.join(missing)}") if missing else ok(
+        ", ".join(image["file"] for _run, _entry, image in entries))
+
+
+def check_screenshot_cited(ctx: Context) -> dict[str, Any]:
+    """Разбор цитирует кусок скриншота и не ставит «приложение» по нему."""
+    from alla_skill_lib.analysis_format import parse_analysis
+
+    found = []
+    for run_dir, entry, image in _image_entries(ctx):
+        path = run_dir / "analyses" / f"{entry['file_id']}.md"
+        analysis = parse_analysis(path.read_text(encoding="utf-8") if path.is_file() else "")
+        quotes = [item.quote for item in analysis.observations
+                  if item.source_id == image["source_id"]]
+        if not quotes:
+            return bad(f"кластер {entry['file_id']}: нет цитаты [{image['source_id']}]")
+        if analysis.category in ("приложение", "данные"):
+            return bad(f"кластер {entry['file_id']}: категория {analysis.category} по скриншоту")
+        found.append(f"{entry['file_id']}: {analysis.category}; [{image['source_id']}] «{quotes[0][:80]}»")
+    return ok("; ".join(found)) if found else bad("в заданиях нет скриншотов")
 
 
 def check_operation_log_respected(ctx: Context) -> dict[str, Any]:

@@ -186,6 +186,8 @@ def _source_kind(what: str) -> dict[str, str]:
         return {"kind": "message"}
     if what.startswith("стек-трейс"):
         return {"kind": "trace"}
+    if what.startswith("скриншот"):
+        return {"kind": "image", "section": "скриншот"}
     return {"kind": "log", "section": what.split(" ", 1)[0]}
 
 
@@ -210,7 +212,7 @@ def _example_sources(name: str | None = None) -> dict[str, dict[str, str]]:
 
 
 _EXAMPLE_LINE_RE = re.compile(
-    r"^(?:### Пример \d+ — |Шаг теста: |Примеров в данных: |"
+    r"^(?:### Пример \d+ — |Шаг теста: |Примеров в данных: |--- Скриншоты из вложений тестов ---|"
     r"(?:Сообщение об ошибке|Стек-трейс) — так(?:ое|ой) же, как в примере 1\.)")
 
 
@@ -235,6 +237,9 @@ def test_example_data_matches_the_task_header_format() -> None:
     assert list(two) == ["S1", "S2", "S3"] and _example_blocks("two") == 2
     assert two["S1"]["text"] == "expected: <200> but was: <500>"
     assert "Шаг теста" not in two["S2"]["text"] and "Discount.percent()" in two["S3"]["text"]
+    screenshot = _example_sources("screenshot")
+    assert screenshot["S3"]["kind"] == "image"
+    assert "Скриншоты" not in screenshot["S2"]["text"]
 
 
 def test_analysis_examples_that_are_ok_pass_validation(project) -> None:

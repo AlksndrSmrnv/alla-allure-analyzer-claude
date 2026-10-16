@@ -60,6 +60,13 @@ paths:
   `GET /api/testresult/{id}`.
 - Логи — из processable attachments: text, JSON, XML, NDJSON и unknown text-like. Binary
   пропускаются.
+- Изображения (`services/image_attachments.py`) не скачиваются при извлечении логов:
+  `enrich_with_logs` записывает их метаданные в `FailedTestSummary.image_attachments`
+  (`ImageAttachmentRef`, `exclude=True`, в `run.json` не пишутся). Изображение — MIME
+  `image/png|jpeg|gif|webp`, без MIME — расширение; SVG — нет (текст, может нести скрипт).
+  Шаг — по дереву исполнения: вложение шага с тем же id, без id — по имени, если оно в дереве
+  одно; `failed_step` — шаг (или его предок) failed/broken. Скачивает и показывает модели
+  скилл (`skill-analysis.md`, «Скриншоты»).
 - **Операция теста.** Свои id теста (`operation_ids`, `key=value`; ключи — реестр
   `_CANONICAL_CORRELATION_KEYS`: operUID, rqUID, requestId, correlationId, traceId) — **все**
   значения (`log_utils.operation_ids`) из сообщения и трейса и из вложений, которые не лог
@@ -279,6 +286,10 @@ paths:
   (`populate_by_name=True`): payloads TestOps плавают.
 - `_request()` должен корректно обрабатывать пустые тела PATCH/DELETE; `_request_raw()` — для
   бинарных attachments.
+- `get_attachment_content(id, max_bytes=None)` — потолок по умолчанию
+  `logs_max_attachment_bytes`; скриншоты скилл качает со своим (`images_max_bytes` + 1 байт:
+  длиннее потолка — обрезан, пропускается). Протокол `AttachmentProvider` параметра не
+  требует: фейковые провайдеры логов его не знают.
 
 ## Настройки (`config.py`)
 
@@ -306,6 +317,8 @@ paths:
 | `ALLURE_LLM_PROMPT_TRACE_MAX_CHARS` | нет | `400` | Лимит trace в задании |
 | `ALLURE_LLM_PROMPT_LOG_MAX_CHARS` | нет | `8000` | Лимит log в задании |
 | `ALLURE_RETRY_MAX_DETAIL_REQUESTS` | нет | `200` | Потолок `GET /api/testresult/{id}` за ошибками попыток на прогон; `0` — не запрашивать |
+| `ALLURE_IMAGES_PER_PROBLEM` | нет | `3` | Скриншотов на проблему в задании (0–3); `0` — не скачивать |
+| `ALLURE_IMAGES_MAX_BYTES` | нет | `5242880` | Потолок одного скриншота (64 КБ – 20 МБ) |
 
 ## Тесты ядра
 

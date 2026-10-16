@@ -26,6 +26,7 @@ from alla_core.services.attachment_handlers import (
     default_handlers,
     log_operation_ids,
 )
+from alla_core.services.image_attachments import image_attachments
 from alla_core.utils.log_events import error_events
 from alla_core.utils.log_focus import StreamingLogSelector, selection_error_text
 from alla_core.utils.log_utils import (
@@ -567,6 +568,8 @@ class LogExtractionService:
                     )
                     return
 
+            summary.image_attachments = image_attachments(all_attachments,
+                                                          summary.execution_steps)
             details_atts = [
                 att for att in all_attachments
                 if _is_details_attachment(att)

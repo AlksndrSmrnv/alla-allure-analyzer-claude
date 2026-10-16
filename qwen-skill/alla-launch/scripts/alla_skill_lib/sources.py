@@ -23,20 +23,43 @@ from alla_skill_lib.analysis_format import (
 )
 
 Registry = dict[str, dict[str, Any]]
+IMAGE_KIND = "image"  # кусок-скриншот: модель смотрит файл, текста в реестре нет
 
 
 def registry(
     sources: tuple[PromptSource, ...],
     tests_by_id: dict[int, FailedTestSummary],
+    *,
+    files: dict[str, str] | None = None,
+    steps: dict[str, str | None] | None = None,
 ) -> Registry:
-    """id → вид, тест, вложение (имя и id), строки и текст куска данных."""
+    """id → вид, тест, вложение (имя и id), строки и текст куска данных.
+
+    У скриншота (``kind == "image"``) текста нет: ``file`` — путь от папки разбора,
+    ``step`` — шаг теста, к которому он приложен.
+    """
     result: Registry = {}
     for source in sources:
         test = tests_by_id.get(source.test_result_id) if source.test_result_id else None
         attachment_id = None
         if source.attachment and test is not None:
+            refs = test.image_attachments if source.kind == IMAGE_KIND else test.log_attachments
             attachment_id = next(
-                (ref.id for ref in test.log_attachments if ref.name == source.attachment), None)
+                (ref.id for ref in refs if ref.name == source.attachment), None)
+        if source.kind == IMAGE_KIND:
+            result[source.id] = {
+                "kind": source.kind,
+                "test_result_id": test.test_result_id if test else None,
+                "test_name": source.test_name,
+                "section": source.section,
+                "attachment": source.attachment,
+                "attachment_id": attachment_id,
+                "lines": None,
+                "text": "",
+                "file": (files or {}).get(source.id),
+                "step": (steps or {}).get(source.id),
+            }
+            continue
         result[source.id] = {
             "kind": source.kind,
             "test_result_id": test.test_result_id if test else None,
@@ -71,7 +94,12 @@ def load_registry(path: Path) -> Registry | None:
 def describe(record: dict[str, Any]) -> str:
     """Источник для человека: «лог app.log, строки 120–134, тест createOrder»."""
     kind = record.get("kind")
-    if kind == "message":
+    if kind == IMAGE_KIND:
+        what = " ".join(part for part in ("скриншот", str(record.get("attachment") or ""))
+                        if part)
+        if record.get("step"):
+            what += f", шаг «{record['step']}»"
+    elif kind == "message":
         what = "сообщение об ошибке"
     elif kind == "trace":
         what = "стек-трейс"

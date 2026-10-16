@@ -33,6 +33,7 @@ import logging
 import re
 import shutil
 import sys
+import tempfile
 import time
 from collections.abc import Iterator
 from datetime import date, datetime, timezone
@@ -73,6 +74,7 @@ from alla_skill_lib.batch_task import (
     render_batch_task,
 )
 from alla_skill_lib.cluster_task import (
+    TaskImage,
     build_cluster_task_with_sources,
     failed_prepare_analysis,
     has_evidence,
@@ -532,26 +534,30 @@ def cmd_prepare(
     # Кластеризация тянет numpy/scipy/sklearn (~0,5 с) — грузим только здесь, а не в каждом next.
     from alla_skill_lib.pipeline import collect_launch
 
-    try:
-        data = asyncio.run(collect_launch(launch_id, settings, progress=_progress))
-    except (AllaError, httpx.HTTPError) as exc:
-        return _fetch_failed(launch_id, exc, settings, env_file)
-    except Exception as exc:  # неожиданный ответ API и т.п. — traceback в stderr
-        logger.exception("Сбой при получении прогона")
-        print("STATUS: error")
-        print(f"Сбой при получении прогона #{launch_id}: {type(exc).__name__}: {exc}")
-        return 1
+    # Скриншоты скачиваются до папки разбора (её ещё нет) во временную папку; в папку
+    # разбора переносятся только те, что попали в задания.
+    with tempfile.TemporaryDirectory(prefix="alla-images-") as staging:
+        try:
+            data = asyncio.run(collect_launch(launch_id, settings, progress=_progress,
+                                              images_dir=Path(staging)))
+        except (AllaError, httpx.HTTPError) as exc:
+            return _fetch_failed(launch_id, exc, settings, env_file)
+        except Exception as exc:  # неожиданный ответ API и т.п. — traceback в stderr
+            logger.exception("Сбой при получении прогона")
+            print("STATUS: error")
+            print(f"Сбой при получении прогона #{launch_id}: {type(exc).__name__}: {exc}")
+            return 1
 
-    if data.triage.total_results == 0:
-        print("STATUS: error")
-        print(
-            f"В прогоне #{launch_id} нет ни одного результата: он пуст или ещё не начался. "
-            "Проверь номер запуска и проект."
-        )
-        return 1
+        if data.triage.total_results == 0:
+            print("STATUS: error")
+            print(
+                f"В прогоне #{launch_id} нет ни одного результата: он пуст или ещё не начался. "
+                "Проверь номер запуска и проект."
+            )
+            return 1
 
-    paths = ws.create_run_dir(reports_dir, launch_id, datetime.now())
-    run = _write_run(paths, data, settings, project_root)
+        paths = ws.create_run_dir(reports_dir, launch_id, datetime.now())
+        run = _write_run(paths, data, settings, project_root)
     ws.remember_last_run(reports_dir, paths)
     _note_session(paths)
 
@@ -690,6 +696,8 @@ def _write_run(
 
             full_names = list(islice(_member_full_names(cluster, tests_by_id), 5))
             frames = project_frames(full_trace)
+            staged = {test_id: data.images[test_id] for test_id in cluster.member_test_ids
+                      if test_id in data.images}
             task = build_cluster_task_with_sources(
                 cluster=cluster,
                 position=position,
@@ -705,9 +713,30 @@ def _write_run(
                 settings=settings,
                 kb_matches=kb_matches,
                 recurrence=entry["history"],
+                images={test_id: TaskImage(
+                    test_result_id=test_id,
+                    path=paths.images(file_id) / image.path.name,
+                    name=image.name,
+                    step=image.step,
+                ) for test_id, image in staged.items()},
             )
+            for image in task.images.values():
+                ws.write_atomic_bytes(image.path, data.images[image.test_result_id].path.read_bytes())
             ws.write_text(paths.cluster_task(file_id), task.text)
-            write_registry(paths.sources(file_id), registry(task.sources, tests_by_id))
+            write_registry(paths.sources(file_id), registry(
+                task.sources, tests_by_id,
+                files={source_id: image.path.relative_to(paths.root).as_posix()
+                       for source_id, image in task.images.items()},
+                steps={source_id: image.step for source_id, image in task.images.items()},
+            ))
+            if task.images:
+                entry["images"] = [{
+                    "source_id": source_id,
+                    "file": image.path.relative_to(paths.root).as_posix(),
+                    "test_result_id": image.test_result_id,
+                    "name": image.name,
+                    "step": image.step,
+                } for source_id, image in task.images.items()]
             # Чьи данные видела модель; при нескольких блоках нужна «СОГЛАСОВАННОСТЬ».
             entry["examples"] = task.examples
             entry["example_blocks"] = task.blocks
@@ -724,6 +753,8 @@ def _write_run(
             paths.evidence(file_id).unlink(missing_ok=True)
             paths.sources(file_id).unlink(missing_ok=True)
             paths.cluster_task(file_id).unlink(missing_ok=True)
+            shutil.rmtree(paths.images(file_id), ignore_errors=True)
+            entry.pop("images", None)
             ws.write_text(paths.analysis(file_id), failed_prepare_analysis(type(exc).__name__))
 
     run = {

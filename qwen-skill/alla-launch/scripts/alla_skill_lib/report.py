@@ -34,7 +34,7 @@ from alla_skill_lib.known_issues import KnownIssue, KnownIssues, KnownRecord
 from alla_skill_lib.proposals import Proposal, weakening_warnings
 from alla_skill_lib.related import Related, RelatedGroup
 from alla_skill_lib.retries import MAX_REPORT_PASSED, passed_after_retry, report_line, retry_facts
-from alla_skill_lib.sources import describe
+from alla_skill_lib.sources import IMAGE_KIND, describe
 from alla_skill_lib.workspace import RunPaths
 
 MAX_FLAGGED_SUMMARY_CHARS = 300
@@ -1190,6 +1190,7 @@ def _unconfirmed(problem: _Problem) -> str:
 MIXED_GROUP_NOTE = "в группе, похоже, несколько проблем"
 UNCHECKED_GROUP_NOTE = "однородность группы не проверена: недостаточно данных"
 SOURCES_LOST_NOTE = "цитата не сверена с данными: файл источников задания не найден"
+IMAGE_QUOTE_NOTE = "текст прочитан агентом со скриншота, не сверен"
 
 
 def _consistency_lines(analysis: ClusterAnalysis, prefix: str, *, bold: bool = False) -> list[str]:
@@ -1216,6 +1217,10 @@ def _evidence_lines(analysis: ClusterAnalysis, title: str, missing_title: str) -
         for item in analysis.observations:
             record = (analysis.sources or {}).get(item.source_id)
             where = describe(record) if record else f"{item.source_id}, {SOURCES_LOST_NOTE}"
+            if record and record.get("kind") == IMAGE_KIND:
+                where += f" ({IMAGE_QUOTE_NOTE})"
+                if record.get("file"):
+                    where += f", файл [{record['file']}]({record['file']})"
             lines.append(f"   - «{_one_line(item.quote)}» — {where}")
     if analysis.missing_text:
         lines.append(f"{missing_title}{analysis.missing_text}")

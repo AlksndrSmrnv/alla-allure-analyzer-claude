@@ -176,12 +176,12 @@ class ClusterAnalysis:
         """Причина вне теста опирается только на сообщение и трейс теста, без лога.
 
         Для категорий «приложение», «окружение», «данные» разбора нового формата
-        (есть реестр источников): ни одна цитата не из лога.
+        (есть реестр источников): ни одна цитата не из лога (скриншот — тоже симптом).
         """
         if self.sources is None or self.category in (None, "тест", "неизвестно"):
             return False
         kinds = {str(self.sources.get(item.source_id, {}).get("kind")) for item in self.observations}
-        return bool(kinds) and kinds <= {"message", "trace"}
+        return bool(kinds) and kinds <= {"message", "trace", "image"}
 
     @property
     def consistency_kind(self) -> str | None:
@@ -644,6 +644,9 @@ def observation_errors(
                 f"в «НАБЛЮДЕНИЯ:» цитата «{short}» слишком короткая — возьми из {source_id} "
                 f"строку не короче {MIN_QUOTE_CHARS} букв и цифр"
             )
+            continue
+        if record.get("kind") == "image":
+            # Текст со скриншота прочитала модель — сверить его не с чем (отчёт так и пишет).
             continue
         if quote_found(quote, str(record.get("text") or "")):
             continue

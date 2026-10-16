@@ -45,6 +45,8 @@ class Settings:
     llm_prompt_trace_max_chars: int = 400
     llm_prompt_log_max_chars: int = 8000
     retry_max_detail_requests: int = 200
+    images_per_problem: int = 3
+    images_max_bytes: int = 5 * 1024 * 1024
 
     @classmethod
     def load(
@@ -105,6 +107,8 @@ BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "llm_prompt_trace_max_chars": (50, None),
     "llm_prompt_log_max_chars": (100, None),
     "retry_max_detail_requests": (0, None),
+    "images_per_problem": (0, 3),
+    "images_max_bytes": (64 * 1024, 20 * 1024 * 1024),
 }
 
 
