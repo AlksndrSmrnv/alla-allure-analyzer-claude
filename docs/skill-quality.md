@@ -91,10 +91,17 @@ X02–X04 — sut-code: bare-репозиторий приложения `.stand
 словами, «нет, не так» → ничего не сохраняется. Офлайн-решаемость X03 охраняет
 `test_ext_sut_code.py::test_stand_scenario_x03_is_solvable_by_search`.
 
+V01 — скриншот: фикстура `screenshot` отдаёт настоящий PNG
+(`tests/fixtures/images/cookie_banner.png`, отрисован из `cookie_banner.html` рядом:
+`qlmanage -t -s 800`), проверки `screenshot_opened` (read_file по пути из `run.json`) и
+`screenshot_cited` (цитата куска скриншота, категория не «приложение»/«данные»). Видит ли
+модель картинку, а не текст о неподдержке, — по `--api-log`: в запросе после read_file
+должна быть часть с изображением. 2–3 минуты.
+
 Для каждого сценария стенд:
 
 - поднимает `tests/fake_testops_server.py` на 127.0.0.1 — те же `FakeTestOps` и fixtures,
-  что в pytest (`default`, `green`, `info_only`, `injection`, `many:N`); каждый запрос
+  что в pytest (`default`, `green`, `info_only`, `injection`, `screenshot`, `many:N`); каждый запрос
   пишется в `testops-requests.jsonl`;
 - собирает git-проект автотестов (в `~/.cache/alla-qwen-stand/work/`, вне папки результатов,
   чтобы агент не нашёл trace и журнал стенда) с исходниками из `skill_fixtures.py` и копией скилла в
