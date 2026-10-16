@@ -105,6 +105,27 @@ def save_confirmed(
     return path
 
 
+def drop_confirmed(paths: ws.RunPaths, file_id: str, kb_entry: str | None = None) -> Path | None:
+    """Снять подтверждение проблемы (путь удалённого файла или None, если снимать нечего).
+
+    Зовут ``remember`` без ``--from-extension`` (пользователь поправил причину — прежний
+    вывод больше не подтверждён) и ``reject`` (с ``kb_entry``: только если подтверждение
+    сохранено в эту запись).
+    """
+    path = paths.confirmed(file_id)
+    if not path.is_file():
+        return None
+    if kb_entry is not None:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict) or data.get("kb_entry") != kb_entry:
+            return None
+    path.unlink()
+    return path
+
+
 def load_confirmed(paths: ws.RunPaths, run: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Подтверждённые выводы расширений по номерам проблем (битые файлы пропускаются)."""
     result: dict[str, dict[str, Any]] = {}

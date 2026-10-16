@@ -19,7 +19,7 @@ from skill_fixtures import (  # noqa: F401
 )
 from skill_fake_testops import FakeTestOps
 from test_ext_git_publish import LOGIN_ANALYSIS, isolated_git  # noqa: F401
-from test_skill_flow import VALID_ANALYSIS, _finish, _prepare, _run
+from test_skill_flow import FEEDBACK, VALID_ANALYSIS, _finish, _prepare, _run
 
 from alla_skill_lib import cli
 from alla_skill_lib import extensions as ext
@@ -433,6 +433,33 @@ def test_removed_tree_asks_for_prepare_and_switch_restores_it(
     assert code == 0 and sut["fix"][:8] in out, out
 
 
+def test_symlinks_in_the_app_repo_do_not_leak_local_files(tmp_path: Path) -> None:
+    """Ссылка в репозитории приложения на файл вне ревизии (``.env`` инженера) не читается ни
+    субагентом (в дереве она — обычный файл с текстом ссылки), ни окном кода в данных."""
+    secret = tmp_path / "secret.env"
+    secret.write_text("DB_PASSWORD=hunter2\n", encoding="utf-8")
+    work = tmp_path / "leaky-src"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)
+    git(work, "config", "user.name", "Разработчик")
+    git(work, "config", "user.email", "dev@example.com")
+    (work / "src").mkdir()
+    os.symlink(os.path.relpath(secret, work / "src"), work / "src" / "Service.java")
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "ссылка")
+    remote = tmp_path / "leaky.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(work), str(remote)], check=True)
+    repo = sutlib.Repo("leaky", str(remote), tmp_path / ".alla-sut" / "leaky-x")
+    sutlib.ensure_clone(repo, time.monotonic() + 30, allow_local=True)
+    tree = sutlib.ensure_tree(repo, git(work, "rev-parse", "HEAD"), time.monotonic() + 30,
+                              allow_local=True)
+    checked_out = tree / "src" / "Service.java"
+    assert not checked_out.is_symlink() and "hunter2" not in checked_out.read_text(encoding="utf-8")
+    assert "hunter2" not in "\n".join(sutlib.window(tree, "src/Service.java", 1))
+
+    os.symlink(secret, tree / "src" / "Old.java")  # дерево, созданное до core.symlinks=false
+    assert sutlib.window(tree, "src/Old.java", 1) == []
+
+
 def test_failed_clone_is_reported(tmp_path: Path) -> None:
     repo = sutlib.Repo("ghost", str(tmp_path / "missing.git"), tmp_path / ".alla-sut" / "ghost-x")
     with pytest.raises(sutlib.SutError, match="не удалось"):
@@ -557,6 +584,45 @@ def test_confirmed_problem_is_not_compared_again(
     assert out.startswith("STATUS: done"), out
     assert "[объединил агент]" not in out and "[подтверждено по коду]" in out
     assert not (run_dir / "related.md").exists()
+
+
+@pytest.mark.parametrize("command", ["remember", "reject"])
+def test_later_correction_drops_the_confirmation(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str], sut: dict[str, Any],
+    command: str,
+) -> None:
+    """Пользователь поправил причину (remember --entry) или отверг запись (reject) — прежний
+    вывод расширения больше не подтверждён и из отчёта уходит."""
+    run_dir, order = confirmed_run(project, capsys, sut)
+    number = str(int(order))
+    assert _run(["remember", number, "--run", str(run_dir), "--from-extension", "sut-code"],
+                capsys)[0] == 0
+    entry_id = next((project / "alla-kb").glob("*.json")).stem
+    if command == "remember":
+        (run_dir / "feedback" / f"{order}.md").write_text(FEEDBACK, encoding="utf-8")
+        args = ["remember", number, "--entry", entry_id, "--run", str(run_dir)]
+    else:
+        args = ["reject", number, entry_id, "--run", str(run_dir)]
+    code, out = _run(args, capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    assert f"подтверждённый вывод расширения по проблеме {number} снят" in out and "next" in out
+    assert not (run_dir / "confirmed" / f"{order}.json").exists()
+
+    out = _run(["next", str(run_dir)], capsys)[1]
+    if out.startswith("STATUS: summary"):
+        (run_dir / "summary.md").write_text("Итог прогона.", encoding="utf-8")
+        out = _run(["next", str(run_dir)], capsys)[1]
+    assert out.startswith("STATUS: done") and "[подтверждено по коду]" not in out, out
+    assert "Подтверждено инженером" not in (run_dir / "report.md").read_text(encoding="utf-8")
+
+
+def test_enable_names_the_settings_table_of_the_extension(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    shutil.copytree(BUNDLED / "sut-code", ws.SKILL_DIR / "extensions" / "sut-code")
+    code, out = _run(["extensions", "enable", "sut-code", "--project-root", str(project)], capsys)
+    assert code == 0 and "Команды /alla:code установлены" in out, out
+    assert "в таблице [sut-code] файла" in out and "[code]" not in out
 
 
 @pytest.mark.parametrize(("analysis", "error"), [

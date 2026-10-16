@@ -163,7 +163,7 @@ def render_data(problem: dict[str, Any], trees: list[dict[str, Any]],
                 f"   Файл: {place['tree']}/{place['path']}"]
         if number <= SNIPPETS:
             out += ["   ```", *("   " + row for row in sutlib.window(
-                Path(place["tree"]) / place["path"], place["line"])), "   ```"]
+                Path(place["tree"]), place["path"], place["line"])), "   ```"]
     if missing:
         out += ["", "Кадры без файла в этих ревизиях (библиотеки или другой сервис):",
                 *(f"- {text}" for text in missing[:5])]

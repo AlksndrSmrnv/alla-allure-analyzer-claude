@@ -17,7 +17,7 @@ from typing import Any
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.agent_rules import FEEDBACK_FORMAT_REF, record_problem, reference_line
 from alla_skill_lib.analysis_format import parse_analysis
-from alla_skill_lib.confirmed import find_finding, load_finding, save_confirmed
+from alla_skill_lib.confirmed import drop_confirmed, find_finding, load_finding, save_confirmed
 from alla_skill_lib.kb import (
     CATEGORY_TO_KB,
     MAX_FINGERPRINT_LINES,
@@ -267,6 +267,10 @@ def remember(
             "и дальше как обычно: попросит сводку — напиши её заново, ответит done — выведи "
             "пользователю новый краткий разбор дословно."
         ]
+    elif (dropped := drop_confirmed(paths, file_id)) is not None:
+        # Пользователь поправил причину: прежний вывод расширения больше не подтверждён.
+        changed.append(dropped)
+        refresh = [_confirmed_dropped(paths, file_id)]
     source_note = (
         f"Источник — вывод расширения {from_extension}" if from_extension
         else "Источник — разбор модели (--from-analysis)"
@@ -311,12 +315,27 @@ def reject(
         return "error", f"В {kb.directory} нет записи «{entry_id}»."
     record.reject(str(entry["signature"]))
     path = kb.save(record)
+    refresh = _report_refresh(paths, run, kb, [record.id])
+    # Подтверждение, сохранённое в эту запись, отвергнуто вместе с ней.
+    dropped = drop_confirmed(paths, entry["file_id"], record.id)
+    if dropped is not None:
+        refresh = [_confirmed_dropped(paths, entry["file_id"])]
     return "saved", "\n".join([
         f"Запись {record.id} больше не будет предлагаться для этой ошибки.",
         f"Изменён файл: {path}",
+        *([f"Удалён файл: {dropped}"] if dropped is not None else []),
         f"Напомни пользователю закоммитить папку {kb.label}/.",
-        *_report_refresh(paths, run, kb, [record.id]),
+        *refresh,
     ])
+
+
+def _confirmed_dropped(paths: ws.RunPaths, file_id: str) -> str:
+    return (
+        f"Прежний подтверждённый вывод расширения по проблеме {int(file_id)} снят — в отчёте "
+        f"его больше не будет. Выполни {paths.next_command()} и дальше как обычно: попросит "
+        "сводку — напиши её заново, ответит done — выведи пользователю новый краткий разбор "
+        "дословно."
+    )
 
 
 def _report_refresh(

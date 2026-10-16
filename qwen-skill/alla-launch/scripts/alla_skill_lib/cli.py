@@ -1759,17 +1759,17 @@ def _extensions_toggle(project_root: Path, name: str, on: bool) -> str:
                 f"Файл субагента .qwen/agents/{extension.agent_name}.md изменён вручную — не удаляю."
             )
     if extension is not None and extension.commands:
-        names = ", ".join(f"/alla:{name}" for name in extension.commands)
+        names = ", ".join(f"/alla:{command}" for command in extension.commands)
         if on:
-            for name, source in extension.commands.items():
-                install_extension_command(project_root, source, name)
+            for command, source in extension.commands.items():
+                install_extension_command(project_root, source, command)
             lines.append(
                 f"Команды {names} установлены в .qwen/commands/alla/: Qwen Code увидит их после "
                 "перезапуска сеанса."
             )
         else:
-            kept = [f"/alla:{name}" for name, source in extension.commands.items()
-                    if remove_extension_command(project_root, source, name) == "kept"]
+            kept = [f"/alla:{command}" for command, source in extension.commands.items()
+                    if remove_extension_command(project_root, source, command) == "kept"]
             if kept:
                 lines.append(f"Команды {', '.join(kept)} изменены вручную — не удаляю.")
     if on and settings:

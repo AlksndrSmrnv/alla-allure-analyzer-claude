@@ -516,8 +516,10 @@ def ensure_tree(repo: Repo, sha: str, deadline: float, allow_local: bool) -> Pat
         if path.exists():
             git(repo.git_dir, "worktree", "remove", "--force", str(path), check=False)
             shutil.rmtree(path, ignore_errors=True)
-        job.steps = [["-C", str(repo.git_dir), "worktree", "add", "--quiet", "--detach",
-                      str(path), sha]]
+        # Символические ссылки — обычными файлами с текстом ссылки: ссылка «Service.java →
+        # ../../.env» иначе отдала бы субагенту и данным prepare файл вне ревизии.
+        job.steps = [["-c", "core.symlinks=false", "-C", str(repo.git_dir), "worktree", "add",
+                      "--quiet", "--detach", str(path), sha]]
         job.on_fail = [["-C", str(repo.git_dir), "worktree", "remove", "--force", str(path)]]
         process = start_job(job, allow_local)
     wait_job(job, deadline, process, f"Подготовка ревизии {sha[:8]} копии {repo.name}")
@@ -777,10 +779,17 @@ def grep(tree: Path, text: str, *, limit: int, ignore_case: bool = False) -> lis
     return rows
 
 
-def window(path: Path, line: int, radius: int = 8) -> list[str]:
-    """Строки файла вокруг ``line`` с номерами; ``>`` — сама строка."""
+def window(root: Path, path: str, line: int, radius: int = 8) -> list[str]:
+    """Строки файла ревизии вокруг ``line`` с номерами; ``>`` — сама строка.
+
+    Файл вне папки ревизии (ссылка из дерева, созданного до ``core.symlinks=false``) не
+    читается.
+    """
+    target = root / path
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if not target.resolve().is_relative_to(root.resolve()):
+            return []
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
     start, end = max(1, line - radius), min(len(lines), line + radius)
