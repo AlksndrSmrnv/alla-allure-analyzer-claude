@@ -88,6 +88,7 @@ from alla_skill_lib.confirmed import load_confirmed
 from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
 from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, reject
 from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
+from alla_skill_lib.images import place_images
 from alla_skill_lib.known_issues import (
     KnownIssues,
     KnownRecord,
@@ -698,6 +699,7 @@ def _write_run(
             frames = project_frames(full_trace)
             staged = {test_id: data.images[test_id] for test_id in cluster.member_test_ids
                       if test_id in data.images}
+            placed = place_images(staged, paths.images(file_id))
             task = build_cluster_task_with_sources(
                 cluster=cluster,
                 position=position,
@@ -715,14 +717,18 @@ def _write_run(
                 recurrence=entry["history"],
                 images={test_id: TaskImage(
                     test_result_id=test_id,
-                    path=paths.images(file_id) / image.path.name,
+                    path=placed[test_id],
                     name=image.name,
                     step=image.step,
                     attachment_id=image.attachment_id,
-                ) for test_id, image in staged.items()},
+                ) for test_id, image in staged.items() if test_id in placed},
             )
-            for image in task.images.values():
-                ws.write_atomic_bytes(image.path, data.images[image.test_result_id].path.read_bytes())
+            shown_paths = {image.path for image in task.images.values()}
+            for path in placed.values():  # скачанный, но не показанный — не нужен
+                if path not in shown_paths:
+                    path.unlink(missing_ok=True)
+            if placed and not shown_paths:
+                shutil.rmtree(paths.images(file_id), ignore_errors=True)
             ws.write_text(paths.cluster_task(file_id), task.text)
             write_registry(paths.sources(file_id), registry(
                 task.sources, tests_by_id,

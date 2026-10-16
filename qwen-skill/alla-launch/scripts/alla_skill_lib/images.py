@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from alla_skill_lib import workspace as ws
+
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary, ImageAttachmentRef
 
@@ -99,8 +101,8 @@ async def fetch_images(
 ) -> dict[int, StagedImage]:
     """Скачать скриншоты во временную папку; id результата теста → файл.
 
-    Больше ``max_bytes`` (по метаданным или по факту), не картинка или сбой скачивания —
-    изображение пропускается: без скриншота разбор прежний.
+    Больше ``max_bytes`` (по метаданным или по факту), не картинка, сбой скачивания или
+    записи — изображение пропускается: без скриншота разбор прежний.
     """
     semaphore = asyncio.Semaphore(max(1, concurrency))
     staged: dict[int, StagedImage] = {}
@@ -126,9 +128,32 @@ async def fetch_images(
                         ref.id, ref.name)
             return
         path = staging / f"{test.test_result_id}.{extension}"
-        path.write_bytes(data)
+        try:
+            path.write_bytes(data)
+        except OSError as exc:  # скриншот необязателен: без него разбор прежний
+            logger.warning("Скриншот %d (%s) теста %d не сохранён: %s",
+                           ref.id, ref.name, test.test_result_id, exc)
+            return
         staged[test.test_result_id] = StagedImage(test.test_result_id, path, ref.name,
                                                   extension, ref.step, ref.id)
 
     await asyncio.gather(*(fetch(test, ref) for test, ref in plan))
     return staged
+
+
+def place_images(staged: dict[int, StagedImage], target_dir: Path) -> dict[int, Path]:
+    """Перенести скриншоты кластера в папку разбора; id результата → файл.
+
+    Не записался (место, права) — скриншот пропускается, а не роняет ``prepare``: задание
+    собирается только с записанными.
+    """
+    placed: dict[int, Path] = {}
+    for test_id, image in staged.items():
+        target = target_dir / image.path.name
+        try:
+            ws.write_atomic_bytes(target, image.path.read_bytes())
+        except OSError as exc:
+            logger.warning("Скриншот теста %d не записан в папку разбора: %s", test_id, exc)
+            continue
+        placed[test_id] = target
+    return placed

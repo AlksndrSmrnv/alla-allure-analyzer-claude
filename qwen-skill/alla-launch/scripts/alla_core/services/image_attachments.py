@@ -29,7 +29,11 @@ def _step_places(
     steps: list[ExecutionStep],
     failed_above: bool = False,
 ) -> tuple[dict[int, tuple[str | None, bool]], dict[str, list[tuple[str | None, bool]]]]:
-    """Шаг каждого вложения дерева: по id и по имени (имя — когда id в дереве нет)."""
+    """Шаг каждого вложения дерева: по id и, для вложений дерева без id, по имени.
+
+    Вложение дерева с id по имени не ищется: у ``screenshot.png`` упавшего шага (id 9401) и
+    одноимённого скриншота после теста вне дерева (id 9402) имя одно, а шаг — нет.
+    """
     by_id: dict[int, tuple[str | None, bool]] = {}
     by_name: dict[str, list[tuple[str | None, bool]]] = {}
     for step in steps:
@@ -38,7 +42,7 @@ def _step_places(
         for att in step.attachments or []:
             if att.id is not None:
                 by_id.setdefault(att.id, place)
-            if att.name:
+            elif att.name:
                 by_name.setdefault(att.name, []).append(place)
         if step.steps:
             inner_ids, inner_names = _step_places(step.steps, failed or failed_above)
@@ -56,7 +60,7 @@ def image_attachments(
     """Изображения теста с id, в порядке списка TestOps; шаг — из дерева исполнения.
 
     ``failed_step`` — изображение приложено к упавшему шагу (или внутри него). Вложение
-    без id в дереве узнаётся по имени, только если такое имя в дереве одно.
+    без id в дереве узнаётся по имени, только если такое имя среди вложений дерева без id одно.
     """
     by_id, by_name = _step_places(steps or [])
     result: list[ImageAttachmentRef] = []

@@ -189,8 +189,9 @@ PAY_TRACE = (
 def screenshot_launch(launch_id: int = 791, png: bytes | None = None) -> LaunchFixture:
     """UI-тест не нашёл кнопку; к упавшему шагу приложен скриншот (сценарий V01).
 
-    У теста ещё скриншот начала теста с тем же именем (раньше, меньший id) и SVG-иконка —
-    модели достаётся только скриншот упавшего шага.
+    У теста ещё скриншот начала теста с тем же именем (раньше, меньший id), SVG-иконка и
+    картинка без MIME после теста (больший id, вне дерева) — модели достаётся только скриншот
+    упавшего шага, а картинка без MIME не скачивается и как лог.
     """
     return LaunchFixture(
         launch={"id": launch_id, "name": "Shop UI", "projectId": 5, "createdDate": LAUNCH_CREATED_MS},
@@ -215,9 +216,10 @@ def screenshot_launch(launch_id: int = 791, png: bytes | None = None) -> LaunchF
             {"id": 9400, "name": "screenshot.png", "type": "image/png", "size": 70},
             {"id": 9401, "name": "screenshot.png", "type": "image/png"},
             {"id": 9402, "name": "logo.svg", "type": "image/svg+xml"},
+            {"id": 9403, "name": "after-test.png"},
         ]},
         contents={9400: tiny_png(), 9401: png if png is not None else tiny_png(3, 3),
-                  9402: b"<svg xmlns='http://www.w3.org/2000/svg'/>"},
+                  9402: b"<svg xmlns='http://www.w3.org/2000/svg'/>", 9403: tiny_png(4, 4)},
     )
 
 

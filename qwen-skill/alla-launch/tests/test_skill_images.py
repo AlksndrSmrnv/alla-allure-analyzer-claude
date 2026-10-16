@@ -80,12 +80,27 @@ def test_image_step_comes_from_the_execution_tree() -> None:
     ]
 
 
+def test_same_name_outside_the_tree_is_not_the_failed_step_screenshot() -> None:
+    """Скриншот после теста (вне дерева) с тем же именем, что у упавшего шага, — не его."""
+    steps = [ExecutionStep.model_validate({
+        "name": "Оплатить", "status": "failed",
+        "attachments": [{"id": 9401, "name": "screenshot.png"}]})]
+    refs = image_attachments([AttachmentMeta.model_validate(item) for item in [
+        {"id": 9401, "name": "screenshot.png", "type": "image/png"},
+        {"id": 9402, "name": "screenshot.png", "type": "image/png"},
+    ]], steps)
+    assert [(ref.id, ref.step, ref.failed_step) for ref in refs] == [
+        (9401, "Оплатить", True), (9402, None, False)]
+    assert select_image(_test(*refs)) == refs[0]
+
+
 def test_log_extraction_records_images_without_downloading_them(
     project: Path, shop: FakeTestOps, capsys,
 ) -> None:
     run_dir, _run, _out = _prepare(project, capsys, launch_id=791)
     downloaded = [path for _method, path in shop.requests if path.endswith("/content")]
-    # Скачан только скриншот упавшего шага: ни раннего скриншота, ни SVG.
+    # Скачан только скриншот упавшего шага: ни раннего скриншота, ни SVG, ни картинки без
+    # MIME (фильтр логов пропускает вложения без MIME — изображения из него исключены).
     assert downloaded == ["/api/testresult/attachment/9401/content"]
     assert (run_dir / "images" / "01" / "401.png").read_bytes() == tiny_png(3, 3)
 
@@ -157,6 +172,43 @@ def test_images_can_be_turned_off(project: Path, shop: FakeTestOps, capsys,
     assert not any(path.endswith("/content") for _method, path in shop.requests)
     assert not (run_dir / "images").exists() and "images" not in run["clusters"][0]
     assert IMAGES_HEADER not in (run_dir / "clusters" / "01.md").read_text(encoding="utf-8")
+
+
+def test_unwritable_screenshot_is_skipped_not_fatal(project: Path, shop: FakeTestOps, capsys,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """Нет места во временной папке или в папке разбора — разбор без скриншота, а не сбой."""
+    def refuse(self: Path, data: bytes) -> int:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", refuse)
+    run_dir, run, _out = _prepare(project, capsys, launch_id=791)
+    assert not run["clusters"][0]["auto"] and "images" not in run["clusters"][0]
+    assert IMAGES_HEADER not in (run_dir / "clusters" / "01.md").read_text(encoding="utf-8")
+
+
+def test_screenshot_not_placed_in_run_dir_is_left_out(project: Path, shop: FakeTestOps, capsys,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    from alla_skill_lib import images, workspace
+
+    real = workspace.write_atomic_bytes
+
+    def refuse_images(path: Path, data: bytes, **kwargs: object) -> None:
+        if "images" in path.parts:
+            raise OSError(13, "Permission denied")
+        real(path, data, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(images.ws, "write_atomic_bytes", refuse_images)
+    run_dir, run, _out = _prepare(project, capsys, launch_id=791)
+    assert not run["clusters"][0]["auto"] and "images" not in run["clusters"][0]
+    assert IMAGES_HEADER not in (run_dir / "clusters" / "01.md").read_text(encoding="utf-8")
+
+
+def test_reviewer_is_told_it_cannot_see_screenshots() -> None:
+    from alla_skill_lib.review_model import SYSTEM_PROMPT
+
+    text = " ".join(SYSTEM_PROMPT.split())
+    assert "а тебе они не показаны" in text and "не считай её ни подтверждением, ни ошибкой" in text
+    assert "держится на скриншоте, проверить нельзя" in text
 
 
 # --- задание и реестр -------------------------------------------------------------------

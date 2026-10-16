@@ -64,9 +64,13 @@ paths:
   `enrich_with_logs` записывает их метаданные в `FailedTestSummary.image_attachments`
   (`ImageAttachmentRef`, `exclude=True`, в `run.json` не пишутся). Изображение — MIME
   `image/png|jpeg|gif|webp`, без MIME — расширение; SVG — нет (текст, может нести скрипт).
-  Шаг — по дереву исполнения: вложение шага с тем же id, без id — по имени, если оно в дереве
-  одно; `failed_step` — шаг или любой его предок failed/broken (через сколько угодно passed-шагов). Скачивает и показывает модели
-  скилл (`skill-analysis.md`, «Скриншоты»).
+  Шаг — по дереву исполнения: вложение шага с тем же id; по имени — только вложения дерева
+  без id, и если такое имя среди них одно (одноимённый `screenshot.png` после теста вне дерева
+  иначе получал шаг упавшего и вытеснял его скриншот — ревью Codex); `failed_step` — шаг или любой его предок failed/broken (через сколько угодно passed-шагов). Скачивает и показывает модели
+  скилл (`skill-analysis.md`, «Скриншоты»). Из вложений для логов изображения исключены и
+  без MIME (`is_image_attachment` по расширению): иначе фильтр MIME пропускал
+  `screenshot.png` без типа, и картинки всех падений скачивались как логи — даже при
+  `ALLURE_IMAGES_PER_PROBLEM=0`.
 - **Операция теста.** Свои id теста (`operation_ids`, `key=value`; ключи — реестр
   `_CANONICAL_CORRELATION_KEYS`: operUID, rqUID, requestId, correlationId, traceId) — **все**
   значения (`log_utils.operation_ids`) из сообщения и трейса и из вложений, которые не лог

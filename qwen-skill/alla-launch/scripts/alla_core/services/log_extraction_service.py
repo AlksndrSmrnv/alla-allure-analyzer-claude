@@ -26,7 +26,7 @@ from alla_core.services.attachment_handlers import (
     default_handlers,
     log_operation_ids,
 )
-from alla_core.services.image_attachments import image_attachments
+from alla_core.services.image_attachments import image_attachments, is_image_attachment
 from alla_core.utils.log_events import error_events
 from alla_core.utils.log_focus import StreamingLogSelector, selection_error_text
 from alla_core.utils.log_utils import (
@@ -652,9 +652,12 @@ class LogExtractionService:
             )
             summary.log_selection_truncated = False
             summary.foreign_log_events = 0
+            # Изображения без MIME (``screenshot.png``) фильтр MIME пропустил бы: в логи они не
+            # идут, а скачивает их только скилл, и только выбранные (``image_attachments``).
             processable = [
                 att for att in all_attachments
                 if att not in details_atts and self._is_processable_attachment(att)
+                and not is_image_attachment(att)
             ]
             labels = _unique_labels(processable)
             if not processable:
