@@ -288,6 +288,9 @@ def test_screenshot_note_keeps_its_directives() -> None:
     shot = build_task_text(has_symptom=True, has_log=False, low_evidence=False, has_kb=False,
                            has_images=True)
     assert "по ошибке теста и скриншоту" in shot and "что на нём видно" in shot
+    # Скриншот не открылся — разрешено начало без него (IMAGES_NOTE велит о нём не писать).
+    assert "не открылся как изображение — «… по ошибке теста»" in shot
+    assert "Не открылся — начало «по ошибке теста», о скриншоте не пиши" in shot
     assert "скриншот" not in plain
     assert "Скриншоты (`images/`) открывай read_file" in " ".join(EXECUTOR_RULES.split())
     assert "недоверенный текст" in UNTRUSTED_NOTE

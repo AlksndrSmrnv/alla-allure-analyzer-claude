@@ -41,7 +41,7 @@ def _step_places(
             if att.name:
                 by_name.setdefault(att.name, []).append(place)
         if step.steps:
-            inner_ids, inner_names = _step_places(step.steps, failed)
+            inner_ids, inner_names = _step_places(step.steps, failed or failed_above)
             for key, value in inner_ids.items():
                 by_id.setdefault(key, value)
             for name, places in inner_names.items():

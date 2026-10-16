@@ -32,20 +32,18 @@ def registry(
     *,
     files: dict[str, str] | None = None,
     steps: dict[str, str | None] | None = None,
+    attachment_ids: dict[str, int | None] | None = None,
 ) -> Registry:
     """id → вид, тест, вложение (имя и id), строки и текст куска данных.
 
     У скриншота (``kind == "image"``) текста нет: ``file`` — путь от папки разбора,
-    ``step`` — шаг теста, к которому он приложен.
+    ``step`` — шаг теста, к которому он приложен, ``attachment_id`` — id скачанного
+    вложения из ``attachment_ids`` (по имени не ищется: ``screenshot.png`` бывает у
+    нескольких шагов).
     """
     result: Registry = {}
     for source in sources:
         test = tests_by_id.get(source.test_result_id) if source.test_result_id else None
-        attachment_id = None
-        if source.attachment and test is not None:
-            refs = test.image_attachments if source.kind == IMAGE_KIND else test.log_attachments
-            attachment_id = next(
-                (ref.id for ref in refs if ref.name == source.attachment), None)
         if source.kind == IMAGE_KIND:
             result[source.id] = {
                 "kind": source.kind,
@@ -53,13 +51,17 @@ def registry(
                 "test_name": source.test_name,
                 "section": source.section,
                 "attachment": source.attachment,
-                "attachment_id": attachment_id,
+                "attachment_id": (attachment_ids or {}).get(source.id),
                 "lines": None,
                 "text": "",
                 "file": (files or {}).get(source.id),
                 "step": (steps or {}).get(source.id),
             }
             continue
+        attachment_id = None
+        if source.attachment and test is not None:
+            attachment_id = next(
+                (ref.id for ref in test.log_attachments if ref.name == source.attachment), None)
         result[source.id] = {
             "kind": source.kind,
             "test_result_id": test.test_result_id if test else None,

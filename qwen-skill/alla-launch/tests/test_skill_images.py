@@ -57,7 +57,10 @@ def test_image_step_comes_from_the_execution_tree() -> None:
          "attachments": [{"id": 1, "name": "open.png"}]},
         {"name": "Оплатить", "status": "failed", "steps": [
             {"name": "Нажать кнопку", "status": "passed",
-             "attachments": [{"name": "click.png"}]},
+             "attachments": [{"name": "click.png"}], "steps": [
+                 {"name": "Дождаться формы", "status": "passed",
+                  "attachments": [{"id": 5, "name": "deep.png"}]},
+             ]},
         ]},
     ]]
     attachments = [AttachmentMeta.model_validate(item) for item in [
@@ -66,12 +69,14 @@ def test_image_step_comes_from_the_execution_tree() -> None:
         {"id": 3, "name": "after.png", "type": "image/png"},
         {"id": 4, "name": "app.log", "type": "text/plain"},
         {"name": "no-id.png", "type": "image/png"},
+        {"id": 5, "name": "deep.png", "type": "image/png"},
     ]]
     refs = image_attachments(attachments, steps)
     assert [(ref.id, ref.step, ref.failed_step) for ref in refs] == [
         (1, "Открыть", False),
         (2, "Нажать кнопку", True),  # без id в дереве — по имени; внутри упавшего шага
         (3, None, False),
+        (5, "Дождаться формы", True),  # упавший предок через два уровня passed-шагов
     ]
 
 

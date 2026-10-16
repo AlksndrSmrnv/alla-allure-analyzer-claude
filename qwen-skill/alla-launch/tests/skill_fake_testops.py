@@ -189,7 +189,7 @@ PAY_TRACE = (
 def screenshot_launch(launch_id: int = 791, png: bytes | None = None) -> LaunchFixture:
     """UI-тест не нашёл кнопку; к упавшему шагу приложен скриншот (сценарий V01).
 
-    У теста ещё скриншот начала теста (раньше, меньший id), SVG-иконка и исходник страницы —
+    У теста ещё скриншот начала теста с тем же именем (раньше, меньший id) и SVG-иконка —
     модели достаётся только скриншот упавшего шага.
     """
     return LaunchFixture(
@@ -206,13 +206,13 @@ def screenshot_launch(launch_id: int = 791, png: bytes | None = None) -> LaunchF
         ],
         executions={401: [
             {"name": "Открыть корзину", "status": "passed",
-             "attachments": [{"id": 9400, "name": "cart.png", "type": "image/png"}]},
+             "attachments": [{"id": 9400, "name": "screenshot.png", "type": "image/png"}]},
             {"name": "Оплатить заказ", "status": "failed",
              "statusDetails": {"message": PAY_MESSAGE},
              "attachments": [{"id": 9401, "name": "screenshot.png", "type": "image/png"}]},
         ]},
         attachments={401: [
-            {"id": 9400, "name": "cart.png", "type": "image/png", "size": 70},
+            {"id": 9400, "name": "screenshot.png", "type": "image/png", "size": 70},
             {"id": 9401, "name": "screenshot.png", "type": "image/png"},
             {"id": 9402, "name": "logo.svg", "type": "image/svg+xml"},
         ]},

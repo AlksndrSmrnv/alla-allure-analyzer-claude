@@ -65,7 +65,7 @@ paths:
   (`ImageAttachmentRef`, `exclude=True`, в `run.json` не пишутся). Изображение — MIME
   `image/png|jpeg|gif|webp`, без MIME — расширение; SVG — нет (текст, может нести скрипт).
   Шаг — по дереву исполнения: вложение шага с тем же id, без id — по имени, если оно в дереве
-  одно; `failed_step` — шаг (или его предок) failed/broken. Скачивает и показывает модели
+  одно; `failed_step` — шаг или любой его предок failed/broken (через сколько угодно passed-шагов). Скачивает и показывает модели
   скилл (`skill-analysis.md`, «Скриншоты»).
 - **Операция теста.** Свои id теста (`operation_ids`, `key=value`; ключи — реестр
   `_CANONICAL_CORRELATION_KEYS`: operUID, rqUID, requestId, correlationId, traceId) — **все**

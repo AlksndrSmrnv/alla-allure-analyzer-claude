@@ -718,6 +718,7 @@ def _write_run(
                     path=paths.images(file_id) / image.path.name,
                     name=image.name,
                     step=image.step,
+                    attachment_id=image.attachment_id,
                 ) for test_id, image in staged.items()},
             )
             for image in task.images.values():
@@ -728,6 +729,8 @@ def _write_run(
                 files={source_id: image.path.relative_to(paths.root).as_posix()
                        for source_id, image in task.images.items()},
                 steps={source_id: image.step for source_id, image in task.images.items()},
+                attachment_ids={source_id: image.attachment_id
+                                for source_id, image in task.images.items()},
             ))
             if task.images:
                 entry["images"] = [{

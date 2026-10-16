@@ -37,6 +37,7 @@ class StagedImage:
     name: str
     extension: str
     step: str | None = None
+    attachment_id: int | None = None
 
 
 def image_type(data: bytes) -> str | None:
@@ -127,7 +128,7 @@ async def fetch_images(
         path = staging / f"{test.test_result_id}.{extension}"
         path.write_bytes(data)
         staged[test.test_result_id] = StagedImage(test.test_result_id, path, ref.name,
-                                                  extension, ref.step)
+                                                  extension, ref.step, ref.id)
 
     await asyncio.gather(*(fetch(test, ref) for test, ref in plan))
     return staged
