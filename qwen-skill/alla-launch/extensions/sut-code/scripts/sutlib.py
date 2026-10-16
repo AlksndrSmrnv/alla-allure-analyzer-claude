@@ -287,6 +287,7 @@ class Job:
     folder: Path  # .alla-sut/<repo>/jobs/<имя>
     steps: list[list[str]] = field(default_factory=list)
     on_fail: list[list[str]] = field(default_factory=list)
+    format: str = ""  # как работа распаковывает дерево (``TREE_FORMAT``), пишется в spec.json
 
     @property
     def done(self) -> Path:
@@ -305,7 +306,8 @@ def start_job(job: Job, allow_local: bool) -> subprocess.Popen[bytes]:
     if job.folder.exists():
         shutil.rmtree(job.folder)
     job.folder.mkdir(parents=True)
-    spec = {"steps": job.steps, "on_fail": job.on_fail, "allow_local": allow_local}
+    spec = {"steps": job.steps, "on_fail": job.on_fail, "allow_local": allow_local,
+            "format": job.format}
     (job.folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
     log = open(job.folder / "log.txt", "wb")  # noqa: SIM115 — живёт дольше этого процесса
     kwargs: dict[str, Any] = {"start_new_session": True}
@@ -319,6 +321,16 @@ def start_job(job: Job, allow_local: bool) -> subprocess.Popen[bytes]:
     log.close()
     job.pid_file.write_text(f"{process.pid} {int(time.time())}", encoding="utf-8")
     return process
+
+
+def job_format(job: Job) -> str | None:
+    """Формат из spec.json работы; ``None`` — работа прежней версии или spec не читается."""
+    try:
+        spec = json.loads((job.folder / "spec.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = spec.get("format") if isinstance(spec, dict) else None
+    return value if isinstance(value, str) and value else None
 
 
 def job_alive(job: Job, process: subprocess.Popen[bytes] | None = None) -> bool:
@@ -524,7 +536,20 @@ def ensure_tree(repo: Repo, sha: str, deadline: float, allow_local: bool) -> Pat
         os.utime(ready)
         return path
     ready.unlink(missing_ok=True)  # старое дерево: до распаковки заново оно не готово
-    job = Job(repo.folder / "jobs" / f"tree-{sha[:12]}")
+    job = Job(repo.folder / "jobs" / f"tree-{sha[:12]}", format=TREE_FORMAT)
+    what = f"Подготовка ревизии {sha[:8]} копии {repo.name}"
+    if job.folder.exists() and job_format(job) != TREE_FORMAT:
+        # Распаковка прежней версии (до core.symlinks=false; ensure_tree зовут под locked, так
+        # что чужая новая работа здесь не появится): её дерево не годится. Идущую — дождаться
+        # (вторая распаковка в ту же папку столкнулась бы с ней), затем распаковать заново.
+        if not job.done.is_file() and job_alive(job):
+            try:
+                wait_job(job, deadline, None, what)
+            except SutPending:
+                raise
+            except SutError:
+                pass  # упала или прервалась — всё равно распаковываем заново
+        shutil.rmtree(job.folder, ignore_errors=True)
     process = None
     if not (job.pid_file.is_file() and job_alive(job)) and not job.done.is_file():
         repo.trees.mkdir(parents=True, exist_ok=True)
@@ -538,7 +563,7 @@ def ensure_tree(repo: Repo, sha: str, deadline: float, allow_local: bool) -> Pat
                       "--quiet", "--detach", str(path), sha]]
         job.on_fail = [["-C", str(repo.git_dir), "worktree", "remove", "--force", str(path)]]
         process = start_job(job, allow_local)
-    wait_job(job, deadline, process, f"Подготовка ревизии {sha[:8]} копии {repo.name}")
+    wait_job(job, deadline, process, what)
     shutil.rmtree(job.folder, ignore_errors=True)
     ready.write_text(f"{sha}\n{TREE_FORMAT}\n", encoding="utf-8")
     return path

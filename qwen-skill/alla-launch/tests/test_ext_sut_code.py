@@ -487,6 +487,34 @@ def test_tree_of_the_previous_version_is_unpacked_again(
     assert (tree / SERVICE).read_text(encoding="utf-8") == SERVICE_BUG
 
 
+def test_background_unpack_of_the_previous_version_is_not_adopted(
+    tmp_path: Path, sut: dict[str, Any]
+) -> None:
+    """Распаковка, запущенная прежней версией (spec.json без формата), пережила таймаут: её
+    дождаться, но результат не брать — дерево с настоящими ссылками распаковать заново."""
+    secret = tmp_path / "secret.env"
+    secret.write_text("DB_PASSWORD=hunter2\n", encoding="utf-8")
+    repo = sutlib.Repo("orders", sut["url"], tmp_path / ".alla-sut" / "orders-x")
+    sutlib.ensure_clone(repo, time.monotonic() + 30, allow_local=True)
+    path = repo.tree_path(sut["bug"])
+    (path / SERVICE).parent.mkdir(parents=True)
+    os.symlink(secret, path / SERVICE)  # что распаковала бы прежняя версия
+    job = repo.folder / "jobs" / f"tree-{sut['bug'][:12]}"
+    job.mkdir(parents=True)
+    (job / "spec.json").write_text(json.dumps({"steps": [], "on_fail": []}), encoding="utf-8")
+    (job / "pid").write_text(f"{os.getpid()} {int(time.time())}", encoding="utf-8")  # ещё идёт
+
+    with pytest.raises(sutlib.SutPending, match="ещё идёт"):
+        sutlib.ensure_tree(repo, sut["bug"], time.monotonic() + 1, allow_local=True)
+    assert not sutlib.tree_ready(path) and (path / SERVICE).is_symlink()
+
+    (job / "done").write_text("ok", encoding="utf-8")  # прежняя работа закончилась
+    tree = sutlib.ensure_tree(repo, sut["bug"], time.monotonic() + 30, allow_local=True)
+    assert tree == path and sutlib.tree_ready(tree)
+    assert not (tree / SERVICE).is_symlink()
+    assert (tree / SERVICE).read_text(encoding="utf-8") == SERVICE_BUG
+
+
 def test_cleanup_removes_trees_of_the_previous_version(tmp_path: Path, sut: dict[str, Any]) -> None:
     repo = sutlib.Repo("orders", sut["url"], tmp_path / ".alla-sut" / "orders-x")
     sutlib.ensure_clone(repo, time.monotonic() + 30, allow_local=True)
