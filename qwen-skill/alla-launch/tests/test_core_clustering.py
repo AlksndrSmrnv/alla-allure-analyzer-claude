@@ -1170,6 +1170,37 @@ def test_log_gate_does_not_merge_two_errors_through_a_test_without_log() -> None
     assert not any({1, 3} <= set(group) for group in groups)
 
 
+REJECTED_LOG = ('2026-10-03 10:00:{sec:02d} [INFO] [{thread}] AccountClient - Response '
+                '{{"status":"REJECTED","errorCode":{code},"errorMessage":"{text}"}}\n')
+
+
+def _rejected(code: int, text: str = "операция отклонена", sec: int = 1,
+              thread: str = "http-nio-8080-exec-1") -> str:
+    return REJECTED_LOG.format(code=code, text=text, sec=sec, thread=thread)
+
+
+def test_log_gate_splits_business_errors_with_different_codes() -> None:
+    """INFO-ответы отличаются только ``errorCode``: слова одинаковы (похожесть 1.0), но
+    разный код ответа — разные бизнес-ошибки; одинаковый код в другом потоке — та же."""
+    failures = _orders(_rejected(6), _rejected(6, sec=7, thread="http-nio-8080-exec-4"),
+                       _rejected(12), _rejected(12, sec=9))
+    assert _groups(failures) == [[1, 2], [3, 4]]
+
+
+def test_log_gate_keeps_business_errors_with_one_code() -> None:
+    """Общий код держит пару, даже если текст сообщения разный (номер, формулировка)."""
+    failures = _orders(_rejected(6, "счет 40817810000000000301 закрыт"),
+                       _rejected(6, "закрыт счет получателя перевода"))
+    assert _groups(failures) == [[1, 2]]
+
+
+def test_log_gate_business_code_on_one_side_leaves_similarity_to_decide() -> None:
+    """Код ответа только у одного лога — сравнивать нечего, решает похожесть, как раньше."""
+    message_only = ('2026-10-03 10:00:02 [INFO] AccountClient - Response '
+                    '{"status":"REJECTED","errorMessage":"операция отклонена"}\n')
+    assert _groups(_orders(_rejected(6), message_only)) == [[1, 2]]
+
+
 @pytest.mark.parametrize("config", [
     ClusteringConfig(log_similarity_weight=0.15, log_split_threshold=0.0),
     ClusteringConfig(log_similarity_weight=0.0),
@@ -1371,6 +1402,13 @@ def test_gates_count_pair_held_by_shared_background() -> None:
 def test_gates_count_one_error_with_different_background_as_held_by_block() -> None:
     """Обратный случай неотличим по паре: общая NPE, разный фон — тоже «держит общий блок»."""
     failures = _orders(_log(NPE_LOG) + REDIS_BACKGROUND_LOG, _log(NPE_LOG) + KAFKA_BACKGROUND_LOG)
+    assert _gates(failures)["log_held_by_block"] == 1
+
+
+def test_gates_count_different_business_codes_behind_shared_background_as_held() -> None:
+    """Общий Redis держит пару, а остатки — разные коды ответа: gate без фона разделил бы
+    их при любой похожести."""
+    failures = _orders(_rejected(6) + REDIS_BACKGROUND_LOG, _rejected(12) + REDIS_BACKGROUND_LOG)
     assert _gates(failures)["log_held_by_block"] == 1
 
 

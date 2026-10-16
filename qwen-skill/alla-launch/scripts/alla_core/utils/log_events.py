@@ -159,15 +159,11 @@ class LogEvent:
         return max(0, index - len(self.rendered) + 1)
 
 
-def has_error_fields(text: str) -> bool:
-    """В тексте есть поле ошибки ответа с непустым значением, а не «успех».
-
-    ``"errorCode":6``, ``errorMessage=счет закрыт``, ``<faultCode>SOAP-ENV:Server</faultCode>`` —
-    да; ``"errorCode":0``, ``"errorMessage":null``, ``errorText=""``, ``errorCount=3`` — нет.
-    """
+def _error_fields(text: str) -> Iterator[tuple[str, str]]:
+    """Поля ошибки ответа ``(имя, значение)`` с непустым значением, а не «успехом»."""
     lowered = text.lower()
     if "err" not in lowered and "fault" not in lowered:
-        return False
+        return
     for regex in (_ERROR_FIELD_RE, _ERROR_FIELD_XML_RE):
         for match in regex.finditer(text):
             value = match.group("value")
@@ -175,8 +171,33 @@ def has_error_fields(text: str) -> bool:
                 value = value[1:-1]
             value = value.strip()
             if value.lower() not in _SUCCESS_VALUES and not _ZEROS_RE.fullmatch(value):
-                return True
-    return False
+                yield match.group("key"), value
+
+
+def has_error_fields(text: str) -> bool:
+    """В тексте есть поле ошибки ответа с непустым значением, а не «успех».
+
+    ``"errorCode":6``, ``errorMessage=счет закрыт``, ``<faultCode>SOAP-ENV:Server</faultCode>`` —
+    да; ``"errorCode":0``, ``"errorMessage":null``, ``errorText=""``, ``errorCount=3`` — нет.
+    """
+    return next(_error_fields(text), None) is not None
+
+
+def error_field_codes(text: str) -> list[str]:
+    """Коды ошибки ответа по порядку, без повторов: ``errorcode=6``, ``faultcode=soap-env:server``.
+
+    Только поля-коды (имя на ``code``), не сообщения: код называет ошибку, а в тексте
+    сообщения бывают номера счетов и заказов. Имя — без регистра и ``_`` (``error_code`` и
+    ``errorCode`` — одно поле), значение — без регистра. Короткие коды (``6``) тоже: в отличие
+    от :func:`~alla_core.utils.text_normalization.numeric_codes`, имя поля уже говорит, что это
+    код ошибки.
+    """
+    codes = [
+        f"{key.casefold().replace('_', '')}={value.casefold()}"
+        for key, value in _error_fields(text)
+        if key.casefold().endswith("code")
+    ]
+    return list(dict.fromkeys(codes))
 
 
 def _level_after_timestamp(rest: str) -> str | None:

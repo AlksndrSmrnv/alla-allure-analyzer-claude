@@ -65,7 +65,7 @@ from alla_core.models.clustering import (
     NearPair,
 )
 from alla_core.models.testops import FailedTestSummary
-from alla_core.utils.log_events import SOURCE_MARK_RE, strip_source_marks
+from alla_core.utils.log_events import SOURCE_MARK_RE, error_field_codes, strip_source_marks
 from alla_core.utils.log_focus import strip_log_selection_metadata
 from alla_core.utils.message_resources import MessageResources, message_resources
 from alla_core.utils.step_paths import normalize_step_path
@@ -315,13 +315,15 @@ class _ErrorBlock:
 
     ``text`` — строки без кадров стека, времени, ID, имён потоков и цифр: номера строк,
     потоков и заказов — не другая ошибка. ``keys`` — корневой класс исключения (последний в
-    блоке, то есть самый глубокий ``Caused by``; обёртки не считаются) и коды ошибок
-    (``numeric_codes``).
+    блоке, то есть самый глубокий ``Caused by``; обёртки не считаются), коды ошибок
+    (``numeric_codes``) и ``codes``. ``codes`` — коды полей ошибки ответа
+    (``error_field_codes``: ``"errorCode":6`` — ``errorcode=6``).
     """
 
     text: str
     keys: frozenset[str]
     lines: int
+    codes: frozenset[str] = frozenset()
 
 
 def _is_frame(lines: list[str], index: int) -> bool:
@@ -356,8 +358,9 @@ def _log_error_blocks(
             if not _TOKEN_RE.search(text):
                 continue
             classes = _EXCEPTION_CLASS_RE.findall(source)
-            keys = frozenset(classes[-1:]) | frozenset(numeric_codes(source))
-            blocks.append(_ErrorBlock(text, keys, len(lines)))
+            codes = frozenset(error_field_codes(source))
+            keys = frozenset(classes[-1:]) | frozenset(numeric_codes(source)) | codes
+            blocks.append(_ErrorBlock(text, keys, len(lines), codes))
     return _compact_blocks(list(dict.fromkeys(blocks)), head_lines, tail_lines)
 
 
@@ -383,7 +386,9 @@ class _LogErrorGate:
     """Gate по логу: ошибки в логах двух падений явно разные.
 
     Пара разная, только если у логов нет ни одного общего блока ошибки, ни общего ключа
-    (корневой класс, код), а TF-IDF похожесть их блоков ниже порога. Любая общая ошибка
+    (корневой класс, код), а TF-IDF похожесть их блоков ниже порога — или у обоих есть коды
+    ошибки ответа (``errorCode``, ``faultCode``…), а общего ключа нет: одинаковый ответ с
+    разным кодом — разные бизнес-ошибки, как бы ни были похожи слова. Любая общая ошибка
     держит пару вместе: общий фон (health-check, Kafka) и общая ошибка падения по паре
     неотличимы, а «фоном» по прогону оказывается и причина с несколькими симптомами —
     удаление общей ошибки дробило бы настоящую проблему. Цена: одинаковая фоновая ошибка
@@ -417,6 +422,8 @@ class _LogErrorGate:
                       for test_blocks in blocks]
         self._keys = [frozenset().union(*(block.keys for block in test_blocks))
                       for test_blocks in blocks]
+        self._block_codes = [bool(block.codes) for block in index]
+        self._codes = [any(block.codes for block in test_blocks) for test_blocks in blocks]
         self._similarity: np.ndarray | None = None
         self._weighted: sparse.csr_matrix | None = None
         if not index:
@@ -453,9 +460,12 @@ class _LogErrorGate:
             if first <= second or second <= first:
                 return self.SIMILAR
             return self.SHARED
+        shared_key = bool(self._keys[i] & self._keys[j])
+        if self._codes[i] and self._codes[j] and not shared_key:
+            return self.SPLIT  # разные коды ошибки ответа: похожесть слов не решает
         if float(self._similarity[i, j]) >= self._threshold:
             return self.SIMILAR
-        if self._keys[i] & self._keys[j]:
+        if shared_key:
             return self.HELD_BY_KEY
         return self.SPLIT
 
@@ -466,11 +476,13 @@ class _LogErrorGate:
         """Разделил бы gate пары ``SHARED`` без их общих блоков.
 
         Остатки (свои блоки каждого лога) не должны делить ключ, а их похожесть — тем же
-        TF-IDF, что у gate, — ниже порога. Одинаковые пары остатков (общий фон, повторы
+        TF-IDF, что у gate, — ниже порога, если коды ошибки ответа есть не у обоих (как в
+        ``verdict``). Одинаковые пары остатков (общий фон, повторы
         ошибок) считаются один раз, произведения — пакетами по ``PAIR_BATCH``.
         """
         if not pairs or self._weighted is None:
             return [False] * len(pairs)
+        held = [False] * len(pairs)
         remainders: dict[frozenset[int], int] = {}
         positions: dict[tuple[int, int], list[int]] = {}
         for position, (i, j) in enumerate(pairs):
@@ -480,10 +492,13 @@ class _LogErrorGate:
             second_keys = frozenset().union(*(self._block_keys[b] for b in second))
             if first_keys & second_keys:
                 continue
+            if (any(self._block_codes[b] for b in first)
+                    and any(self._block_codes[b] for b in second)):
+                held[position] = True
+                continue
             rows = sorted((remainders.setdefault(first, len(remainders)),
                            remainders.setdefault(second, len(remainders))))
             positions.setdefault((rows[0], rows[1]), []).append(position)
-        held = [False] * len(pairs)
         if not positions:
             return held
         vectors = normalize(sparse.csr_matrix(
@@ -1190,7 +1205,7 @@ def _log_codes(failure: FailedTestSummary) -> tuple[str, ...]:
     """Коды ошибок из исходного лога: нормализованный уже заменил длинные числа на <NUM>."""
     raw = strip_source_marks(failure.log_snippet or "")
     http = {"http=" + (a or b) for a, b in _HTTP_STATUS_RE.findall(raw)}
-    return tuple(sorted(set(numeric_codes(raw)) | http))
+    return tuple(sorted(set(numeric_codes(raw)) | set(error_field_codes(raw)) | http))
 
 
 def _error_events(failure: FailedTestSummary) -> int:

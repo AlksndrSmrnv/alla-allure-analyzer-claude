@@ -1697,7 +1697,7 @@ def info_business_error() -> Case:
     Сообщение ассерта у всех тестов одно («статус перевода REJECTED»); различает их только
     ``errorMessage`` записи своей операции (``operUID`` из вложения-запроса): закрытый счёт
     получателя и нехватка средств — две проблемы. Успешный ответ (``errorCode`` 0) — не ошибка.
-    Пока склеиваются: сообщение одно, а похожесть логов между порогами gate и log override.
+    Похожесть логов (0.45) между порогами gate и log override — разделяет разный ``errorCode``.
     """
     builder = LaunchBuilder(5122, "Transfers regression")
     message = "Transfer status expected:<DONE> but was:<REJECTED>"

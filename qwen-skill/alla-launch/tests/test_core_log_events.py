@@ -11,6 +11,7 @@ import skill_fixtures  # noqa: F401  # scripts/ в sys.path
 from alla_core.services.log_extraction_service import _detect_content_type, _extract_error_blocks
 from alla_core.utils.log_events import (
     error_events,
+    error_field_codes,
     has_error_fields,
     parse_events,
     render_error_blocks,
@@ -414,6 +415,19 @@ def test_info_record_with_error_fields_does_not_swallow_the_next_exception() -> 
 def test_has_error_fields_reads_quoted_values_whole() -> None:
     assert has_error_fields('"errorMessage": "say \\"no\\""')
     assert not has_error_fields('"errorMessage": {"text": null}')
+
+
+@pytest.mark.parametrize(("text", "codes"), [
+    ('{"status":"REJECTED","errorCode":6,"errorMessage":"счет закрыт"}', ["errorcode=6"]),
+    ("error_code=E_LIMIT errorMessage=limit exceeded", ["errorcode=e_limit"]),
+    ('{"ufsErrorCode":"12","errorCode":"12"}', ["ufserrorcode=12", "errorcode=12"]),
+    ("<soap:faultCode>SOAP-ENV:Server</soap:faultCode>", ["faultcode=soap-env:server"]),
+    ('{"errorCode":0,"errorMessage":null}', []),
+    ('{"errorMessage":"счет закрыт","errorCount":3}', []),
+])
+def test_error_field_codes_take_code_fields_only(text: str, codes: list[str]) -> None:
+    """Коды — только поля на ``code``, без «успеха»; имя без регистра и ``_``."""
+    assert error_field_codes(text) == codes
 
 
 # ---------------------------------------------------------------------------
