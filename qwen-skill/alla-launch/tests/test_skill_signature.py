@@ -199,6 +199,53 @@ def test_info_line_with_error_fields_names_the_cause() -> None:
     assert "accepted" not in material
 
 
+def _response_log(fields: str) -> str:
+    return ("2026-10-16 10:00:01 [INFO] [operUID=op-tr-3001] c.e.AccountClient - Response "
+            f'{{"status":"REJECTED",{fields}}}\n')
+
+
+@pytest.mark.parametrize("account", ['"account":"{n}"', "'account': '{n}'", '"ids":["{n}"]'])
+def test_quoted_long_number_in_a_log_line_is_an_id(account: str) -> None:
+    def log(number: str) -> str:
+        return _response_log('"errorCode":6,"errorMessage":"account is closed",'
+                             + account.format(n=number))
+
+    one = _signature(ASSERT_500, ASSERT_TRACE, log("40817810000000000301"))
+    material = _material(ASSERT_500, ASSERT_TRACE, log("40817810000000000301"))
+
+    assert one == _signature(ASSERT_500, ASSERT_TRACE, log("40817810000000000302"), test_id=2)
+    assert material is not None and "4081" not in material and "<num>" in material
+    # Короткий код остаётся в тексте строки, отпечаток его не повторяет: хэш прежних записей.
+    assert "<codes:" not in material
+
+
+@pytest.mark.parametrize("field", ['"errorCode":"{c}"', '"errorCode":{c}', 'errorCode={c}',
+                                   '"faultCode":"{c}"', '"error_code":"{c}"'])
+def test_long_response_error_code_in_a_log_line_still_differs(field: str) -> None:
+    def log(code: str) -> str:
+        return _response_log(field.format(c=code) + ',"errorMessage":"rejected"')
+
+    material = _material(ASSERT_500, ASSERT_TRACE, log("10001"))
+
+    assert (_signature(ASSERT_500, ASSERT_TRACE, log("10001"))
+            != _signature(ASSERT_500, ASSERT_TRACE, log("10002")))
+    assert material is not None and "<codes:" in material and "=10001" in material
+
+
+def test_brackets_in_a_log_line_and_quotes_in_the_message_keep_the_number() -> None:
+    def log(code: str) -> str:
+        return f"2026-10-16 10:00:01 [ERROR] gateway rejected payment [{code}]\n"
+
+    def message(code: str) -> str:
+        return (f'Payment status expected "DONE" but was "REJECTED" for gateway reply "{code}" '
+                "after three attempts with the backup route")
+
+    assert (_signature(ASSERT_500, ASSERT_TRACE, log("10001"))
+            != _signature(ASSERT_500, ASSERT_TRACE, log("10002")))
+    assert (_signature(message("10001"), ASSERT_TRACE, "")
+            != _signature(message("10002"), ASSERT_TRACE, ""))
+
+
 def test_journal_info_record_with_error_fields_is_an_error() -> None:
     def journal(message: str) -> str:
         return _journal({"logLevel": "INFO", "message": "POST /transfers"},

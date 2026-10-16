@@ -16,7 +16,9 @@ gates кластеризации по логу и по ресурсам:
   порт в длинном сообщении и регистр локатора нормализация сообщения стирает.
 
 Время, UUID, длинные числа и имена потоков в материал не входят, коды ошибок
-(``numeric_codes``) — входят.
+(``numeric_codes``) — входят. В строках лога длинное число в кавычках — тоже ID (номер
+счёта в JSON), а не значение ассерта; числовые коды полей ошибки ответа
+(``error_field_codes``) — входят.
 """
 
 from __future__ import annotations
@@ -25,12 +27,14 @@ import contextlib
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_core.utils.log_events import (
     ERROR_LEVELS,
+    error_field_codes,
     has_error_fields,
     iter_events,
     strip_source_marks,
@@ -108,6 +112,13 @@ _JSON_CODE_KEYS = {"errorcode": "error_code", "error_code": "error_code", "code"
                    "statuscode": "status_code", "status_code": "status_code",
                    "status": "status"}
 _WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_$.:-]*")
+# Длинное число, оставшееся после normalize_text, — у кавычки или скобки: её защита — для
+# значений ассерта (``expected:<10001>``, ``"-1001"``). В строке лога кавычки — синтаксис
+# JSON и ``key="…"``: ``"account":"40817810000000000301"`` — ID, как ``account=4081…``.
+# Скобки защищают и в логе (``[10001]``, ``<10001>``).
+_LOG_QUOTED_NUMBER_RE = re.compile(r"(?<![<\[])\b\d{4,}\b(?![>\]])")
+# Код поля ошибки ответа, который мягкий вид стирает: число из 4+ цифр, как у numeric_codes.
+_LONG_CODE_VALUE_RE = re.compile(r"-?\d{4,}")
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +255,25 @@ def _strict(text: str) -> str:
 
 def _soft(text: str) -> str:
     """Мягкий вид: ещё и без длинных чисел (ID), но с кодами ошибок отдельным отпечатком."""
-    normalized = _collapse(normalize_text(replace_thread_names(text)))
-    codes = numeric_codes(text)
+    return _with_codes(_collapse(normalize_text(replace_thread_names(text))), numeric_codes(text))
+
+
+def _soft_log(line: str) -> str:
+    """Мягкий вид строки лога: ещё и без длинных чисел в кавычках (:data:`_LOG_QUOTED_NUMBER_RE`).
+
+    Код в кавычках (``"errorCode":"10001"``) так тоже уходит в ``<NUM>`` — его держит отпечаток:
+    к ``numeric_codes`` добавляются числовые коды полей ошибки ответа из 4+ цифр
+    (``error_field_codes``: имени ``errorcode`` у ``numeric_codes`` нет). Короткий код
+    (``"errorCode":6``) остаётся в тексте строки, и отпечаток его не повторяет.
+    """
+    normalized = _LOG_QUOTED_NUMBER_RE.sub("<NUM>", normalize_text(replace_thread_names(line)))
+    field_codes = [code for code in error_field_codes(line)
+                   if _LONG_CODE_VALUE_RE.fullmatch(code.partition("=")[2])]
+    codes = list(dict.fromkeys(numeric_codes(line) + field_codes))
+    return _with_codes(_collapse(normalized), codes)
+
+
+def _with_codes(normalized: str, codes: list[str]) -> str:
     if not codes:
         return normalized
     return f"{normalized} <codes:{'|'.join(sorted(codes[:_MAX_CODES]))}>"
@@ -256,9 +284,9 @@ def _has_signal_words(text: str) -> bool:
     return sum(word not in NON_CODE_PREFIXES for word in words) >= 2
 
 
-def _unique(lines: list[str]) -> list[str]:
+def _unique(lines: list[str], view: Callable[[str], str] = _soft) -> list[str]:
     """Строки в виде сигнатуры: без повторов и по порядку — не зависят от числа повторов."""
-    return sorted({_soft(line) for line in lines} - {""})
+    return sorted({view(line) for line in lines} - {""})
 
 
 def _message_part(message: str) -> str:
@@ -394,7 +422,8 @@ def _log_anchor(log: str) -> _LogAnchor:
                     errors.append(line)
                 else:
                     plain.append(line)
-    return _LogAnchor(_unique(causes), _unique(errors), _unique(plain))
+    return _LogAnchor(_unique(causes, _soft_log), _unique(errors, _soft_log),
+                      _unique(plain, _soft_log))
 
 
 def _log_part(

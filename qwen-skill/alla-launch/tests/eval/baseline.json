@@ -343,7 +343,7 @@
       "precision": 1.0,
       "recall": 1.0,
       "signature_log_clusters": 2,
-      "signature_log_unstable": 1,
+      "signature_log_unstable": 0,
       "signature_shared": 0,
       "signature_shared_wrong": 0,
       "tests": 4
