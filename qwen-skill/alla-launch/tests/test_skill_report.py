@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -811,6 +812,17 @@ def test_problems_with_an_agent_fix_are_not_merged(tmp_path: Path) -> None:
         full, "Автотест сломан, но править вручную")
     assert merged_count(run, related, {"01"}) == 2
     assert merged_count(run, related, set()) == 1
+
+
+def test_confirmed_finding_without_details_is_saved(tmp_path: Path) -> None:
+    from datetime import date
+
+    from alla_skill_lib.confirmed import save_confirmed
+
+    finding = {"category": "приложение", "title": "NPE", "cause": "NPE без customer",
+               "fix": ["Вернуть проверку"]}
+    path = save_confirmed(RunPaths(tmp_path), "01", "sut-code", finding, "npe", date(2026, 10, 15))
+    assert json.loads(path.read_text(encoding="utf-8"))["details"] == []
 
 
 def test_brief_with_merged_problems_keeps_its_ceiling(tmp_path: Path) -> None:

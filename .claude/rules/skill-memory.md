@@ -184,6 +184,18 @@ paths:
 (`БАЗА ЗНАНИЙ:` того же `kb_dir`), вывод просит выполнить `next` (`_report_refresh`) — так
 группа известной проблемы распадается после `reject`.
 
+Третий источник `remember` — `--from-extension <имя>` (взаимоисключающий с
+`--from-analysis`): последний `extensions/<имя>/*-NN.finding.json` (`confirmed.find_finding`),
+проверка формы, `format_ok`, категории и секретов — `confirmed.check_finding`; признак —
+признак кластера. Отказы здесь — `error` без «Попытки N из 3»: вывод расширения модель не
+перепишет. `kb_fields` вывода — своё поле записи `<имя>` (`KBRecord.extra`, с `confirmed` и
+`launch_id`), `confirmed/NN.json` — для отчёта (`skill-analysis.md`), поэтому ответ всегда
+просит `next`. Общий путь трёх источников — `feedback._Input`. Подтверждение снимается
+(`confirmed.drop_confirmed`, ответ просит `next`): `remember` без `--from-extension` по той
+же проблеме — пользователь поправил причину, а прежний `confirmed/NN.json` показывал бы
+старую как подтверждённую (ревью Codex); `reject` записи, в которую подтверждение сохранено
+(`kb_entry`).
+
 ## История (`history`)
 
 - `alla-reports/history.jsonl` (локально). Повторы — по точной сигнатуре или записи базы

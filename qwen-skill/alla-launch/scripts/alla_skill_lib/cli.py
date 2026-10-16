@@ -35,7 +35,7 @@ import shutil
 import sys
 import time
 from collections.abc import Iterator
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -82,6 +82,7 @@ from alla_skill_lib.cluster_task import (
     select_log_and_trace,
 )
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
+from alla_skill_lib.confirmed import load_confirmed
 from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
 from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, reject
 from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
@@ -120,7 +121,9 @@ from alla_skill_lib.qwen_files import (
     install_batch_agent,
     install_commands,
     install_extension_agent,
+    install_extension_command,
     remove_extension_agent,
+    remove_extension_command,
 )
 from alla_skill_lib.related import (
     RELATED_FORMAT,
@@ -300,7 +303,8 @@ def _dispatch(argv: list[str] | None) -> int:
         return cmd_clean(reports_dir, args.older_than_days, dry_run=args.dry_run)
     if args.command == "remember":
         return _cluster_command(args, reports_dir, lambda paths, run, entry: remember(
-            paths, run, entry, args.entry, date.today(), from_analysis=args.from_analysis
+            paths, run, entry, args.entry, date.today(), from_analysis=args.from_analysis,
+            from_extension=args.from_extension,
         ))
     if args.command == "reject":
         return _cluster_command(args, reports_dir, lambda paths, run, entry: reject(
@@ -419,10 +423,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="сохранить причину и рецепт из обратной связи в базу знаний проекта",
     )
     keep.add_argument("--entry", help="id существующей записи, которую нужно обновить")
-    keep.add_argument(
+    source = keep.add_mutually_exclusive_group()
+    source.add_argument(
         "--from-analysis",
         action="store_true",
         help="сохранить разбор модели как есть (пользователь подтвердил его без правок)",
+    )
+    source.add_argument(
+        "--from-extension", metavar="ИМЯ",
+        help="сохранить вывод расширения по проблеме (пользователь подтвердил его) — в базу "
+             "знаний и в отчёт",
     )
     drop = commands.add_parser(
         "reject", parents=[common, run_option],
@@ -461,11 +471,14 @@ def _build_parser() -> argparse.ArgumentParser:
         toggle.add_argument("name", help="имя расширения")
     again = ext_commands.add_parser(
         "run", parents=[common],
-        help="повторить хук расширения: с номером проблемы — after_apply, без — after_report",
+        help="запустить расширение по просьбе пользователя (on_request) или повторить его хук: "
+             "с номером проблемы — after_apply, без — after_report",
     )
     again.add_argument("name", help="имя расширения")
-    again.add_argument("cluster", nargs="?", help="номер проблемы с применённой правкой")
+    again.add_argument("clusters", nargs="*", metavar="N", help="номера проблем")
     again.add_argument("--run", required=True, help="папка разбора")
+    again.add_argument("--param", action="append", default=[], metavar="КЛЮЧ=ЗНАЧЕНИЕ",
+                       help="параметр запроса для on_request (можно несколько)")
     action = ext_commands.add_parser(
         "action", parents=[common],
         help="выполнить действие расширения (из его задания); аргументы скрипта — после --",
@@ -718,6 +731,7 @@ def _write_run(
         "launch_id": triage.launch_id,
         "launch_name": triage.launch_name,
         "launch_url": f"{settings.endpoint.rstrip('/')}/launch/{triage.launch_id}",
+        "launch_created": _launch_created(triage.launch_created_ms),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "project_root": str(project_root),
         "kb_dir": str(kb_dir),
@@ -743,6 +757,13 @@ def _write_run(
     }
     ws.write_json(paths.run_json, run)
     return run
+
+
+def _launch_created(created_ms: int | None) -> str | None:
+    """Время запуска прогона из TestOps (миллисекунды эпохи) — ISO 8601 в UTC."""
+    if created_ms is None:
+        return None
+    return datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc).isoformat(timespec="seconds")
 
 
 def _member_full_names(
@@ -941,7 +962,9 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
 
     known = known_issues(run, analyses, flagged, paths)
     notes += known.notes
-    related_outcome = _related_step(paths, state, run, analyses, flagged, known, project_root)
+    confirmed = load_confirmed(paths, run)
+    related_outcome = _related_step(paths, state, run, analyses, flagged, known, project_root,
+                                    set(confirmed))
     if isinstance(related_outcome, tuple):
         return related_outcome
     related = related_outcome or Related()
@@ -954,7 +977,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     }
     # Проблемы с правкой агента в отчёте не объединяются: у каждой своя команда apply.
     separate = {file_id for file_id, state in states.items() if state != "unknown"}
-    summary_data = build_summary_data(run, analyses, flagged, known, related, separate)
+    summary_data = build_summary_data(run, analyses, flagged, known, related, separate, confirmed)
     summary_hash = hashlib.sha256(summary_data.encode("utf-8")).hexdigest()
     previous_hash = state.get("summary_data_hash")
     summary = ws.read_text(paths.summary) if paths.summary.is_file() else ""
@@ -977,7 +1000,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
 
     console, full = render_report(
         run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed, known,
-        related,
+        related, confirmed,
     )
     ws.write_text(paths.report, full)
     # Уже применённую или неоднозначную правку повторно не предлагаем.
@@ -1130,6 +1153,7 @@ def _related_step(
     flagged: set[str],
     known: KnownIssues,
     project_root: Path,
+    confirmed: set[str],
 ) -> tuple[str, str] | Related | None:
     """Шаг «похожие проблемы»: (статус, текст), подтверждённые группы или None (отброшено).
 
@@ -1137,7 +1161,9 @@ def _related_step(
     групп (``state.related_data_hash``): иначе ``related.md`` удаляется и просится заново.
     """
     current_kb = current_kb_matches(run, paths)
-    groups = candidate_groups(run, analyses, flagged, project_root, known, current_kb)
+    # Подтверждённые инженером проблемы не сравниваются: их причина известна (до задания —
+    # иначе после remember --from-extension next снова просил бы сравнить и их).
+    groups = candidate_groups(run, analyses, flagged, project_root, known, current_kb, confirmed)
     if not groups:
         paths.related.unlink(missing_ok=True)
         # Оба поля — независимо: иначе review показал бы числа исчезнувших групп.
@@ -1178,11 +1204,11 @@ def _related_step(
             f"Затем выполни: {paths.next_command()}",
         ])
     related = related_groups(decision, run)
-    confirmed = {"confirmed_groups": len(related.groups),
-                 "confirmed_problems": sum(len(group.file_ids) for group in related.groups)}
+    decided = {"confirmed_groups": len(related.groups),
+               "confirmed_problems": sum(len(group.file_ids) for group in related.groups)}
     stats = state.get("related") or {}
-    if any(stats.get(key) != value for key, value in confirmed.items()):
-        state["related"] = {**stats, **confirmed}
+    if any(stats.get(key) != value for key, value in decided.items()):
+        state["related"] = {**stats, **decided}
         ws.write_json(paths.state_json, state)
     return related
 
@@ -1405,6 +1431,9 @@ def _done_body(
             f"  файл обратной связи: {paths.root / 'feedback'}/NN.md",
             f"  {ws.skill_command('remember', 'N', '--run', run)}",
             f"  разбор подтверждён как есть: {ws.skill_command('remember', 'N', '--run', run, '--from-analysis')}",
+            "  вывод расширения подтверждён (ответ субагента расширения по проблеме N просил "
+            "подтвердить, пользователь согласился) — вместо --from-analysis: "
+            f"{ws.skill_command('remember', 'N', '--run', run, '--from-extension', '<имя расширения>')}",
             f"  известная проблема не подходит: {ws.skill_command('reject', 'N', '<id>', '--run', run)}",
         ]
     return "\n".join(lines)
@@ -1537,7 +1566,7 @@ def _apply(
     if result.changed:
         # Порядок как в SKILL.md (раздел 4): правка применена → расширения → предложить тест.
         hooks = ext.block(ext.fire("after_apply", paths, run, {
-            "problem": ext.problem_context(paths, entry, _load_apply_record(paths, file_id)),
+            "problem": ext.problem_context(paths, entry, _load_apply_record(paths, file_id), run),
         }))
         return "applied", "\n".join([
             result.text,
@@ -1602,7 +1631,7 @@ def _revert(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> t
     if result.status != "reverted":
         return result.status, result.text
     hooks = ext.block(ext.fire("after_revert", paths, run, {
-        "problem": ext.problem_context(paths, entry, record),
+        "problem": ext.problem_context(paths, entry, record, run),
     }))
     return result.status, result.text + ("\n" + hooks if hooks else "")
 
@@ -1646,7 +1675,9 @@ def cmd_extensions(args: argparse.Namespace, project_root: Path, reports_dir: Pa
         elif command in ("enable", "disable"):
             status, body = "ok", _extensions_toggle(project_root, args.name, command == "enable")
         elif command == "run":
-            status, body = "ok", _extensions_run(args.name, args.cluster, args.run, reports_dir)
+            status, body = "ok", _extensions_run(
+                args.name, args.clusters, args.run, reports_dir, ext.parse_params(args.param)
+            )
         else:
             status, body = ext.run_action(
                 project_root, reports_dir, args.name, args.action, args.context, args.extra
@@ -1674,7 +1705,8 @@ def _extensions_list(project_root: Path) -> str:
         if extension.overrides_bundled:
             origin += ", заменяет встроенное"
         about = f". {extension.description}" if extension.description else ""
-        lines.append(f"- {name} — {state} ({origin}): {extension.title}{about}")
+        commands = "".join(f" Команда: /alla:{command}." for command in extension.commands)
+        lines.append(f"- {name} — {state} ({origin}): {extension.title}{about}{commands}")
     for name, error in sorted(catalog.errors.items()):
         lines.append(f"- {name} — не работает: {error}")
     for name in sorted(enabled - set(catalog.extensions) - set(catalog.errors)):
@@ -1704,7 +1736,11 @@ def _extensions_toggle(project_root: Path, name: str, on: bool) -> str:
                 f"Расширения {name} нет. Список: {ws.skill_command('extensions', 'list')}"
             )
         # Неверные настройки в config.toml видны сразу, а не при первом событии.
-        settings = ext.resolved_settings(extension, ext.load_config(project_root))
+        config = ext.load_config(project_root)
+        settings = ext.resolved_settings(extension, config)
+        conflict = ext.command_conflict(extension, catalog, config)
+        if conflict:  # до записи config.toml и файлов команд: чужая команда не затирается
+            raise ext.ExtensionError(f"Расширение {name} не включено: {conflict}")
     changed = ext.set_enabled(project_root, name, on)
     verb = "включено" if on else "выключено"
     lines = [
@@ -1722,6 +1758,20 @@ def _extensions_toggle(project_root: Path, name: str, on: bool) -> str:
             lines.append(
                 f"Файл субагента .qwen/agents/{extension.agent_name}.md изменён вручную — не удаляю."
             )
+    if extension is not None and extension.commands:
+        names = ", ".join(f"/alla:{command}" for command in extension.commands)
+        if on:
+            for command, source in extension.commands.items():
+                install_extension_command(project_root, source, command)
+            lines.append(
+                f"Команды {names} установлены в .qwen/commands/alla/: Qwen Code увидит их после "
+                "перезапуска сеанса."
+            )
+        else:
+            kept = [f"/alla:{command}" for command, source in extension.commands.items()
+                    if remove_extension_command(project_root, source, command) == "kept"]
+            if kept:
+                lines.append(f"Команды {', '.join(kept)} изменены вручную — не удаляю.")
     if on and settings:
         lines.append(
             f"Настройки (меняются в таблице [{name}] файла {ext.CONFIG_FILE}): "
@@ -1732,12 +1782,27 @@ def _extensions_toggle(project_root: Path, name: str, on: bool) -> str:
     return "\n".join(lines)
 
 
-def _extensions_run(name: str, cluster: str | None, run_dir: str, reports_dir: Path) -> str:
-    """Повторить хук расширения (пользователь просит повторить его действие)."""
+def _extensions_run(
+    name: str,
+    clusters: list[str],
+    run_dir: str,
+    reports_dir: Path,
+    params: dict[str, list[str]],
+) -> str:
+    """Запустить расширение по просьбе пользователя (``on_request``) или повторить его хук."""
     paths = ws.resolve_run(run_dir, reports_dir)
     run = ws.read_json(paths.run_json)
     project_root = Path(run["project_root"])
-    ext.find_active(project_root, name)
+    extension, _ = ext.find_active(project_root, name)
+    if extension.hooks_for(ext.REQUEST_EVENT):
+        return _extensions_request(extension, clusters, paths, run, params)
+    if params:
+        raise ext.ExtensionError(
+            f"У расширения {name} нет хука {ext.REQUEST_EVENT} — параметры --param ему не передать."
+        )
+    if len(clusters) > 1:
+        raise ext.ExtensionError("Повтор хука — для одной проблемы за раз.")
+    cluster = clusters[0] if clusters else None
     if cluster is None:
         status, body = _next_step(paths, [])
         if status != "done":
@@ -1761,20 +1826,55 @@ def _extensions_run(name: str, cluster: str | None, run_dir: str, reports_dir: P
             )
         event = "after_apply"
         lines = ext.fire(event, paths, run, {
-            "problem": ext.problem_context(paths, entry, _load_apply_record(paths, file_id)),
+            "problem": ext.problem_context(paths, entry, _load_apply_record(paths, file_id), run),
         }, only={name})
     return ext.block(lines) or f"У расширения {name} нет хука на событие {event}."
 
 
+def _extensions_request(
+    extension: ext.Extension,
+    clusters: list[str],
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    params: dict[str, list[str]],
+) -> str:
+    """Событие ``on_request``: по пункту блока «Расширения:» на каждую названную проблему."""
+    if not clusters:
+        raise ext.ExtensionError(
+            f"Назови номер проблемы из отчёта: {ws.skill_command('extensions', 'run', extension.name, 'N', '--run', str(paths.root))}"
+        )
+    entries = []
+    for cluster in dict.fromkeys(clusters):
+        entry = find_entry(run, cluster)
+        if entry is None:
+            raise ext.ExtensionError(f"В разборе {paths.root} нет проблемы №{cluster}.")
+        entries.append(entry)
+    lines: list[str] = []
+    for entry in entries:
+        lines += ext.fire(ext.REQUEST_EVENT, paths, run, {
+            "problem": ext.problem_context(
+                paths, entry, _load_apply_record(paths, entry["file_id"]), run),
+            "params": params,
+        }, only={extension.name})
+    return ext.block(lines)
+
+
 def _install_extension_agents(project_root: Path) -> None:
+    """Субагенты и слэш-команды включённых расширений — в ``.qwen/`` проекта."""
     for extension, _ in ext.active(project_root).extensions:
-        if extension.agent is None:
-            continue
-        if install_extension_agent(project_root, extension.agent, extension.agent_name):
+        if extension.agent is not None and install_extension_agent(
+            project_root, extension.agent, extension.agent_name
+        ):
             _progress(
                 f"Установлен субагент расширения {extension.agent_name} (Qwen Code увидит его со "
                 "следующего сеанса)."
             )
+        for name, source in extension.commands.items():
+            if install_extension_command(project_root, source, name):
+                _progress(
+                    f"Установлена команда /alla:{name} расширения {extension.name} (Qwen Code "
+                    "увидит её со следующего сеанса)."
+                )
 
 
 def _with_report_hooks(paths: ws.RunPaths, body: str) -> str:
@@ -1816,15 +1916,18 @@ def _report_data(paths: ws.RunPaths, run: dict[str, Any], body: str) -> dict[str
     _, _, rest = body.partition(REPORT_BEGIN + "\n")
     console, _, _ = rest.partition("\n" + REPORT_END)
     problems = []
+    confirmed = load_confirmed(paths, run)
     for entry in run["clusters"]:
         path = paths.analysis(entry["file_id"])
         analysis = parse_analysis(ws.read_text(path)) if path.is_file() else None
+        sure = confirmed.get(entry["file_id"])
         problems.append({
             "number": int(entry["file_id"]),
             "label": " ".join(str(entry.get("label", "")).split()),
             "tests": entry.get("member_count"),
-            "category": analysis.category if analysis else None,
-            "cause": analysis.cause if analysis else "",
+            "category": sure["category"] if sure else analysis.category if analysis else None,
+            "cause": sure["cause"] if sure else analysis.cause if analysis else "",
+            "confirmed": sure is not None,
         })
     return {"console": console, "problems": problems}
 

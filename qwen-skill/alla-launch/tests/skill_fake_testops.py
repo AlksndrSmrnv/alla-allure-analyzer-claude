@@ -16,6 +16,8 @@ import pytest
 
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
 TOKEN = "secret-api-token-4242"
+# 2026-09-01 10:00:00 UTC — время запуска фейковых прогонов.
+LAUNCH_CREATED_MS = 1788256800000
 
 ORDER_TRACE = (
     "java.lang.AssertionError: expected: <200> but was: <500>\n"
@@ -90,7 +92,7 @@ def default_launch(launch_id: int = 777) -> LaunchFixture:
         "statusDetails": {"message": "expected: <200> but was: <500>"},
     }
     return LaunchFixture(
-        launch={"id": launch_id, "name": "Regression nightly", "projectId": 5},
+        launch={"id": launch_id, "name": "Regression nightly", "projectId": 5, "createdDate": LAUNCH_CREATED_MS},
         results=results,
         executions={101: [step], 102: [step]},
         details={108: {"id": 108, "name": "silent", "status": "failed"}},
@@ -127,7 +129,7 @@ def many_launch(count: int, launch_id: int = 900) -> LaunchFixture:
             "statusDetails": {"message": message},
         }]
     return LaunchFixture(
-        launch={"id": launch_id, "name": "Big regression", "projectId": 5},
+        launch={"id": launch_id, "name": "Big regression", "projectId": 5, "createdDate": LAUNCH_CREATED_MS},
         results=results,
         executions=executions,
     )
@@ -143,7 +145,7 @@ def test_bug_launch(launch_id: int = 782) -> LaunchFixture:
         "(contract v2: POST /orders returns 201)\n"
     )
     return LaunchFixture(
-        launch={"id": launch_id, "name": "Orders smoke", "projectId": 5},
+        launch={"id": launch_id, "name": "Orders smoke", "projectId": 5, "createdDate": LAUNCH_CREATED_MS},
         results=[
             {
                 "id": 201,
@@ -166,7 +168,7 @@ def test_bug_launch(launch_id: int = 782) -> LaunchFixture:
 
 def green_launch() -> LaunchFixture:
     return LaunchFixture(
-        launch={"id": 778, "name": "Smoke", "projectId": 5},
+        launch={"id": 778, "name": "Smoke", "projectId": 5, "createdDate": LAUNCH_CREATED_MS},
         results=[
             {"id": 201, "name": "a", "status": "passed"},
             {"id": 202, "name": "b", "status": "passed"},
@@ -184,7 +186,7 @@ INFO_ONLY_LOG = (
 def info_only_launch(launch_id: int = 779) -> LaunchFixture:
     """Падение без симптома: ни сообщения, ни стека, в логе только INFO (сценарий E03)."""
     return LaunchFixture(
-        launch={"id": launch_id, "name": "Payments nightly", "projectId": 5},
+        launch={"id": launch_id, "name": "Payments nightly", "projectId": 5, "createdDate": LAUNCH_CREATED_MS},
         results=[
             {"id": 301, "name": "payByCard",
              "fullName": "ru.company.payments.PaymentTest.payByCard", "status": "failed"},
@@ -210,7 +212,7 @@ def scant_launch(launch_id: int = 781) -> LaunchFixture:
         "\tat ru.company.reports.ReportTest.exportMonthly(ReportTest.java:12)\n"
     )
     return LaunchFixture(
-        launch={"id": launch_id, "name": "Reports nightly", "projectId": 5},
+        launch={"id": launch_id, "name": "Reports nightly", "projectId": 5, "createdDate": LAUNCH_CREATED_MS},
         results=[
             {"id": 401, "name": "exportMonthly",
              "fullName": "ru.company.reports.ReportTest.exportMonthly", "status": "failed",

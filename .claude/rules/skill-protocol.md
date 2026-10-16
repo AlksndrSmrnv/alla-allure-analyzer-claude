@@ -67,7 +67,7 @@ paths:
 `verify N [N…] --run DIR`, `skip N --run DIR`, `check`, `clean`,
 `review [run_dir | --run DIR] [--no-model]`,
 `apply N --run DIR [--yes --diff ХЭШ] [--repeat]`, `revert N --run DIR`,
-`remember N --run DIR [--entry ID] [--from-analysis]`, `reject N <id> --run DIR`,
+`remember N --run DIR [--entry ID] [--from-analysis | --from-extension ИМЯ]`, `reject N <id> --run DIR`,
 `extensions [list|enable|disable|run|action]` (`skill-extensions.md`).
 
 - Где в синтаксисе есть `--run DIR`, он обязателен: `.last_run` после нового `prepare`
@@ -90,7 +90,7 @@ paths:
 - Продолжает свежий (<24 ч) незавершённый разбор того же прогона без обращения к TestOps;
   `--fresh` — начать заново.
 - Папку с пустым или оборванным `run.json` (`ws.read_run`) или с другой версией
-  (`schema` ≠ `RUN_SCHEMA`, сейчас 4) пропускает: берёт другую свежую либо начинает новую.
+  (`schema` ≠ `RUN_SCHEMA`, сейчас 5) пропускает: берёт другую свежую либо начинает новую.
   Остальные команды на такой папке дают `error` с готовой командой `prepare <id> --fresh`.
   Совместимости со старыми папками нет: поддерживается только текущий формат.
 - Пустой `state.json` не роняет `next`: счётчики начинаются заново.
@@ -163,6 +163,12 @@ paths:
   Поведение после правки правил проверяй сценарием P04 стенда. Поиск файлов (glob, grep)
   запрещён тем же списком: модель искала код проекта сама (E07, E10); на стенде это ловит
   проверка `no_code_search`, а чтение кода не из «Где искать код автотеста» — `listed_code_only`.
+  Копия кода приложения расширения `sut-code` (`SUT_DIRNAME` = `.alla-sut/<репо>/trees/<sha>/`)
+  — исключение `listed_code_only`: её читает только субагент (`ToolCall.subagent`) и только
+  в деревьях ревизий (`sut_read_problem`). Искать по ней `glob`/`grep_search` нельзя
+  (`no_code_search`): поиск Qwen уважает `.gitignore` копии и молча вернул бы пусто
+  (исходники Qwen Code 0.25: ripgrep без `--no-ignore-vcs`; `read_file` смотрит только
+  `.qwenignore`), поэтому поиск — действие расширения `search`.
 - Один и тот же текст правил — `alla_skill_lib/agent_rules.py` (`EXECUTOR_RULES`): он
   подставляется в `clusters/NN.md`, `batches/N.md`, `relate_task.md`, `summary_task.md` и
   повторён в `SKILL.md`.

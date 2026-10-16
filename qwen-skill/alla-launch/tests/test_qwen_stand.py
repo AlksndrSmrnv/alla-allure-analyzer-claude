@@ -19,6 +19,7 @@ from qwen_stand import (
     KNOWLEDGE,
     KNOWLEDGE_TARGETS,
     SCENARIOS,
+    STAND_SUT,
     Context,
     build_project,
     parse_traces,
@@ -74,6 +75,24 @@ def test_build_project_is_committed_and_hides_env(tmp_path: Path) -> None:
     assert ".venv" not in tracked
     assert not any(name.endswith(".env") for name in tracked)
 
+
+
+def test_sut_scenarios_get_the_app_repository(tmp_path: Path) -> None:
+    """X02–X04: bare-репозиторий приложения внутри проекта, sut-code включён с ним, /alla:code
+    установлена; проект после этого чистый (копия .alla-sut/ сама себя исключает из git)."""
+    project = build_project(tmp_path, "http://127.0.0.1:1", venv=None,
+                            extensions=("sut-code",), sut_repo=True)
+    bare = project / STAND_SUT
+    refs = subprocess.run(["git", "-C", str(bare), "for-each-ref", "--format=%(refname:short)"],
+                          capture_output=True, text=True, check=True).stdout.split()
+    assert {"main", "release/1.4", "v1.4.0", "v1.4.2"} <= set(refs)
+    config = (project / "alla-extensions" / "config.toml").read_text(encoding="utf-8")
+    assert f'repos = ["orders={bare}"]' in config and "allow_local = true" in config
+    assert (project / ".qwen" / "commands" / "alla" / "code.md").is_file()
+    assert (project / ".qwen" / "agents" / "alla-sut-code.md").is_file()
+    status = subprocess.run(["git", "-C", str(project), "status", "--porcelain"],
+                            capture_output=True, text=True, check=True).stdout
+    assert status == ""
 
 
 def test_install_scenario_project_has_no_env(tmp_path: Path) -> None:
@@ -212,6 +231,33 @@ def test_only_listed_code_files_are_opened(tmp_path: Path, path: str, status: st
         (ctx.project / name).parent.mkdir(parents=True, exist_ok=True)
         (ctx.project / name).write_text("x")
     assert CHECKS["listed_code_only"](ctx)["status"] == status
+
+
+SUT_FILE = ".alla-sut/orders/trees/a1b2c3d4e5f6/src/main/java/ru/company/OrderService.java"
+
+
+@pytest.mark.parametrize(("call", "subagent", "check", "status"), [
+    # Субагент sut-code читает дерево ревизии приложения — это его работа.
+    (("read_file", {"file_path": SUT_FILE}, ""), True, "listed_code_only", "pass"),
+    (("read_file", {"file_path": SUT_FILE}, ""), True, "allowed_reads", "pass"),
+    # Основной агент код приложения не читает: это делает только субагент расширения.
+    (("read_file", {"file_path": SUT_FILE}, ""), False, "listed_code_only", "fail"),
+    # Служебные файлы копии (bare-репозиторий) — не код ревизии.
+    (("read_file", {"file_path": ".alla-sut/orders/repo.git/config"}, ""), True,
+     "listed_code_only", "fail"),
+    # Поиск Qwen уважает .gitignore и в копии молча ничего не найдёт: поиск — действием.
+    (("grep_search", {"pattern": "customer", "path": ".alla-sut/orders/trees/a1b2c3d4e5f6"}, ""),
+     True, "no_code_search", "fail"),
+    (("glob", {"pattern": ".alla-sut/**/*.java"}, ""), True, "no_code_search", "fail"),
+])
+def test_app_code_copy_rules(tmp_path: Path, call: tuple[str, dict[str, Any], str],
+                             subagent: bool, check: str, status: str) -> None:
+    ctx = context(tmp_path, events(call, subagent=subagent))
+    for name in (SUT_FILE, ".alla-sut/orders/repo.git/config"):
+        (ctx.project / name).parent.mkdir(parents=True, exist_ok=True)
+        (ctx.project / name).write_text("x")
+    result = CHECKS[check](ctx)
+    assert result["status"] == status, result
 
 
 @pytest.mark.parametrize(("arguments", "check"), [
@@ -527,7 +573,7 @@ def _scant_run(tmp_path: Path, analysis: str | None, attempts: int = 0, *,
                skipped: bool = False, written_by_model: bool = True) -> Context:
     run_dir = tmp_path / "p" / "alla-reports" / "781-20261004-100000"
     (run_dir / "analyses").mkdir(parents=True)
-    (run_dir / "run.json").write_text(json.dumps({"schema": 4, "clusters": [
+    (run_dir / "run.json").write_text(json.dumps({"schema": 5, "clusters": [
         {"file_id": "01", "auto": False}]}), encoding="utf-8")
     state: dict[str, Any] = {"attempts": {"01": {"count": attempts}} if attempts else {}}
     if skipped:

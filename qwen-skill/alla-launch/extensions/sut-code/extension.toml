@@ -1,0 +1,37 @@
+# Встроенное расширение alla-launch: разбор проблемы по коду тестируемого приложения.
+# Включить:  python3 .qwen/skills/alla-launch/scripts/alla_skill.py extensions enable sut-code
+# Настройки — в <проект>/alla-extensions/config.toml, таблица [sut-code].
+
+name = "sut-code"
+title = "Разбор по коду приложения"
+description = "По просьбе находит причину проблемы в коде тестируемого приложения: ревизия, место, совет, нужен ли дефект"
+api = 1
+agent = "agent.md"
+# Qwen обрывает команду через 120 с: скрипт укладывается раньше, долгий клон идёт в фоне.
+timeout = 110
+commands = ["commands/code.md"]
+
+[settings]
+repos = []                # ссылки на git приложения (ssh или https); «имя=ссылка» — со своим именем
+default_branch = ""       # основная ветка; пусто — ветка HEAD на сервере
+keep_trees = 3            # сколько ревизий держать распакованными на каждый репозиторий (+ использованные за час)
+max_reads = 15            # сколько файлов кода субагент может открыть за разбор
+hint = true               # после отчёта подсказывать проблемы для разбора по коду
+allow_local = false       # локальные пути вместо ссылок — только для тестов и стенда
+
+[[hooks]]
+event = "on_request"
+task = "task.md"
+
+[[hooks]]
+event = "after_report"
+script = "scripts/hint.py"
+
+[actions]
+prepare = "scripts/prepare.py"
+search = "scripts/search.py"
+files = "scripts/files.py"
+switch = "scripts/switch.py"
+history = "scripts/history.py"
+compare = "scripts/compare.py"
+check = "scripts/check.py"

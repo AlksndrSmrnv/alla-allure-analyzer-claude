@@ -25,9 +25,10 @@ LAST_RUN_FILE = ".last_run"
 SKILL_PROBLEMS_FILE = "skill-problems.md"
 RESUME_WINDOW_HOURS = 24  # неоконченный разбор того же прогона продолжается, а не дублируется
 # Версия папки разбора. Папку другой версии не продолжить: поддерживается только текущий
-# формат (4: лог только операции теста — ``operation_ids``, ``operation_logs``,
+# формат (5: ``launch_created`` — время запуска прогона, подтверждённые выводы расширений
+# ``confirmed/``; 4: лог только операции теста — ``operation_ids``, ``operation_logs``,
 # ``foreign_log_events`` у тестов; 3: наблюдения с реестром источников, примеры, повторы).
-RUN_SCHEMA = 4
+RUN_SCHEMA = 5
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,14 @@ class RunPaths:
 
     def feedback(self, file_id: str) -> Path:
         return self.root / "feedback" / f"{file_id}.md"
+
+    def extension_dir(self, name: str) -> Path:
+        """Папка расширения в разборе: контексты, задания и итоги его хуков."""
+        return self.root / "extensions" / name
+
+    def confirmed(self, file_id: str) -> Path:
+        """Вывод расширения, который пользователь подтвердил (``remember --from-extension``)."""
+        return self.root / "confirmed" / f"{file_id}.json"
 
     def next_command(self) -> str:
         return skill_command("next", str(self.root))

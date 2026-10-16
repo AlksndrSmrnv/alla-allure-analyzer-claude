@@ -5,6 +5,7 @@ paths:
   - "qwen-skill/alla-launch/commands/alla/extensions.md"
   - "qwen-skill/alla-launch/tests/test_skill_extensions.py"
   - "qwen-skill/alla-launch/tests/test_ext_git_publish.py"
+  - "qwen-skill/alla-launch/tests/test_ext_sut_code.py"
 ---
 
 # Расширения скилла (`extensions.py`, `extensions/`)
@@ -36,6 +37,16 @@ paths:
   расширениях: сломанное исключено из активных, и его хук иначе молча не сработал бы.
   Отметки пишутся и при пустом выводе хуков: молчаливый хук отчёта тоже не повторяется. Повтор —
   `extensions run <имя> [N]`: `after_apply` только для правки в состоянии `applied`.
+- `on_request` (`REQUEST_EVENT`) — функция по просьбе пользователя: если у расширения есть
+  этот хук, `extensions run <имя> N [N…] --run DIR [--param k=v…]` (`cli._extensions_request`)
+  стреляет им по разу на каждую названную проблему (дубли номеров убираются, номер обязателен,
+  правка и `done` не нужны), `confirm` не спрашивается. Без хука `run` — прежний повтор, а
+  `--param` и несколько N — ошибка. `parse_params`: ключ `[a-z][a-z0-9_]*`, значение — одна
+  строка до 500 символов; в контексте `params` — ключ → список значений, в шаблоне
+  `$param_<ключ>` через запятую.
+- Контекст проблемы (`problem_context(paths, entry, record, run)`) несёт `tests` (до 20,
+  представитель первым) и `sources` — куски «Данных» из реестра `evidence/NN.sources.json`
+  (до `MAX_SOURCES_CHARS`); общий контекст — `launch_created` из `run.json` и `params`.
 - Хук `task` — задание субагенту `alla-<имя>` (файл агента расширения, проверяется как
   `alla-batch`): контекст `<папка разбора>/extensions/<имя>/<stem>.json`, задание `<stem>.md`,
   в ответ команды — блок «Расширения:» (`ext.block`) с вызовом `agent` и запасным путём без
@@ -58,6 +69,17 @@ paths:
 - Агенты включённых расширений ставит `enable` и каждый `prepare`
   (`qwen_files.install_extension_agent`); `disable` убирает файл, только если он совпадает с
   нашим.
+- Слэш-команды расширения — `commands = ["commands/<имя>.md"]` в манифесте
+  (`_commands`/`_check_command`: `.md`, имя по `NAME_RE`, `description`,
+  `disable-model-invocation: true`, не пустой текст). Имена команд скилла заняты
+  (`skill_command_names` — из папки рядом с модулем, не из `ws.SKILL_DIR`), одна команда у двух
+  включённых расширений — второе в `Active.problems`. Ставятся тем же путём, что агенты:
+  `enable`/`prepare` → `.qwen/commands/alla/<имя>.md`, `disable` — убрать, если файл наш.
+  Цикл по командам в `_extensions_toggle` — своей переменной (`command`): `name` там — имя
+  расширения, по нему подсказка называет таблицу настроек `[<имя>]`.
+  `enable` поверх занятой команды отказывает (`command_conflict`) до записи `config.toml` и
+  файлов: включённое ставится последним, `active` отдаёт команду первому, и второе затёрло бы
+  чужой файл, оставшись неактивным (ревью Codex).
 - Модель работу расширения не делает: субагент запускает только команду скилла из задания
   (правило «из shell только команды скилла» не ослаблено). `session_rules.WRITABLE_RE`
   разрешает субагенту только `extensions/<имя>/*.txt` (сообщение коммита).
@@ -77,6 +99,55 @@ paths:
 - `after_revert.py` только напоминает о ветке на сервере, ничего не удаляет.
 - Тесты — на настоящем git (`test_ext_git_publish.py`, изолированный `GIT_CONFIG_GLOBAL`);
   поведение модели — сценарий стенда `X01` (фикстура `test_bug`, bare-remote внутри проекта).
+
+## sut-code
+
+Разбор проблемы по коду тестируемого приложения по просьбе пользователя (`/alla:code N
+[ревизия] [ссылка]`, хук `on_request`, субагент `alla-sut-code`). Подсказка после отчёта —
+`scripts/hint.py` (`after_report`, проблемы «приложение»/«неизвестно» без `confirmed`).
+
+- Копия — `<проект>/.alla-sut/` со своим `.gitignore` (`*`): `<имя>-<sha1(url)[:6]>/repo.git` —
+  bare partial clone (`--filter=blob:none`, ветки в `refs/heads/*`), `trees/<sha12>` — `git
+  worktree --detach` (+ `<sha12>.ready`), `lock` — `fcntl` на fetch/worktree. Первый клон и
+  дерево ревизии — фоновая работа (`sutlib.py job`, `start_new_session`, `jobs/<имя>/done|failed`):
+  скрипт ждёт её `WAIT_BUDGET` (70 с), иначе `SutPending` — «повтори через пару минут»; клон
+  идёт во временную папку и переименовывается при успехе. Очистка (`cleanup_trees`,
+  `keep_trees`) не трогает деревья запроса и те, чей `.ready` моложе `TREE_BUSY_SECONDS` (час):
+  каждое действие отмечает дерево (`load_state`), его может читать субагент другого запроса.
+  Дерева запроса нет — `load_state` просит повторить `prepare` (`switch` — `need_trees=False`,
+  он создаёт дерево сам). Дерево — `worktree add` с `-c core.symlinks=false`: символическая
+  ссылка из репозитория приложения (`Service.java → ../../.env`) становится файлом с текстом
+  ссылки, иначе субагент своим чтением файлов и окно кода `prepare` открыли бы файл вне
+  ревизии (ревью Codex); `window` к тому же не читает путь, разрешённый за папку ревизии.
+  Формат распаковки — вторая строка `.ready` (`TREE_FORMAT`, `tree_ready`): дерево без неё
+  распаковано до этого правила и не готово — `ensure_tree` распаковывает заново,
+  `load_state` просит повторить `prepare`, `cleanup_trees` удаляет его, даже свежее и в
+  пределах `keep_trees` (кроме дерева текущего запроса). Тот же формат — в `spec.json`
+  фоновой работы (`Job.format`, `job_format`): работу прежней версии, пережившую таймаут,
+  `ensure_tree` не подхватывает — идущую дожидается (`SutPending`), затем удаляет и
+  распаковывает заново (ревью Codex). Меняя способ распаковки, меняйте `TREE_FORMAT`. `timeout = 110` в манифесте: Qwen
+  обрывает команду на 120 с (`SHELL_COMMAND_TIMEOUT_MS`, исходники Qwen Code 0.25).
+- Ссылки (`check_url`): https/http/ssh и `git@host:path`; без пароля в URL, без `::`, без
+  ведущего «-»; локальный путь — только `allow_local` (тесты, стенд). git — с
+  `protocol.ext.allow=never`, `GIT_TERMINAL_PROMPT=0`, ssh `BatchMode=yes`, если у инженера нет
+  своего `GIT_SSH_COMMAND`/`core.sshCommand`.
+- Ревизия (`prepare.choose_revision`): `--param ref=X` (или `имя=X` для одного репозитория) →
+  ветка, тег `X`/`vX`, коммит; иначе приблизительно — `rev-list -1 --before=<launch_created>`
+  основной ветки (`default_branch` или HEAD bare-копии). Версию из TestOps пока не читаем
+  (решение отложено, план `docs/plans/2026-10-15-sut-code-extension.md`).
+- `prepare` пишет `<stem>.sut.md` (ревизии и папки, места кадров стека всех языков с окнами
+  кода, `git grep -F` постоянных кусков текстов ошибок, куски `[S…]`) и `<stem>.sut-state` (не
+  `.json`: `extensions action` принимает контекстом любой `.json` папки расширения).
+- Поиск — действия `search` (`git grep -F -i`) и `files`: `grep_search`/`glob` Qwen копию не
+  видят. `switch` пересобирает данные на другой ревизии, `history` — `git log -L`/по файлу от
+  ревизии назад, `compare` — коммиты основной ветки после ревизии по файлу.
+- `check` (`RESULT_FORMAT`, повторён в `task.md` и README расширения): место и цитаты кода — в
+  файле ревизии ±3 строки, `[S…]` — в куске данных, коммиты ИСТОРИИ — в репозитории; попытки —
+  `<stem>.check-attempts`, третья принимается с `format_ok = false`. Итог — `result.json`
+  (вход будущего расширения дефектов), `report.md`, `finding.json` (контракт выводов, см.
+  ниже).
+- Тесты — `test_ext_sut_code.py` на настоящем git (репозиторий с тегом, веткой релиза,
+  коммитом с NPE и исправлением после даты прогона).
 
 ## Новое событие или поле
 

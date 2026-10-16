@@ -39,6 +39,11 @@ SEARCHABLE_RUN_DIRS = {"clusters", "analyses", "proposals", "feedback", "batches
 HINTS_HEADING = "--- Где искать код автотеста (пути от корня проекта) ---"
 # Чтение, которое к коду проекта не относится: свои файлы разбора, скилл, база знаний.
 NOT_PROJECT_CODE = ("alla-reports", ".qwen", "alla-kb")
+# Копия кода тестируемого приложения (расширение sut-code): .alla-sut/<репозиторий>/trees/<sha>/.
+# Читать её может только субагент расширения и только в деревьях ревизий; искать по ней
+# инструментами Qwen нельзя (их поиск уважает .gitignore и молча вернул бы пусто) — поиск
+# идёт действием расширения.
+SUT_DIRNAME = ".alla-sut"
 DONE_RE = re.compile(r"^STATUS: done\s*$", re.MULTILINE)
 REPORT_RE = re.compile(r"===ОТЧЁТ===\n(.*?)\n===КОНЕЦ===", re.DOTALL)
 # Блок проблем скилла: агент пишет его в файл папки разбора, пользователю не выводит.
@@ -439,9 +444,19 @@ def listed_code(ctx: RuleContext) -> set[Path]:
             for path in hinted_files(task.read_text(encoding="utf-8"), project)}
 
 
+def sut_read_problem(call: ToolCall, relative: tuple[str, ...]) -> str | None:
+    """Что не так с чтением копии приложения, или None — субагент читает файл дерева ревизии."""
+    if len(relative) < 5 or relative[2] != "trees":
+        return "служебные файлы копии приложения (читать можно только trees/<ревизия>/)"
+    if not call.subagent:
+        return "код приложения читает только субагент расширения"
+    return None
+
+
 def check_listed_code_only(ctx: RuleContext) -> dict[str, Any]:
     """Код проекта открывается только из «Где искать код автотеста»: путь не угадывается
-    (E07: модель читала ReportTest.java по имени из кадра) и посторонний код не читается."""
+    (E07: модель читала ReportTest.java по имени из кадра) и посторонний код не читается.
+    Код приложения (``.alla-sut/``) — только субагентом и только в деревьях ревизий."""
     project = canonical(ctx.project)
     listed = listed_code(ctx)
     opened = []
@@ -455,7 +470,14 @@ def check_listed_code_only(ctx: RuleContext) -> dict[str, Any]:
         for path in targets:
             if not path.is_relative_to(project):
                 continue  # вне проекта — дело allowed_reads
-            if path.relative_to(project).parts[:1] in {(name,) for name in NOT_PROJECT_CODE}:
+            relative = path.relative_to(project).parts
+            if relative[:1] in {(name,) for name in NOT_PROJECT_CODE}:
+                continue
+            if relative[:1] == (SUT_DIRNAME,):
+                problem = sut_read_problem(call, relative)
+                if problem:
+                    return bad(at(call, f"{problem}: {path}"))
+                opened.append(path.relative_to(project).as_posix())
                 continue
             if path not in listed:
                 return bad(at(call, f"файла нет в «Где искать код автотеста»: {path}"))
