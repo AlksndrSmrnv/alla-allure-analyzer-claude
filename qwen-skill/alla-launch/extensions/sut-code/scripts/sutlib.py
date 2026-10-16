@@ -501,13 +501,29 @@ def approximate(repo: Repo, branch: str, launch_created: str | None) -> tuple[st
     return result.stdout.strip(), f"приблизительно: последний коммит ветки {branch}"
 
 
+# Как распаковано дерево — вторая строка ``.ready``. Дерево без неё распаковано до
+# ``core.symlinks=false`` и может содержать настоящие ссылки наружу: оно не готово,
+# ``ensure_tree`` распакует его заново, а ``load_state`` попросит повторить prepare.
+TREE_FORMAT = "symlinks-as-files"
+
+
+def tree_ready(path: Path) -> bool:
+    """Дерево распаковано и распаковано безопасно (``TREE_FORMAT`` в отметке ``.ready``)."""
+    try:
+        lines = ready_mark(path).read_text(encoding="utf-8").split()
+    except OSError:
+        return False
+    return path.is_dir() and TREE_FORMAT in lines[1:]
+
+
 def ensure_tree(repo: Repo, sha: str, deadline: float, allow_local: bool) -> Path:
     """Дерево ревизии (``git worktree --detach``); большое дерево создаётся в фоне."""
     path = repo.tree_path(sha)
     ready = ready_mark(path)
-    if ready.is_file() and path.is_dir():
+    if tree_ready(path):
         os.utime(ready)
         return path
+    ready.unlink(missing_ok=True)  # старое дерево: до распаковки заново оно не готово
     job = Job(repo.folder / "jobs" / f"tree-{sha[:12]}")
     process = None
     if not (job.pid_file.is_file() and job_alive(job)) and not job.done.is_file():
@@ -524,7 +540,7 @@ def ensure_tree(repo: Repo, sha: str, deadline: float, allow_local: bool) -> Pat
         process = start_job(job, allow_local)
     wait_job(job, deadline, process, f"Подготовка ревизии {sha[:8]} копии {repo.name}")
     shutil.rmtree(job.folder, ignore_errors=True)
-    ready.write_text(sha, encoding="utf-8")
+    ready.write_text(f"{sha}\n{TREE_FORMAT}\n", encoding="utf-8")
     return path
 
 
@@ -540,12 +556,16 @@ def ready_mark(tree: Path) -> Path:
 
 def cleanup_trees(repo: Repo, keep: int, in_use: set[Path]) -> None:
     """Оставить ``keep`` последних деревьев (по последнему использованию), те, что в работе у
-    этого запроса, и те, которыми пользовались недавно (``TREE_BUSY_SECONDS``)."""
+    этого запроса, и те, которыми пользовались недавно (``TREE_BUSY_SECONDS``). Дерево прежней
+    распаковки (``tree_ready`` — нет) удаляется всегда: в нём могут быть ссылки наружу, а путь к
+    нему остался в старых данных субагента."""
     marks = sorted(repo.trees.glob("*.ready"), key=lambda mark: mark.stat().st_mtime, reverse=True)
     busy_since = time.time() - TREE_BUSY_SECONDS
-    for mark in marks[max(keep, 1):]:
+    for index, mark in enumerate(marks):
         path = mark.with_suffix("")
-        if path in in_use or mark.stat().st_mtime > busy_since:
+        if path in in_use:
+            continue
+        if tree_ready(path) and (index < max(keep, 1) or mark.stat().st_mtime > busy_since):
             continue
         git(repo.git_dir, "worktree", "remove", "--force", str(path), check=False)
         shutil.rmtree(path, ignore_errors=True)
@@ -587,13 +607,13 @@ def load_state(context_file: Path, *, need_trees: bool = True) -> dict[str, Any]
         raise SutError("ревизии ещё не выбраны — сначала выполни действие prepare из задания")
     for tree in state["trees"]:
         folder = Path(tree["tree"])
-        mark = ready_mark(folder)
-        if folder.is_dir() and mark.is_file():
+        if tree_ready(folder):
             with contextlib.suppress(OSError):
-                os.utime(mark)
+                os.utime(ready_mark(folder))
         elif need_trees:
-            raise SutError(f"папки ревизии {tree['repo']} {str(tree['sha'])[:8]} уже нет (копию "
-                           "почистили) — выполни действие prepare из задания заново")
+            raise SutError(f"папки ревизии {tree['repo']} {str(tree['sha'])[:8]} уже нет или она "
+                           "распакована прежней версией расширения — выполни действие prepare из "
+                           "задания заново")
     return state
 
 

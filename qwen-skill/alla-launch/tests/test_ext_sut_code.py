@@ -460,6 +460,43 @@ def test_symlinks_in_the_app_repo_do_not_leak_local_files(tmp_path: Path) -> Non
     assert sutlib.window(tree, "src/Old.java", 1) == []
 
 
+def test_tree_of_the_previous_version_is_unpacked_again(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str], sut: dict[str, Any],
+    tmp_path: Path,
+) -> None:
+    """Дерево, распакованное до core.symlinks=false (отметка .ready без формата), с настоящей
+    ссылкой наружу: действия его не читают, prepare распаковывает заново, а в данных субагента
+    нет ни строк, ни пути к файлу вне ревизии."""
+    secret = tmp_path / "secret.env"
+    secret.write_text("DB_PASSWORD=hunter2\n", encoding="utf-8")
+    enable(project, capsys, repos=[sut["url"]], allow_local=True)
+    _, context, _ = request(project, capsys, "ref=v1.4.2")
+    assert action(project, capsys, "prepare", context)[0] == 0
+    tree = Path(json.loads(sutlib.state_path(context).read_text(encoding="utf-8"))["trees"][0]["tree"])
+    sutlib.ready_mark(tree).write_text(sut["bug"], encoding="utf-8")  # отметка прежней версии
+    (tree / SERVICE).unlink()
+    os.symlink(secret, tree / SERVICE)
+
+    code, out = action(project, capsys, "files", context, "orderservice")
+    assert code == 1 and "прежней версией расширения" in out and "prepare" in out, out
+    code, out = action(project, capsys, "prepare", context)
+    assert code == 0, out
+    assert not (tree / SERVICE).is_symlink() and sutlib.tree_ready(tree)
+    data = sutlib.data_path(context).read_text(encoding="utf-8")
+    assert "hunter2" not in data and f"Файл: {tree}/{SERVICE}" in data
+    assert (tree / SERVICE).read_text(encoding="utf-8") == SERVICE_BUG
+
+
+def test_cleanup_removes_trees_of_the_previous_version(tmp_path: Path, sut: dict[str, Any]) -> None:
+    repo = sutlib.Repo("orders", sut["url"], tmp_path / ".alla-sut" / "orders-x")
+    sutlib.ensure_clone(repo, time.monotonic() + 30, allow_local=True)
+    old, mine = (sutlib.ensure_tree(repo, sut[key], time.monotonic() + 30, allow_local=True)
+                 for key in ("first", "fix"))
+    sutlib.ready_mark(old).write_text(sut["first"], encoding="utf-8")  # свежее, но прежнее
+    sutlib.cleanup_trees(repo, 3, {mine})
+    assert not old.exists() and (mine / SERVICE).is_file()
+
+
 def test_failed_clone_is_reported(tmp_path: Path) -> None:
     repo = sutlib.Repo("ghost", str(tmp_path / "missing.git"), tmp_path / ".alla-sut" / "ghost-x")
     with pytest.raises(sutlib.SutError, match="не удалось"):
