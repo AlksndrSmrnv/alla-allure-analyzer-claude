@@ -31,6 +31,8 @@ _CORRELATION_KEY_PRIORITY = {
     key: index for index, key in enumerate(_CANONICAL_CORRELATION_KEYS)
 }
 _CORRELATION_KEYS_LOWER: frozenset[str] = frozenset(_CANONICAL_CORRELATION_KEYS)
+# Ключи реестра (lowercase) — для других модулей: id операции не код ошибки (text_normalization).
+CORRELATION_KEYS = _CORRELATION_KEYS_LOWER
 _CORRELATION_VALUE_PATTERN = r"[A-Za-z0-9\-_.]{4,64}"
 _PLACEHOLDER_VALUES: frozenset[str] = frozenset(
     {

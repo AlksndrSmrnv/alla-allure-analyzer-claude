@@ -17,7 +17,7 @@ from alla_core.services.clustering_service import (
     _strip_correlation_only_http_sections,
 )
 from alla_core.utils.message_resources import message_resources
-from alla_core.utils.text_normalization import normalize_text
+from alla_core.utils.text_normalization import normalize_text, normalize_text_for_llm
 
 
 def _failure(
@@ -153,6 +153,22 @@ def test_hyphenless_uuids_are_normalized() -> None:
 
     assert report.cluster_count == 1
     assert report.clusters[0].member_test_ids == [40, 41]
+
+
+@pytest.mark.parametrize(("text", "normalized"), [
+    ("[operUID=op-tr-3001] Response REJECTED", "[operUID=<ID>] Response REJECTED"),
+    ('{"rqUID": "req-30001", "status": 1}', '{"rqUID": "<ID>", "status": 1}'),
+    ("<traceId>t-30001</traceId> ORA-01017", "<traceId><ID></traceId> ORA-<NUM>"),
+    ("requestId=550e8400-e29b-41d4-a716-446655440000", "requestId=<ID>"),
+    # Уже нормализованный текст (признак базы знаний) нормализуется так же.
+    ("[operUID=op-tr-<NUM>] Response REJECTED", "[operUID=<ID>] Response REJECTED"),
+])
+def test_operation_id_values_are_normalized(text: str, normalized: str) -> None:
+    assert normalize_text(text) == normalized
+
+
+def test_operation_id_stays_in_the_text_for_the_model() -> None:
+    assert normalize_text_for_llm("[operUID=op-tr-3001] x") == "[operUID=op-tr-3001] x"
 
 
 def test_empty_messages_fallback_to_trace_and_merge_when_trace_is_similar() -> None:

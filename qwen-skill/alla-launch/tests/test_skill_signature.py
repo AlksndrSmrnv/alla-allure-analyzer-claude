@@ -82,6 +82,20 @@ def test_same_log_error_with_other_time_ids_and_threads_is_one_signature() -> No
             == _signature(ASSERT_500, ASSERT_TRACE, second, test_id=987654))
 
 
+@pytest.mark.parametrize("field", ["[operUID={oper}]", 'rqUID="{oper}"', "<traceId>{oper}</traceId>"])
+def test_operation_id_does_not_change_the_signature(field: str) -> None:
+    def log(oper: str, error: str = "account is closed") -> str:
+        return (f"2026-10-03 12:00:00 [ERROR] {field.format(oper=oper)} c.e.AccountClient - "
+                f"transfer rejected: {error}\n")
+
+    one = _signature(ASSERT_500, ASSERT_TRACE, log("op-tr-3001"))
+    material = _material(ASSERT_500, ASSERT_TRACE, log("op-tr-3001"))
+
+    assert one == _signature(ASSERT_500, ASSERT_TRACE, log("op-tr-3002"), test_id=2)
+    assert one != _signature(ASSERT_500, ASSERT_TRACE, log("op-tr-3001", "limit exceeded"))
+    assert material is not None and "<id>" in material and "<codes:" not in material
+
+
 def test_generic_assertion_ignores_a_log_of_only_info_lines() -> None:
     without_log = _signature(ASSERT_500, ASSERT_TRACE, "")
 

@@ -237,6 +237,18 @@ def test_one_error_on_different_threads_is_folded(first: str, second: str) -> No
     assert "повторялось" not in different and "error_code=10002" in different
 
 
+def test_one_error_of_different_operations_is_folded() -> None:
+    def event(second: int, oper: str, code: str = "ORA-01017") -> str:
+        return (f"2026-10-03 10:00:0{second} [ERROR] [operUID={oper}] c.e.AccountDao - "
+                f"login failed {code}\n")
+
+    folded = render_error_blocks(event(1, "op-tr-3001") + event(2, "op-tr-3002"))
+    assert "[строка 1 · повторялось 2 раза: 1, 2]" in folded
+
+    different = render_error_blocks(event(1, "op-tr-3001") + event(2, "op-tr-3002", "ORA-28000"))
+    assert "повторялось" not in different and "ORA-28000" in different
+
+
 def test_repeats_with_different_ids_do_not_crowd_out_other_anchor_lines() -> None:
     def log(repeats: int) -> str:
         return "".join(
@@ -300,6 +312,12 @@ def test_every_paragraph_of_an_event_carries_its_lines() -> None:
     ("https-jsse-nio-8443-exec-1 ajp-nio-8009-exec-3 catalina-exec-1000", []),
     ("sqlstate-42601 at [http-nio-8080-exec-1]", ["sqlstate-42601"]),
     ("status 2026-10-03 failed", []),
+    # Id операции — не код: ни часть токена через дефис, ни значение поля id операции.
+    ("[operUID=op-tr-3001] Response REJECTED", []),
+    ("request op-tr-3001 failed: ORA-01017", ["ora-01017"]),
+    ('{"rqUID": "req-30001", "error_code": 10001}', ["error_code=10001"]),
+    ("<traceId>t-30001</traceId> ORA-12541", ["ora-12541"]),
+    ("cust-err-4001", []),
 ])
 def test_numeric_codes_read_quoted_and_signed_values(text: str, codes: list[str]) -> None:
     assert numeric_codes(text) == codes

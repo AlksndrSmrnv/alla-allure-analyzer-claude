@@ -6,6 +6,8 @@
 
 import re
 
+from alla_core.utils.log_utils import CORRELATION_KEYS
+
 # ---------------------------------------------------------------------------
 # Скомпилированные паттерны
 # ---------------------------------------------------------------------------
@@ -69,11 +71,33 @@ _TIME_ONLY_RE = re.compile(
 # (OR-семантика lookbehind/lookahead).
 _LONG_NUMBER_RE = re.compile(r"(?<![\"'<\[])\b\d{4,}\b(?![\"'>\]])")
 _IP_RE = re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
+# Значение поля id операции (ключи реестра ``log_utils``: ``operUID=op-tr-3001``,
+# ``"rqUID": "req-30001"``, ``<traceId>t-30001</traceId>``) — id одного теста, как UUID.
+# Только реестр, без ключей проекта (``ALLURE_OPERATION_ID_KEYS``): сигнатура от настроек
+# не зависит. Плейсхолдеры в значении — уже нормализованный текст (признак базы знаний).
+_OPERATION_ID_KEYS = "|".join(sorted(CORRELATION_KEYS))
+_OPERATION_ID_VALUE = r"(?:[a-z0-9_.-]|<(?:num|id)>)+"
+_OPERATION_ID_RE = re.compile(
+    r"\b(?P<key>(?:" + _OPERATION_ID_KEYS + r")\b[\"']?\s*[=:]\s*[\"']?)" + _OPERATION_ID_VALUE
+    + r"|(?P<tag><(?:" + _OPERATION_ID_KEYS + r")>)" + _OPERATION_ID_VALUE,
+    re.IGNORECASE,
+)
 _REPORT_LOG_MARKER_RE = re.compile(r"^\s*---\s*Лог приложения\s*---\s*$")
 
 
+def mask_operation_ids(text: str) -> str:
+    """Заменить значения полей id операции меткой ``<ID>``: ``[operUID=<ID>]``."""
+    return _OPERATION_ID_RE.sub(lambda match: (match.group("key") or match.group("tag")) + "<ID>",
+                                text)
+
+
 def _normalize_common(text: str, *, replace_long_numbers: bool) -> str:
-    """Применить общую normalizer-цепочку с настраиваемой заменой длинных чисел."""
+    """Применить общую normalizer-цепочку с настраиваемой заменой длинных чисел.
+
+    Id операции заменяются вместе с длинными числами: модели они нужны для сверки.
+    """
+    if replace_long_numbers:
+        text = mask_operation_ids(text)
     text = _UUID_RE.sub("<ID>", text)
     text = _UUID_NOHYPHEN_RE.sub("<ID>", text)
     text = _DATETIME_ISO_RE.sub("<TS>", text)
@@ -99,6 +123,8 @@ def normalize_text(text: str) -> str:
     - Полный datetime до date-only (иначе дата матчится отдельно от времени)
     - IP до точка-дат (192.168.1.1 не должен стать <TS>)
     - Long numbers последними (иначе год «2026» станет <NUM> до матча даты)
+    - Id операции первыми (``traceId=<uuid>``, ``operUID=op-tr-3001]`` — число у скобки
+      защищено как значение ассерта)
     """
     return _normalize_common(text, replace_long_numbers=True)
 
@@ -146,8 +172,10 @@ _NUMERIC_CONTEXT_RE = re.compile(
     r"(?P<number>-?\d{4,})\b",
     re.IGNORECASE,
 )
+# Встроенный код — отдельный токен: «op-tr-3001» — id операции, а не код «tr-3001», поэтому
+# совпадение, которое продолжает токен через дефис, не код.
 _EMBEDDED_NUMERIC_CODE_RE = re.compile(
-    r"\b(?P<prefix>[a-z][a-z0-9_]{1,15})-(?P<number>\d{4,}[a-z0-9-]*)\b",
+    r"(?<![\w-])(?P<prefix>[a-z][a-z0-9_]{1,15})-(?P<number>\d{4,}[a-z0-9-]*)\b",
     re.IGNORECASE,
 )
 NON_CODE_PREFIXES = frozenset(
@@ -198,9 +226,11 @@ def numeric_codes(text: str) -> list[str]:
 
     Контекстные (``code``/``status``/``errno`` … и 4+ цифры) и встроенные
     (``ORA-01017``, но не ``thread-1234`` — префиксы из :data:`NON_CODE_PREFIXES` — и не имена
-    потоков вроде ``http-nio-8080-exec-7``).
+    потоков вроде ``http-nio-8080-exec-7``). Id не коды: ни часть токена через дефис
+    (``op-tr-3001``), ни значение поля id операции (``rqUID=req-30001``).
     """
     normalized = " ".join(normalize_text_for_llm(text).split()).casefold()
+    normalized = mask_operation_ids(normalized)
     values = [
         f"{match.group('label').casefold()}={match.group('number')}"
         for match in _NUMERIC_CONTEXT_RE.finditer(normalized)
