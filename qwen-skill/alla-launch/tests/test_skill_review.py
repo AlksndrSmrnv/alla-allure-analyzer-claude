@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from skill_fake_testops import FakeTestOps
+from skill_fake_testops import FakeTestOps, tiny_png
 from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
 from skill_journal import Journal, qwen_dirs, save_main
 from test_skill_flow import MARKDOWN_ANALYSIS, VALID_ANALYSIS, _finish, _prepare, _run
@@ -261,7 +261,7 @@ import json, os, sys
 argv = sys.argv[1:]
 prompt = sys.stdin.read()
 log = {{"argv": argv, "env": sorted(k for k in os.environ if k.startswith("QWEN_CODE_")),
-       "cwd": os.getcwd(), "prompt": prompt}}
+       "cwd": os.getcwd(), "files": sorted(os.listdir(".")), "prompt": prompt}}
 open({log!r}, "w", encoding="utf-8").write(json.dumps(log, ensure_ascii=False))
 mode = {mode!r}
 if mode == "fail":
@@ -309,6 +309,7 @@ def test_model_assessment_with_clean_context(project: Path, testops: FakeTestOps
     assert "=== ПРОБЛЕМА 1" in call["prompt"] and "----- РАЗБОР АГЕНТА -----" in call["prompt"]
     assert "customer is null" in call["prompt"]  # разбор и данные задания
     assert "public class OrderTest" in call["prompt"]  # код из «Где искать код автотеста»
+    assert call["files"] == [] and review_model.SHOTS_HEADER not in call["prompt"]  # скриншотов нет
     facts = json.loads((run_dir / "review" / "facts.json").read_text(encoding="utf-8"))
     assessment = facts["assessment"]
     # модель разбирала проблемы 1 и 3 (2 — скрипт); 99 не запрашивалась
@@ -317,6 +318,57 @@ def test_model_assessment_with_clean_context(project: Path, testops: FakeTestOps
     assert facts["grades"]["quality"] == review.QUALITY_FAIR
     report = (run_dir / "review" / "report.md").read_text(encoding="utf-8")
     assert "скорее «окружение»" in report and "Разборам можно доверять." in report
+
+
+def test_reviewer_gets_screenshots_of_reviewed_problems_only(
+    project: Path, testops: FakeTestOps, capsys, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    run_dir, _, _ = _finished_run(project, capsys, monkeypatch, tmp_path)
+    run_json = run_dir / "run.json"
+    run = json.loads(run_json.read_text(encoding="utf-8"))
+    order, auto = run["clusters"][0], run["clusters"][1]
+    assert not order["auto"] and auto["auto"]
+    for entry, width in ((order, 3), (auto, 4)):
+        (run_dir / "images" / entry["file_id"]).mkdir(parents=True, exist_ok=True)
+        (run_dir / "images" / entry["file_id"] / "1.png").write_bytes(tiny_png(width, width))
+    (run_dir / "images" / order["file_id"] / "2.png").write_text("не картинка", encoding="utf-8")
+    order["images"] = [
+        {"source_id": "S7", "file": f"images/{order['file_id']}/1.png"},
+        {"source_id": "S8", "file": f"images/{auto['file_id']}/1.png"},  # чужой проблемы
+        {"source_id": "S9", "file": f"images/{order['file_id']}/2.png"},  # не изображение
+        {"source_id": "../S1", "file": f"images/{order['file_id']}/1.png"},
+    ]
+    auto["images"] = [{"source_id": "S3", "file": f"images/{auto['file_id']}/1.png"}]
+    run_json.write_text(json.dumps(run, ensure_ascii=False), encoding="utf-8")
+    script, log = _fake_qwen(tmp_path, "ok")
+    monkeypatch.setenv(review_model.QWEN_ENV, str(script))
+
+    code, out = _run(["review", "--run", str(run_dir)], capsys)
+
+    assert code == 0, out
+    call = json.loads(log.read_text(encoding="utf-8"))
+    # в рабочей папке проверяющего — только скриншот оцениваемой проблемы 1, байты те же
+    assert call["files"] == ["p01-S7.png"]
+    assert (Path(call["cwd"]) / "p01-S7.png").exists() is False  # папка убрана после проверки
+    block = call["prompt"].split("=== ПРОБЛЕМА 1 ")[1].split("=== КОНЕЦ ПРОБЛЕМЫ 1")[0]
+    assert f"----- {review_model.SHOTS_HEADER}" in block
+    assert "S7 — @p01-S7.png\n" in block  # «@имя» qwen подставит изображением
+    assert "S8 — изображение не приложено" in block and "S9 — изображение не приложено" in block
+    assert "../S1" not in call["prompt"] and call["prompt"].count("@p") == 1
+    facts = json.loads((run_dir / "review" / "facts.json").read_text(encoding="utf-8"))
+    assert facts["assessment"]["images"] == 1
+
+
+def test_staged_screenshot_keeps_bytes(tmp_path: Path) -> None:
+    paths = ws.RunPaths(tmp_path / "run")
+    (paths.images("02")).mkdir(parents=True)
+    (paths.images("02") / "5.jpg").write_bytes(b"\xff\xd8\xff" + b"0" * 10)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    entry = {"file_id": "02", "images": [{"source_id": "S4", "file": "images/02/5.jpg"},
+                                          {"source_id": "S5", "file": "images/02/../../x.png"}]}
+    assert review_model.stage_images(paths, entry, 12, workdir) == [("S4", "p12-S4.jpg"), ("S5", None)]
+    assert (workdir / "p12-S4.jpg").read_bytes() == b"\xff\xd8\xff" + b"0" * 10
 
 
 @pytest.mark.parametrize(("mode", "error_code"), [("fail", "timeout"), ("garbage", "bad_output")])
