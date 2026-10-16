@@ -94,6 +94,23 @@ def test_same_name_outside_the_tree_is_not_the_failed_step_screenshot() -> None:
     assert select_image(_test(*refs)) == refs[0]
 
 
+def test_ambiguous_name_leaves_the_step_unknown() -> None:
+    """В дереве ``screenshot.png`` без id, в списке — два вложения с этим именем: чьё оно,
+    не узнать, шаг у обоих неизвестен, и после теста не вытесняет скриншот шага."""
+    steps = [ExecutionStep.model_validate({
+        "name": "Оплатить", "status": "failed", "attachments": [{"name": "screenshot.png"}]})]
+    refs = image_attachments([AttachmentMeta.model_validate(item) for item in [
+        {"id": 9401, "name": "screenshot.png", "type": "image/png"},
+        {"id": 9402, "name": "screenshot.png", "type": "image/png"},
+        {"id": 9403, "name": "app.log", "type": "text/plain"},
+    ]], steps)
+    assert [(ref.id, ref.step, ref.failed_step) for ref in refs] == [
+        (9401, None, False), (9402, None, False)]
+    single = image_attachments([AttachmentMeta.model_validate(
+        {"id": 9401, "name": "screenshot.png", "type": "image/png"})], steps)
+    assert [(ref.step, ref.failed_step) for ref in single] == [("Оплатить", True)]
+
+
 def test_log_extraction_records_images_without_downloading_them(
     project: Path, shop: FakeTestOps, capsys,
 ) -> None:
@@ -203,11 +220,12 @@ def test_screenshot_not_placed_in_run_dir_is_left_out(project: Path, shop: FakeT
     assert IMAGES_HEADER not in (run_dir / "clusters" / "01.md").read_text(encoding="utf-8")
 
 
-def test_reviewer_is_told_it_cannot_see_screenshots() -> None:
+def test_reviewer_checks_screenshot_quotes_by_the_image() -> None:
     from alla_skill_lib.review_model import SYSTEM_PROMPT
 
     text = " ".join(SYSTEM_PROMPT.split())
-    assert "а тебе они не показаны" in text and "не считай её ни подтверждением, ни ошибкой" in text
+    assert "Тебе приложены те же" in text and "сверяй с изображением" in text
+    assert "не считай ни подтверждением, ни ошибкой" in text  # если изображения нет
     assert "держится на скриншоте, проверить нельзя" in text
 
 

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+from collections import Counter
 
 from alla_core.models.testops import AttachmentMeta, ExecutionStep, ImageAttachmentRef
 
@@ -60,15 +61,21 @@ def image_attachments(
     """Изображения теста с id, в порядке списка TestOps; шаг — из дерева исполнения.
 
     ``failed_step`` — изображение приложено к упавшему шагу (или внутри него). Вложение
-    без id в дереве узнаётся по имени, только если такое имя среди вложений дерева без id одно.
+    без id в дереве узнаётся по имени, только если имя однозначно с обеих сторон: одно среди
+    вложений дерева без id и одно среди вложений списка, не сопоставленных по id. Иначе шаг
+    неизвестен: ``screenshot.png`` шага и одноимённый скриншот после теста получили бы оба
+    шаг упавшего, и больший id вытеснил бы нужный.
     """
     by_id, by_name = _step_places(steps or [])
+    unmatched_names = Counter(att.name for att in attachments
+                              if att.name and (att.id is None or att.id not in by_id))
     result: list[ImageAttachmentRef] = []
     for att in attachments:
         if att.id is None or not is_image_attachment(att):
             continue
         place = by_id.get(att.id)
-        if place is None and att.name and len(by_name.get(att.name, [])) == 1:
+        if (place is None and att.name and len(by_name.get(att.name, [])) == 1
+                and unmatched_names[att.name] == 1):
             place = by_name[att.name][0]
         step, failed = place if place is not None else (None, False)
         result.append(ImageAttachmentRef(
