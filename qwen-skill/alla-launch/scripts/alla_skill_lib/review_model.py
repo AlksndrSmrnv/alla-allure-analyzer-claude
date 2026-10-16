@@ -193,13 +193,28 @@ def stage_images(paths: ws.RunPaths, entry: Mapping[str, Any], number: int,
         name = None
         source = (paths.root / str(image.get("file", ""))).resolve()
         if own is not None and source.is_relative_to(own) and source.is_file():
-            data = source.read_bytes()
-            extension = image_type(data)
-            if extension is not None:
-                name = f"p{number:02d}-{source_id}.{extension}"
-                (workdir / name).write_bytes(data)
+            name = _copy_image(source, workdir, f"p{number:02d}-{source_id}")
         staged.append((source_id, name))
     return staged
+
+
+def _copy_image(source: Path, workdir: Path, stem: str) -> str | None:
+    """Копия изображения для проверяющего; не картинка или сбой чтения и записи — ``None``
+    («изображение не приложено»): скриншот необязателен, ``review`` из-за него не падает."""
+    try:
+        data = source.read_bytes()
+    except OSError:
+        return None
+    extension = image_type(data)
+    if extension is None:
+        return None
+    target = workdir / f"{stem}.{extension}"
+    try:
+        target.write_bytes(data)
+    except OSError:
+        target.unlink(missing_ok=True)  # неполная копия заняла бы место
+        return None
+    return target.name
 
 
 def build_prompt(paths: ws.RunPaths, selected: list[dict[str, Any]], project_root: Path,

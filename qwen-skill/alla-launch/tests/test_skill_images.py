@@ -182,6 +182,23 @@ def test_fetch_images_skips_big_broken_and_failed(tmp_path: Path) -> None:
     assert all(limit == 151 for _, limit in client.asked)
 
 
+def test_partial_screenshot_is_removed_after_write_error(tmp_path: Path,
+                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    """Место кончилось посреди записи — неполный файл удаляется сразу, а не держит место."""
+    real_write = Path.write_bytes
+
+    def half_write(self: Path, data: bytes) -> int:
+        real_write(self, data[:5])
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", half_write)
+    plan = [(FailedTestSummary(test_result_id=1, name="t1", status=Status.FAILED),
+             ImageAttachmentRef(id=11, name="ok.png"))]
+    staged = asyncio.run(fetch_images(_Client({11: tiny_png()}), plan, tmp_path,
+                                      max_bytes=10_000, concurrency=1))
+    assert staged == {} and list(tmp_path.iterdir()) == []
+
+
 def test_images_can_be_turned_off(project: Path, shop: FakeTestOps, capsys,
                                   monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALLURE_IMAGES_PER_PROBLEM", "0")

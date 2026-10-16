@@ -133,6 +133,8 @@ async def fetch_images(
         except OSError as exc:  # скриншот необязателен: без него разбор прежний
             logger.warning("Скриншот %d (%s) теста %d не сохранён: %s",
                            ref.id, ref.name, test.test_result_id, exc)
+            # Неполный файл при нехватке места занимал бы её до конца prepare.
+            path.unlink(missing_ok=True)
             return
         staged[test.test_result_id] = StagedImage(test.test_result_id, path, ref.name,
                                                   extension, ref.step, ref.id)

@@ -371,6 +371,35 @@ def test_staged_screenshot_keeps_bytes(tmp_path: Path) -> None:
     assert (workdir / "p12-S4.jpg").read_bytes() == b"\xff\xd8\xff" + b"0" * 10
 
 
+@pytest.mark.parametrize("failing", ["read", "write"])
+def test_screenshot_copy_failure_is_not_attached_not_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str,
+) -> None:
+    """Нет доступа к оригиналу или места для копии — «изображение не приложено», без
+    неполной копии; review из-за этого не падает."""
+    paths = ws.RunPaths(tmp_path / "run")
+    paths.images("02").mkdir(parents=True)
+    (paths.images("02") / "5.png").write_bytes(tiny_png())
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    real_write = Path.write_bytes
+
+    def broken_read(self: Path) -> bytes:
+        raise PermissionError(13, "Permission denied")
+
+    def half_write(self: Path, data: bytes) -> int:
+        real_write(self, data[:3])
+        raise OSError(28, "No space left on device")
+
+    if failing == "read":
+        monkeypatch.setattr(Path, "read_bytes", broken_read)
+    else:
+        monkeypatch.setattr(Path, "write_bytes", half_write)
+    entry = {"file_id": "02", "images": [{"source_id": "S4", "file": "images/02/5.png"}]}
+    assert review_model.stage_images(paths, entry, 1, workdir) == [("S4", None)]
+    assert list(workdir.iterdir()) == []
+
+
 @pytest.mark.parametrize(("mode", "error_code"), [("fail", "timeout"), ("garbage", "bad_output")])
 def test_model_failures_leave_report_without_assessment(
     mode: str, error_code: str, project: Path, testops: FakeTestOps, capsys,
