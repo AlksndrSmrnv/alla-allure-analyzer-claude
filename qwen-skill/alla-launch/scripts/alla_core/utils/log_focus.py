@@ -16,7 +16,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
-from alla_core.utils.log_events import SOURCE_MARK_RE
+from alla_core.utils.log_events import SOURCE_MARK_RE, has_error_fields
 
 FOCUS_NOTE = "[лог сокращён: отобраны блоки по связи с ошибкой, пропуски помечены]"
 CONTEXT_LINES = 2
@@ -243,10 +243,15 @@ def _block_score(text: str, tokens: dict[str, float]) -> float:
     """Пересечение с ошибкой + небольшой бонус блокам с явной ошибкой приложения.
 
     Бонус меньше одного совпавшего слова: он лишь поднимает ERROR-блоки над
-    «шумом» (HTTP-сигналы, INFO-журнал), когда пересечения нет ни у кого.
+    «шумом» (HTTP-сигналы, INFO-журнал), когда пересечения нет ни у кого. Поля ошибки
+    ответа (``"errorCode":6``) — та же явная ошибка, хоть запись и INFO.
     """
-    bonus = ERROR_HINT_BONUS if _ERROR_HINT_RE.search(text) else 0.0
+    bonus = ERROR_HINT_BONUS if _has_error_hint(text) else 0.0
     return _score(text, tokens) + bonus
+
+
+def _has_error_hint(text: str) -> bool:
+    return bool(_ERROR_HINT_RE.search(text)) or has_error_fields(text)
 
 
 def _split_source_mark(text: str) -> tuple[str | None, str]:
@@ -293,7 +298,7 @@ def _shrink_lines(text: str, tokens: dict[str, float], limit: int) -> str:
     lines = text.split("\n")
     anchors = [i for i, line in enumerate(lines) if _score(line, tokens) > 0]
     if not anchors:
-        anchors = [i for i, line in enumerate(lines) if _ERROR_HINT_RE.search(line)]
+        anchors = [i for i, line in enumerate(lines) if _has_error_hint(line)]
     signaled = bool(anchors)
     if not anchors:
         anchors = list(range(len(lines)))  # начало блока, дальше отрежет лимит

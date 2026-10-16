@@ -170,6 +170,33 @@ def test_journal_error_codes_keep_their_field_name(field: str) -> None:
             != _signature(ASSERT_500, ASSERT_TRACE, journal("10002")))
 
 
+def test_info_line_with_error_fields_names_the_cause() -> None:
+    def log(message: str) -> str:
+        return ("2026-10-16 10:00:00 [INFO] c.e.Transfer - accepted\n"
+                "2026-10-16 10:00:01 [INFO] c.e.AccountClient - Response "
+                f'{{"status":"REJECTED","errorCode":6,"errorMessage":"{message}"}}\n')
+
+    closed = _signature(ASSERT_500, ASSERT_TRACE, log("account is closed"))
+
+    assert closed != _signature(ASSERT_500, ASSERT_TRACE, log("not enough funds"))
+    assert closed != _signature(ASSERT_500, ASSERT_TRACE, "")
+    material = _material(ASSERT_500, ASSERT_TRACE, log("account is closed"))
+    assert material is not None and "account is closed" in material
+    assert "accepted" not in material
+
+
+def test_journal_info_record_with_error_fields_is_an_error() -> None:
+    def journal(message: str) -> str:
+        return _journal({"logLevel": "INFO", "message": "POST /transfers"},
+                        {"logLevel": "INFO", "message": "response", "errorCode": 6,
+                         "errorMessage": message})
+
+    material = _material(ASSERT_500, ASSERT_TRACE, journal("account is closed"))
+
+    assert material is not None and "account is closed" in material
+    assert "post /transfers" not in material
+
+
 def test_journal_of_only_info_records_is_not_added() -> None:
     journal = _journal({"logLevel": "INFO", "message": "POST /payments"},
                        {"level": "debug", "message": "pool stats"})

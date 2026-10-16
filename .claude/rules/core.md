@@ -107,9 +107,22 @@ paths:
   считается): `ERROR` в тексте INFO не ошибка, WARN не ошибка. Уровни ошибки —
   `log_events.ERROR_LEVELS`, включая `PANIC`/`DPANIC` (logrus, zap, zerolog). JUL «дата класс метод» + `SEVERE:` — одно событие
   (`LogEvent.level_line` = 1: уровень и причина во второй строке); Traceback кончается строкой
-  исключения. `ErrorBlocksHandler` берёт события-ошибки, Traceback и исключения. Для лога
+  исключения. `ErrorBlocksHandler` берёт события-ошибки, Traceback и исключения, и
+  записи с полями ошибки ответа. Для лога
   `<ISO-время> [ERROR] …` извлечение побайтово прежнее (эталон старой функции —
   `test_core_log_events.py`).
+- **Поля ошибки ответа** (`log_events.has_error_fields`) делают ошибкой событие любого уровня
+  (`LogEvent.reports_error`, по нему фильтрует `error_events`): бизнес-ошибку сервисы пишут на
+  INFO — `[INFO] … {"errorCode":6, "errorMessage":"счет закрыт"}`; раньше её отбрасывал отбор по
+  уровню, в том числе до отбора по операции (реальный прогон). Поле — JSON (`"key":`),
+  `key=`/`key:` или XML (`<ns:key>…</`), имя — любой префикс + `error|err|fault` + `_?` +
+  `code|message|msg|text|description|desc|string` (`ufsErrorCode`, `error_message`, `faultString`;
+  регистр любой; `errorCount` и `"error":` — нет). Значение «успеха» ошибкой не делает: пусто,
+  `null`/`none`/`nil`, `ok`/`success`, `false`, одни нули; объект и список — тоже нет.
+  `is_error` прежний: продолжение стека (строка исключения после ошибки) решает только уровень,
+  и INFO с полями ошибки следующее исключение не поглощает. `log_focus` даёт таким блокам тот
+  же бонус и якоря, что ERROR-блокам. Склейка разных бизнес-ошибок при одном сообщении
+  остаётся (эталон `info_business_error`: похожесть логов между порогами gate и override).
 - JSON-запись строкой (NDJSON: zap, zerolog, slog, logrus, logstash-logback-encoder, ECS,
   Log4j2 JsonTemplateLayout) — тоже начало записи, и в текстовом логе, и во вложении,
   определённом как json (`ErrorBlocksHandler` берёт `text` и `json`): строка с `{` (отступ из

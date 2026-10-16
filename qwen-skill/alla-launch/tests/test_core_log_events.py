@@ -9,7 +9,12 @@ import pytest
 import skill_fixtures  # noqa: F401  # scripts/ в sys.path
 
 from alla_core.services.log_extraction_service import _detect_content_type, _extract_error_blocks
-from alla_core.utils.log_events import error_events, parse_events, render_error_blocks
+from alla_core.utils.log_events import (
+    error_events,
+    has_error_fields,
+    parse_events,
+    render_error_blocks,
+)
 from eval import corpus_dev
 
 FORMAT_LOGS = {
@@ -339,6 +344,76 @@ def test_exception_starts_an_event_only_before_frames() -> None:
 
     assert [event.kind for event in error_events(with_frames)] == ["exception"]
     assert not list(error_events(without))
+
+
+# ---------------------------------------------------------------------------
+# Поля ошибки ответа: запись любого уровня с ними — ошибка
+# ---------------------------------------------------------------------------
+
+BUSINESS_INFO = ('2026-10-16 10:00:01 [INFO] [ufsBusinessId=b-301] c.e.AccountClient - Response '
+                 '{"status":"REJECTED","errorCode":6 , "errorMessage":"счет закрыт"}')
+
+
+def test_info_record_with_error_fields_is_an_error() -> None:
+    log = ("2026-10-16 10:00:00 [INFO] c.e.TransferController - Transfer accepted\n"
+           f"{BUSINESS_INFO}\n"
+           "2026-10-16 10:00:02 [INFO] c.e.TransferController - Transfer finished\n")
+
+    event, = error_events(log)
+
+    assert (event.first_line, event.level, event.text) == (2, "INFO", BUSINESS_INFO)
+
+
+@pytest.mark.parametrize("record", [
+    "2026-10-16 10:00:01 [INFO] Response {\"errorCode\":0,\"errorMessage\":null}",
+    "2026-10-16 10:00:01 [INFO] Response {\"errorCode\":\"000\",\"errorText\":\"\"}",
+    "2026-10-16 10:00:01 [INFO] Response(errorCode=null, errorMessage=null)",
+    "2026-10-16 10:00:01 [INFO] Response {\"errorMessage\":\"OK\",\"errorCount\":3}",
+    "2026-10-16 10:00:01 [INFO] user typed error code in the search field",
+    "2026-10-16 10:00:01 [INFO] <errorCode>0</errorCode>",
+])
+def test_success_values_and_other_fields_are_not_errors(record: str) -> None:
+    assert not list(error_events(record + "\n"))
+
+
+@pytest.mark.parametrize("record", [
+    "time=2026-10-16T10:00:01Z level=info msg=response errorCode=6",
+    "2026-10-16 10:00:01 WARN  c.e.Client - got {\"ufsErrorCode\":\"E12\"}",
+    "2026-10-16 10:00:01 [INFO] answer error_code: 10001",
+    '{"level":"info","msg":"response","errorMessage":"счет закрыт"}',
+    "2026-10-16 10:00:01 [INFO] SOAP <ns2:faultString>Server is busy</ns2:faultString>",
+])
+def test_error_fields_make_any_format_an_error(record: str) -> None:
+    event, = error_events(record + "\n")
+
+    assert event.first_line == 1
+
+
+def test_error_fields_in_the_body_under_an_info_record() -> None:
+    log = ("2026-10-16 10:00:01 [INFO] c.e.AccountClient - Response:\n"
+           "{\n"
+           '  "status": "REJECTED",\n'
+           '  "errorMessage": "счет закрыт"\n'
+           "}\n"
+           "2026-10-16 10:00:02 [INFO] c.e.AccountClient - Next request\n")
+
+    event, = error_events(log)
+
+    assert (event.first_line, event.last_line) == (1, 5)
+
+
+def test_info_record_with_error_fields_does_not_swallow_the_next_exception() -> None:
+    log = (f"{BUSINESS_INFO}\n"
+           "java.lang.IllegalStateException: account cache is stale\n"
+           "\tat ru.company.AccountCache.get(AccountCache.java:12)\n")
+
+    assert [(event.first_line, event.kind) for event in error_events(log)] == [
+        (1, "level"), (2, "exception")]
+
+
+def test_has_error_fields_reads_quoted_values_whole() -> None:
+    assert has_error_fields('"errorMessage": "say \\"no\\""')
+    assert not has_error_fields('"errorMessage": {"text": null}')
 
 
 # ---------------------------------------------------------------------------

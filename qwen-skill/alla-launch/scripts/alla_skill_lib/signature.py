@@ -29,7 +29,12 @@ from dataclasses import dataclass
 
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
-from alla_core.utils.log_events import ERROR_LEVELS, iter_events, strip_source_marks
+from alla_core.utils.log_events import (
+    ERROR_LEVELS,
+    has_error_fields,
+    iter_events,
+    strip_source_marks,
+)
 from alla_core.utils.log_focus import strip_log_selection_metadata
 from alla_core.utils.log_utils import parse_log_sections
 from alla_core.utils.message_resources import message_resources
@@ -365,16 +370,23 @@ def _log_anchor(log: str) -> _LogAnchor:
         # файла — события, их разбирает iter_events.
         records = _json_records(body) if not label or label.startswith("журнал: ") else None
         if records is not None:
-            for level, text in map(_record_line, records):
+            for record in records:
+                level, text = _record_line(record)
                 if text:
                     line = f"[{level}] {text}" if level else text
-                    (errors if level in ERROR_LEVELS else plain).append(line)
+                    failed = level in ERROR_LEVELS or has_error_fields(
+                        json.dumps(record, ensure_ascii=False))
+                    (errors if failed else plain).append(line)
             continue
         for event in iter_events(body):
             # Строки события до строки уровня включительно: у JUL причина — во второй
             # строке («ALERT: database unavailable»), под заголовком «дата класс метод».
-            heading = (set(_error_lines("\n".join(event.lines[:event.level_line + 1])))
-                       if event.level in ERROR_LEVELS else set())
+            # У записи другого уровня заголовок — строки с полями ошибки ответа
+            # («"errorMessage":"счет закрыт"»): «error» внутри имени поля _ERROR_HINT_RE не видит.
+            if event.level in ERROR_LEVELS:
+                heading = set(_error_lines("\n".join(event.lines[:event.level_line + 1])))
+            else:
+                heading = {line for line in _error_lines(event.text) if has_error_fields(line)}
             for line in _error_lines(event.text):
                 if _CAUSE_HINT_RE.search(line):
                     causes.append(line)

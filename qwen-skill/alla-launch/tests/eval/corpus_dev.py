@@ -1667,6 +1667,62 @@ def shared_service_log() -> Case:
     return builder.build("shared_service_log")
 
 
+def _business_line(time: str, oper: str, level: str, text: str) -> str:
+    return f"2026-10-03 12:{time} [{level}] [operUID={oper}] {text}\n"
+
+
+# Ошибка бизнес-ответа пишется на INFO: уровень не ошибка, ошибка — в полях ответа.
+# Доказательство — сама запись: «errorMessage: …» секции HTTP без неё не скажет, чей это ответ.
+_CLOSED = '"errorCode":6,"errorMessage":"счет закрыт"'
+_NO_FUNDS = '"errorCode":12,"errorMessage":"недостаточно средств на счете списания"'
+BUSINESS_ERROR_LOG = (
+    _business_line("00:00.100", "op-tr-3001", "INFO", "c.e.transfer.TransferController - "
+                   "Transfer request accepted")
+    + _business_line("00:00.150", "op-tr-3001", "INFO", "c.e.transfer.AccountClient - Response "
+                     f'{{"status":"REJECTED",{_CLOSED},"account":"40817810000000000301"}}')
+    + _business_line("00:01.000", "op-tr-3002", "INFO", "c.e.transfer.AccountClient - Response "
+                     f'{{"status":"REJECTED",{_CLOSED},"account":"40817810000000000302"}}')
+    + _business_line("00:01.300", "op-tr-4001", "INFO", "c.e.transfer.LimitClient - Response "
+                     f'{{"status":"REJECTED",{_NO_FUNDS}}}')
+    + _business_line("00:02.000", "op-tr-4002", "INFO", "c.e.transfer.LimitClient - Response "
+                     f'{{"status":"REJECTED",{_NO_FUNDS}}}')
+    + _business_line("00:02.500", "op-tr-5001", "INFO", "c.e.transfer.AccountClient - Response "
+                     '{"status":"OK","errorCode":0,"errorMessage":null}')
+)
+
+
+def info_business_error() -> Case:
+    """Причина — ошибка бизнес-ответа в INFO-записи общего лога сервиса, а не ERROR.
+
+    Сообщение ассерта у всех тестов одно («статус перевода REJECTED»); различает их только
+    ``errorMessage`` записи своей операции (``operUID`` из вложения-запроса): закрытый счёт
+    получателя и нехватка средств — две проблемы. Успешный ответ (``errorCode`` 0) — не ошибка.
+    Пока склеиваются: сообщение одно, а похожесть логов между порогами gate и log override.
+    """
+    builder = LaunchBuilder(5122, "Transfers regression")
+    message = "Transfer status expected:<DONE> but was:<REJECTED>"
+    tests = [
+        ("transfer-account-closed", "transfer-account-closed", "данные", "transferToClosed",
+         "op-tr-3001", _CLOSED),
+        ("transfer-account-closed", "transfer-account-closed", "данные", "transferToClosedCard",
+         "op-tr-3002", _CLOSED),
+        ("transfer-no-funds", "transfer-no-funds", "данные", "transferOverLimit",
+         "op-tr-4001", _NO_FUNDS),
+        ("transfer-no-funds", "transfer-no-funds", "данные", "transferWholeBalance",
+         "op-tr-4002", _NO_FUNDS),
+    ]
+    test_class = "ru.company.bank.TransferTest"
+    for index, (group, cause, category, method, oper, evidence) in enumerate(tests):
+        builder.add_failure(
+            group, cause=cause, category=category, name=method,
+            full_name=f"{test_class}.{method}", message=message,
+            trace=_assert_trace(message, test_class, method, 30 + index * 7),
+            log=BUSINESS_ERROR_LOG, log_name="transfer-service.log",
+            logs=[_request(oper, "/transfers")], evidence=[evidence],
+        )
+    return builder.build("info_business_error")
+
+
 # ---------------------------------------------------------------------------
 # Бывший holdout v2 (перенесён в dev 2026-10-15, журнал — holdout_journal.md)
 # ---------------------------------------------------------------------------
@@ -3065,6 +3121,7 @@ CASES: dict[str, Callable[[], Case]] = {
     "java_log_formats": java_log_formats,
     "log_level_controls": log_level_controls,
     "shared_service_log": shared_service_log,
+    "info_business_error": info_business_error,
     "log_formats_more": log_formats_more,
     "log_traps_more": log_traps_more,
     "same_symptom_log_causes": same_symptom_log_causes,

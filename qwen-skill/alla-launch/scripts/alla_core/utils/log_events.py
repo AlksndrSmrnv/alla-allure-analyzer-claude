@@ -36,6 +36,13 @@ zerolog, 3 и выше — ошибка). Слово
 ``SEVERE: …`` — одно событие. Traceback Python заканчивается строкой
 исключения.
 
+Запись любого уровня с полями ошибки ответа — тоже ошибка (:func:`has_error_fields`):
+``[INFO] … {"errorCode":6, "errorMessage":"счет закрыт"}``, ``errorCode=6``,
+``<faultString>…</faultString>``. Поле — имя на ``error``/``err``/``fault`` + ``code``/``message``/
+``msg``/``text``/``description``/``string`` (``ufsErrorCode``, ``error_message``); значение «успеха»
+(пусто, ``null``, ``0``, ``OK``…) ошибкой не делает. Продолжение стека решает по-прежнему
+только уровень (:attr:`LogEvent.is_error`).
+
 JSON-ошибка показывается строкой записи; многострочные поля стека (``stack_trace``,
 ``stacktrace``, ``error.stack_trace``, ``exception``…) вынимаются из неё и идут
 строками ниже, а заголовком становится запись без них. Многострочное сообщение
@@ -95,6 +102,18 @@ _TRACEBACK_RE = re.compile(r"^Traceback \(most recent call last\):")
 _EXCEPTION_RE = re.compile(r"^[\w.$]+(?:Exception|Error|Throwable)(?::\s.*)?$")
 _FRAME_RE = re.compile(r"^\s*at\s+\S")
 _TOKEN_STRIP = "[]|:,;()<>"
+# Поля ошибки ответа: JSON (``"errorCode":6``), ``key=value`` и ``key: value``, XML.
+_ERROR_FIELD_KEY = (r"[A-Za-z_]*?(?:error|err|fault)_?"
+                    r"(?:code|message|msg|text|description|desc|string)")
+_ERROR_FIELD_RE = re.compile(
+    rf'(?<![\w$])"?(?P<key>{_ERROR_FIELD_KEY})"?\s*[:=]\s*'
+    r'(?P<value>"(?:[^"\\]|\\.)*"|[^\s,;(){}\[\]"<]*)',
+    re.IGNORECASE,
+)
+_ERROR_FIELD_XML_RE = re.compile(
+    rf"<(?:[\w-]+:)?(?P<key>{_ERROR_FIELD_KEY})>(?P<value>[^<]*)</", re.IGNORECASE)
+_SUCCESS_VALUES = frozenset({"", "null", "none", "nil", "ok", "success", "false"})
+_ZEROS_RE = re.compile(r"0+(?:\.0+)?")
 
 
 @dataclass
@@ -120,6 +139,11 @@ class LogEvent:
         return self.level in ERROR_LEVELS or self.kind in ("traceback", "exception")
 
     @property
+    def reports_error(self) -> bool:
+        """Событие-ошибка: уровень, Traceback, исключение или поля ошибки ответа."""
+        return self.is_error or has_error_fields(self.text)
+
+    @property
     def shown(self) -> list[str]:
         """Строки показа: ``lines``, где первая заменена на ``rendered``, если он есть."""
         return [*self.rendered, *self.lines[1:]] if self.rendered else self.lines
@@ -133,6 +157,26 @@ class LogEvent:
         if not self.rendered:
             return index
         return max(0, index - len(self.rendered) + 1)
+
+
+def has_error_fields(text: str) -> bool:
+    """В тексте есть поле ошибки ответа с непустым значением, а не «успех».
+
+    ``"errorCode":6``, ``errorMessage=счет закрыт``, ``<faultCode>SOAP-ENV:Server</faultCode>`` —
+    да; ``"errorCode":0``, ``"errorMessage":null``, ``errorText=""``, ``errorCount=3`` — нет.
+    """
+    lowered = text.lower()
+    if "err" not in lowered and "fault" not in lowered:
+        return False
+    for regex in (_ERROR_FIELD_RE, _ERROR_FIELD_XML_RE):
+        for match in regex.finditer(text):
+            value = match.group("value")
+            if value.startswith('"'):
+                value = value[1:-1]
+            value = value.strip()
+            if value.lower() not in _SUCCESS_VALUES and not _ZEROS_RE.fullmatch(value):
+                return True
+    return False
 
 
 def _level_after_timestamp(rest: str) -> str | None:
@@ -300,8 +344,9 @@ def parse_events(text: str) -> list[LogEvent]:
 
 
 def error_events(text: str) -> Iterator[LogEvent]:
-    """События-ошибки: уровень ошибки, Traceback или исключение со стеком."""
-    return (event for event in iter_events(text) if event.is_error)
+    """События-ошибки: уровень ошибки, Traceback, исключение со стеком или запись любого
+    уровня с полями ошибки ответа (:func:`has_error_fields`)."""
+    return (event for event in iter_events(text) if event.reports_error)
 
 
 # ---------------------------------------------------------------------------

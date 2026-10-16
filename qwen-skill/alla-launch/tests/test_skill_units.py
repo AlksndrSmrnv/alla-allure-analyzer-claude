@@ -317,6 +317,17 @@ def test_focus_log_without_overlap_keeps_earliest_blocks() -> None:
     assert len(focused) <= 2000
 
 
+def test_focus_log_keeps_an_info_block_with_error_fields_like_an_error_block() -> None:
+    noise = [f"2026-09-01 10:{i:02d}:00 [INFO] heartbeat {i} " + "x" * 90 for i in range(40)]
+    business = ('2026-09-01 11:00:00 [INFO] AccountClient - Response '
+                '{"status":"REJECTED","errorCode":6,"errorMessage":"счет закрыт"}')
+    log = "--- [файл: app.log] ---\n" + "\n\n".join([*noise[:20], business, *noise[20:]])
+
+    focused = focus_log(log, "expected: <200> but was: <500>", 2000)
+
+    assert business in focused
+
+
 def test_focus_log_tiny_budget_keeps_start_of_best_block() -> None:
     log = "--- [файл: app.log] ---\n" + _error_block(1, "OrderService customer is null", 5)
     focused = focus_log(log, "OrderService customer", 130)
