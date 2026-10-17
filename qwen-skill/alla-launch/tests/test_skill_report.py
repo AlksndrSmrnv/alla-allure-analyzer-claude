@@ -269,8 +269,8 @@ def test_terminal_brief_ends_with_a_link_to_the_full_report(tmp_path: Path) -> N
     run = _run([2])
     console, full = _render(folder, run, [APP])
     report_path = (folder / "report.md").absolute()
-    assert console.rstrip().endswith(f"Файл: {report_path}")
-    assert f"[report.md]({report_path.as_uri()})" in console
+    assert console.rstrip().endswith(f"Полный разбор: [report.md]({report_path.as_uri()})")
+    assert "Файл: " not in console  # повтор пути модель выбрасывала из дословного вывода
     assert "%20" in report_path.as_uri()  # ссылка кликабельна и с пробелом в пути
     assert f"Полный разбор: [report.md]({report_path.as_uri()})" in console
     assert "file://" not in full  # в самом файле ссылка на себя не нужна

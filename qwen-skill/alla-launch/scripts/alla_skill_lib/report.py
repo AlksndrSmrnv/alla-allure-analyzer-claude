@@ -598,9 +598,12 @@ def render_report(
 
 
 def _report_link(paths: RunPaths) -> str:
-    """Ссылка на полный разбор: кликабельная ``file://`` и путь, который можно скопировать."""
+    """Ссылка на полный разбор — кликабельная ``file://``.
+
+    Строку с обычным путём под ней модель выбрасывала как повтор ссылки (стенд E03, V01).
+    """
     report = paths.report.absolute()
-    return f"Полный разбор: [{report.name}]({report.as_uri()})\nФайл: {report}"
+    return f"Полный разбор: [{report.name}]({report.as_uri()})"
 
 
 def render_green_report(run: dict[str, Any], paths: RunPaths) -> tuple[str, str]:

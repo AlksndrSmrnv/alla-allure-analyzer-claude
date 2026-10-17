@@ -167,9 +167,10 @@ def test_full_flow_until_done(project: Path, testops: FakeTestOps, capsys) -> No
     assert brief.index("[ПРИЛОЖЕНИЕ]") < brief.index("[НЕ ЯСНО]")
     assert "По категориям" not in brief and "[приложение]" not in brief
     assert "testresult" not in brief and "### Что делать" not in brief  # подробности — в файле
-    # И ссылка на файл с полным разбором (кликабельная и обычный путь).
+    # И ссылка на файл с полным разбором — последней строкой, без повтора пути.
     link = (run_dir / "report.md").absolute()
-    assert f"[report.md]({link.as_uri()})" in brief and brief.rstrip().endswith(f"Файл: {link}")
+    assert brief.rstrip().endswith(f"Полный разбор: [report.md]({link.as_uri()})")
+    assert "Файл: " not in brief
     report = _full_report(run_dir)
     # «Коротко» в файле тот же; ниже файл содержит тексты целиком и все тесты.
     assert "### Коротко\nУпало 4 теста, выявлено 3 проблемы. Главная — NPE в OrderService." in report
