@@ -259,6 +259,8 @@ def test_check_accepts_valid_analysis_and_writes_finding(
                                  "знаний; «нет» — не сохраню.")
     assert f"Ревизия: {Path(sut['url']).stem} v1.4.2 ({sut['bug'][:8]}) — тег v1.4.2 — названа инженером" in out
     assert "Внимание:" not in out
+    assert ("Дефект: заводить — ошибка приложения, в релизе 1.4.2 не исправлена. Заголовок: "
+            "OrderService.create") in out
 
     finding = json.loads(context.with_suffix(".finding.json").read_text(encoding="utf-8"))
     assert finding["problem"] == int(order) and finding["format_ok"] is True
@@ -273,6 +275,21 @@ def test_check_accepts_valid_analysis_and_writes_finding(
     result = json.loads(context.with_suffix(".result.json").read_text(encoding="utf-8"))
     assert result["defect"]["needed"] and result["commits"] == [sut["bug"][:8]]
     assert "## Разбор целиком" in context.with_suffix(".report.md").read_text(encoding="utf-8")
+
+
+def test_check_keeps_one_period_after_defect_reason(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str], sut: dict[str, Any]
+) -> None:
+    # Модель сама ставит точку в конце ДЕФЕКТ — ответ не должен показать «..» (стенд X02, X03).
+    enable(project, capsys, repos=[sut["url"]], allow_local=True)
+    _, context, _ = request(project, capsys, "ref=v1.4.2")
+    assert action(project, capsys, "prepare", context)[0] == 0
+    text = ANALYSIS.replace("не исправлена\n", "не исправлена.\n")
+    context.with_suffix(".txt").write_text(
+        text.format(sha=sut["bug"][:8], bug=sut["bug"][:8]), encoding="utf-8")
+    code, out = action(project, capsys, "check", context)
+    assert code == 0, out
+    assert "не исправлена. Заголовок:" in out and ".." not in out
 
 
 @pytest.mark.parametrize(("change", "error"), [

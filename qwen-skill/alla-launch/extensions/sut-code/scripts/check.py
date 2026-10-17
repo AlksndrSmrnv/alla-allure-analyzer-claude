@@ -265,7 +265,9 @@ def details(result: Result, one: bool, state: dict[str, Any]) -> list[str]:
         rows.append(f"История: {result.history}")
     if result.defect:
         title = f" Заголовок: {result.defect_title}" if result.defect_title else ""
-        rows.append(f"Дефект: {result.defect} — {result.defect_reason}.{title}")
+        # Своя точка модели уже стоит — вторая давала «..» в ответе пользователю (стенд X02).
+        end = "" if result.defect_reason.endswith((".", "!", "?", "…")) else "."
+        rows.append(f"Дефект: {result.defect} — {result.defect_reason}{end}{title}")
     return [row[:400] for row in rows[:8]]
 
 
