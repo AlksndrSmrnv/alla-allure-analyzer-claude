@@ -70,6 +70,7 @@ _SECRET_RE = re.compile(
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----",
     re.IGNORECASE,
 )
+_TEST_PARAMS_RE = re.compile(r"\[.*\]\s*$", re.DOTALL)
 _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")
 _FRAME_RE = re.compile(r"^\s*(?:at\s|File\s\"|\.\.\.\s*\d+\s+more)")
 _GENERIC_MESSAGE_RE = re.compile(
@@ -302,10 +303,13 @@ def _merge_tests(old: Iterable[str], new: set[str]) -> list[str]:
 def key_of_test(full_name: str | None, test_case_id: object = None) -> str | None:
     """Ключ теста для записи: ``full_name`` (класс и метод), иначе ``testcase:<id>`` TestOps.
 
-    Параметры теста в ключ не входят: на разных параметрах это та же проблема.
+    Параметры теста (``[...]`` в конце имени) в ключ не входят: на разных параметрах это та
+    же проблема. ``alla-kb/`` коммитится: имя, похожее на секрет (``secret_lines``), не
+    сохраняется — тогда ``testcase:<id>`` или ничего.
     """
-    if full_name and full_name.strip():
-        return full_name.strip()
+    name = _TEST_PARAMS_RE.sub("", full_name or "").strip()
+    if name and not secret_lines(name):
+        return name
     if test_case_id is not None and str(test_case_id).strip():
         return f"testcase:{str(test_case_id).strip()}"
     return None

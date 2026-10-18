@@ -304,6 +304,11 @@ def test_record_tests_are_capped_and_new_ones_win() -> None:
 def test_test_keys_come_from_full_name_or_test_case() -> None:
     assert key_of_test(" ru.OrderTest.create ", 7) == "ru.OrderTest.create"
     assert key_of_test(None, 7) == "testcase:7" and key_of_test("", None) is None
+    # Параметры не входят; имя, похожее на секрет, в коммитируемую базу не попадает (ревью Codex).
+    assert key_of_test("tests.test_login.test_ok[user-1]", 7) == "tests.test_login.test_ok"
+    assert key_of_test("LoginTest.login[password=hunter2]", 7) == "LoginTest.login"
+    assert key_of_test("LoginTest.login_password=hunter2", 7) == "testcase:7"
+    assert key_of_test("LoginTest.login_password=hunter2", None) is None
 
     cluster, tests = _cluster(MESSAGE, TRACE, LOG)
     tests[1] = tests[1].model_copy(update={"full_name": "ru.OrderTest.check"})
