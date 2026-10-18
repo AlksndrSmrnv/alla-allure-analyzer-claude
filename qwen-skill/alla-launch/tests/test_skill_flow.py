@@ -602,6 +602,39 @@ def test_reassigned_error_leaves_the_previous_record_without_its_tests(
         "other_record": "exact", first_file.stem: "fingerprint"}
 
 
+def test_reassigning_after_a_version_change_drops_the_test_binding(
+    project: Path, testops: FakeTestOps, monkeypatch, capsys
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    (run_dir / "feedback" / f"{order}.md").write_text(FEEDBACK, encoding="utf-8")
+    assert _run(["remember", "1", "--run", str(run_dir)], capsys)[1].startswith("STATUS: saved")
+    [first_file] = (project / "alla-kb").glob("*.json")
+    _age_signatures(first_file, "confirmed_signatures")
+    second = {**json.loads(first_file.read_text(encoding="utf-8")), "id": "other_record",
+              "title": "Другая запись", "confirmed_signatures": [], "confirmed_tests": []}
+    (project / "alla-kb" / "other_record.json").write_text(json.dumps(second), encoding="utf-8")
+
+    FakeTestOps(default_launch(778)).install(monkeypatch)
+    run_dir2, _, _ = _prepare(project, capsys, launch_id=778)
+    _finish(run_dir2, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    (run_dir2 / "feedback" / f"{order}.md").write_text(FEEDBACK, encoding="utf-8")
+    # Запись узнаёт ошибку по тесту — это тоже «уже подтверждали» (ревью Codex).
+    code, out = _run(["remember", "1", "--run", str(run_dir2)], capsys)
+    assert code == 1 and f"уже подтверждали в записи «{first_file.stem}»" in out, out
+
+    code, out = _run(["remember", "1", "--entry", "other_record", "--run", str(run_dir2)], capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    assert json.loads(first_file.read_text(encoding="utf-8"))["confirmed_tests"] == []
+
+    FakeTestOps(default_launch(779)).install(monkeypatch)
+    _, run3, _ = _prepare(project, capsys, launch_id=779)
+    order3 = next(e for e in run3["clusters"] if e["file_id"] == order)
+    assert {m["id"]: m["origin"] for m in order3["kb"]} == {
+        "other_record": "exact", first_file.stem: "fingerprint"}
+
+
 def _test_analysis_on_a_known_record(
     project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> tuple[Path, str, str, str]:

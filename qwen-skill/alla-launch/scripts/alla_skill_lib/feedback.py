@@ -28,6 +28,8 @@ from alla_skill_lib.kb import (
     kb_label,
     make_entry_id,
     missing_fingerprint_lines,
+    normalize_fp,
+    record_matches,
     secret_lines,
     store_fingerprint,
 )
@@ -210,9 +212,16 @@ def remember(
 
     assert given.category is not None
     signature = str(entry["signature"])
+    tests = entry_tests(run, entry)
+    haystack = normalize_fp(ws.read_text(paths.evidence(file_id)))
+
+    def confirmed_here(candidate: KBRecord) -> bool:
+        """Запись уже точно узнаёт эту ошибку: по сигнатуре или, после смены версии, по тесту."""
+        return record_matches(candidate, signature, haystack, tests) == "exact"
+
     records, _warnings = kb.load()
     if record is None:
-        owner = next((r for r in records if signature in r.confirmed_signatures), None)
+        owner = next((r for r in records if confirmed_here(r)), None)
         if owner is not None:
             return "error", (
                 f"Эту ошибку уже подтверждали в записи «{owner.id}» ({owner.title}). "
@@ -251,15 +260,15 @@ def remember(
             "launch_id": run["launch_id"],
         }
 
-    tests = entry_tests(run, entry)
     record.confirm(signature, tests)
     changed = [kb.save(record)]
     touched = [record.id]
     for other in records:
-        if other.id != record.id and signature in other.confirmed_signatures:
+        if other.id != record.id and confirmed_here(other):
             # Ошибку переназначили этой записи: прежняя теряет и сигнатуру, и тесты кластера —
-            # иначе после смены версии она снова узнавалась бы по ним точно.
-            other.confirmed_signatures.remove(signature)
+            # иначе она узнавалась бы по ним точно (и та, что узнавала её по тесту после
+            # смены версии, — ревью Codex).
+            other.confirmed_signatures = [s for s in other.confirmed_signatures if s != signature]
             other.confirmed_tests = sorted(set(other.confirmed_tests) - set(tests))
             changed.append(kb.save(other))
             touched.append(other.id)
