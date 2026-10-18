@@ -100,6 +100,7 @@ from alla_skill_lib.kb import (
     ProjectKB,
     cluster_evidence,
     cluster_signature,
+    cluster_tests,
     default_fingerprint,
     discover_kb_dirs,
     find_kb_dir,
@@ -681,7 +682,8 @@ def _write_run(
             evidence = "\n".join(part for part in (message, trace, representative_log) if part)
             ws.write_text(paths.evidence(file_id), evidence)
             signature = cluster_signature(cluster, tests_by_id)
-            kb_matches = match_cluster(load_kb(cluster_kb_dir), signature, evidence)
+            kb_matches = match_cluster(load_kb(cluster_kb_dir), signature, evidence,
+                                       cluster_tests(cluster, tests_by_id))
             entry.update({
                 "signature": signature,
                 "fingerprint": default_fingerprint(message, trace, representative_log),

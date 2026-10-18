@@ -18,6 +18,7 @@ from skill_fake_testops import TOKEN, FakeTestOps, default_launch, green_launch
 
 from alla_skill_lib import cli
 from alla_skill_lib.kb import entry_tests
+from alla_skill_lib.signature import SIGNATURE_VERSION
 
 VALID_ANALYSIS = (
     "ЧТО СЛОМАЛОСЬ: Тест получил HTTP 500 вместо 200. В логе приложения: "
@@ -528,6 +529,46 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     history = (project / "alla-reports" / "history.jsonl").read_text(encoding="utf-8").splitlines()
     latest = [json.loads(line) for line in history if json.loads(line)["launch_id"] == 778]
     assert next(r for r in reversed(latest) if r["file_id"] == order)["kb_entry"] is None
+    FakeTestOps(default_launch(779)).install(monkeypatch)
+    _, run3, _ = _prepare(project, capsys, launch_id=779)
+    assert next(e for e in run3["clusters"] if e["file_id"] == order)["kb"] == []
+
+
+def _age_signatures(kb_file: Path, key: str) -> None:
+    """Обновление скилла сменило версию сигнатуры: хэши записи — прежней версии."""
+    data = json.loads(kb_file.read_text(encoding="utf-8"))
+    previous = f"v{SIGNATURE_VERSION - 1}:"
+    data[key] = [previous + sig.split(":", 1)[1] for sig in data[key]]
+    kb_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def test_record_survives_a_signature_version_change_by_its_tests(
+    project: Path, testops: FakeTestOps, monkeypatch, capsys
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    (run_dir / "feedback" / f"{order}.md").write_text(FEEDBACK, encoding="utf-8")
+    assert _run(["remember", "1", "--run", str(run_dir)], capsys)[1].startswith("STATUS: saved")
+    [kb_file] = (project / "alla-kb").glob("*.json")
+    entry_id = kb_file.stem
+    _age_signatures(kb_file, "confirmed_signatures")
+
+    # Хэш записи больше не совпадает, но тест и признак те же — узнавание по-прежнему точное.
+    FakeTestOps(default_launch(778)).install(monkeypatch)
+    run_dir2, run2, _ = _prepare(project, capsys, launch_id=778)
+    order2 = next(e for e in run2["clusters"] if e["file_id"] == order)
+    assert order2["signature"] not in json.loads(kb_file.read_text(encoding="utf-8"))["confirmed_signatures"]
+    assert [(m["id"], m["origin"]) for m in order2["kb"]] == [(entry_id, "exact")]
+    assert "ТОЧНОЕ" in (run_dir2 / "clusters" / f"{order}.md").read_text(encoding="utf-8")
+    out = _finish(run_dir2, capsys, {
+        order: VALID_ANALYSIS + f"БАЗА ЗНАНИЙ: {entry_id}\n", login: MARKDOWN_ANALYSIS,
+    })
+    assert f"известная проблема: {entry_id}" in out
+
+    # Отказ, сохранённый на прежней версии, тоже держится: запись больше не предлагается.
+    assert _run(["reject", "1", entry_id, "--run", str(run_dir2)], capsys)[1].startswith("STATUS: saved")
+    _age_signatures(kb_file, "rejected_signatures")
     FakeTestOps(default_launch(779)).install(monkeypatch)
     _, run3, _ = _prepare(project, capsys, launch_id=779)
     assert next(e for e in run3["clusters"] if e["file_id"] == order)["kb"] == []

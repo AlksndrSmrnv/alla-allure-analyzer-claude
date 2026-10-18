@@ -31,6 +31,7 @@ from alla_core.models.testops import FailedTestSummary
 from alla_core.utils.text_normalization import canonicalize_kb_error_example, normalize_text
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.code_hints import SKIP_DIRS
+from alla_skill_lib.signature import SIGNATURE_VERSION
 from alla_skill_lib.signature import cluster_signature as cluster_signature
 from alla_skill_lib.signature import cluster_sources
 
@@ -443,13 +444,15 @@ def match_cluster(
     records: Iterable[KBRecord],
     signature: str | None,
     evidence: str,
+    tests: Iterable[str] = (),
 ) -> list[dict[str, Any]]:
     """Снимки подходящих записей: сначала точные, затем по признаку; не больше 3."""
     exact: list[dict[str, Any]] = []
     by_fingerprint: list[dict[str, Any]] = []
     haystack = normalize_fp(evidence)  # один раз на кластер, а не на каждую запись
+    tests = list(tests)
     for record in records:
-        origin = record_matches(record, signature, haystack)
+        origin = record_matches(record, signature, haystack, tests)
         if origin == "exact":
             exact.append(_snapshot(record, origin))
         elif origin == "fingerprint":
@@ -457,19 +460,56 @@ def match_cluster(
     return (exact + by_fingerprint)[:MAX_MATCHES]
 
 
-def record_matches(record: KBRecord, signature: str | None, haystack: str) -> str | None:
+def record_matches(
+    record: KBRecord,
+    signature: str | None,
+    haystack: str,
+    tests: Iterable[str] = (),
+) -> str | None:
     """Как запись подходит кластеру: ``exact`` | ``fingerprint`` | ``None``.
 
-    ``haystack`` — данные кластера после ``normalize_fp``. Одно правило для подбора
-    записей в ``prepare`` и для проверки известной проблемы при сборке отчёта.
+    ``haystack`` — данные кластера после ``normalize_fp``, ``tests`` — ключи его тестов
+    (``key_of_test``). Одно правило для подбора записей в ``prepare`` и для проверки
+    известной проблемы при сборке отчёта.
+
+    Тесты записи действуют, только пока у неё нет сигнатуры текущей версии того же вида
+    (подтверждённой или отвергнутой): после смены версии хэши в записи не совпадают ни с
+    чем, и подтверждение или отказ держатся на тесте и признаке. Без признака тест не
+    решает ничего — тест падает и по другим причинам.
     """
-    if signature and signature in record.rejected_signatures:
-        return None
+    tests = set(tests)
+    hits = bool(fingerprint_lines(record.error_example)) and not _missing_in(
+        record.error_example, haystack)
     if signature and signature in record.confirmed_signatures:
         return "exact"
-    if fingerprint_lines(record.error_example) and not _missing_in(record.error_example, haystack):
-        return "fingerprint"
-    return None
+    if record_rejected(record, signature, tests, hits=hits):
+        return None
+    if hits and tests & set(record.confirmed_tests) and not _has_current(record.confirmed_signatures):
+        return "exact"
+    return "fingerprint" if hits else None
+
+
+def record_rejected(
+    record: KBRecord,
+    signature: str | None,
+    tests: Iterable[str],
+    *,
+    hits: bool,
+) -> bool:
+    """Запись отвергнута для этого кластера: по сигнатуре или, после смены версии, по тесту.
+
+    ``hits`` — признак записи есть в данных кластера.
+    """
+    if signature and signature in record.rejected_signatures:
+        return True
+    return (hits and bool(set(tests) & set(record.rejected_tests))
+            and not _has_current(record.rejected_signatures))
+
+
+def _has_current(signatures: Iterable[str]) -> bool:
+    """Есть сигнатура текущей версии: тесты записи тогда не нужны."""
+    prefix = f"v{SIGNATURE_VERSION}:"
+    return any(signature.startswith(prefix) for signature in signatures)
 
 
 def _snapshot(record: KBRecord, origin: str) -> dict[str, Any]:

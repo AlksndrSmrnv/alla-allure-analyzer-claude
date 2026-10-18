@@ -24,10 +24,13 @@ from alla_skill_lib.kb import (
     KB_TO_CATEGORY,
     KBRecord,
     ProjectKB,
+    entry_tests,
+    fingerprint_hits,
     kb_label,
     match_cluster,
     normalize_fp,
     record_matches,
+    record_rejected,
 )
 
 
@@ -111,10 +114,10 @@ def known_issues(
         record = _load(cache, directory, analysis.kb_ref, run, result.notes)
         if record is None:
             continue
-        if entry.get("signature") and entry["signature"] in record.rejected_signatures:
+        if _rejected(record, run, entry, paths):
             result.rejected[file_id] = _from_record(kb_dir, record, entry)
             continue
-        if not _matches(record, entry, paths):
+        if not _matches(record, run, entry, paths):
             continue
         known = _from_record(kb_dir, record, entry)
         if analysis.category != known.category:
@@ -197,16 +200,30 @@ def current_kb_matches(run: dict[str, Any], paths: ws.RunPaths) -> dict[str, lis
         label = kb_label(project_root, Path(kb_dir))
         result[entry["file_id"]] = [
             {**match, "kb_dir": kb_dir, "kb_label": label}
-            for match in match_cluster(cache[kb_dir], entry.get("signature"), text)]
+            for match in match_cluster(cache[kb_dir], entry.get("signature"), text,
+                                       entry_tests(run, entry))]
     return result
 
 
-def _matches(record: KBRecord, entry: dict[str, Any], paths: ws.RunPaths) -> bool:
-    """Запись подходит кластеру сейчас: не отвергнута и узнаётся точно или по признаку."""
+def _evidence(entry: dict[str, Any], paths: ws.RunPaths) -> str:
+    """Данные кластера для признака; без доказательств (кластер auto) — пусто."""
     evidence = paths.evidence(entry["file_id"])
-    # Без доказательств (кластер auto) — только точное совпадение сигнатуры.
-    text = ws.read_text(evidence) if evidence.is_file() else ""
-    return record_matches(record, entry.get("signature"), normalize_fp(text)) is not None
+    return ws.read_text(evidence) if evidence.is_file() else ""
+
+
+def _rejected(record: KBRecord, run: dict[str, Any], entry: dict[str, Any],
+              paths: ws.RunPaths) -> bool:
+    """Пользователь отверг запись для этой ошибки (по сигнатуре или, после смены версии, по тесту)."""
+    return record_rejected(record, entry.get("signature"), entry_tests(run, entry),
+                           hits=fingerprint_hits(record.error_example, _evidence(entry, paths)))
+
+
+def _matches(record: KBRecord, run: dict[str, Any], entry: dict[str, Any],
+             paths: ws.RunPaths) -> bool:
+    """Запись подходит кластеру сейчас: не отвергнута и узнаётся точно или по признаку."""
+    # Без доказательств — только точное совпадение сигнатуры.
+    return record_matches(record, entry.get("signature"), normalize_fp(_evidence(entry, paths)),
+                          entry_tests(run, entry)) is not None
 
 
 def _from_record(kb_dir: str, record: KBRecord, entry: dict[str, Any]) -> KnownRecord:

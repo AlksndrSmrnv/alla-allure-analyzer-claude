@@ -32,6 +32,8 @@ from alla_skill_lib.kb import (
     make_entry_id,
     match_cluster,
     missing_fingerprint_lines,
+    normalize_fp,
+    record_matches,
     secret_lines,
     store_fingerprint,
 )
@@ -315,6 +317,32 @@ def test_test_keys_come_from_full_name_or_test_case() -> None:
     }
     assert entry_tests(run, {"cluster_id": "c1"}) == ["ru.OrderTest.check", "testcase:11"]
     assert entry_tests(run, {"cluster_id": "missing"}) == []
+
+
+def test_tests_keep_records_recognised_after_a_signature_version_change() -> None:
+    from alla_skill_lib.signature import SIGNATURE_VERSION
+    old, new = f"v{SIGNATURE_VERSION - 1}:old", f"v{SIGNATURE_VERSION}:new"
+    haystack = normalize_fp("java.lang.NullPointerException: customer is null")
+    tests = ["ru.OrderTest.create"]
+    confirmed = _record(confirmed_signatures=[old], confirmed_tests=tests)
+    # Хэш старой версии не совпадает, но тест и признак те же — узнавание точное.
+    assert record_matches(confirmed, new, haystack, tests) == "exact"
+    # Другой тест или признака нет — тест ничего не решает.
+    assert record_matches(confirmed, new, haystack, ["ru.CartTest.add"]) == "fingerprint"
+    assert record_matches(confirmed, new, normalize_fp("Payment declined"), tests) is None
+    # Запись уже подтверждена на текущей версии: другая сигнатура того же теста — только признак.
+    current = _record(confirmed_signatures=[old, f"v{SIGNATURE_VERSION}:other"], confirmed_tests=tests)
+    assert record_matches(current, new, haystack, tests) == "fingerprint"
+
+    # Отказ старой версии по тому же тесту держится: запись не предлагается.
+    rejected = _record(rejected_signatures=[old], rejected_tests=tests)
+    assert record_matches(rejected, new, haystack, tests) is None
+    assert record_matches(rejected, new, haystack, ["ru.CartTest.add"]) == "fingerprint"
+    rejected_now = _record(rejected_signatures=[f"v{SIGNATURE_VERSION}:other"], rejected_tests=tests)
+    assert record_matches(rejected_now, new, haystack, tests) == "fingerprint"
+    # Точная сигнатура текущей версии сильнее старого отказа по тесту.
+    both = _record(confirmed_signatures=[new], rejected_signatures=[old], rejected_tests=tests)
+    assert record_matches(both, new, haystack, tests) == "exact"
 
 
 def test_match_cluster_orders_exact_first_and_drops_rejected() -> None:
