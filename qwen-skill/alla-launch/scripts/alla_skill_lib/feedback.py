@@ -23,6 +23,7 @@ from alla_skill_lib.kb import (
     MAX_FINGERPRINT_LINES,
     KBRecord,
     ProjectKB,
+    entry_tests,
     fingerprint_lines,
     kb_label,
     make_entry_id,
@@ -250,7 +251,7 @@ def remember(
             "launch_id": run["launch_id"],
         }
 
-    record.confirm(signature)
+    record.confirm(signature, entry_tests(run, entry))
     changed = [kb.save(record)]
     touched = [record.id]
     for other in records:
@@ -313,7 +314,7 @@ def reject(
         return "error", str(exc)
     if record is None:
         return "error", f"В {kb.directory} нет записи «{entry_id}»."
-    record.reject(str(entry["signature"]))
+    record.reject(str(entry["signature"]), entry_tests(run, entry))
     path = kb.save(record)
     refresh = _report_refresh(paths, run, kb, [record.id])
     # Подтверждение, сохранённое в эту запись, отвергнуто вместе с ней.

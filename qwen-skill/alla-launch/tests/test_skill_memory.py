@@ -20,11 +20,15 @@ from alla_skill_lib.history import (
     render_recurrence,
 )
 from alla_skill_lib.kb import (
+    MAX_RECORD_TESTS,
     KBRecord,
     ProjectKB,
     cluster_signature,
+    cluster_tests,
     default_fingerprint,
+    entry_tests,
     fingerprint_hits,
+    key_of_test,
     make_entry_id,
     match_cluster,
     missing_fingerprint_lines,
@@ -264,6 +268,53 @@ def test_kb_ids_and_signature_invariants(tmp_path: Path) -> None:
     assert record.rejected_signatures == ["v7:x"] and record.confirmed_signatures == []
     record.confirm("v7:x")
     assert record.confirmed_signatures == ["v7:x"] and record.rejected_signatures == []
+
+
+def test_record_keeps_tests_it_was_confirmed_and_rejected_on(tmp_path: Path) -> None:
+    record = _record()
+    record.confirm("v9:x", ["ru.OrderTest.create", "ru.OrderTest.update"])
+    record.reject("v9:y", ["ru.OrderTest.update", "ru.CartTest.add"])
+    # Зеркально сигнатурам: отказ по тесту снимает его подтверждение, и наоборот.
+    assert record.confirmed_tests == ["ru.OrderTest.create"]
+    assert record.rejected_tests == ["ru.CartTest.add", "ru.OrderTest.update"]
+    record.confirm("v9:y", ["ru.CartTest.add"])
+    assert record.confirmed_tests == ["ru.CartTest.add", "ru.OrderTest.create"]
+    assert record.rejected_tests == ["ru.OrderTest.update"]
+
+    kb = ProjectKB(tmp_path / "alla-kb")
+    loaded = kb.get(kb.save(record).stem)
+    assert loaded is not None and loaded.to_json() == record.to_json()
+    # Запись, сохранённая до этих полей, читается: тестов просто нет.
+    assert _record().confirmed_tests == [] and "confirmed_tests" in _record().to_json()
+    with pytest.raises(ValueError, match="confirmed_tests"):
+        KBRecord.from_json(_record().to_json() | {"confirmed_tests": "ru.OrderTest.create"})
+
+
+def test_record_tests_are_capped_and_new_ones_win() -> None:
+    record = _record(confirmed_tests=[f"old.T{i:02}" for i in range(MAX_RECORD_TESTS)])
+    record.confirm("v9:x", ["new.A", "new.B"])
+    assert len(record.confirmed_tests) == MAX_RECORD_TESTS
+    assert {"new.A", "new.B"} <= set(record.confirmed_tests)
+    assert record.confirmed_tests == sorted(record.confirmed_tests)
+
+
+def test_test_keys_come_from_full_name_or_test_case() -> None:
+    assert key_of_test(" ru.OrderTest.create ", 7) == "ru.OrderTest.create"
+    assert key_of_test(None, 7) == "testcase:7" and key_of_test("", None) is None
+
+    cluster, tests = _cluster(MESSAGE, TRACE, LOG)
+    tests[1] = tests[1].model_copy(update={"full_name": "ru.OrderTest.check"})
+    assert cluster_tests(cluster, tests) == ["ru.OrderTest.check"]
+    run = {
+        "clustering": {"clusters": [{"cluster_id": "c1", "member_test_ids": [1, 2, 3]}]},
+        "triage": {"failed_tests": [
+            {"test_result_id": 1, "full_name": "ru.OrderTest.check", "test_case_id": 10},
+            {"test_result_id": 2, "full_name": None, "test_case_id": 11},
+            {"test_result_id": 3, "full_name": "ru.OrderTest.check", "test_case_id": 10},
+        ]},
+    }
+    assert entry_tests(run, {"cluster_id": "c1"}) == ["ru.OrderTest.check", "testcase:11"]
+    assert entry_tests(run, {"cluster_id": "missing"}) == []
 
 
 def test_match_cluster_orders_exact_first_and_drops_rejected() -> None:

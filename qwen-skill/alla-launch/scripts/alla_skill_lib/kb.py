@@ -36,6 +36,8 @@ from alla_skill_lib.signature import cluster_sources
 
 KB_DIRNAME = "alla-kb"
 MAX_MATCHES = 3
+# Тестов в записи — не больше: список коммитится, а для узнавания хватает недавних.
+MAX_RECORD_TESTS = 50
 MAX_FINGERPRINT_LINES = 3
 MAX_FINGERPRINT_LINE_CHARS = 160
 CATEGORY_TO_KB = {"тест": "test", "приложение": "service", "окружение": "env", "данные": "data"}
@@ -83,7 +85,7 @@ _TRANSLIT = dict(zip(
 
 _KNOWN_FIELDS = frozenset({
     "id", "title", "category", "description", "resolution_steps", "error_example",
-    "confirmed_signatures", "rejected_signatures", "created",
+    "confirmed_signatures", "rejected_signatures", "confirmed_tests", "rejected_tests", "created",
 })
 
 README = """\
@@ -97,7 +99,9 @@ README = """\
 
 Коммитьте эту папку, чтобы рецепты получила вся команда. Файлы можно править
 руками: `title`, `description`, `resolution_steps`, `error_example`
-(1–3 строки из текста ошибки или лога). Поле `id` не меняйте.
+(1–3 строки из текста ошибки или лога), `confirmed_tests` и `rejected_tests`
+(тесты, на которых запись подтвердили или отвергли: по ним запись узнаётся и после
+обновления скилла). Поле `id` не меняйте.
 """
 
 
@@ -212,6 +216,10 @@ class KBRecord:
     error_example: str
     confirmed_signatures: list[str] = field(default_factory=list)
     rejected_signatures: list[str] = field(default_factory=list)
+    # Тесты, на которых запись подтвердили или отвергли (``key_of_test``). Имя теста от версии
+    # сигнатуры не зависит: по нему запись узнаётся, когда хэши старой версии не совпадают.
+    confirmed_tests: list[str] = field(default_factory=list)
+    rejected_tests: list[str] = field(default_factory=list)
     created: dict[str, Any] = field(default_factory=dict)
     # Поля, добавленные руками (jira, owner, tags…): при перезаписи не теряются.
     extra: dict[str, Any] = field(default_factory=dict)
@@ -224,7 +232,8 @@ class KBRecord:
         for key in ("id", "title", "category"):
             if key not in data:
                 raise ValueError(f"нет поля {key!r}")
-        for key in ("resolution_steps", "confirmed_signatures", "rejected_signatures"):
+        for key in ("resolution_steps", "confirmed_signatures", "rejected_signatures",
+                    "confirmed_tests", "rejected_tests"):
             if not isinstance(data.get(key, []), list):
                 raise ValueError(f"поле {key!r} должно быть списком")
         if not isinstance(data.get("created", {}), dict):
@@ -243,6 +252,8 @@ class KBRecord:
             error_example=str(data.get("error_example", "")),
             confirmed_signatures=sorted({str(s) for s in data.get("confirmed_signatures", [])}),
             rejected_signatures=sorted({str(s) for s in data.get("rejected_signatures", [])}),
+            confirmed_tests=sorted({str(t) for t in data.get("confirmed_tests", [])}),
+            rejected_tests=sorted({str(t) for t in data.get("rejected_tests", [])}),
             created=dict(data.get("created", {})),
             extra={key: value for key, value in data.items() if key not in _KNOWN_FIELDS},
         )
@@ -258,16 +269,70 @@ class KBRecord:
             "error_example": self.error_example,
             "confirmed_signatures": sorted(set(self.confirmed_signatures)),
             "rejected_signatures": sorted(set(self.rejected_signatures)),
+            "confirmed_tests": sorted(set(self.confirmed_tests)),
+            "rejected_tests": sorted(set(self.rejected_tests)),
             "created": self.created,
         }
 
-    def confirm(self, signature: str) -> None:
+    def confirm(self, signature: str, tests: Iterable[str] = ()) -> None:
+        """Запись подходит ошибке с этой сигнатурой и этим тестам."""
+        tests = set(tests)
         self.confirmed_signatures = sorted(set(self.confirmed_signatures) | {signature})
         self.rejected_signatures = sorted(set(self.rejected_signatures) - {signature})
+        self.confirmed_tests = _merge_tests(self.confirmed_tests, tests)
+        self.rejected_tests = sorted(set(self.rejected_tests) - tests)
 
-    def reject(self, signature: str) -> None:
+    def reject(self, signature: str, tests: Iterable[str] = ()) -> None:
+        """Запись не подходит ошибке с этой сигнатурой и этим тестам."""
+        tests = set(tests)
         self.rejected_signatures = sorted(set(self.rejected_signatures) | {signature})
         self.confirmed_signatures = sorted(set(self.confirmed_signatures) - {signature})
+        self.rejected_tests = _merge_tests(self.rejected_tests, tests)
+        self.confirmed_tests = sorted(set(self.confirmed_tests) - tests)
+
+
+def _merge_tests(old: Iterable[str], new: set[str]) -> list[str]:
+    """Старые и новые тесты, не больше ``MAX_RECORD_TESTS``: новые важнее старых."""
+    fresh = sorted(new)[:MAX_RECORD_TESTS]
+    rest = [test for test in sorted(set(old)) if test not in new]
+    return sorted([*fresh, *rest][:MAX_RECORD_TESTS])
+
+
+def key_of_test(full_name: str | None, test_case_id: object = None) -> str | None:
+    """Ключ теста для записи: ``full_name`` (класс и метод), иначе ``testcase:<id>`` TestOps.
+
+    Параметры теста в ключ не входят: на разных параметрах это та же проблема.
+    """
+    if full_name and full_name.strip():
+        return full_name.strip()
+    if test_case_id is not None and str(test_case_id).strip():
+        return f"testcase:{str(test_case_id).strip()}"
+    return None
+
+
+def cluster_tests(
+    cluster: FailureCluster,
+    tests_by_id: dict[int, FailedTestSummary],
+) -> list[str]:
+    """Ключи тестов кластера (``prepare``: модели ядра)."""
+    keys = {
+        key_of_test(test.full_name, test.test_case_id)
+        for test in (tests_by_id.get(test_id) for test_id in cluster.member_test_ids)
+        if test is not None
+    }
+    return sorted(key for key in keys if key)
+
+
+def entry_tests(run: dict[str, Any], entry: dict[str, Any]) -> list[str]:
+    """Ключи тестов кластера по ``run.json`` (после ``prepare``: ``remember``, отчёт)."""
+    clusters = (run.get("clustering") or {}).get("clusters", [])
+    members: list[Any] = next((cluster.get("member_test_ids", []) for cluster in clusters
+                               if cluster.get("cluster_id") == entry.get("cluster_id")), [])
+    by_id = {test.get("test_result_id"): test
+             for test in (run.get("triage") or {}).get("failed_tests", [])}
+    keys = {key_of_test(test.get("full_name"), test.get("test_case_id"))
+            for test in (by_id.get(test_id) for test_id in members) if test is not None}
+    return sorted(key for key in keys if key)
 
 
 def find_kb_dir(project_root: Path) -> Path:

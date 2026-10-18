@@ -17,6 +17,7 @@ from skill_fixtures import (  # noqa: F401
 from skill_fake_testops import TOKEN, FakeTestOps, default_launch, green_launch
 
 from alla_skill_lib import cli
+from alla_skill_lib.kb import entry_tests
 
 VALID_ANALYSIS = (
     "ЧТО СЛОМАЛОСЬ: Тест получил HTTP 500 вместо 200. В логе приложения: "
@@ -460,6 +461,10 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     assert data["category"] == "service"
     assert data["confirmed_signatures"] == [order_entry["signature"]]
     assert data["error_example"] == order_entry["fingerprint"]
+    # Тесты, на которых запись подтвердили: по ним она узнаётся и после смены версии сигнатуры.
+    order_tests = entry_tests(run, order_entry)
+    assert order_tests and all(test.startswith("ru.company.") for test in order_tests), order_tests
+    assert data["confirmed_tests"] == order_tests and data["rejected_tests"] == []
     assert data["resolution_steps"] == ["Передавать customer в запросе создания заказа"]
     assert (project / "alla-kb" / "README.md").is_file()
 
@@ -506,6 +511,8 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     assert code == 0 and out.startswith("STATUS: saved")
     assert f"Запись указана в разборах проблемы {int(order)}" in out
     assert f"next {run_dir2}" in out
+    rejected = json.loads(kb_file.read_text(encoding="utf-8"))
+    assert rejected["rejected_tests"] == order_tests and rejected["confirmed_tests"] == []
     # Отчёт пересобирается по текущей базе знаний: отвергнутая запись — уже не известная проблема.
     # Разбор опирался на отвергнутую запись — данные сводки изменились, она пишется заново.
     out = _next(run_dir2, capsys)
