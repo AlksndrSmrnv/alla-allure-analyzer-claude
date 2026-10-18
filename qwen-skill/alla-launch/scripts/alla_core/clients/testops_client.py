@@ -1,17 +1,22 @@
 """Реализация HTTP-клиента Allure TestOps."""
 
+import asyncio
 import logging
 from typing import Any
 
 import httpx
 
 from alla_core.clients.auth import AllureAuthManager
+from alla_core.clients.retry import RETRY_STATUSES, header, retry_delay
 from alla_core.config import Settings
 from alla_core.exceptions import AllaError, AllureApiError, PaginationLimitError
 from alla_core.models.common import PageResponse
 from alla_core.models.testops import AttachmentMeta, ExecutionStep, LaunchResponse, TestResultResponse
 
 logger = logging.getLogger(__name__)
+
+# chunks, total_bytes, capped, status_code, body_preview, retry_after
+_StreamResult = tuple[list[bytes], int, bool, int, str, object]
 
 
 class AllureTestOpsClient:
@@ -34,6 +39,8 @@ class AllureTestOpsClient:
         self._page_size = settings.page_size
         self._max_pages = settings.max_pages
         self._max_attachment_bytes = settings.logs_max_attachment_bytes
+        self._retries = settings.http_retries
+        self._sleep = asyncio.sleep  # подменяется в тестах
         self._http = httpx.AsyncClient(
             timeout=settings.request_timeout,
             verify=settings.ssl_verify,
@@ -283,6 +290,20 @@ class AllureTestOpsClient:
 
     # --- Внутренний HTTP ---
 
+    def _may_retry(self, method: str, attempt: int) -> bool:
+        """Повторять только чтение (GET идемпотентен) и не больше ``http_retries`` раз."""
+        return method.upper() == "GET" and attempt < self._retries
+
+    async def _pause_before_retry(
+        self, method: str, path: str, attempt: int, reason: str, retry_after: object,
+    ) -> None:
+        delay = retry_delay(retry_after, attempt)
+        logger.warning(
+            "TestOps: %s %s — %s, повтор %d из %d через %.0f с",
+            method, path, reason, attempt + 1, self._retries, delay,
+        )
+        await self._sleep(delay)
+
     async def _send_with_auth_retry(
         self,
         method: str,
@@ -291,12 +312,43 @@ class AllureTestOpsClient:
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
     ) -> httpx.Response:
-        """Выполнить запрос с auth-header и одноразовым повтором при 401.
+        """Выполнить запрос с повторами при временных сбоях.
+
+        Сетевой сбой и ответы ``RETRY_STATUSES`` у GET повторяются до ``http_retries``
+        раз с паузой (``Retry-After`` или 1, 2, 4… с): один 502 балансировщика или 429 не
+        должен обрывать выгрузку прогона. Последний сетевой сбой — ``AllureApiError(0, ...)``,
+        последний ответ со статусом отдаётся как есть: вызывающий код сам решает, какие
+        статусы считать ошибками.
+        """
+        attempt = 0
+        while True:
+            try:
+                resp = await self._send_once(method, path, params=params, json=json)
+            except AllureApiError as exc:
+                if exc.status_code != 0 or not self._may_retry(method, attempt):
+                    raise
+                await self._pause_before_retry(method, path, attempt, "сбой сети", None)
+            else:
+                if resp.status_code not in RETRY_STATUSES or not self._may_retry(method, attempt):
+                    return resp
+                await self._pause_before_retry(
+                    method, path, attempt, f"HTTP {resp.status_code}",
+                    header(resp, "Retry-After"),
+                )
+            attempt += 1
+
+    async def _send_once(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        """Одна попытка запроса с auth-header и одноразовым повтором при 401.
 
         Транслирует ``httpx.RequestError`` в ``AllureApiError(0, ...)`` как на
-        первой, так и на повторной попытке. Возвращает ``httpx.Response`` —
-        вызывающий код сам решает, как интерпретировать тело и какие
-        статусы считать ошибками.
+        первой, так и на повторной попытке.
         """
         url = f"{self._endpoint}{path}"
         auth_header = await self._auth.get_auth_header()
@@ -342,20 +394,23 @@ class AllureTestOpsClient:
             method, self._endpoint, path, max_bytes,
         )
         url = f"{self._endpoint}{path}"
-        auth_header = await self._auth.get_auth_header()
-
-        chunks, total, capped, status, body_preview = await self._stream_attempt(
-            method, url, params, auth_header, max_bytes, path,
-        )
-
-        if status == 401:
-            logger.debug("Получен 401 (stream), reauth и повтор")
-            failed_token = auth_header.get("Authorization", "").removeprefix("Bearer ")
-            self._auth.invalidate(failed_token=failed_token)
-            auth_header = await self._auth.get_auth_header()
-            chunks, total, capped, status, body_preview = await self._stream_attempt(
-                method, url, params, auth_header, max_bytes, path,
-            )
+        attempt = 0
+        while True:
+            try:
+                chunks, total, capped, status, body_preview, retry_after = (
+                    await self._stream_with_auth_retry(method, url, params, max_bytes, path)
+                )
+            except AllureApiError as exc:
+                if exc.status_code != 0 or not self._may_retry(method, attempt):
+                    raise
+                await self._pause_before_retry(method, path, attempt, "сбой сети", None)
+            else:
+                if status not in RETRY_STATUSES or not self._may_retry(method, attempt):
+                    break
+                await self._pause_before_retry(
+                    method, path, attempt, f"HTTP {status}", retry_after,
+                )
+            attempt += 1
 
         if status == 404:
             raise AllureApiError(
@@ -376,6 +431,27 @@ class AllureTestOpsClient:
 
         return b"".join(chunks)
 
+    async def _stream_with_auth_retry(
+        self,
+        method: str,
+        url: str,
+        params: dict[str, Any] | None,
+        max_bytes: int | None,
+        path: str,
+    ) -> _StreamResult:
+        """Одна попытка streaming-запроса с одноразовым повтором при 401."""
+        auth_header = await self._auth.get_auth_header()
+        result = await self._stream_attempt(method, url, params, auth_header, max_bytes, path)
+        if result[3] == 401:
+            logger.debug("Получен 401 (stream), reauth и повтор")
+            failed_token = auth_header.get("Authorization", "").removeprefix("Bearer ")
+            self._auth.invalidate(failed_token=failed_token)
+            auth_header = await self._auth.get_auth_header()
+            result = await self._stream_attempt(
+                method, url, params, auth_header, max_bytes, path,
+            )
+        return result
+
     async def _stream_attempt(
         self,
         method: str,
@@ -384,9 +460,10 @@ class AllureTestOpsClient:
         headers: dict[str, str],
         max_bytes: int | None,
         path: str,
-    ) -> tuple[list[bytes], int, bool, int, str]:
+    ) -> _StreamResult:
         """Одна попытка streaming-запроса. Возвращает кортеж
-        ``(chunks, total_bytes, capped, status_code, body_preview)``.
+        ``(chunks, total_bytes, capped, status_code, body_preview, retry_after)``;
+        ``retry_after`` — заголовок ``Retry-After`` ответа с ошибкой.
 
         ``httpx.RequestError`` транслируется в ``AllureApiError(0, ...)``.
         Для статусов 4xx/5xx тело **не** читается целиком: берётся первые
@@ -416,7 +493,7 @@ class AllureTestOpsClient:
                         if len(preview_buf) >= ERROR_BODY_PREVIEW_BYTES:
                             break
                     preview = bytes(preview_buf).decode("utf-8", errors="replace")[:500]
-                    return [], 0, False, status, preview
+                    return [], 0, False, status, preview, header(resp, "Retry-After")
 
                 chunks: list[bytes] = []
                 total = 0
@@ -431,7 +508,7 @@ class AllureTestOpsClient:
                         break
                     chunks.append(chunk)
                     total += len(chunk)
-                return chunks, total, capped, status, ""
+                return chunks, total, capped, status, "", None
         except httpx.RequestError as exc:
             raise AllureApiError(0, str(exc), path) from exc
 

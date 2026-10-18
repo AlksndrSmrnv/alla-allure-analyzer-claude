@@ -59,6 +59,7 @@ async def collect_launch(
         api_token=settings.token,
         timeout=settings.request_timeout,
         ssl_verify=settings.ssl_verify,
+        retries=settings.http_retries,
     )
     warnings: list[str] = []
     async with AllureTestOpsClient(settings, auth) as client:

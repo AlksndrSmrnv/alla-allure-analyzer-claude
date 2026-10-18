@@ -348,6 +348,15 @@ paths:
   (`populate_by_name=True`): payloads TestOps плавают.
 - `_request()` должен корректно обрабатывать пустые тела PATCH/DELETE; `_request_raw()` — для
   бинарных attachments.
+- **Повторы при временных сбоях.** GET (JSON и stream) повторяется до `http_retries` раз при
+  `RETRY_STATUSES` (429, 502, 503, 504) и `httpx.RequestError` (сеть, таймаут): пауза —
+  `Retry-After` в секундах, иначе 1, 2, 4… с, не больше 30 с (`clients/retry.py`); каждая
+  попытка — со своим повтором при 401. 500 не повторяется (ошибка TestOps на запрос обычно
+  воспроизводится), не-GET — тоже. Последний ответ отдаётся как раньше: 5xx — `AllureApiError`
+  со статусом, сеть — `AllureApiError(0, …)`. Обмен токена (`AllureAuthManager`,
+  `retries=settings.http_retries`) повторяется так же (POST обмена идемпотентен; 401 — нет).
+  Причина: один 502 балансировщика при пагинации обрывал весь `prepare`. Тесты подменяют
+  `_sleep` клиента и менеджера.
 - `get_attachment_content(id, max_bytes=None)` — потолок по умолчанию
   `logs_max_attachment_bytes`; скриншоты скилл качает со своим (`images_max_bytes` + 1 байт:
   длиннее потолка — обрезан, пропускается). Протокол `AttachmentProvider` параметра не
@@ -363,6 +372,7 @@ paths:
 | `ALLURE_ENDPOINT` | да | — | URL Allure TestOps без `/api` |
 | `ALLURE_TOKEN` | да | `""` | API token |
 | `ALLURE_REQUEST_TIMEOUT` | нет | `30` | HTTP timeout к TestOps |
+| `ALLURE_HTTP_RETRIES` | нет | `3` | Повторы GET при 429/502/503/504 и сбоях сети (0–10) |
 | `ALLURE_PAGE_SIZE` | нет | `100` | Размер страницы TestOps API |
 | `ALLURE_MAX_PAGES` | нет | `50` | Защита пагинации |
 | `ALLURE_DETAIL_CONCURRENCY` | нет | `10` | Параллелизм details/comments |

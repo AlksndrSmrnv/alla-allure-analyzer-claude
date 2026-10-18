@@ -6,6 +6,7 @@ import time
 
 import httpx
 
+from alla_core.clients.retry import RETRY_STATUSES, header, retry_delay
 from alla_core.exceptions import AuthenticationError
 
 logger = logging.getLogger(__name__)
@@ -43,9 +44,13 @@ class AllureAuthManager:
         *,
         timeout: int = 30,
         ssl_verify: bool = True,
+        retries: int = 0,
     ) -> None:
         self._endpoint = endpoint.rstrip("/")
         self._api_token = api_token
+        # Повторы обмена при 429/502–504 и сбое сети — как у запросов клиента (``http_retries``).
+        self._retries = retries
+        self._sleep = asyncio.sleep  # подменяется в тестах
         self._token_info: _TokenInfo | None = None
         self._token_lock = asyncio.Lock()
         self._http = httpx.AsyncClient(timeout=timeout, verify=ssl_verify)
@@ -80,15 +85,7 @@ class AllureAuthManager:
         logger.debug("Обмен API-токена на JWT по адресу %s", url)
 
         try:
-            resp = await self._http.post(
-                url,
-                data={
-                    "grant_type": "apitoken",
-                    "scope": "openid",
-                    "token": self._api_token,
-                },
-                headers={"Accept": "application/json"},
-            )
+            resp = await self._post_token(url)
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise AuthenticationError(
@@ -115,6 +112,39 @@ class AllureAuthManager:
         expires_in = int(body.get("expires_in", 3600))
         logger.debug("JWT получен, срок действия %d секунд", expires_in)
         return _TokenInfo(access_token=access_token, expires_in=expires_in)
+
+    async def _post_token(self, url: str) -> httpx.Response:
+        """POST обмена с повторами: обмен идемпотентен, а 502 балансировщика на первом же
+        запросе иначе обрывал бы выгрузку прогона. Последний сбой сети пробрасывается."""
+        attempt = 0
+        while True:
+            retry_after: object = None
+            try:
+                resp = await self._http.post(
+                    url,
+                    data={
+                        "grant_type": "apitoken",
+                        "scope": "openid",
+                        "token": self._api_token,
+                    },
+                    headers={"Accept": "application/json"},
+                )
+            except httpx.RequestError:
+                if attempt >= self._retries:
+                    raise
+                reason = "сбой сети"
+            else:
+                if resp.status_code not in RETRY_STATUSES or attempt >= self._retries:
+                    return resp
+                reason = f"HTTP {resp.status_code}"
+                retry_after = header(resp, "Retry-After")
+            delay = retry_delay(retry_after, attempt)
+            logger.warning(
+                "TestOps: обмен токена — %s, повтор %d из %d через %.0f с",
+                reason, attempt + 1, self._retries, delay,
+            )
+            await self._sleep(delay)
+            attempt += 1
 
     def invalidate(self, failed_token: str | None = None) -> None:
         """Принудительная повторная аутентификация при следующем запросе.

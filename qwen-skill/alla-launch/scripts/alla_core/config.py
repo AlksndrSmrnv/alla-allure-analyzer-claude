@@ -30,6 +30,8 @@ class Settings:
     endpoint: str = ""
     token: str = field(default="", repr=False)
     request_timeout: int = 30
+    # Повторы GET при 429/502/503/504 и сетевых сбоях (пауза 1, 2, 4… с или Retry-After).
+    http_retries: int = 3
     page_size: int = 100
     max_pages: int = 50
     detail_concurrency: int = 10
@@ -117,6 +119,7 @@ _OPERATION_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
 # Допустимые границы (ge, le) значений настроек.
 # Например, параллелизм 0 навсегда подвесит asyncio.Semaphore в триаже и логах.
 BOUNDS: dict[str, tuple[float | None, float | None]] = {
+    "http_retries": (0, 10),
     "detail_concurrency": (1, None),
     "logs_concurrency": (1, None),
     "logs_max_attachment_bytes": (1024, None),

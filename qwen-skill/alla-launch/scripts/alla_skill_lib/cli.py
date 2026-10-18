@@ -2035,6 +2035,7 @@ async def _ping_testops(settings: Settings) -> None:
         api_token=settings.token,
         timeout=settings.request_timeout,
         ssl_verify=settings.ssl_verify,
+        retries=settings.http_retries,
     )
     await auth.get_auth_header()
 

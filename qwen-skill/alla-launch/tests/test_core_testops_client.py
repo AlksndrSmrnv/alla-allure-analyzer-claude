@@ -14,14 +14,17 @@ from alla_core.config import Settings
 from alla_core.exceptions import AllureApiError
 
 
-def _make_settings(monkeypatch, tmp_path) -> Settings:
+def _make_settings(monkeypatch, tmp_path, *, retries: int = 0) -> Settings:
     # Settings скилла — dataclass: окружение читает только Settings.load,
-    # а тесту нужны фиксированные значения.
-    return Settings(endpoint="https://allure.test", token="test-token")
+    # а тесту нужны фиксированные значения. Повторы при 5xx и сбоях сети по умолчанию
+    # выключены: эти тесты проверяют одну попытку; повторы — в разделе ниже.
+    return Settings(endpoint="https://allure.test", token="test-token", http_retries=retries)
 
 
-async def _make_client(monkeypatch, tmp_path) -> tuple[AllureTestOpsClient, MagicMock]:
-    settings = _make_settings(monkeypatch, tmp_path)
+async def _make_client(
+    monkeypatch, tmp_path, *, retries: int = 0,
+) -> tuple[AllureTestOpsClient, MagicMock]:
+    settings = _make_settings(monkeypatch, tmp_path, retries=retries)
     auth = MagicMock(spec=AllureAuthManager)
     # Очерёдность токенов: первый протух, второй валиден.
     auth.get_auth_header = AsyncMock(
@@ -35,7 +38,18 @@ async def _make_client(monkeypatch, tmp_path) -> tuple[AllureTestOpsClient, Magi
     # Конструктор поднимает реальный httpx.AsyncClient — закрываем его перед
     # подменой на _ScriptedHttp, иначе остаются ResourceWarning'и.
     await client._http.aclose()
+    client._sleep = _RecordedSleep()  # type: ignore[assignment]
     return client, auth
+
+
+class _RecordedSleep:
+    """Замена ``asyncio.sleep`` клиента: паузы перед повторами без ожидания."""
+
+    def __init__(self) -> None:
+        self.delays: list[float] = []
+
+    async def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
 
 
 class _ScriptedHttp:
@@ -368,3 +382,142 @@ async def test_get_attachment_content_applies_settings_cap(monkeypatch, tmp_path
     result = await client.get_attachment_content(42)
 
     assert result == b"hello"
+
+
+# ---------------------------------------------------------------------------
+# Повторы при временных сбоях (429, 502–504, сеть)
+# ---------------------------------------------------------------------------
+
+
+async def _retrying_client(monkeypatch, tmp_path, retries: int = 3) -> AllureTestOpsClient:
+    client, auth = await _make_client(monkeypatch, tmp_path, retries=retries)
+    auth.get_auth_header = AsyncMock(return_value={"Authorization": "Bearer fresh"})
+    return client
+
+
+def _with_header(resp: MagicMock, name: str, value: str) -> MagicMock:
+    resp.headers = httpx.Headers({name: value})
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_request_retries_bad_gateway_and_returns_json(monkeypatch, tmp_path) -> None:
+    """Один 502 балансировщика не обрывает выгрузку: пауза 1 с и повтор."""
+    client = await _retrying_client(monkeypatch, tmp_path)
+    client._http = _ScriptedHttp([
+        _make_response(502, text="bad gateway"),
+        _make_response(200, body=b'{"id": 7}'),
+    ])
+
+    assert await client._request("GET", "/api/launch/7") == {"id": 7}
+    assert client._sleep.delays == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_request_retry_after_sets_the_pause(monkeypatch, tmp_path) -> None:
+    """429 с Retry-After — пауза по заголовку; больше 30 с не ждём."""
+    client = await _retrying_client(monkeypatch, tmp_path)
+    client._http = _ScriptedHttp([
+        _with_header(_make_response(429, text="slow down"), "Retry-After", "5"),
+        _with_header(_make_response(429, text="slow down"), "Retry-After", "3600"),
+        _with_header(
+            _make_response(503, text="busy"), "Retry-After", "Wed, 21 Oct 2026 07:28:00 GMT",
+        ),
+        _make_response(200, body=b'{"id": 7}'),
+    ])
+
+    assert await client._request("GET", "/api/launch/7") == {"id": 7}
+    # Дату HTTP не разбираем — обычная пауза третьей попытки.
+    assert client._sleep.delays == [5.0, 30.0, 4.0]
+
+
+@pytest.mark.asyncio
+async def test_request_retries_network_errors_with_growing_pause(monkeypatch, tmp_path) -> None:
+    client = await _retrying_client(monkeypatch, tmp_path)
+    client._http = _ScriptedHttp([
+        httpx.ConnectError("connection refused"),
+        httpx.ReadTimeout(""),
+        _make_response(200, body=b'{"id": 7}'),
+    ])
+
+    assert await client._request("GET", "/api/launch/7") == {"id": 7}
+    assert client._sleep.delays == [1.0, 2.0]
+
+
+@pytest.mark.asyncio
+async def test_request_gives_up_after_configured_retries(monkeypatch, tmp_path) -> None:
+    """После ``http_retries`` повторов — ошибка последнего ответа."""
+    client = await _retrying_client(monkeypatch, tmp_path, retries=2)
+    client._http = _ScriptedHttp([_make_response(503, text="busy")] * 3)
+
+    with pytest.raises(AllureApiError) as exc_info:
+        await client._request("GET", "/api/launch/7")
+
+    assert exc_info.value.status_code == 503
+    assert len(client._http.calls) == 3
+    assert client._sleep.delays == [1.0, 2.0]
+
+
+@pytest.mark.asyncio
+async def test_request_gives_up_on_persistent_network_error(monkeypatch, tmp_path) -> None:
+    client = await _retrying_client(monkeypatch, tmp_path, retries=1)
+    client._http = _ScriptedHttp([httpx.ConnectError("down"), httpx.ConnectError("still down")])
+
+    with pytest.raises(AllureApiError) as exc_info:
+        await client._request("GET", "/api/launch/7")
+
+    assert exc_info.value.status_code == 0
+    assert "still down" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_request_does_not_retry_internal_error_or_post(monkeypatch, tmp_path) -> None:
+    """500 TestOps обычно воспроизводится, а не-GET не идемпотентен — без повторов."""
+    client = await _retrying_client(monkeypatch, tmp_path)
+    client._http = _ScriptedHttp([_make_response(500, text="boom")])
+    with pytest.raises(AllureApiError) as exc_info:
+        await client._request("GET", "/api/launch/7")
+    assert exc_info.value.status_code == 500
+
+    client._http = _ScriptedHttp([_make_response(502, text="bad gateway")])
+    resp = await client._send_with_auth_retry("POST", "/api/whatever")
+    assert resp.status_code == 502
+    assert client._sleep.delays == []
+
+
+@pytest.mark.asyncio
+async def test_request_raw_retries_gateway_and_network_errors(monkeypatch, tmp_path) -> None:
+    client = await _retrying_client(monkeypatch, tmp_path)
+    client._http = _ScriptedHttp([
+        _make_stream_response(504, error_body=b"gateway timeout"),
+        httpx.ReadTimeout("timeout"),
+        _make_stream_response(200, chunks=[b"log"]),
+    ])
+
+    assert await client._request_raw("GET", "/api/testresult/attachment/1/content") == b"log"
+    assert client._sleep.delays == [1.0, 2.0]
+
+
+@pytest.mark.asyncio
+async def test_request_raw_gives_up_after_retries(monkeypatch, tmp_path) -> None:
+    client = await _retrying_client(monkeypatch, tmp_path, retries=1)
+    client._http = _ScriptedHttp([
+        _make_stream_response(502, error_body=b"bad gateway"),
+        _make_stream_response(502, error_body=b"bad gateway"),
+    ])
+
+    with pytest.raises(AllureApiError) as exc_info:
+        await client._request_raw("GET", "/api/testresult/attachment/1/content")
+
+    assert exc_info.value.status_code == 502
+    assert len(client._http.calls) == 2
+
+
+def test_http_retries_setting_bounds() -> None:
+    from alla_core.exceptions import ConfigurationError
+
+    base = {"ALLURE_ENDPOINT": "https://allure.test", "ALLURE_TOKEN": "t"}
+    assert Settings.load(environ=base).http_retries == 3
+    assert Settings.load(environ={**base, "ALLURE_HTTP_RETRIES": "0"}).http_retries == 0
+    with pytest.raises(ConfigurationError, match="ALLURE_HTTP_RETRIES"):
+        Settings.load(environ={**base, "ALLURE_HTTP_RETRIES": "11"})

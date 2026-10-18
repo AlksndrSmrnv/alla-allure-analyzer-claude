@@ -284,3 +284,75 @@ def test_constructor_strips_trailing_slash() -> None:
         api_token="token",
     )
     assert auth._endpoint == "https://allure.test"
+
+
+# ---------------------------------------------------------------------------
+# Повторы обмена токена при временных сбоях
+# ---------------------------------------------------------------------------
+
+
+class _ScriptedPost:
+    """``post`` отдаёт по очереди ответы или поднимает исключения."""
+
+    def __init__(self, items: list[object]) -> None:
+        self._items = list(items)
+        self.calls = 0
+
+    async def post(self, url, data, headers):
+        self.calls += 1
+        item = self._items.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _retrying_auth(items: list[object], retries: int = 3) -> tuple[AllureAuthManager, list[float]]:
+    auth = AllureAuthManager(
+        endpoint="https://allure.test", api_token="test-api-token", retries=retries,
+    )
+    auth._http = _ScriptedPost(items)
+    delays: list[float] = []
+
+    async def _sleep(delay: float) -> None:
+        delays.append(delay)
+
+    auth._sleep = _sleep  # type: ignore[assignment]
+    return auth, delays
+
+
+@pytest.mark.asyncio
+async def test_exchange_token_retries_gateway_and_network_errors() -> None:
+    auth, delays = _retrying_auth([
+        _MockResponse(status_code=502, text="bad gateway"),
+        httpx.ConnectError("refused"),
+        _MockResponse({"access_token": "jwt", "expires_in": 3600}),
+    ])
+
+    info = await auth._exchange_token()
+
+    assert info.access_token == "jwt"
+    assert delays == [1.0, 2.0]
+
+
+@pytest.mark.asyncio
+async def test_exchange_token_gives_up_after_retries() -> None:
+    auth, delays = _retrying_auth([_MockResponse(status_code=503, text="busy")] * 2, retries=1)
+
+    with pytest.raises(AuthenticationError, match="HTTP 503"):
+        await auth._exchange_token()
+    assert delays == [1.0]
+
+    auth, _ = _retrying_auth([httpx.ConnectError("down")] * 2, retries=1)
+    with pytest.raises(AuthenticationError, match="Ошибка запроса"):
+        await auth._exchange_token()
+
+
+@pytest.mark.asyncio
+async def test_exchange_token_does_not_retry_bad_token() -> None:
+    """401 — неверный токен, повтор его не исправит."""
+    auth, delays = _retrying_auth([_MockResponse(status_code=401, text="Unauthorized")])
+
+    with pytest.raises(AuthenticationError, match="HTTP 401"):
+        await auth._exchange_token()
+    assert delays == []
+    assert auth._http.calls == 1
