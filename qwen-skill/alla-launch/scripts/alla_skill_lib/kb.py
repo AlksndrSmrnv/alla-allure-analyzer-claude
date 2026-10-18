@@ -472,19 +472,19 @@ def record_matches(
     (``key_of_test``). Одно правило для подбора записей в ``prepare`` и для проверки
     известной проблемы при сборке отчёта.
 
-    Тесты записи действуют, только пока у неё нет сигнатуры текущей версии того же вида
-    (подтверждённой или отвергнутой): после смены версии хэши в записи не совпадают ни с
-    чем, и подтверждение или отказ держатся на тесте и признаке. Без признака тест не
-    решает ничего — тест падает и по другим причинам.
+    Тесты записи действуют только при смене версии (``_migrating``): у записи есть
+    сигнатуры того же вида (подтверждённые или отвергнутые), и все — прежних версий. Тогда
+    хэши в записи не совпадают ни с чем, и подтверждение или отказ держатся на тесте и
+    признаке. Без признака тест не решает ничего — тест падает и по другим причинам.
     """
     tests = set(tests)
     hits = bool(fingerprint_lines(record.error_example)) and not _missing_in(
         record.error_example, haystack)
-    if signature and signature in record.confirmed_signatures:
-        return "exact"
     if record_rejected(record, signature, tests, hits=hits):
         return None
-    if hits and tests & set(record.confirmed_tests) and not _has_current(record.confirmed_signatures):
+    if signature and signature in record.confirmed_signatures:
+        return "exact"
+    if hits and tests & set(record.confirmed_tests) and _migrating(record.confirmed_signatures):
         return "exact"
     return "fingerprint" if hits else None
 
@@ -498,18 +498,27 @@ def record_rejected(
 ) -> bool:
     """Запись отвергнута для этого кластера: по сигнатуре или, после смены версии, по тесту.
 
-    ``hits`` — признак записи есть в данных кластера.
+    ``hits`` — признак записи есть в данных кластера. Подтверждённая сигнатура кластера
+    сильнее старого отказа по тесту: та же ошибка, что подтвердили (одно правило для
+    ``prepare`` и отчёта).
     """
     if signature and signature in record.rejected_signatures:
         return True
+    if signature and signature in record.confirmed_signatures:
+        return False
     return (hits and bool(set(tests) & set(record.rejected_tests))
-            and not _has_current(record.rejected_signatures))
+            and _migrating(record.rejected_signatures))
 
 
-def _has_current(signatures: Iterable[str]) -> bool:
-    """Есть сигнатура текущей версии: тесты записи тогда не нужны."""
+def _migrating(signatures: Iterable[str]) -> bool:
+    """Сигнатуры записи есть, но все — прежних версий: узнавать по тестам.
+
+    Пустой список — не смена версии: последнюю сигнатуру сняли (``remember --entry`` другой
+    записи) или запись правили руками, и тесты точного узнавания не дают.
+    """
     prefix = f"v{SIGNATURE_VERSION}:"
-    return any(signature.startswith(prefix) for signature in signatures)
+    signatures = list(signatures)
+    return bool(signatures) and not any(signature.startswith(prefix) for signature in signatures)
 
 
 def _snapshot(record: KBRecord, origin: str) -> dict[str, Any]:

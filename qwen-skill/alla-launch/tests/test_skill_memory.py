@@ -34,6 +34,7 @@ from alla_skill_lib.kb import (
     missing_fingerprint_lines,
     normalize_fp,
     record_matches,
+    record_rejected,
     secret_lines,
     store_fingerprint,
 )
@@ -343,6 +344,12 @@ def test_tests_keep_records_recognised_after_a_signature_version_change() -> Non
     # Точная сигнатура текущей версии сильнее старого отказа по тесту.
     both = _record(confirmed_signatures=[new], rejected_signatures=[old], rejected_tests=tests)
     assert record_matches(both, new, haystack, tests) == "exact"
+    # То же правило у отчёта (known_issues спрашивает отказ отдельно) — ревью Codex.
+    assert not record_rejected(both, new, tests, hits=True)
+    # Сигнатур нет вовсе (последнюю переназначили другой записи) — это не смена версии.
+    bare = _record(confirmed_tests=tests, rejected_tests=["ru.CartTest.add"])
+    assert record_matches(bare, new, haystack, tests) == "fingerprint"
+    assert record_matches(bare, new, haystack, ["ru.CartTest.add"]) == "fingerprint"
 
 
 def test_match_cluster_orders_exact_first_and_drops_rejected() -> None:

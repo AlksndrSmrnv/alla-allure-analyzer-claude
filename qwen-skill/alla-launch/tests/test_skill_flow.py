@@ -574,6 +574,34 @@ def test_record_survives_a_signature_version_change_by_its_tests(
     assert next(e for e in run3["clusters"] if e["file_id"] == order)["kb"] == []
 
 
+def test_reassigned_error_leaves_the_previous_record_without_its_tests(
+    project: Path, testops: FakeTestOps, monkeypatch, capsys
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    (run_dir / "feedback" / f"{order}.md").write_text(FEEDBACK, encoding="utf-8")
+    assert _run(["remember", "1", "--run", str(run_dir)], capsys)[1].startswith("STATUS: saved")
+    [first_file] = (project / "alla-kb").glob("*.json")
+    first = json.loads(first_file.read_text(encoding="utf-8"))
+    second = {**first, "id": "other_record", "title": "Другая запись",
+              "confirmed_signatures": [], "confirmed_tests": []}
+    (project / "alla-kb" / "other_record.json").write_text(json.dumps(second), encoding="utf-8")
+
+    # Пользователь переназначил ошибку другой записи: прежняя теряет сигнатуру и тесты,
+    # иначе по тестам она снова узнавалась бы точно (ревью Codex).
+    code, out = _run(["remember", "1", "--entry", "other_record", "--run", str(run_dir)], capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    previous = json.loads(first_file.read_text(encoding="utf-8"))
+    assert previous["confirmed_signatures"] == [] and previous["confirmed_tests"] == []
+
+    FakeTestOps(default_launch(778)).install(monkeypatch)
+    _, run2, _ = _prepare(project, capsys, launch_id=778)
+    order2 = next(e for e in run2["clusters"] if e["file_id"] == order)
+    assert {m["id"]: m["origin"] for m in order2["kb"]} == {
+        "other_record": "exact", first_file.stem: "fingerprint"}
+
+
 def _test_analysis_on_a_known_record(
     project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> tuple[Path, str, str, str]:

@@ -251,12 +251,16 @@ def remember(
             "launch_id": run["launch_id"],
         }
 
-    record.confirm(signature, entry_tests(run, entry))
+    tests = entry_tests(run, entry)
+    record.confirm(signature, tests)
     changed = [kb.save(record)]
     touched = [record.id]
     for other in records:
         if other.id != record.id and signature in other.confirmed_signatures:
+            # Ошибку переназначили этой записи: прежняя теряет и сигнатуру, и тесты кластера —
+            # иначе после смены версии она снова узнавалась бы по ним точно.
             other.confirmed_signatures.remove(signature)
+            other.confirmed_tests = sorted(set(other.confirmed_tests) - set(tests))
             changed.append(kb.save(other))
             touched.append(other.id)
     _count_refusal(paths, file_id, reset=True)
