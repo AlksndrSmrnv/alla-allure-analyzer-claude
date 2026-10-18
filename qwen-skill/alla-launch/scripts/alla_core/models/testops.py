@@ -56,7 +56,8 @@ class LaunchResponse(BaseModel):
 
     id: int
     name: str | None = None
-    closed: bool = False
+    # None — TestOps не прислал поле: незакрытым прогон не считаем.
+    closed: bool | None = None
     created_date: int | None = Field(None, alias="createdDate")
     project_id: int | None = Field(None, alias="projectId")
 
@@ -174,6 +175,25 @@ class RetryInfo(BaseModel):
     passed_after_retry: list[PassedAfterRetry] = Field(default_factory=list)
 
 
+class FetchInfo(BaseModel):
+    """Полнота выгрузки прогона — только числа.
+
+    ``launch_closed`` — поле ``closed`` прогона (``None`` — TestOps его не прислал).
+    ``results_reported`` — ``totalElements`` последней страницы результатов,
+    ``results_received`` — уникальных результатов получено, ``duplicates`` — повторов id
+    в ответах (страницы идущего прогона сдвигаются). ``execution_failed`` — активные падения,
+    чьё дерево шагов не получено после повторов, ``detail_failed`` — чей запасной запрос
+    ошибки (``GET /api/testresult/{id}``) не прошёл: у них может не быть сообщения и шага.
+    """
+
+    launch_closed: bool | None = None
+    results_reported: int | None = None
+    results_received: int = 0
+    duplicates: int = 0
+    execution_failed: int = 0
+    detail_failed: int = 0
+
+
 class FailedTestSummary(BaseModel):
     """Доменная модель: краткое описание упавшего теста для вывода триажа.
 
@@ -245,6 +265,7 @@ class TriageReport(BaseModel):
     muted_failure_count: int = 0
     failed_tests: list[FailedTestSummary] = []
     retries: RetryInfo = Field(default_factory=RetryInfo)
+    fetch: FetchInfo = Field(default_factory=FetchInfo)
 
     @property
     def failure_count(self) -> int:

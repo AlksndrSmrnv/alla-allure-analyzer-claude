@@ -11,6 +11,7 @@ from alla_core.models.testops import (
     AttemptSummary,
     ExecutionStep,
     FailedTestSummary,
+    FetchInfo,
     PassedAfterRetry,
     RetryInfo,
     TestResultResponse,
@@ -64,6 +65,52 @@ def _attempt_message(status_details: object, trace: str | None) -> str | None:
     return _clip_attempt_line(_attempt_line(status_details, trace))
 
 
+def _unique_results(
+    results: list[TestResultResponse], fetch: FetchInfo,
+) -> list[TestResultResponse]:
+    """Результаты без повторов id (первое вхождение); число повторов — в ``fetch``."""
+    seen: set[int] = set()
+    unique: list[TestResultResponse] = []
+    for result in results:
+        if result.id in seen:
+            fetch.duplicates += 1
+            continue
+        seen.add(result.id)
+        unique.append(result)
+    fetch.results_received = len(unique)
+    return unique
+
+
+def fetch_warnings(info: FetchInfo, launch_id: int) -> list[str]:
+    """Предупреждения о неполной выгрузке: прогон идёт, результаты потерялись, данные тестов."""
+    again = f"разберите прогон заново позже: prepare {launch_id} --fresh"
+    warnings: list[str] = []
+    if info.launch_closed is False:
+        warnings.append(
+            f"Прогон в TestOps ещё не закрыт: результаты и падения могут быть неполными — "
+            f"{again}."
+        )
+    if info.results_reported is not None and info.results_received < info.results_reported:
+        warnings.append(
+            f"TestOps насчитал {info.results_reported} результатов, получено "
+            f"{info.results_received}: прогон менялся во время выгрузки, часть падений может "
+            f"отсутствовать — {again}."
+        )
+    lost = [
+        f"{label} — у {count}" for label, count in (
+            ("дерево шагов", info.execution_failed),
+            ("ошибка теста", info.detail_failed),
+        ) if count
+    ]
+    if lost:
+        warnings.append(
+            f"TestOps не отдал данные части падений даже после повторов ({', '.join(lost)}): "
+            f"у этих тестов может не быть сообщения об ошибке или шага, и они могут попасть "
+            f"не в ту проблему — {again}."
+        )
+    return warnings
+
+
 class TriageService:
     """Оркестрирует процесс триажа упавших тестов.
 
@@ -93,8 +140,13 @@ class TriageService:
         launch = await self._client.get_launch(launch_id)
         logger.info("Анализ запуска #%d (%s)", launch_id, launch.name or "без названия")
 
-        # 2. Все результаты тестов
-        all_results = await self._client.get_all_test_results_for_launch(launch_id)
+        # 2. Все результаты тестов. Страницы идущего прогона сдвигаются: один результат
+        # может прийти дважды — считаем его один раз.
+        fetch = FetchInfo(launch_closed=launch.closed)
+        all_results = _unique_results(
+            await self._client.get_all_test_results_for_launch(launch_id), fetch,
+        )
+        fetch.results_reported = getattr(self._client, "last_total_elements", None)
 
         # 2.1. Связать hidden-результаты (попытки до финального) с финальными — до
         # фильтрации; статистика и активные падения считаются без hidden, как раньше.
@@ -121,7 +173,7 @@ class TriageService:
         )
 
         # 4. Получить execution-данные для упавших/сломанных тестов
-        failures_with_execution = await self._fetch_failed_executions(results)
+        failures_with_execution = await self._fetch_failed_executions(results, fetch)
 
         # 5. Сформировать сводки из результатов + execution-шагов
         failed_tests = [
@@ -130,7 +182,7 @@ class TriageService:
         ]
 
         # 5.5. Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}
-        await self._fetch_missing_traces(failed_tests)
+        await self._fetch_missing_traces(failed_tests, fetch)
 
         # 5.6. Попытки активных падений с ошибками и прошедшие после повтора
         retries = await self._attach_attempts(failed_tests, links, results, launch_id)
@@ -149,6 +201,7 @@ class TriageService:
             muted_failure_count=muted_failure_count,
             failed_tests=failed_tests,
             retries=retries,
+            fetch=fetch,
         )
 
         self._log_report(report)
@@ -169,6 +222,7 @@ class TriageService:
     async def _fetch_failed_executions(
         self,
         results: list[TestResultResponse],
+        fetch: FetchInfo | None = None,
     ) -> list[tuple[TestResultResponse, list[ExecutionStep]]]:
         """Получить execution-шаги для упавших/сломанных тестов параллельно.
 
@@ -219,6 +273,10 @@ class TriageService:
             for item in gathered_results
         ]
 
+        if fetch is not None:
+            fetch.execution_failed = sum(
+                1 for item in execution_results if isinstance(item, BaseException)
+            )
         return [
             self._collect_execution_result(original, exec_or_exc)
             for original, exec_or_exc in zip(failed_results, execution_results)
@@ -243,6 +301,7 @@ class TriageService:
     async def _fetch_missing_traces(
         self,
         summaries: list[FailedTestSummary],
+        fetch: FetchInfo | None = None,
     ) -> None:
         """Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}.
 
@@ -281,6 +340,8 @@ class TriageService:
 
         tasks = [fetch_one(s.test_result_id) for s in missing]
         results = await asyncio.gather(*tasks)
+        if fetch is not None:
+            fetch.detail_failed = sum(1 for detail in results if detail is None)
 
         for summary, detail in zip(missing, results):
             if detail is None or not detail.trace:

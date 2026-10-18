@@ -22,7 +22,7 @@ from alla_core.services.log_extraction_service import (
     LogExtractionService,
 )
 from alla_core.services.retry_linking import retry_warnings
-from alla_core.services.triage_service import TriageService
+from alla_core.services.triage_service import TriageService, fetch_warnings
 
 from alla_skill_lib.images import StagedImage, fetch_images, plan_images
 
@@ -65,6 +65,7 @@ async def collect_launch(
     async with AllureTestOpsClient(settings, auth) as client:
         say(f"Получаю результаты прогона #{launch_id} из TestOps…")
         triage = await TriageService(client, settings).analyze_launch(launch_id)
+        warnings.extend(fetch_warnings(triage.fetch, launch_id))
         warnings.extend(retry_warnings(triage.retries))
         say(
             f"Результатов: {triage.total_results}, активных падений: "

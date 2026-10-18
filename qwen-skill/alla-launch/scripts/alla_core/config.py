@@ -33,7 +33,8 @@ class Settings:
     # Повторы GET при 429/502/503/504 и сетевых сбоях (пауза 1, 2, 4… с или Retry-After).
     http_retries: int = 3
     page_size: int = 100
-    max_pages: int = 50
+    # 200 страниц по 100 — 20 000 результатов вместе со скрытыми повторами.
+    max_pages: int = 200
     detail_concurrency: int = 10
     ssl_verify: bool = True
     logs_concurrency: int = 5
@@ -120,6 +121,9 @@ _OPERATION_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
 # Например, параллелизм 0 навсегда подвесит asyncio.Semaphore в триаже и логах.
 BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "http_retries": (0, 10),
+    "page_size": (1, None),
+    "max_pages": (1, None),
+    "request_timeout": (1, None),
     "detail_concurrency": (1, None),
     "logs_concurrency": (1, None),
     "logs_max_attachment_bytes": (1024, None),

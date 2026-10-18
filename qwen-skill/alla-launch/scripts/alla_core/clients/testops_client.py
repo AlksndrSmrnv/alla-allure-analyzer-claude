@@ -40,6 +40,7 @@ class AllureTestOpsClient:
         self._max_pages = settings.max_pages
         self._max_attachment_bytes = settings.logs_max_attachment_bytes
         self._retries = settings.http_retries
+        self.last_total_elements: int | None = None
         self._sleep = asyncio.sleep  # подменяется в тестах
         self._http = httpx.AsyncClient(
             timeout=settings.request_timeout,
@@ -204,6 +205,17 @@ class AllureTestOpsClient:
                 launch_id, page=page, size=self._page_size,
             )
             all_results.extend(page_resp.content)
+            # Сколько результатов TestOps насчитал к последней странице: у идущего прогона
+            # число растёт, и сверка с полученным показывает, что выгрузка неполная.
+            self.last_total_elements = page_resp.total_elements
+            if page == 0 and page_resp.total_pages > self._max_pages:
+                # Сразу, а не после max_pages запросов: исход тот же, а ждать минуты незачем.
+                raise PaginationLimitError(
+                    f"В прогоне {page_resp.total_elements} результатов "
+                    f"({page_resp.total_pages} страниц по {self._page_size}), "
+                    f"лимит — {self._max_pages} страниц.",
+                    pages_needed=page_resp.total_pages,
+                )
 
             logger.debug(
                 "Получена страница %d/%d (пока собрано %d результатов)",
@@ -226,7 +238,8 @@ class AllureTestOpsClient:
                 raise PaginationLimitError(
                     f"Превышен max_pages={self._max_pages}. "
                     f"Получено {len(all_results)}/{page_resp.total_elements} "
-                    f"результатов. Увеличьте ALLURE_MAX_PAGES при необходимости."
+                    f"результатов. Увеличьте ALLURE_MAX_PAGES при необходимости.",
+                    pages_needed=page_resp.total_pages,
                 )
 
         logger.info(

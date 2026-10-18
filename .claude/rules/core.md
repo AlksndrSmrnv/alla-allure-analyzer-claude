@@ -33,6 +33,18 @@ paths:
   пишет его в `run.json` как `launch_created` (ISO 8601, UTC). Нужен расширениям: `sut-code`
   по нему выбирает ревизию приложения, если инженер её не назвал.
 
+- **Полнота выгрузки** (`TriageReport.fetch`, `FetchInfo`; в `run.json` внутри `triage`,
+  только числа). Результаты без повторов id (`_unique_results`: страницы идущего прогона
+  сдвигаются); `results_reported` — `totalElements` последней страницы
+  (`AllureTestOpsClient.last_total_elements`, у фейковых провайдеров нет — `None`);
+  `execution_failed`/`detail_failed` — активные падения, чьё дерево шагов или запасной
+  `GET /api/testresult/{id}` не получены после повторов (у них может не быть сообщения и
+  шага — тест уйдёт не в ту проблему). `launch_closed` — поле `closed` прогона, `None` —
+  TestOps его не прислал (тогда прогон идущим не считается). `fetch_warnings` — предупреждения
+  прогона (`run.json` `warnings`, вывод `prepare`, отчёт) с командой `prepare <id> --fresh`:
+  прогон не закрыт, получено меньше `totalElements`, данные тестов не получены. Лимит
+  страниц (`max_pages`) проверяется по первой странице: `PaginationLimitError` с
+  `pages_needed`, подсказка `errors.py` называет нужное значение `ALLURE_MAX_PAGES`.
 - `hidden` results исключаются из статистики и анализа как retry/non-final, но до фильтрации
   связываются с финальными (`services/retry_linking.py`, шаг 5). Ключ один на прогон:
   `historyId`, затем `historyKey` (есть значение хотя бы у одной hidden-попытки), иначе
@@ -374,7 +386,7 @@ paths:
 | `ALLURE_REQUEST_TIMEOUT` | нет | `30` | HTTP timeout к TestOps |
 | `ALLURE_HTTP_RETRIES` | нет | `3` | Повторы GET при 429/502/503/504 и сбоях сети (0–10) |
 | `ALLURE_PAGE_SIZE` | нет | `100` | Размер страницы TestOps API |
-| `ALLURE_MAX_PAGES` | нет | `50` | Защита пагинации |
+| `ALLURE_MAX_PAGES` | нет | `200` | Защита пагинации; больше страниц — `PaginationLimitError` сразу после первой страницы |
 | `ALLURE_DETAIL_CONCURRENCY` | нет | `10` | Параллелизм details/comments |
 | `ALLURE_SSL_VERIFY` | нет | `true` | Проверка TLS |
 | `ALLURE_LOGS_CONCURRENCY` | нет | `5` | Параллелизм скачивания attachments |

@@ -58,9 +58,13 @@ def fetch_error_hint(exc: BaseException, settings: Settings, env_file: Path) -> 
         return (
             f"Нет соединения с {settings.endpoint}. Проверь ALLURE_ENDPOINT, VPN и прокси."
         )
-    if any(isinstance(item, PaginationLimitError) for item in causes):
+    limit = next((item for item in causes if isinstance(item, PaginationLimitError)), None)
+    if limit is not None:
+        needed = (
+            f" хотя бы до {limit.pages_needed}" if limit.pages_needed else ""
+        )
         return (
-            f"Результатов больше лимита страниц. Увеличь ALLURE_MAX_PAGES "
+            f"Результатов больше лимита страниц. Увеличь ALLURE_MAX_PAGES{needed} "
             f"(сейчас {settings.max_pages}) или ALLURE_PAGE_SIZE в {env_file}."
         )
     api = next((item for item in causes if isinstance(item, AllureApiError)), None)

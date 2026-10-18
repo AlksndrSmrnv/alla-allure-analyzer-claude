@@ -23,7 +23,14 @@ class AllureApiError(AllaError):
 
 
 class PaginationLimitError(AllaError):
-    """Превышен максимальный лимит страниц (защитный механизм)."""
+    """Превышен максимальный лимит страниц (защитный механизм).
+
+    ``pages_needed`` — сколько страниц в прогоне по ответу TestOps (для подсказки).
+    """
+
+    def __init__(self, message: str, *, pages_needed: int | None = None) -> None:
+        self.pages_needed = pages_needed
+        super().__init__(message)
 
 
 class KnowledgeBaseError(AllaError):
