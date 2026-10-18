@@ -3,10 +3,14 @@
 # скилл в .qwen/skills/alla-launch, `setup` создаёт .venv проекта, `check` — сначала с пустым
 # .env (ждём error), затем с адресом фейкового TestOps (ждём ready), и `prepare` прогона.
 # Нужны python3 (3.11+), git и сеть до индекса пакетов. Репозиторий не меняет.
+# Унаследованные переменные ALLURE_* сбрасываются: окружение важнее .env скилла, и с ними
+# скрипт ходил бы в настоящий TestOps вместо фейкового.
 #
 #   bash .github/scripts/skill_setup_smoke.sh
 #   docker run --rm -v "$PWD":/repo -w /repo python:3.11 bash .github/scripts/skill_setup_smoke.sh
 set -euo pipefail
+
+while IFS= read -r var; do unset "$var"; done < <(compgen -e | grep '^ALLURE_' || true)
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d)
