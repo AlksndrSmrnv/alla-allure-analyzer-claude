@@ -45,8 +45,10 @@ bash .github/scripts/skill_setup_smoke.sh       # setup → check → prepare с
 ```
 
 CI — `.github/workflows/ci.yml` (GitHub Actions, ubuntu-latest): на Python 3.11 и 3.12 —
-pytest, ruff, mypy и эталон (только dev: holdout проверяет `test_eval_quality`, отдельно его
-не печатать); отдельный job гоняет `skill_setup_smoke.sh` в контейнере `python:3.11` —
+pytest (`-rs`; на Linux пропускаются только 4 проверки стенда для macOS), ruff, mypy
+(`--python-version` версии матрицы: на 3.12 ставится numpy с заглушками на синтаксисе 3.12)
+и эталон (только dev: holdout проверяет `test_eval_quality`, отдельно его не печатать);
+отдельный job гоняет `skill_setup_smoke.sh` в контейнере `python:3.11` —
 установку скилла в синтетический проект и `check`/`prepare` против фейкового TestOps.
 Стенд Qwen в CI не запускается: он только для macOS и платный. ruff и mypy закреплены в
 `requirements-dev.txt` точными версиями — обновлять вместе с исправлением их замечаний.
