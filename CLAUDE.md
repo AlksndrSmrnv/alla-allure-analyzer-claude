@@ -41,7 +41,15 @@ python3.11 -m venv .venv && .venv/bin/pip install -r qwen-skill/alla-launch/requ
 .venv/bin/mypy qwen-skill/alla-launch/scripts qwen-skill/alla-launch/extensions   # strict, без ошибок
 .venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case A01 --output /tmp/alla-stand-001
 .venv/bin/python qwen-skill/alla-launch/tests/eval/run_eval.py --details   # эталон, офлайн, ~2 с
+bash .github/scripts/skill_setup_smoke.sh       # setup → check → prepare с нуля, нужна сеть до pip
 ```
+
+CI — `.github/workflows/ci.yml` (GitHub Actions, ubuntu-latest): на Python 3.11 и 3.12 —
+pytest, ruff, mypy и эталон (только dev: holdout проверяет `test_eval_quality`, отдельно его
+не печатать); отдельный job гоняет `skill_setup_smoke.sh` в контейнере `python:3.11` —
+установку скилла в синтетический проект и `check`/`prepare` против фейкового TestOps.
+Стенд Qwen в CI не запускается: он только для macOS и платный. ruff и mypy закреплены в
+`requirements-dev.txt` точными версиями — обновлять вместе с исправлением их замечаний.
 
 ## Проверка на настоящем Qwen Code
 

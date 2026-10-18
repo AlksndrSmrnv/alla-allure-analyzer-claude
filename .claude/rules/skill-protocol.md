@@ -39,6 +39,12 @@ paths:
   `.venv`, если он есть (у симлинка путь со слэшем — ошибка 128), иначе `.venv/`. После
   успешного pip install пишет `.venv/.alla-setup-complete` (хэш `requirements.txt`) и создаёт
   `.env` скилла из образца. Без маркера все команды отвечают `STATUS: setup_required`.
+- Установку с нуля на Linux проверяет `.github/scripts/skill_setup_smoke.sh` (job CI в
+  `python:3.11`): `setup_required` до установки, `setup` дважды (второй берёт готовый `.venv`,
+  `/.venv` в `.gitignore` один раз), права `.env` 600, `check` с пустым `.env` — `error` и код
+  2, с фейковым TestOps — `ready`, `prepare 777` — `analyze`. Меняя вывод или коды `setup` и
+  `check`, правь и скрипт. Фейковый сервер работает в `.venv` проекта, поэтому
+  `skill_fake_testops.py` не импортирует pytest во время выполнения.
 - `/alla-launch установи` (`SKILL.md`, «1. Старт») — модель выполняет `setup`, затем `check`, и
   без номера прогона ничего не разбирает; пустой `.env` — `check` отвечает `error`, модель
   просит пользователя вписать адрес и токен. Отдельной команды скрипта для этого нет.

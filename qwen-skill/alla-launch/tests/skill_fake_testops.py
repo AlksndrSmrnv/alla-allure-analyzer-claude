@@ -11,10 +11,13 @@ import math
 import struct
 import zlib
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
-import pytest
+
+if TYPE_CHECKING:
+    # Только аннотация: fake_testops_server.py запускается и в .venv проекта, где pytest нет.
+    import pytest
 
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
 TOKEN = "secret-api-token-4242"

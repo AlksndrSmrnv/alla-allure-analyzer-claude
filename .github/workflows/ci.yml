@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: qwen-skill/alla-launch/requirements*.txt
+      - name: Install dependencies
+        run: python -m pip install -r qwen-skill/alla-launch/requirements-dev.txt
+      - name: pytest
+        run: python -m pytest
+      - name: ruff
+        run: ruff check qwen-skill/alla-launch
+      - name: mypy
+        run: mypy qwen-skill/alla-launch/scripts qwen-skill/alla-launch/extensions
+      # Только dev: holdout проверяет test_eval_quality, отдельно его не печатаем.
+      - name: Eval (dev)
+        run: python qwen-skill/alla-launch/tests/eval/run_eval.py
+
+  # Установка скилла с нуля в чистом Debian-образе, как у пользователя на Linux.
+  setup-smoke:
+    name: skill setup from scratch (python:3.11 container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: python:3.11
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup, check, prepare
+        run: bash .github/scripts/skill_setup_smoke.sh
