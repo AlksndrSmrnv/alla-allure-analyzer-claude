@@ -315,7 +315,8 @@ def evaluate_near_pairs(
     return {**result, "near_pairs_same": same_count, "near_problems": problems}
 
 
-KB_OFFER_KEYS = ("kb_offers", "kb_offers_found", "kb_offers_wrong")
+KB_OFFER_KEYS = ("kb_offers", "kb_offers_found", "kb_offers_wrong",
+                 "kb_exact", "kb_exact_kept", "kb_exact_wrong_after")
 
 
 def kb_offer_records(labels: dict[str, Any]) -> list[dict[str, Any]]:
@@ -368,3 +369,38 @@ def evaluate_kb_offers(
         problems += [f"кластер {file_id}: предложена запись чужой причины {cause}"
                      for cause in sorted(offered - present)]
     return {**totals, "kb_offer_problems": problems}
+
+
+def evaluate_kb_version_change(
+    labels: dict[str, Any],
+    exact_now: Iterable[tuple[str, tuple[int, ...], set[str]]],
+    exact_after: Iterable[tuple[str, tuple[int, ...], set[str]]],
+) -> dict[str, Any]:
+    """Точные предложения записей до и после смены версии сигнатуры.
+
+    ``exact_now`` — (кластер, тесты, причины записей, узнанных точно) на текущей версии,
+    ``exact_after`` — то же, когда подтверждённые сигнатуры записей — прежней версии и
+    узнавание держится на тестах записи (``confirmed_tests``) и признаке:
+
+    * ``kb_exact`` / ``kb_exact_kept`` — точные узнавания своей причины и сохранившиеся из
+      них после смены версии;
+    * ``kb_exact_wrong_after`` — точные предложения чужой причине после смены версии.
+    """
+    causes = {record["cause"] for record in kb_offer_records(labels)}
+    cause_of = {test: group.get("cause") for group in labels["groups"] for test in group["tests"]}
+    after = {file_id: offered for file_id, _members, offered in exact_after}
+    totals = {"kb_exact": 0, "kb_exact_kept": 0, "kb_exact_wrong_after": 0}
+    problems: list[str] = []
+    for file_id, members, offered in exact_now:
+        present = {cause_of.get(test) for test in members} & causes
+        own = offered & present
+        kept = own & after.get(file_id, set())
+        wrong = after.get(file_id, set()) - present
+        totals["kb_exact"] += len(own)
+        totals["kb_exact_kept"] += len(kept)
+        totals["kb_exact_wrong_after"] += len(wrong)
+        problems += [f"кластер {file_id}: после смены версии запись причины {cause} — не точно"
+                     for cause in sorted(own - kept)]
+        problems += [f"кластер {file_id}: после смены версии точно предложена запись чужой "
+                     f"причины {cause}" for cause in sorted(wrong)]
+    return {**totals, "kb_version_problems": problems}

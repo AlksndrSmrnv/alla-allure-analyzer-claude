@@ -52,6 +52,7 @@ from eval.metrics import (  # noqa: E402
     evaluate,
     evaluate_gate_pairs,
     evaluate_kb_offers,
+    evaluate_kb_version_change,
     evaluate_near_pairs,
     evaluate_retries,
     evaluate_signatures,
@@ -209,6 +210,10 @@ def evaluate_fixture(fixture: LaunchFixture, labels: dict[str, Any] | None) -> d
         records = kb_offer_records(labels)
         if records:
             result.update(evaluate_kb_offers(labels, kb_offers(prepared, records)))
+            result.update(evaluate_kb_version_change(
+                labels, kb_offers(prepared, records, exact_only=True, as_remember=True),
+                kb_offers(prepared, records, exact_only=True, previous_version=True,
+                          as_remember=True)))
     result["max_task_chars"] = prepared.max_task_chars
     result["seconds"] = round(prepared.seconds, 2)
     return result
@@ -217,43 +222,78 @@ def evaluate_fixture(fixture: LaunchFixture, labels: dict[str, Any] | None) -> d
 def kb_offers(
     prepared: PreparedRun,
     records: list[dict[str, Any]],
+    *,
+    exact_only: bool = False,
+    previous_version: bool = False,
+    as_remember: bool = False,
 ) -> list[tuple[str, tuple[int, ...], set[str]]]:
     """Какие записи из ``records`` подходят каждому кластеру — по правилу ``prepare``.
 
-    Записи подбираются после ``prepare`` по его ``evidence/NN.txt`` и сигнатуре кластера
-    (``match_cluster``), поэтому задания и остальные метрики от них не зависят. Сигнатура
-    первой группы причины считается подтверждённой, как после ``remember``.
+    Записи подбираются после ``prepare`` по его ``evidence/NN.txt``, сигнатуре и тестам
+    кластера (``match_cluster``), поэтому задания и остальные метрики от них не зависят.
+    Сигнатура и тесты первой группы причины считаются подтверждёнными, как после
+    ``remember``. ``exact_only`` — только точные узнавания; ``previous_version`` —
+    подтверждённые сигнатуры записей прежней версии (обновление скилла сменило версию).
+    ``as_remember`` — признак записи, как его принял бы ``remember``: строка разметки, если
+    она есть в данных подтверждённого кластера, иначе признак кластера из ``prepare``
+    (строки, которой нет в данных, ``remember`` не сохранит).
     """
     import re
 
     from alla_skill_lib import workspace
-    from alla_skill_lib.kb import CATEGORY_TO_KB, KBRecord, match_cluster, store_fingerprint
+    from alla_skill_lib.kb import (
+        CATEGORY_TO_KB,
+        KBRecord,
+        entry_tests,
+        fingerprint_hits,
+        key_of_test,
+        match_cluster,
+        store_fingerprint,
+    )
+    from alla_skill_lib.signature import SIGNATURE_VERSION
 
     paths = workspace.RunPaths(prepared.run_dir)
     run = workspace.read_json(paths.run_json)
     members = {cluster.file_id: cluster.members for cluster in prepared.clusters}
     signature_of = {test: entry.get("signature") for entry in run["clusters"]
                     for test in members[entry["file_id"]]}
+    failed = {test["test_result_id"]: test for test in run["triage"]["failed_tests"]}
     kb_records = []
     cause_of: dict[str, str] = {}
     for record in records:
         entry_id = re.sub(r"[^a-z0-9]+", "_", record["cause"].lower()).strip("_")
         cause_of[entry_id] = record["cause"]
-        confirmed = {signature_of.get(test) for test in record["confirmed_tests"]} - {None}
+        confirmed = {str(signature) for signature in
+                     {signature_of.get(test) for test in record["confirmed_tests"]} - {None}}
+        if previous_version:
+            confirmed = {f"v{SIGNATURE_VERSION - 1}:{signature.split(':', 1)[1]}"
+                         for signature in confirmed}
+        keys = {key_of_test(failed[test].get("full_name"), failed[test].get("test_case_id"))
+                for test in record["confirmed_tests"] if test in failed}
+        error_example = record["error_example"]
+        if as_remember:
+            own = next((entry for entry in run["clusters"]
+                        if set(members[entry["file_id"]]) & set(record["confirmed_tests"])), None)
+            evidence = paths.evidence(own["file_id"]) if own else None
+            text = evidence.read_text(encoding="utf-8") if evidence and evidence.is_file() else ""
+            if own and not fingerprint_hits(error_example, text):
+                error_example = own.get("fingerprint") or error_example
         kb_records.append(KBRecord(
             id=entry_id, title=record["cause"],
             category=CATEGORY_TO_KB.get(str(record["category"]), "service"),
             description="", resolution_steps=["-"],
-            error_example=store_fingerprint(record["error_example"]),
-            confirmed_signatures=sorted(str(signature) for signature in confirmed),
+            error_example=store_fingerprint(error_example),
+            confirmed_signatures=sorted(confirmed),
+            confirmed_tests=sorted(key for key in keys if key),
         ))
     offers: list[tuple[str, tuple[int, ...], set[str]]] = []
     for entry in run["clusters"]:
         evidence = paths.evidence(entry["file_id"])
         text = evidence.read_text(encoding="utf-8") if evidence.is_file() else ""
-        matches = match_cluster(kb_records, entry.get("signature"), text)
+        matches = match_cluster(kb_records, entry.get("signature"), text, entry_tests(run, entry))
         offers.append((entry["file_id"], members[entry["file_id"]],
-                       {cause_of[match["id"]] for match in matches}))
+                       {cause_of[match["id"]] for match in matches
+                        if not exact_only or match["origin"] == "exact"}))
     return offers
 
 
@@ -340,7 +380,9 @@ def print_table(results: dict[str, dict[str, dict[str, Any]]]) -> None:
             if "kb_offers" in result:
                 print(f"записи базы знаний {case_name}: предложены своей причине "
                       f"{result['kb_offers_found']}/{result['kb_offers']}, чужой "
-                      f"{result['kb_offers_wrong']}")
+                      f"{result['kb_offers_wrong']}; точно {result['kb_exact']}, после смены "
+                      f"версии сигнатуры точно {result['kb_exact_kept']}, чужой "
+                      f"{result['kb_exact_wrong_after']}")
         for case_name, result in cases.items():
             if result["signature_shared"] or result["signature_log_unstable"]:
                 print(f"сигнатуры {case_name}: одна на два кластера {result['signature_shared']} "
@@ -375,6 +417,8 @@ def print_details(results: dict[str, dict[str, dict[str, Any]]]) -> None:
                       for item in result["lost"]]
             lines += [f"  повторы: {problem}" for problem in result.get("retry_problems", [])]
             lines += [f"  база знаний: {problem}" for problem in result.get("kb_offer_problems", [])]
+            lines += [f"  база знаний: {problem}"
+                      for problem in result.get("kb_version_problems", [])]
             lines += [f"  сигнатура: {problem}" for problem in result.get("signature_problems", [])]
             lines += [f"  близкие: {problem}" for problem in result.get("near_problems", [])]
             decided = {key: value for key, value in result["gates"].items() if value}
