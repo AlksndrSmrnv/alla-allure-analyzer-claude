@@ -649,17 +649,23 @@ def test_mixed_group_found_check(tmp_path: Path, consistency: str, status: str) 
     ("ОДНА ПРИЧИНА: 1, 2 — отказ проверки уникальности", 1,
      "**Проблема 1 и 2** — ", True, "fail"),
     ("РАЗНЫЕ: 1, 2 — разные объекты", 0, "**Проблема 1** — ", False, "fail"),  # писал не агент
+    # Ревью Codex: невалидный файл после лимита попыток отброшен — отчёт раздельный, но
+    # решения «РАЗНЫЕ» нет.
+    ("Всё ещё не тот формат.", None, "**Проблема 1** — \n**Проблема 2** — ", True, "fail"),
+    ("РАЗНЫЕ: 1, 2 — разные объекты", None, "**Проблема 1** — ", True, "fail"),  # не принято
 ])
-def test_related_kept_apart_check(tmp_path: Path, decision: str, confirmed: int, report: str,
-                                  written: bool, status: str) -> None:
+def test_related_kept_apart_check(tmp_path: Path, decision: str, confirmed: int | None,
+                                  report: str, written: bool, status: str) -> None:
     run_dir = tmp_path / "p" / "alla-reports" / "5123-20261019-100000"
     run_dir.mkdir(parents=True)
     (run_dir / "run.json").write_text("{}", encoding="utf-8")
     (run_dir / "relate_task.md").write_text("задание", encoding="utf-8")
     (run_dir / "related.md").write_text(decision, encoding="utf-8")
     (run_dir / "report.md").write_text(report, encoding="utf-8")
-    (run_dir / "state.json").write_text(json.dumps(
-        {"related": {"groups": 1, "problems": 2, "confirmed_groups": confirmed}}), encoding="utf-8")
+    related = {"groups": 1, "problems": 2}
+    if confirmed is not None:
+        related["confirmed_groups"] = confirmed
+    (run_dir / "state.json").write_text(json.dumps({"related": related}), encoding="utf-8")
     calls = [("write_file", {"file_path": str(run_dir / "related.md"), "content": decision},
               "ok")] if written else []
     result = CHECKS["related_kept_apart"](context(tmp_path, events(*calls), "E12"))

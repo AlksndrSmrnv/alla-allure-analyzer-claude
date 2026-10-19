@@ -44,6 +44,7 @@ from skill_fake_testops import TOKEN  # noqa: E402
 from skill_fixtures import LOGIN_TEST_JAVA, ORDER_TEST_JAVA  # noqa: E402 — и scripts/ в sys.path
 
 from alla_skill_lib import session_rules as rules  # noqa: E402
+from alla_skill_lib.related import parse_related  # noqa: E402
 from alla_skill_lib.session_rules import (  # noqa: E402
     SHELL_TOOL,
     SKILL_IN_PROJECT,
@@ -1320,12 +1321,20 @@ def check_related_kept_apart(ctx: Context) -> dict[str, Any]:
             return bad(f"{run_dir.name}: скрипт не просил сравнить похожие проблемы")
         if not related.is_file() or canonical(related.resolve()) not in written:
             return bad(f"{run_dir.name}: модель не записывала related.md")
-        line = related.read_text(encoding="utf-8").strip()[:200]
+        content = related.read_text(encoding="utf-8")
+        line = content.strip()[:200]
+        decision = parse_related(content)
+        apart = {number for numbers, _ in decision.different for number in numbers}
+        if decision.unrecognized or decision.same or not {1, 2} <= apart:
+            return bad(f"{run_dir.name}: в related.md нет решения «РАЗНЫЕ: 1, 2»: {line}")
+        # Принятое решение пишет confirmed_groups (и 0); отброшенное после лимита попыток — нет.
         state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+        if (state.get("related") or {}).get("confirmed_groups") != 0:
+            return bad(f"{run_dir.name}: решение related.md не принято скриптом: {line}")
         report = run_dir / "report.md"
         text = report.read_text(encoding="utf-8") if report.is_file() else ""
-        if (state.get("related") or {}).get("confirmed_groups") or "**Проблема 1 и 2**" in text:
-            return bad(f"{run_dir.name}: разные проблемы объединены; related.md: {line}")
+        if "**Проблема 1 и 2**" in text:
+            return bad(f"{run_dir.name}: разные проблемы объединены в отчёте; related.md: {line}")
         found.append(f"{run_dir.name}: {line[:160]}")
     return ok("; ".join(found)) if found else bad("нет папок разбора")
 
