@@ -293,7 +293,8 @@ def test_screenshot_note_keeps_its_directives() -> None:
         "который пересказ приводит как видимый на экране",
         "остальные скриншоты открывай как обычно",
         "это не проблема скилла",
-        "остальные скриншоты не открывай",
+        "После ошибки одного файла остальные открывай как обычно",
+        "только если модель изображения не принимает, остальные скриншоты не открывай",
     ):
         assert directive in note, directive
     plain = build_task_text(has_symptom=True, has_log=False, low_evidence=False, has_kb=False)
