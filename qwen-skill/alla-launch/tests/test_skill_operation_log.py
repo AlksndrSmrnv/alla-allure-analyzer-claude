@@ -48,7 +48,8 @@ def test_shared_log_gives_each_test_only_its_operation(
     assert loyalty["log_not_found"]
     assert f"[{LOG_NOT_FOUND}: id операции теста" in task and "shop-service.log" in task
     assert "DR-5" not in task and "DECLINED" not in task
-    assert f"Начни с «{LOG_NOT_FOUND}, анализ построен по ошибке теста»" in " ".join(task.split())
+    # Обязательного начала «лог операции не найден» нет: пометка уже стоит в «Данных».
+    assert "Ошибок операции этого теста в общем логе не нашлось" in " ".join(task.split())
 
 
 def test_analysis_without_the_operation_log_in_missing_is_sent_back(
@@ -121,9 +122,9 @@ def test_log_note_only_when_an_operation_log_gave_nothing() -> None:
 def test_task_variant_for_a_missing_operation_log() -> None:
     task = " ".join(build_task_text(has_symptom=True, has_log=False, low_evidence=False,
                                     has_kb=False, log_not_found=True).split())
-    assert f"Начни с «{LOG_NOT_FOUND}, анализ построен по ошибке теста»" in task
+    assert "Начни с" not in task and "Ошибок операции этого теста в общем логе не нашлось" in task
     assert "Лог операции этого теста не найден — в «НЕ ХВАТАЕТ» назови его" in task
-    assert "лога приложения в данных нет" not in task
+    assert "Что лога в данных нет" not in task
 
 
 _APP = ("ЧТО СЛОМАЛОСЬ: Заказ не создан: сервис ответил 500.\n"
@@ -134,6 +135,7 @@ _SOURCES = {
     "S1": {"kind": "message", "text": "expected: <200> but was: <500>"},
     "S2": {"kind": "log", "section": "HTTP", "text": "HTTP статус: 500\nerror: customer is null"},
     "S3": {"kind": "log", "section": "лог", "text": "ERROR NullPointerException: customer is null"},
+    "S4": {"kind": "image", "section": "скриншот", "text": ""},
 }
 
 
@@ -145,22 +147,26 @@ def _category_errors(category: str, observations: str, kb: str = "",
 
 
 @pytest.mark.parametrize("category", ["приложение", "данные"])
-def test_app_and_data_need_a_quote_from_the_operation_log(category: str) -> None:
+def test_app_and_data_need_a_checked_quote_not_only_a_screenshot(category: str) -> None:
+    """Лог не обязателен: ошибку сервиса в сообщении, трейсе или HTTP-ответе скрипт
+    принимает (голый ли это код 500, решает модель по заданию); только скриншот — нет."""
     from_message = "- [S1] «expected: <200> but was: <500>»\n"
     from_http = "- [S2] «error: customer is null»\n"
     from_log = "- [S3] «NullPointerException: customer is null»\n"
-    error = f"категорию «{category}» подтверждают только цитата из лога операции"
+    from_image = "- [S4] «Внутренняя ошибка сервиса заказов»\n"
+    error = f"категорию «{category}» подтверждают только сверенная цитата"
 
-    assert any(error in item for item in _category_errors(category, from_message))
-    # Ответ HTTP — то, что увидел тест, а не лог сервиса.
-    assert any(error in item for item in _category_errors(category, from_http))
-    assert _category_errors(category, from_message + from_log) == []
+    assert _category_errors(category, from_message) == []
+    assert _category_errors(category, from_http) == []
+    assert _category_errors(category, from_log) == []
+    assert any(error in item for item in _category_errors(category, from_image))
+    assert _category_errors(category, from_image + from_http) == []
     # Точная (подтверждённая) запись базы знаний той же категории тоже подтверждает.
-    assert _category_errors(category, from_message, "БАЗА ЗНАНИЙ: orders_npe_1a2b\n",
+    assert _category_errors(category, from_image, "БАЗА ЗНАНИЙ: orders_npe_1a2b\n",
                             {"orders_npe_1a2b": category}) == []
     other = "данные" if category == "приложение" else "приложение"
     assert any(error in item for item in _category_errors(
-        category, from_message, "БАЗА ЗНАНИЙ: orders_npe_1a2b\n", {"orders_npe_1a2b": other}))
+        category, from_image, "БАЗА ЗНАНИЙ: orders_npe_1a2b\n", {"orders_npe_1a2b": other}))
 
 
 @pytest.mark.parametrize("category", ["тест", "окружение"])
@@ -197,8 +203,8 @@ def test_http_response_does_not_replace_the_operation_log() -> None:
     text = " ".join(task.text.split())
     assert "Лог операции этого теста не найден — в «НЕ ХВАТАЕТ» назови его" in text
     # Вариант задания — «лога нет»: HTTP-ответ — симптом, а не лог сервиса.
-    assert f"Начни с «{LOG_NOT_FOUND}, анализ построен по ошибке теста»" in text
-    assert "500 и другие 5xx — «неизвестно»" in text
+    assert "Ошибок операции этого теста в общем логе не нашлось" in text
+    assert "500 и другие 5xx без текста ошибки сервиса" in text
 
 
 def test_http_response_alone_is_a_symptom_not_an_application_log() -> None:
@@ -216,7 +222,7 @@ def test_http_response_alone_is_a_symptom_not_an_application_log() -> None:
 
     text = " ".join(task.text.split())
     assert "анализ построен по логу приложения" not in text
-    assert "лога приложения в данных нет" in text and not task.log_not_found
+    assert "Что лога в данных нет, здесь не пиши" in text and not task.log_not_found
 
 
 def test_http_response_beside_a_service_log_is_the_symptom() -> None:

@@ -199,14 +199,12 @@ def test_report_separates_observations_from_the_presumed_cause(
     assert "- **Наблюдения:**" in report and "- **Не хватает:** лога auth-service" in report
     assert "- Не хватает: лога auth-service за время теста." in report
     assert "Не хватает: нет" not in report  # «нет» не показывается
-    # «окружение» только по сообщению теста — пометка; у ошибки приложения есть цитата из лога.
-    assert "не принимает соединения. (причина не подтверждена логом)" in report
-    assert report.count("(причина не подтверждена логом)") == 2  # раздел и подробности
-    assert "(причина не подтверждена логом)" in summary_task
-    # В терминале — одна короткая метка, без цитат.
-    login_line = next(line for line in brief.splitlines() if "не подтверждено логом" in line)
-    assert login_line.startswith("**Проблема ") and login_line.endswith("[не подтверждено логом]")
-    assert brief.count("не подтверждено логом") == 1
+    # «окружение» только по сообщению теста — без пометки «не подтверждено логом»: в проектах
+    # без логов она стояла у каждой проблемы; чего не хватает, разбор пишет в «Не хватает».
+    assert "не принимает соединения." in report
+    for text in (report, summary_task, brief):
+        assert "подтверждено логом" not in text and "подтверждена логом" not in text
+    # В терминале — без цитат.
     assert "Наблюдения" not in brief and "«java.lang.NullPointerException" not in brief
 
 

@@ -397,6 +397,12 @@ SCENARIOS: dict[str, Scenario] = {
         (*FULL_RUN, "prepare_launch", "screenshot_opened", "screenshot_cited"), launch_id=791,
         review=("Evidence: причина названа по скриншоту (окно cookie поверх формы), текст "
                 "цитаты действительно виден на картинке; категория «тест», шаг — закрыть окно",)),
+    "N01": Scenario(
+        "Прогон без логов: выводы по ответу сервиса и ошибке теста, без оговорок о логе",
+        "no_logs", ("/alla-launch 792",),
+        (*FULL_RUN, "prepare_launch", "no_log_noise"), launch_id=792,
+        review=("Evidence: причины 422 и 500 с исключением названы по тексту ответа сервиса, "
+                "голый 500 — «неизвестно»; отсутствие лога не повторяется в каждом разборе",)),
     "P04": Scenario(
         "40 кластеров: пакеты субагентов", "many:40", ("/alla-launch 900",),
         (*FULL_RUN, "prepare_launch", "subagents_used", "batch_agent_used"), launch_id=900),
@@ -1116,6 +1122,50 @@ def check_screenshot_cited(ctx: Context) -> dict[str, Any]:
             return bad(f"кластер {entry['file_id']}: категория {analysis.category} по скриншоту")
         found.append(f"{entry['file_id']}: {analysis.category}; [{image['source_id']}] «{quotes[0][:80]}»")
     return ok("; ".join(found)) if found else bad("в заданиях нет скриншотов")
+
+
+# N01: метка проблемы → ожидаемая категория. Лог в «НЕ ХВАТАЕТ» — довод против только у
+# «данных» и «окружения»: у NPE сервиса причина видна, но кто обнулил customer (тест или
+# сервис), открытый вопрос — лог его различает (стенд N01, 2026-10-19).
+NO_LOG_EXPECTED = (
+    ("<422>", "данные"),
+    ("Expected status code <201>", "приложение"),
+    ("Connection refused", "окружение"),
+    ("expected: <200> but was: <500>", "неизвестно"),
+)
+_NO_LOG_PHRASE = re.compile(r"лог\w*[^.;]{0,40}\bнет\b|нет\s+лог", re.IGNORECASE)
+
+
+def check_no_log_noise(ctx: Context) -> dict[str, Any]:
+    """Прогон без логов (N01): категории по однозначной ошибке, без фразы об отсутствии лога
+    в ЧТО СЛОМАЛОСЬ и без лога в «НЕ ХВАТАЕТ», когда причина видна из данных."""
+    from alla_skill_lib.analysis_format import parse_analysis
+
+    found: list[str] = []
+    for run_dir in ctx.run_dirs():
+        run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        if len(run["clusters"]) != len(NO_LOG_EXPECTED):
+            return bad(f"{run_dir.name}: проблем {len(run['clusters'])}, ожидалось "
+                       f"{len(NO_LOG_EXPECTED)}")
+        for entry in run["clusters"]:
+            label = str(entry.get("label") or "")
+            expected = next((category for marker, category in NO_LOG_EXPECTED
+                             if marker in label), None)
+            if expected is None:
+                return bad(f"кластер {entry['file_id']}: неожиданная метка «{label[:80]}»")
+            path = run_dir / "analyses" / f"{entry['file_id']}.md"
+            analysis = parse_analysis(path.read_text(encoding="utf-8") if path.is_file() else "")
+            if analysis.category != expected:
+                return bad(f"кластер {entry['file_id']}: категория {analysis.category}, "
+                           f"ожидалась {expected} ({label[:60]})")
+            if _NO_LOG_PHRASE.search(analysis.what):
+                return bad(f"кластер {entry['file_id']}: ЧТО СЛОМАЛОСЬ говорит о логе: "
+                           f"«{analysis.what[:120]}»")
+            if expected in ("данные", "окружение") and "лог" in analysis.missing_text.lower():
+                return bad(f"кластер {entry['file_id']}: причина видна, а НЕ ХВАТАЕТ просит "
+                           f"лог: «{analysis.missing_text[:120]}»")
+            found.append(f"{entry['file_id']}: {expected}")
+    return ok("; ".join(found)) if found else bad("нет папок разбора")
 
 
 def check_operation_log_respected(ctx: Context) -> dict[str, Any]:

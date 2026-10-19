@@ -134,7 +134,6 @@ COMPACT_CAUSE_CHARS = 240
 COMPACT_WHAT_CHARS = 160
 COMPACT_STEP_CHARS = 160
 COMPACT_MISSING_CHARS = 160
-UNCONFIRMED_NOTE = "причина не подтверждена логом"
 
 
 @dataclass(frozen=True)
@@ -177,6 +176,8 @@ class ClusterAnalysis:
 
         Для категорий «приложение», «окружение», «данные» разбора нового формата
         (есть реестр источников): ни одна цитата не из лога (скриншот — тоже симптом).
+        Только статистика проверки для пилота (``review``): в отчёте пометки нет — в
+        проектах без логов она стояла у каждой проблемы.
         """
         if self.sources is None or self.category in (None, "тест", "неизвестно"):
             return False
@@ -230,8 +231,7 @@ class ClusterAnalysis:
         исправления, не тратя контекст на полные разборы. Каждое поле
         обрезано: длинная причина одного кластера не должна вытеснять остальные.
         """
-        lines = [f"ПРИЧИНА: {_clip(_one_line(self.cause), COMPACT_CAUSE_CHARS)}"
-                 + (f" ({UNCONFIRMED_NOTE})" if self.unconfirmed_by_log else "")]
+        lines = [f"ПРИЧИНА: {_clip(_one_line(self.cause), COMPACT_CAUSE_CHARS)}"]
         what = _clip(self.what_first_sentence(), COMPACT_WHAT_CHARS)
         if what:
             lines.append(f"ЧТО СЛОМАЛОСЬ: {what}")
@@ -474,8 +474,8 @@ def validate_analysis(
     цитаты непроверенными), а при категории «неизвестно» — содержательный «НЕ ХВАТАЕТ».
     ``log_not_found`` — лога в задании нет, потому что в общем логе не нашлось записей
     операции теста: «НЕ ХВАТАЕТ» должен назвать лог. ``exact_kb`` — точные записи базы
-    знаний кластера (id → категория): «приложение» и «данные» подтверждает цитата из лога
-    операции теста или ссылка на точную запись той же категории (:func:`category_errors`).
+    знаний кластера (id → категория): «приложение» и «данные» подтверждает сверенная цитата
+    (не со скриншота) или ссылка на точную запись той же категории (:func:`category_errors`).
     """
     errors: list[str] = []
     if not analysis.what:
@@ -507,15 +507,16 @@ def validate_analysis(
     return errors
 
 
-# Категории, которые называют сбой в сервисе: без строки его лога это версия, а не причина.
-LOG_CONFIRMED_CATEGORIES = ("приложение", "данные")
-LOG_SECTIONS = frozenset({"лог", "журнал"})  # HTTP — ответ, который видел тест, а не лог
+# Категории, которые называют сбой в сервисе: нужна сверенная скриптом цитата с ним.
+SERVICE_FAULT_CATEGORIES = ("приложение", "данные")
 CATEGORY_UNCONFIRMED_ERROR = (
-    "категорию «{category}» подтверждают только цитата из лога операции (кусок «лог …» или "
-    "«журнал …» в НАБЛЮДЕНИЯХ) или точная запись базы знаний той же категории (пометка "
-    "«ТОЧНОЕ» и строка «БАЗА ЗНАНИЙ: <id>»); в разборе нет ни того, ни другого. Есть в "
-    "«Данных» кусок лога с ошибкой, на которой держится причина, — процитируй его; нет — "
-    "поставь «неизвестно», а чего не хватает (лог сервиса за время теста) — в «НЕ ХВАТАЕТ:»"
+    "категорию «{category}» подтверждают только сверенная цитата из «Данных» (лог операции, "
+    "сообщение об ошибке, трейс или HTTP-ответ с текстом ошибки самого сервиса) или точная "
+    "запись базы знаний той же категории (пометка «ТОЧНОЕ» и строка «БАЗА ЗНАНИЙ: <id>»); "
+    "в разборе есть только цитаты со скриншота — его скрипт не сверяет, и он показывает, что "
+    "увидел тест, а не что сломалось в сервисе. Есть в «Данных» кусок с ошибкой сервиса, на "
+    "которой держится причина, — процитируй его; нет — поставь «неизвестно» (при 502, 503 и "
+    "504 — «окружение»), а чего не хватает — в «НЕ ХВАТАЕТ:»"
 )
 LOG_NOT_FOUND_ERROR = (
     "лог операции этого теста не найден (пометка в «Данных») — в «НЕ ХВАТАЕТ:» назови его: "
@@ -550,11 +551,11 @@ def quote_parts(quote: str) -> list[str]:
     return [part for part in parts if part]
 
 
-def confirmed_by_log(analysis: ClusterAnalysis, sources: dict[str, dict[str, Any]]) -> bool:
-    """Хоть одна цитата — из куска лога (``лог``/``журнал``; HTTP-ответ — не лог)."""
+def quotes_checked_source(analysis: ClusterAnalysis, sources: dict[str, dict[str, Any]]) -> bool:
+    """Хоть одна цитата — из куска, который скрипт сверяет (не со скриншота)."""
     for observation in analysis.observations:
-        record = sources.get(observation.source_id) or {}
-        if record.get("kind") == "log" and (record.get("section") or "лог") in LOG_SECTIONS:
+        record = sources.get(observation.source_id)
+        if record is not None and record.get("kind") != "image":
             return True
     return False
 
@@ -564,16 +565,18 @@ def category_errors(
     sources: dict[str, dict[str, Any]] | None,
     exact_kb: Mapping[str, str],
 ) -> list[str]:
-    """«приложение» и «данные» — только по логу операции теста или точной записи базы знаний.
+    """«приложение» и «данные» — по сверенной цитате или точной записи базы знаний.
 
-    Без них такая категория — правдоподобная версия: сообщение теста говорит, что он
-    увидел, а не что сломалось в сервисе. Реестра нет (``sources`` — ``None``) — цитаты не
-    сверить, разбор принимается (неполадка скилла, модель её не исправит).
+    Сверенная цитата — лог операции, сообщение, трейс или HTTP-ответ: однозначна ли в ней
+    ошибка сервиса (а не голый код 500), решает модель по заданию. Только цитаты со
+    скриншота скрипт не сверяет — такую категорию он не принимает. Реестра нет (``sources``
+    — ``None``) — цитаты не сверить, разбор принимается (неполадка скилла, модель её не
+    исправит).
     """
     category = analysis.category
-    if sources is None or category not in LOG_CONFIRMED_CATEGORIES:
+    if sources is None or category not in SERVICE_FAULT_CATEGORIES:
         return []
-    if confirmed_by_log(analysis, sources):
+    if quotes_checked_source(analysis, sources):
         return []
     if analysis.kb_ref and exact_kb.get(analysis.kb_ref) == category:
         return []

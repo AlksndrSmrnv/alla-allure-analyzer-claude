@@ -313,7 +313,7 @@ def test_screenshot_quote_is_accepted_without_matching(project: Path) -> None:
 def test_screenshot_does_not_confirm_application(project: Path) -> None:
     analysis = parse_analysis(_analysis("приложение"))
     errors = validate_analysis(analysis, project, frozenset(), observed=True, sources=SOURCES)
-    assert any("подтверждают только цитата из лога операции" in error for error in errors)
+    assert any("есть только цитаты со скриншота" in error for error in errors)
     environment = parse_analysis(_analysis("окружение"))
     environment.sources = SOURCES
     assert environment.unconfirmed_by_log

@@ -27,7 +27,7 @@ from alla_core.models.testops import TriageReport
 from alla_core.services.prompt_builder_service import build_launch_summary_prompt
 
 from alla_skill_lib.agent_rules import EXECUTOR_RULES, SUMMARY_FORMAT_REF, reference_line
-from alla_skill_lib.analysis_format import UNCONFIRMED_NOTE, ClusterAnalysis, first_sentence
+from alla_skill_lib.analysis_format import ClusterAnalysis, first_sentence
 from alla_skill_lib.cluster_task import UNTRUSTED_NOTE
 from alla_skill_lib.history import format_date
 from alla_skill_lib.known_issues import KnownIssue, KnownIssues, KnownRecord
@@ -510,8 +510,7 @@ def _summary_text(analysis: ClusterAnalysis, flagged: bool, detailed: bool) -> s
         return _truncate(_one_line(analysis.raw), limit)
     if detailed:
         return analysis.compact()
-    note = f" ({UNCONFIRMED_NOTE})" if analysis.unconfirmed_by_log else ""
-    return f"ПРИЧИНА: {_truncate(_one_line(analysis.cause), SUMMARY_SHORT_CAUSE_CHARS)}{note}"
+    return f"ПРИЧИНА: {_truncate(_one_line(analysis.cause), SUMMARY_SHORT_CAUSE_CHARS)}"
 
 
 # ---------------------------------------------------------------------------
@@ -787,10 +786,9 @@ def _merged_item(unit: list[_Problem], tests: _Tests, not_proposed: dict[str, st
     analysis = largest.analysis
     size = _size(unit)
     numbers = [p.entry["file_id"] for p in sorted(unit, key=lambda p: p.number)]
-    unconfirmed = next((_unconfirmed(p) for p in unit if _unconfirmed(p)), "")
     lines = [
         f"**{_merged_title(numbers)}** — {size} {_plural(size, 'тест', 'теста', 'тестов')} · {MERGED_TAG}",
-        f"- Общая причина: {largest.label} — {_one_line(group.cause)}{unconfirmed}",
+        f"- Общая причина: {largest.label} — {_one_line(group.cause)}",
     ]
     # Текст — из разбора одной проблемы: подпись говорит, из какой (её тестов меньше, чем в пункте).
     what = _one_line(analysis.what)
@@ -836,7 +834,7 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
         what = _one_line(analysis.what)
         if what:
             lines.append(f"- Что случилось: {what}")
-        lines.append(f"- {_opinion_label(problem)} {_opinion(problem, _reason(problem))}{_unconfirmed(problem)}")
+        lines.append(f"- {_opinion_label(problem)} {_opinion(problem, _reason(problem))}")
         lines += _consistency_lines(analysis, "- ")
         lines += _evidence_lines(analysis, "- Наблюдения:", "- Не хватает: ")
     lines += _confirmed_lines(problem)
@@ -1186,10 +1184,6 @@ def _opinion(problem: _Problem, reason: str) -> str:
     return f"{problem.label} — {text}" if text else problem.label
 
 
-def _unconfirmed(problem: _Problem) -> str:
-    return f" ({UNCONFIRMED_NOTE})" if not problem.flagged and problem.analysis.unconfirmed_by_log else ""
-
-
 MIXED_GROUP_NOTE = "в группе, похоже, несколько проблем"
 UNCHECKED_GROUP_NOTE = "однородность группы не проверена: недостаточно данных"
 SOURCES_LOST_NOTE = "цитата не сверена с данными: файл источников задания не найден"
@@ -1245,8 +1239,6 @@ def _brief_tags(problem: _Problem, *, related: bool = True, history: bool = True
     tags: list[str] = [CONFIRMED_TAG] if problem.confirmed is not None else []
     if not problem.flagged and problem.analysis.consistency_kind == "different":
         tags.append(MIXED_GROUP_NOTE)
-    if not problem.flagged and problem.analysis.unconfirmed_by_log:
-        tags.append("не подтверждено логом")
     if history:
         tags += _history_tags(problem)
     if problem.known is not None:
@@ -1398,8 +1390,7 @@ def _details(
         else:
             lines += [
                 f"- **Что случилось:** {_one_line(analysis.what)}",
-                (f"- **{_opinion_label(problem)}** {_opinion(problem, analysis.cause_reason)}"
-                 f"{_unconfirmed(problem)}"),
+                f"- **{_opinion_label(problem)}** {_opinion(problem, analysis.cause_reason)}",
                 *_consistency_lines(analysis, "- **", bold=True),
                 *_evidence_lines(analysis, "- **Наблюдения:**", "- **Не хватает:** "),
                 "- **Разбор предлагал:**" if problem.rejected else "- **Как исправить:**",

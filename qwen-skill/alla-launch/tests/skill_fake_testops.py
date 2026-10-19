@@ -226,6 +226,54 @@ def screenshot_launch(launch_id: int = 791, png: bytes | None = None) -> LaunchF
     )
 
 
+def _no_log_result(result_id: int, cls: str, method: str, message: str, frame: str) -> dict[str, Any]:
+    trace = f"{message.splitlines()[0]}\n\tat ru.company.{cls}.{method}({frame})\n"
+    return {"id": result_id, "name": method, "fullName": f"ru.company.{cls}.{method}",
+            "status": "failed", "statusDetails": {"message": message, "trace": trace}}
+
+
+NO_LOG_NPE_MESSAGE = (
+    "1 expectation failed.\nExpected status code <201> but was <500>.\n\nResponse body: "
+    '{"status":500,"exception":"java.lang.NullPointerException","message":"Cannot invoke '
+    '\\"Customer.getId()\\" because \\"customer\\" is null","trace":"at '
+    'ru.company.orders.service.OrderService.create(OrderService.java:42)","path":"/orders"}'
+)
+
+
+def no_logs_launch(launch_id: int = 792) -> LaunchFixture:
+    """Проект без логов: ни у одного теста нет вложения-лога (сценарий N01).
+
+    Четыре разные проблемы: ответ сервиса 422 «promo code SPRING25 has expired» во вложении
+    ответа (данные), исключение сервиса в теле ответа 500 в сообщении (приложение), отказ
+    соединения с auth-service (окружение) и голый assertion 200 != 500 (неизвестно).
+    """
+    return LaunchFixture(
+        launch={"id": launch_id, "name": "Shop API nightly", "projectId": 5,
+                "createdDate": LAUNCH_CREATED_MS},
+        results=[
+            _no_log_result(501, "checkout.PromoTest", "applyPromoCode",
+                           "expected: <200> but was: <422>", "PromoTest.java:27"),
+            _no_log_result(502, "orders.OrderTest", "createOrder", NO_LOG_NPE_MESSAGE,
+                           "OrderTest.java:31"),
+            _no_log_result(503, "auth.LoginTest", "login",
+                           "java.net.ConnectException: Connection refused: "
+                           "auth-service.stand.local/10.0.3.15:8443", "LoginTest.java:18"),
+            _no_log_result(504, "reports.ReportTest", "monthlyReport",
+                           "expected: <200> but was: <500>", "ReportTest.java:22"),
+            {"id": 505, "name": "openCatalog", "status": "passed"},
+        ],
+        executions={
+            501: [{"name": "Применить промокод к корзине", "status": "failed"}],
+            502: [{"name": "Создать заказ", "status": "failed"}],
+            503: [{"name": "Войти под тестовым пользователем", "status": "failed"}],
+            504: [{"name": "Запросить месячный отчёт", "status": "failed"}],
+        },
+        attachments={501: [{"id": 9501, "name": "response.json", "type": "application/json"}]},
+        contents={9501: b'{"status": 422, "error": "promo code SPRING25 has expired", '
+                        b'"path": "/cart/promo"}'},
+    )
+
+
 def green_launch() -> LaunchFixture:
     return LaunchFixture(
         launch={"id": 778, "name": "Smoke", "projectId": 5, "createdDate": LAUNCH_CREATED_MS},

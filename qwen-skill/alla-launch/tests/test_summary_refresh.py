@@ -47,8 +47,8 @@ def test_summary_hash_uses_the_same_data_block_as_task(
         for entry in run["clusters"]
     }
     data = report.build_summary_data(run, analyses, set())
-    # Причина «окружение» у login опирается только на сообщение теста — пометка в сводке.
-    assert "не принимает соединения. (причина не подтверждена логом)" in data
+    # Причина «окружение» у login опирается только на сообщение теста — без пометки о логе.
+    assert "не принимает соединения." in data and "не подтверждена логом" not in data
     task = (directory / "summary_task.md").read_text(encoding="utf-8")
     assert data in task
     assert _state(directory)["summary_data_hash"] == hashlib.sha256(data.encode()).hexdigest()
