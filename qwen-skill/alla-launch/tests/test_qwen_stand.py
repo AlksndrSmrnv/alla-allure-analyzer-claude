@@ -105,9 +105,9 @@ def test_install_scenario_project_has_no_env(tmp_path: Path) -> None:
 FRAME_RE = re.compile(r"at (ru\.company\.[\w.]+)\.(\w+)\((\w+\.java):(\d+)\)")
 
 
-@pytest.mark.parametrize("spec", ["mixed", "retries", "known"])
+@pytest.mark.parametrize("spec", ["mixed", "retries", "known", "unique"])
 def test_stand_project_has_the_code_of_the_corpus_traces(tmp_path: Path, spec: str) -> None:
-    """E08–E10: у каждого теста есть подсказка по full_name, кадр стека указывает на свой метод."""
+    """E08–E10, E12: у каждого теста есть подсказка по full_name, кадр стека указывает на свой метод."""
     from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
 
     project = build_project(tmp_path, "http://127.0.0.1:1", venv=None)
@@ -641,6 +641,29 @@ def test_mixed_group_found_check(tmp_path: Path, consistency: str, status: str) 
     (run_dir / "analyses" / "01.md").write_text(
         "ЧТО СЛОМАЛОСЬ: 500.\nПРИЧИНА: приложение — сбой.\n" + consistency, encoding="utf-8")
     assert CHECKS["mixed_group_found"](context(tmp_path, [], "E08"))["status"] == status
+
+
+@pytest.mark.parametrize(("decision", "confirmed", "report", "written", "status"), [
+    ("РАЗНЫЕ: 1, 2 — у 1 занят адрес ссылки, у 2 осталась папка", 0,
+     "**Проблема 1** — \n**Проблема 2** — ", True, "pass"),
+    ("ОДНА ПРИЧИНА: 1, 2 — отказ проверки уникальности", 1,
+     "**Проблема 1 и 2** — ", True, "fail"),
+    ("РАЗНЫЕ: 1, 2 — разные объекты", 0, "**Проблема 1** — ", False, "fail"),  # писал не агент
+])
+def test_related_kept_apart_check(tmp_path: Path, decision: str, confirmed: int, report: str,
+                                  written: bool, status: str) -> None:
+    run_dir = tmp_path / "p" / "alla-reports" / "5123-20261019-100000"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}", encoding="utf-8")
+    (run_dir / "relate_task.md").write_text("задание", encoding="utf-8")
+    (run_dir / "related.md").write_text(decision, encoding="utf-8")
+    (run_dir / "report.md").write_text(report, encoding="utf-8")
+    (run_dir / "state.json").write_text(json.dumps(
+        {"related": {"groups": 1, "problems": 2, "confirmed_groups": confirmed}}), encoding="utf-8")
+    calls = [("write_file", {"file_path": str(run_dir / "related.md"), "content": decision},
+              "ok")] if written else []
+    result = CHECKS["related_kept_apart"](context(tmp_path, events(*calls), "E12"))
+    assert result["status"] == status, result
 
 
 @pytest.mark.parametrize(("refund", "loyalty", "status"), [

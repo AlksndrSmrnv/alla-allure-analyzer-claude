@@ -47,6 +47,7 @@ FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
     "retries": lambda: _retries_launch(),
     "known": lambda: _known_launch(),
     "split": lambda: _split_launch(),
+    "unique": lambda: _unique_launch(),
     "shared": lambda: _shared_launch(),
     "test_bug": test_bug_launch,
     "no_logs": no_logs_launch,
@@ -88,6 +89,14 @@ def _split_launch() -> LaunchFixture:
     return step_split_one_cause().fixture
 
 
+def _unique_launch() -> LaunchFixture:
+    """Отказ уникальности у ссылки и у папки: один класс причины, разные объекты — после
+    разбора проблемы остаются раздельными (корпус эталона, E12)."""
+    from eval.corpus_dev import unique_conflict_two_objects
+
+    return unique_conflict_two_objects().fixture
+
+
 def _shared_launch() -> LaunchFixture:
     """Общий лог сервиса с ошибками разных операций у всех тестов; у теста без запроса id
     операции неизвестен (корпус эталона, L01)."""
@@ -98,7 +107,7 @@ def _shared_launch() -> LaunchFixture:
 
 def build_fixture(spec: str) -> LaunchFixture:
     """``default`` | ``green`` | ``info_only`` | ``injection`` | ``scant`` | ``mixed`` |
-    ``retries`` | ``known`` | ``split`` | ``shared`` | ``test_bug`` | ``screenshot`` |
+    ``retries`` | ``known`` | ``split`` | ``unique`` | ``shared`` | ``test_bug`` | ``screenshot`` |
     ``no_logs`` |
     ``many:<число>``."""
     name, _, arg = spec.partition(":")

@@ -345,6 +345,48 @@ def step_split_one_cause() -> Case:
     return builder.build("step_split_one_cause")
 
 
+def _duplicate_notice(field: str, value: str, page_class: str, method: str,
+                      test_class: str, test_method: str, line: int) -> tuple[str, str]:
+    text = f"Ошибка: запись с таким значением уже существует ({field} = {value})"
+    message = (f'Element should have text "Создано" {{.notification.error}}\n'
+               f'Actual value: text="{text}"\nTimeout: 4 s.')
+    trace = java_trace(f"com.codeborne.selenide.ex.ElementShould: {message}", [
+        "com.codeborne.selenide.impl.WebElementSource.checkCondition(WebElementSource.java:79)",
+        f"ru.company.ui.{page_class}.{method}({page_class}.java:22)",
+        f"{test_class}.{test_method}({test_class.rsplit('.', 1)[-1]}.java:{line})",
+    ])
+    return message, trace
+
+
+def unique_conflict_two_objects() -> Case:
+    """Отказ проверки уникальности у ссылки и у папки — один класс, разные причины.
+
+    Обратный к ``step_split_one_cause`` случай: текст ошибки почти тот же, тесты упали на
+    разных шагах (близкая пара, развело ``step``), но ломаются разные объекты — адрес ссылки
+    занят в данных стенда, папку оставил другой тест. Общий шаг «очистить данные» их не
+    объединяет: шаг ``relate`` должен оставить их раздельными (стенд Qwen, E12).
+    """
+    builder = LaunchBuilder(5123, "Workspace UI")
+    variants = [
+        ("ws-link-alias", "link-alias-taken-in-stand-data", "link.alias", "promo-autumn",
+         "LinkPage", "shouldBeCreated", "ru.company.links.LinksTest", "createShortLink", 27,
+         "Проверить, что ссылка создана"),
+        ("ws-folder-name", "folder-left-by-other-test", "folder.name", "Отчёты QA",
+         "FolderPage", "create", "ru.company.folders.FoldersTest", "createFolder", 31,
+         "Нажать кнопку «Создать папку»"),
+    ]
+    for group, cause, field, value, page_class, method, test_class, test_method, line, step \
+            in variants:
+        message, trace = _duplicate_notice(field, value, page_class, method,
+                                           test_class, test_method, line)
+        builder.add_failure(
+            group, cause=cause, category="данные", name=test_method,
+            full_name=f"{test_class}.{test_method}", message=message, trace=trace, step=step,
+            evidence=[f"({field} = {value})"], status="broken",
+        )
+    return builder.build("unique_conflict_two_objects")
+
+
 def auth_401_403() -> Case:
     """401 и 403 с похожим текстом — разные причины."""
     builder = LaunchBuilder(5104, "Access regression")
@@ -3109,6 +3151,7 @@ CASES: dict[str, Callable[[], Case]] = {
     "retries_by_context": retries_by_context,
     "same_assertion_two_npes": same_assertion_two_npes,
     "step_split_one_cause": step_split_one_cause,
+    "unique_conflict_two_objects": unique_conflict_two_objects,
     "log_noise_one_problem": log_noise_one_problem,
     "background_log_errors": background_log_errors,
     "resources_split": resources_split,

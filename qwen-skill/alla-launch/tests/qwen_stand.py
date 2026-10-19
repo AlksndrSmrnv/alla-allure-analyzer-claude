@@ -148,6 +148,23 @@ STAND_SOURCES: dict[str, str] = {
          "assertEquals(200, checkout.submit(cart().withBonus(500)).statusCode());"),
         ("checkoutGuest", 44, "assertEquals(200, checkout.submit(guestCart()).statusCode());"),
     )),
+    # E12 (unique_conflict_two_objects): отказ уникальности у ссылки и у папки — разные объекты
+    "links/LinksTest.java": java_source("ru.company.links", "LinksTest", _tests(
+        ("createShortLink", 27,
+         "linkPage.open().create(\"https://shop.example/autumn\", \"promo-autumn\");\n"
+         "linkPage.shouldBeCreated();"),
+    ), fields=("private final LinkPage linkPage = new LinkPage();",)),
+    "folders/FoldersTest.java": java_source("ru.company.folders", "FoldersTest", _tests(
+        ("createFolder", 31, "folderPage.open().create(\"Отчёты QA\");"),
+    ), fields=("private final FolderPage folderPage = new FolderPage();",)),
+    "ui/LinkPage.java": java_source("ru.company.ui", "LinkPage", [
+        ("public void shouldBeCreated()", 22, "$(\".notification\").shouldHave(text(\"Создано\"));"),
+    ]),
+    "ui/FolderPage.java": java_source("ru.company.ui", "FolderPage", [
+        ("public void create(String name)", 22,
+         "$(\"#folder-name\").setValue(name);\n$(\"#create-folder\").click();\n"
+         "$(\".notification\").shouldHave(text(\"Создано\"));"),
+    ]),
     # V01 (screenshot): кнопка оплаты под окном cookie — тест его не закрывает
     "shop/PayTest.java": java_source("ru.company.shop", "PayTest", _tests(
         ("payOrder", 21, "open(\"/checkout\");\n$(\"#pay-button\").shouldBe(visible).click();"),
@@ -311,6 +328,14 @@ SCENARIOS: dict[str, Scenario] = {
         review=(("Evidence: в related.md общая причина взята из разборов (покупатель в заказе "
                  "не заполнен), без новых фактов; summary.md называет их одной проблемой "
                  "(«проблема 1 и 2»), не известной проблемой"),)),
+    "E12": Scenario(
+        "Отказ уникальности у ссылки и у папки: один класс причины — проблемы остаются "
+        "раздельными", "unique",
+        ("/alla-launch 5123",), (*FULL_RUN, "prepare_launch", "related_kept_apart"),
+        launch_id=5123,
+        review=(("Evidence: в related.md — РАЗНЫЕ с отличием из разборов (ссылка и папка, "
+                 "разные шаги); summary.md называет две проблемы и не сводит их к одной "
+                 "причине «уникальность» или к общему шагу «очистить данные»"),)),
     "L01": Scenario(
         "Общий лог сервиса: у каждого теста только своя операция, «лог операции не найден»",
         "shared", ("/alla-launch 5121",), (*FULL_RUN, "prepare_launch", "operation_log_respected"),
@@ -1279,6 +1304,29 @@ def check_related_confirmed(ctx: Context) -> dict[str, Any]:
             return bad(f"{run_dir.name}: проблемы {numbers} не объединены в одну; "
                        f"related.md: {line}")
         found.append(f"{run_dir.name}: {related.read_text(encoding='utf-8').strip()[:160]}")
+    return ok("; ".join(found)) if found else bad("нет папок разбора")
+
+
+def check_related_kept_apart(ctx: Context) -> dict[str, Any]:
+    """Скрипт попросил сравнить похожие проблемы, модель сама записала ``related.md`` и не
+    объединила проблемы с одним классом причины у разных объектов (E12)."""
+    project = canonical(ctx.project)
+    written = {target for call in ctx.trace.calls if call.name in WRITE_TOOLS
+               for target in ctx.tool_targets(project, path_of(call))}
+    found: list[str] = []
+    for run_dir in ctx.run_dirs():
+        related = run_dir / "related.md"
+        if not (run_dir / "relate_task.md").is_file():
+            return bad(f"{run_dir.name}: скрипт не просил сравнить похожие проблемы")
+        if not related.is_file() or canonical(related.resolve()) not in written:
+            return bad(f"{run_dir.name}: модель не записывала related.md")
+        line = related.read_text(encoding="utf-8").strip()[:200]
+        state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+        report = run_dir / "report.md"
+        text = report.read_text(encoding="utf-8") if report.is_file() else ""
+        if (state.get("related") or {}).get("confirmed_groups") or "**Проблема 1 и 2**" in text:
+            return bad(f"{run_dir.name}: разные проблемы объединены; related.md: {line}")
+        found.append(f"{run_dir.name}: {line[:160]}")
     return ok("; ".join(found)) if found else bad("нет папок разбора")
 
 

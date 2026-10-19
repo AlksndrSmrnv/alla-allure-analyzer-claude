@@ -199,6 +199,10 @@ python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['clus
   `background_log_errors`, `same_conflict_two_causes`, `go_log_formats`,
   `log_level_controls` ×3), `step` (`connect_services`, `known_issue_symptoms`),
   `resource` (`resources_split` ×3, `ui_and_network`).
+- `unique_conflict_two_objects` (добавлен позже, развело `step`) — обратный к
+  `step_split_one_cause` случай: почти тот же текст ошибки и один класс причины (отказ
+  проверки уникальности), но разные объекты — ссылка и папка. Его раздельным держит шаг
+  `relate`, а не кластеризация (стенд Qwen, E12).
 
 ## Сигнатуры
 

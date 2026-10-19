@@ -289,7 +289,7 @@ def _example_groups() -> list[CandidateGroup]:
     body = _read(REFERENCES / "related-format.md").split("<!-- example-data -->", 1)[1]
     headers = re.findall(r"^--- Группа \d+: проблемы ([\d, ]+) ---$", body.split("\n```\n", 1)[0],
                          re.MULTILINE)
-    assert len(headers) == 2
+    assert len(headers) == 3
     return [CandidateGroup([f"{int(n):02d}" for n in header.split(",")], []) for header in headers]
 
 
