@@ -1248,6 +1248,13 @@ def test_log_gate_is_off_with_zero_threshold_or_zero_log_weight(
      {"pricing-#.internal"}, set()),
     ("java.net.UnknownHostException: geo.internal: Name or service not known", set(), set()),
     ("getaddrinfo ENOTFOUND api.stage.local", set(), set()),
+    ('Get "https://esign-api.qa.svc/v1/health": dial tcp: lookup esign-api.qa.svc on '
+     "10.96.0.10:53: server misbehaving", set(), set()),
+    ("requests.exceptions.ConnectionError: HTTPConnectionPool(host='tariffs-api', port=8000): "
+     "Max retries exceeded with url: /v1/config (Caused by NewConnectionError('…: Failed to "
+     "establish a new connection: [Errno 111] Connection refused'))", {"tariffs-api:8000"}, set()),
+    ("HTTPSConnectionPool(host='Pay-2.internal', port=443): Read timed out.",
+     {"pay-#.internal:443"}, set()),
     ("Element not found {#checkout-button}\nExpected: visible", set(), {"#checkout-button"}),
     ("Element not found {#Login}", set(), {"#Login"}),
     ("Element should be visible {.cart li:nth-child(2)}", set(), {".cart li:nth-child(#)"}),
@@ -1264,6 +1271,9 @@ def test_log_gate_is_off_with_zero_threshold_or_zero_log_weight(
      {"#app .ready"}),
     ("Waiting for selector `[data-test=\"submit\"]` failed", set(), {'[data-test="submit"]'}),
     ("waiting for selector '[data-test=\"cancel\"]' failed", set(), {'[data-test="cancel"]'}),
+    ('element ("[data-qa=\"plan-card\"]") still not displayed after 10000ms', set(),
+     {'[data-qa="plan-card"]'}),
+    ("element ('#roaming-toggle') still not existing after 5000ms", set(), {"#roaming-toggle"}),
     # Не ресурсы: имена классов и файлов, тестовые данные в кавычках.
     ("java.lang.IllegalStateException at ru.company.orders.OrderService (OrderService.java:40)",
      set(), set()),
