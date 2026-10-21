@@ -428,17 +428,16 @@ def _log_anchor(log: str) -> _LogAnchor:
                     (errors if failed else plain).append(line)
             continue
         for event in iter_events(body):
-            # Строки события до строки уровня включительно: у JUL причина — во второй
-            # строке («ALERT: database unavailable»), под заголовком «дата класс метод».
-            # У записи другого уровня ошибка — строки с полями ошибки ответа: «error» внутри
+            # Строки заголовка записи: у JUL причина — во второй строке («ALERT: database
+            # unavailable»), под «дата класс метод»; у .NET — сообщение под «fail: Category[1]».
+            # Ошибка у записи любого уровня — и строки с полями ошибки ответа: «error» внутри
             # имени поля _ERROR_HINT_RE не видит, а двух латинских слов в них может не быть
-            # (``"errorCode": 6`` тела ответа, ``"errorMessage": "счет закрыт"``).
+            # (``"errorCode": 6`` тела ответа, ``"errorMessage": "счет закрыт"``); у
+            # ERROR-записи тело ответа бывает строкой ниже заголовка (ревью Codex).
             heading: set[str] = set()
-            fields: set[str] = set()
             if event.level in ERROR_LEVELS:
                 heading = set(_error_lines("\n".join(event.lines[:event.level_line + 1])))
-            else:
-                fields = {line for line in _error_lines(event.text) if has_error_fields(line)}
+            fields = {line for line in _error_lines(event.text) if has_error_fields(line)}
             for line in _error_lines(event.text):
                 if _CAUSE_HINT_RE.search(line):
                     causes.append(line)

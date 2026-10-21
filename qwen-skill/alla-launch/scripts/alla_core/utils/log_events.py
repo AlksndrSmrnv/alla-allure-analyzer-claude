@@ -143,7 +143,9 @@ class LogEvent:
     kind: str  # level | traceback | exception | plain
     lines: list[str] = field(default_factory=list)
     closed: bool = False  # Traceback дошёл до строки исключения
-    level_line: int = 0  # индекс строки уровня в ``lines``: у JUL это вторая строка
+    # Последняя строка заголовка записи в ``lines``: у JUL уровень во второй строке, у .NET
+    # SimpleConsole сообщение — первая строка под ``fail: Category[1]``.
+    level_line: int = 0
     # Показ первой строки, если он не дословный: JSON-запись со стеком — заголовок и
     # строки многострочных полей. Пометка строк у них — строка записи.
     rendered: list[str] = field(default_factory=list)
@@ -413,6 +415,8 @@ def iter_events(text: str) -> Iterator[LogEvent]:
             current.level = jul.group("level")
             current.level_line = 1
             continue
+        if len(current.lines) == 1 and _DOTNET_RE.match(current.lines[0]):
+            current.level_line = 1  # .NET: заголовок — категория, сообщение строкой ниже
         current.lines.append(line)
         if current.kind == "traceback" and line.strip() and not line[0].isspace():
             current.closed = True  # строка исключения завершает Traceback

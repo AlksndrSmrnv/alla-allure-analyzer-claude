@@ -76,6 +76,23 @@ def test_process_id_in_the_record_header_does_not_change_the_signature(line: str
                                .replace("deadlock", "lock timeout") + "\n")
 
 
+@pytest.mark.parametrize("log", [
+    # .NET: сообщение — строка под заголовком «fail: Category[0]».
+    "fail: Billing.Service[0]\n      Response {body}\n",
+    "fail: Billing.Service[0]\n      Rejected: {reason}\n",
+    # Тело ответа строкой ниже ERROR-записи.
+    "2026-10-04 11:00:00,731 ERROR [main] Billing - transfer rejected\nResponse {body}\n",
+])
+def test_error_record_body_names_the_error(log: str) -> None:
+    """Разные ошибки в теле записи — разные сигнатуры (ревью Codex)."""
+    closed = log.format(body='{"errorCode":6,"errorMessage":"account closed"}',
+                        reason="account is closed")
+    balance = log.format(body='{"errorCode":12,"errorMessage":"insufficient balance"}',
+                         reason="insufficient balance on the account")
+    assert _signature(ASSERT_500, ASSERT_TRACE, closed) != _signature(
+        ASSERT_500, ASSERT_TRACE, balance)
+
+
 @pytest.mark.parametrize("level", ["ERROR", "FINE", "INFO", "WARN", "CRIT", "ERR"])
 def test_bracketed_number_after_the_level_is_not_a_process_id(level: str) -> None:
     log = (f"2026-10-04 11:00:00,731 {level} [{{n}}] Billing - "
