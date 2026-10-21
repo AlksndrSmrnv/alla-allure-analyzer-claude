@@ -16,7 +16,7 @@ from alla_core.services.clustering_service import (
     _extract_assertion_actual,
     _strip_correlation_only_http_sections,
 )
-from alla_core.utils.message_resources import message_resources
+from alla_core.utils.message_resources import message_resources, without_resolved_hosts
 from alla_core.utils.text_normalization import normalize_text, normalize_text_for_llm
 
 
@@ -1300,6 +1300,41 @@ def _calls(*messages: str, step: str = "Вызвать сервис", logs: tupl
 
 def _connect(host: str) -> str:
     return f"java.net.ConnectException: Failed to connect to {host}/10.2.0.7:8080"
+
+
+@pytest.mark.parametrize(("message", "masked"), [
+    ("Error: getaddrinfo EAI_AGAIN hr-docs.qa.svc.cluster.local",
+     "Error: getaddrinfo EAI_AGAIN host"),
+    ('Get "https://esign-api.qa.svc/v1/health": dial tcp: lookup esign-api.qa.svc on '
+     "10.96.0.10:53: no such host",
+     'Get "https://host/v1/health": dial tcp: lookup host on 10.96.0.10:53: no such host'),
+    ("java.net.UnknownHostException: geo.internal: Name or service not known",
+     "java.net.UnknownHostException: host: Name or service not known"),
+    # Не сбой DNS — хост остаётся: разные сервисы отказали по-разному.
+    ("java.net.ConnectException: Failed to connect to inventory.svc/10.2.0.7:8080",
+     "java.net.ConnectException: Failed to connect to inventory.svc/10.2.0.7:8080"),
+])
+def test_without_resolved_hosts(message: str, masked: str) -> None:
+    assert without_resolved_hosts(message) == masked
+
+
+def test_dns_failures_of_different_hosts_are_one_problem() -> None:
+    """Короткое сообщение резолвера: имя хоста — половина слов, но сбой один."""
+    failures = _calls("Error: getaddrinfo EAI_AGAIN hr-docs.qa.svc.cluster.local",
+                      "Error: getaddrinfo EAI_AGAIN vacation-api.qa.svc.cluster.local")
+    assert _groups(failures) == [[1, 2]]
+
+
+def test_dns_failure_of_another_host_is_still_a_different_example() -> None:
+    """Похожесть сравнивает сбой DNS без хостов, а пример «другой» — с хостами."""
+    failures = _calls("Error: getaddrinfo EAI_AGAIN hr-docs.qa.svc.cluster.local",
+                      "Error: getaddrinfo EAI_AGAIN hr-docs.qa.svc.cluster.local",
+                      "Error: getaddrinfo EAI_AGAIN vacation-api.qa.svc.cluster.local")
+    report = ClusteringService(ClusteringConfig(log_similarity_weight=0.15)
+                               ).cluster_failures(launch_id=1, failures=failures)
+    cluster, = report.clusters
+    assert [(e.role, e.test_result_id) for e in cluster.examples] == [
+        ("typical", 1), ("different", 3)]
 
 
 def test_resource_gate_splits_different_hosts_of_one_message() -> None:

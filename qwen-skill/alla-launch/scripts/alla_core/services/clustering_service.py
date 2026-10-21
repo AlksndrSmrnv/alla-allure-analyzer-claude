@@ -67,7 +67,11 @@ from alla_core.models.clustering import (
 from alla_core.models.testops import FailedTestSummary
 from alla_core.utils.log_events import SOURCE_MARK_RE, error_field_codes, strip_source_marks
 from alla_core.utils.log_focus import strip_log_selection_metadata
-from alla_core.utils.message_resources import MessageResources, message_resources
+from alla_core.utils.message_resources import (
+    MessageResources,
+    message_resources,
+    without_resolved_hosts,
+)
 from alla_core.utils.step_paths import normalize_step_path
 from alla_core.utils.text_normalization import (
     normalize_text,
@@ -193,12 +197,18 @@ def _strip_correlation_only_http_sections(log_snippet: str) -> str:
     return "\n\n".join(kept_parts)
 
 
-def _build_message_document(failure: FailedTestSummary) -> str:
-    """Собрать message-документ (message + category)."""
+def _build_message_document(failure: FailedTestSummary, *, for_similarity: bool = False) -> str:
+    """Собрать message-документ (message + category).
+
+    Для похожести (``for_similarity``) у сбоя DNS — без имён хостов: резолвер отказывает всем
+    хостам сразу. Примеры кластера сравнивают сообщения с хостами — другой хост остаётся
+    отличием.
+    """
     parts: list[str] = []
 
     if failure.status_message:
-        parts.append(failure.status_message)
+        parts.append(without_resolved_hosts(failure.status_message) if for_similarity
+                     else failure.status_message)
 
     if failure.category:
         parts.append(failure.category)
@@ -613,7 +623,8 @@ class ClusteringService:
         elif len(has_text_indices) == 1:
             cluster_groups[0] = [has_text_indices[0]]
         else:
-            message_docs = [message_documents[i] for i in has_text_indices]
+            message_docs = [_build_message_document(failures[i], for_similarity=True)
+                            for i in has_text_indices]
             trace_docs = [trace_documents[i] for i in has_text_indices]
             log_docs = [log_documents[i] for i in has_text_indices]
             step_docs = [step_documents[i] for i in has_text_indices]
@@ -1222,7 +1233,7 @@ def select_examples(
     """До трёх примеров кластера, детерминированно; ничья — меньший id теста.
 
     * ``typical`` — медоид: минимальная сумма расстояний до остальных участников;
-    * ``different`` — самый далёкий от типичного, если его сообщение, шаг или лог
+    * ``different`` — самый далёкий от типичного среди тех, чьё сообщение, шаг или лог
       отличаются после нормализации (логи — когда есть у обоих: нет лога — не отличие);
     * ``informative`` — больше всего событий-ошибок в логе среди остальных, если его
       лог отличается от логов уже выбранных.
@@ -1249,12 +1260,13 @@ def select_examples(
         return (messages[a] != messages[b] or steps[a] != steps[b]
                 or (both_logs and logs[a] != logs[b]))
 
-    rest = [i for i in indices if i != typical]
+    # Самый далёкий среди отличающихся: по расстоянию отличие бывает не видно (сбой DNS
+    # сравнивается без хостов), а другой хост — всё равно другой пример.
+    rest = [i for i in indices if i != typical and differs(i, typical)]
     if rest:
         farthest = min(rest, key=lambda i: (-distance(typical, i), test_id(i)))
-        if differs(farthest, typical):
-            chosen.append(farthest)
-            examples.append(ClusterExample(role="different", test_result_id=test_id(farthest)))
+        chosen.append(farthest)
+        examples.append(ClusterExample(role="different", test_result_id=test_id(farthest)))
     # Повторы уже выбранных логов исключаются до выбора: иначе дубликат с наибольшим числом
     # ошибок закрывал бы следующий, действительно другой лог.
     others = [i for i in indices if i not in chosen and _error_events(failures[i]) > 0

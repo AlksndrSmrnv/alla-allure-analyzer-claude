@@ -18,8 +18,10 @@
   сервисы; в TF-IDF сообщения четырёхзначные порты сливаются в ``<NUM>``). Регистр имени
   хоста не важен (DNS).
 * Ошибка разрешения имени (``UnknownHostException``, ``Could not resolve host``,
-  ``ENOTFOUND``, Go ``dial tcp: lookup h on …: server misbehaving``…) хостов не даёт: отказывает обычно общий резолвер, а не сервис хоста, и
-  сбой DNS бьёт по всем хостам сразу.
+  ``ENOTFOUND``, Go ``dial tcp: lookup h on …: server misbehaving``…) хостов не даёт:
+  отказывает обычно общий резолвер, а не сервис хоста, и сбой DNS бьёт по всем хостам
+  сразу. По той же причине кластеризация сравнивает такие сообщения без имён хостов
+  (:func:`without_resolved_hosts`).
 * Локатор — Selenide ``Element not found {…}``, Selenium ``Unable to locate element: {…}`` и
   ``By.xxx: …``, Playwright ``waiting for locator(…)``/``getByXxx(…)``, Cypress
   ``Expected to find element: `…` ``, Puppeteer ``waiting for selector "…"``, WebdriverIO
@@ -59,6 +61,14 @@ _LOCATOR_RES = tuple(re.compile(pattern, re.MULTILINE) for pattern in (
     r"(?i:waiting for selector) (?P<quote>[`\"'])(?P<loc>.+?)(?P=quote)",
     r"\belement \((?P<quote>[\"'])(?P<loc>.+?)(?P=quote)\) still not \w+",
 ))
+# Имя, которое не разрешилось: в сообщении о сбое DNS сравнению текстов не мешает.
+_RESOLVED_HOST_RES = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
+    r"\b(?:ENOTFOUND|EAI_AGAIN) (?P<host>[^\s:'\"]+)",
+    r"\blookup (?P<host>\S+) on\b",
+    r"UnknownHostException: (?P<host>[^\s:]+)",
+    r"Could not resolve host: (?P<host>[^\s:]+)",
+    r"\bhttps?://(?P<host>[^/\s:\"']+)",
+))
 _IP_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 _DIGITS_RE = re.compile(r"\d+")
 
@@ -97,3 +107,18 @@ def message_resources(message: str | None) -> MessageResources:
         for pattern in _LOCATOR_RES for match in pattern.finditer(message)
     }
     return MessageResources(frozenset(hosts), frozenset(locators))
+
+
+def without_resolved_hosts(message: str) -> str:
+    """Сообщение о сбое DNS без имён хостов (``host``); другое сообщение — как есть.
+
+    Сбой резолвера бьёт по всем хостам сразу, а в коротком сообщении
+    (``getaddrinfo EAI_AGAIN payroll.qa.svc.cluster.local``) имя хоста — половина слов, и
+    похожесть одной проблемы падала ниже порога.
+    """
+    if not _NAME_RESOLUTION_RE.search(message):
+        return message
+    for pattern in _RESOLVED_HOST_RES:
+        message = pattern.sub(lambda match: match.group(0).replace(match.group("host"), "host"),
+                              message)
+    return message
