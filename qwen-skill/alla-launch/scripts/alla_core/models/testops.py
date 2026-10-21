@@ -153,8 +153,9 @@ class PassedAfterRetry(BaseModel):
 class RetryInfo(BaseModel):
     """Связь попыток с финальными результатами — только числа и имя поля связи.
 
-    ``linked_by`` — поле, по которому связаны попытки (``historyId``, ``historyKey``,
-    ``testCaseId+parameters+environment``), ``None`` — связать было не по чему.
+    ``linked_by`` — поля, по которым связаны попытки, через запятую (``historyId``,
+    ``historyKey``, ``testCaseId+parameters+environment``; у каждой попытки — первое, что у
+    неё есть), ``None`` — связать было не по чему.
     Скрытые попытки делятся на ``linked`` и несвязанные: ``no_key`` (нет значения
     ключа), ``no_final`` (нет финального результата с тем же ключом), ``ambiguous``
     (финальных результатов с этим ключом несколько). ``errors_total`` — неудачные

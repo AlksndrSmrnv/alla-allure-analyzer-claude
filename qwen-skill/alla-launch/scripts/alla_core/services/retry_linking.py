@@ -4,7 +4,8 @@
 выполнения» (``historyId``): тест + параметры + окружение; при смене параметров или
 окружения повтор становится отдельным результатом. Настоящих ответов с повторами нет,
 поэтому ключ выбирается по тому, какие поля есть в ответе (модели принимают
-неизвестные поля, ``extra="allow"``):
+неизвестные поля, ``extra="allow"``). Ключ — свой у каждой попытки, первый, значение
+которого у неё есть (часть результатов приходит без ``historyId``):
 
 1. ``historyId``, затем ``historyKey``;
 2. ``testCaseId`` + нормализованные ``parameters`` + ``environment`` — только если есть
@@ -27,6 +28,7 @@ from alla_core.models.testops import RetryInfo, TestResultResponse
 
 HISTORY_FIELDS = ("historyId", "historyKey")
 CONTEXT_KEY = "testCaseId+parameters+environment"
+LINK_FIELDS = (*HISTORY_FIELDS, CONTEXT_KEY)
 _CONTEXT_FIELDS = ("parameters", "environment")
 
 
@@ -56,26 +58,27 @@ class RetryLinks:
 def link_attempts(results: list[TestResultResponse]) -> RetryLinks:
     """Связать скрытые попытки с финальными (не ``hidden``) результатами по общему ключу.
 
-    Ключ выбирается один на прогон (:func:`link_field`). Если финальных результатов с
-    одним ключом несколько, их попытки не связываются: угадывать не будем.
+    Ключ — свой у каждой попытки (:func:`attempt_key`): первое поле, значение которого у неё
+    есть; финальный результат ищется по тому же полю. На другое поле, если по первому
+    финального нет, попытка не переходит: другой ``historyId`` — другое выполнение. Если
+    финальных результатов с одним ключом несколько, их попытки не связываются: угадывать
+    не будем.
     """
     hidden = [result for result in results if result.hidden]
     links = RetryLinks(linked_by=link_field(hidden), hidden_total=len(hidden))
     if not hidden:
         return links
-    if links.linked_by is None:
-        links.no_key = len(hidden)
-        return links
 
-    finals: dict[str, list[int]] = defaultdict(list)
+    finals: dict[tuple[str, str], list[int]] = defaultdict(list)
     for result in results:
         if not result.hidden:
-            key = link_key(result, links.linked_by)
-            if key is not None:
-                finals[key].append(result.id)
+            for name in LINK_FIELDS:
+                value = link_key(result, name)
+                if value is not None:
+                    finals[(name, value)].append(result.id)
     grouped: dict[int, list[TestResultResponse]] = defaultdict(list)
     for attempt in hidden:
-        key = link_key(attempt, links.linked_by)
+        key = attempt_key(attempt)
         owners = finals.get(key, []) if key is not None else []
         if key is None:
             links.no_key += 1
@@ -92,15 +95,21 @@ def link_attempts(results: list[TestResultResponse]) -> RetryLinks:
     return links
 
 
-def link_field(hidden: list[TestResultResponse]) -> str | None:
-    """Поле связи по скрытым попыткам: первое из :data:`HISTORY_FIELDS`, у которого есть
-    значение хотя бы у одной попытки, иначе :data:`CONTEXT_KEY`, иначе ``None``."""
-    for name in HISTORY_FIELDS:
-        if any(_text(_extra(result, name)) for result in hidden):
-            return name
-    if any(_context_key(result) is not None for result in hidden):
-        return CONTEXT_KEY
+def attempt_key(result: TestResultResponse) -> tuple[str, str] | None:
+    """Ключ связи результата — ``(поле, значение)`` первого из :data:`LINK_FIELDS`, значение
+    которого у него есть; ``None`` — ни одного."""
+    for name in LINK_FIELDS:
+        value = link_key(result, name)
+        if value is not None:
+            return name, value
     return None
+
+
+def link_field(hidden: list[TestResultResponse]) -> str | None:
+    """Поля связи скрытых попыток по порядку :data:`LINK_FIELDS` через запятую
+    (``historyId``, ``historyId, historyKey``); ``None`` — ключа нет ни у одной."""
+    used = {key[0] for result in hidden if (key := attempt_key(result)) is not None}
+    return ", ".join(name for name in LINK_FIELDS if name in used) or None
 
 
 def link_key(result: TestResultResponse, linked_by: str) -> str | None:

@@ -62,6 +62,33 @@ def test_history_key_is_used_when_history_id_is_absent() -> None:
     assert _linked(links) == {2: [1]}
 
 
+def test_each_attempt_links_by_its_own_first_key() -> None:
+    """Часть результатов без historyId: попытка с одним historyKey или контекстом всё равно
+    находит свой финальный (эталон retries_more)."""
+    results = [
+        _result(1, hidden=True, historyId="h-a"),
+        _result(2, historyId="h-a", historyKey="k-a"),
+        _result(3, hidden=True, historyKey="k-b"),
+        _result(4, historyId="h-b", historyKey="k-b"),
+        _result(5, hidden=True, **_context(506)),
+        _result(6, historyId="h-c", **_context(506)),
+    ]
+
+    links = link_attempts(results)
+
+    assert _linked(links) == {2: [1], 4: [3], 6: [5]}
+    assert links.linked_by == f"historyId, historyKey, {CONTEXT_KEY}"
+    assert (links.linked, links.no_key, links.no_final) == (3, 0, 0)
+
+
+def test_attempt_does_not_fall_back_to_another_key() -> None:
+    """Другой historyId — другое выполнение, даже если historyKey совпал."""
+    links = link_attempts([_result(1, hidden=True, historyId="h-old", historyKey="k"),
+                           _result(2, historyId="h-new", historyKey="k")])
+
+    assert (_linked(links), links.no_final) == ({}, 1)
+
+
 def test_parametrized_test_with_one_test_case_is_not_mixed() -> None:
     results = [
         _result(1, hidden=True, **_context(504, "chrome")),
