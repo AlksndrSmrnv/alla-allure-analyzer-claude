@@ -113,7 +113,11 @@ paths:
 - Текстовый лог делится на события (`utils/log_events.py`): запись начинается строкой со
   временем (ISO, `dd.MM.yyyy`, `yyyy/MM/dd`, `HH:mm:ss.SSS`, syslog, JUL, в `[]`), logfmt
   `time=`, заголовком klog/glog `E1003 10:00:00.123456 12 file.go:42]` (уровень — первая
-  буква: `I`/`W`/`E`/`F` → INFO/WARNING/ERROR/FATAL), Go `panic: …` и `fatal error: …` с
+  буква: `I`/`W`/`E`/`F` → INFO/WARNING/ERROR/FATAL), Ruby `Logger` (Rails)
+  `E, [2026-10-04T11:00:00.126776 #52] ERROR -- : …` (уровень — слово после `]`), .NET
+  SimpleConsole `fail: Category[1]` строкой (`fail` → ERROR, `crit` → CRITICAL; без суффикса
+  `[id]` и с текстом в той же строке — не запись; сообщение и исключение ниже с отступом —
+  продолжение), Go `panic: …` и `fatal error: …` с
   колонки 0 (уровни `PANIC`, `FATAL`; `[signal …]`, дамп goroutine, кадры
   `\tfile.go:42 +0x…`, пустые строки и вложенный `\tpanic:` — продолжение до следующей
   записи), Java `Exception in thread "…" класс` (событие-исключение без времени), Python

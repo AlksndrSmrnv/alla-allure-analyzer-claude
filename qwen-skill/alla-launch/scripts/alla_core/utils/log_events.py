@@ -12,6 +12,10 @@ INFO-запись со своим временем не поглощается �
   JUL ``Oct 03, 2026 10:00:00 AM``; logfmt ``time=``/``ts=``;
 * заголовок klog/glog ``E1003 10:00:00.123456 12 file.go:42]`` — уровень в первой
   букве (``I``/``W``/``E``/``F``);
+* Ruby ``Logger`` ``E, [2026-10-04T11:00:00.126776 #52] ERROR -- : …`` — уровень словом
+  после ``]``;
+* .NET SimpleConsole ``fail: Category[1]`` строкой (``fail`` — ERROR, ``crit`` — CRITICAL,
+  ``info``, ``warn``…), сообщение и исключение идут ниже с отступом — продолжение;
 * Go ``panic: …`` и ``fatal error: …`` с начала строки (уровни ``PANIC`` и
   ``FATAL``): дамп goroutine, кадры и пустые строки — продолжение до следующей
   записи;
@@ -86,6 +90,13 @@ _LOGFMT_PAIR_RE = re.compile(r'(?:^|\s)(?P<key>[\w.-]+)=(?P<value>"(?:[^"\\]|\\.
 _LOGFMT_LEVEL_KEYS = frozenset({"level", "lvl", "severity"})
 _KLOG_RE = re.compile(r"^(?P<level>[IWEF])\d{4} \d{2}:\d{2}:\d{2}\.\d{6}\s+\d+ [^\s\]]+:\d+\] ")
 _KLOG_LEVELS = {"I": "INFO", "W": "WARNING", "E": "ERROR", "F": "FATAL"}
+# Ruby ``Logger`` (Rails): ``E, [2026-10-04T11:00:00.126776 #52] ERROR -- : …``.
+_RUBY_RE = re.compile(r"^[DIWEFAU], \[\d{4}-\d{2}-\d{2}T[\d:.]+ #\d+\]\s+(?P<level>[A-Z]+) -- ")
+# .NET ``Microsoft.Extensions.Logging`` SimpleConsole: ``fail: Category[EventId]`` строкой,
+# сообщение и исключение — строками ниже с отступом.
+_DOTNET_RE = re.compile(r"^(?P<level>trce|dbug|info|warn|fail|crit): [\w.`+<>]+\[\d+\]\s*$")
+_DOTNET_LEVELS = {"trce": "TRACE", "dbug": "DEBUG", "info": "INFO", "warn": "WARN",
+                  "fail": "ERROR", "crit": "CRITICAL"}
 _GO_CRASH_RE = re.compile(r"^(?P<crash>panic|fatal error): \S")
 _GO_CRASH_LEVELS = {"panic": "PANIC", "fatal error": "FATAL"}
 _UNCAUGHT_RE = re.compile(r'^Exception in thread "[^"]*" [\w.$]+')
@@ -321,6 +332,13 @@ def _start(line: str) -> tuple[str | None, str | None]:
     klog = _KLOG_RE.match(line)
     if klog:
         return "level", _KLOG_LEVELS[klog.group("level")]
+    ruby = _RUBY_RE.match(line)
+    if ruby:
+        level = ruby.group("level")
+        return "level", level if level in _LEVELS else None
+    dotnet = _DOTNET_RE.match(line)
+    if dotnet:
+        return "level", _DOTNET_LEVELS[dotnet.group("level")]
     crash = _GO_CRASH_RE.match(line)
     if crash:
         return "level", _GO_CRASH_LEVELS[crash.group("crash")]

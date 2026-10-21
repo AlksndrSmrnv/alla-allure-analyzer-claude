@@ -51,6 +51,8 @@ FORMAT_LOGS = {
     "ecs-json": (corpus_dev.ECS_JSON_LOG, "exceeds captured amount 1200.00"),
     "json-template": (corpus_dev.JSON_TEMPLATE_LOG,
                       "AccessDeniedException: /mnt/exports/invoices-2026-10.xml"),
+    "ruby-logger": (corpus_dev.RUBY_LOGGER_LOG, "warehouse WH-9 has no slot for zone NORTH"),
+    "dotnet-console": (corpus_dev.DOTNET_CONSOLE_LOG, "Tariff T-14 has no price for region 77"),
 }
 
 
@@ -109,6 +111,12 @@ def test_neighbouring_info_is_not_swallowed_by_the_stack() -> None:
     '{"status": 500, "error": "Internal Server Error", "message": "no level field"}',
     '{"severity": "NOTICE", "message": "error rate dropped"}',
     '[{"level": "error", "msg": "array, not a record"}]',
+    "I, [2026-10-03T10:58:00.100123 #41]  INFO -- : Rescued error in retry loop",
+    "W, [2026-10-03T10:58:00.100123 #41]  WARN -- : error budget low",
+    "E, garbage without a Ruby Logger header",
+    "info: Billing.Jobs.ReportJob[0] error report sent",
+    "warn: Billing.Jobs.ReportJob[0]\n      error rate above threshold",
+    "fail: no category, just text",
 ])
 def test_error_words_outside_the_level_position_are_not_errors(line: str) -> None:
     assert not list(error_events(line + "\n"))

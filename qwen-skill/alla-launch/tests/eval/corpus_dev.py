@@ -1479,6 +1479,25 @@ JSON_TEMPLATE_LOG = _ndjson(
                        "(UnixException.java:90)\n"
                        "\tat com.example.invoices.ExportJob.write(ExportJob.java:52)\n"}},
 )
+RUBY_LOGGER_LOG = (
+    "I, [2026-10-03T10:58:00.100123 #41]  INFO -- : [req-9] Started POST \"/api/orders\"\n"
+    "E, [2026-10-03T10:58:00.180456 #41] ERROR -- : [req-9] Orders::CreateJob failed: "
+    "warehouse WH-9 has no slot for zone NORTH\n"
+    "app/jobs/orders/create_job.rb:31:in `perform'\n"
+    "I, [2026-10-03T10:58:00.190789 #41]  INFO -- : [req-9] Completed 500 Internal Server "
+    "Error in 90ms\n"
+)
+DOTNET_CONSOLE_LOG = (
+    "info: Microsoft.AspNetCore.Hosting.Diagnostics[1]\n"
+    "      Request starting HTTP/1.1 POST http://billing-api/api/v1/invoices - 180\n"
+    "fail: Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware[1]\n"
+    "      An unhandled exception has occurred while executing the request.\n"
+    "      Billing.TariffException: Tariff T-14 has no price for region 77\n"
+    "         at Billing.Tariffs.TariffService.Price(Int32 region) in "
+    "/src/Billing/Tariffs/TariffService.cs:line 52\n"
+    "info: Microsoft.AspNetCore.Hosting.Diagnostics[2]\n"
+    "      Request finished HTTP/1.1 POST http://billing-api/api/v1/invoices - 500 - 41.5530ms\n"
+)
 _MDC = "[traceId=6f1c2a, spanId=91be, userId=5512, tenant=retail, requestId=r-77]"
 LONG_MDC_LOG = (
     f"2026-10-03 10:55:00.100 [http-nio-8080-exec-9] {_MDC} INFO  "
