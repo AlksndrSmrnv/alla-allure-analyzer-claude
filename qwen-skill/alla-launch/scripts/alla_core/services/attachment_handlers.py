@@ -259,9 +259,7 @@ class ErrorBlocksHandler:
             return None
         if ctx.decoded_text is None:
             return None
-        # Журнал массивом (ошибки страницы браузера, выгрузка записей) — записи строками.
-        text = json_array_lines(ctx.decoded_text) or ctx.decoded_text
-        events = list(error_events(text))
+        events = list(error_events(_log_text(ctx.decoded_text)))
         foreign = 0
         if ctx.operation_ids is not None:
             ids = ctx.operation_ids
@@ -305,7 +303,7 @@ class HttpSignalsHandler:
             # Общий лог: HTTP-сигналы только из записей своей операции (любого уровня),
             # иначе «Корреляция» и поля ошибки пришли бы из чужого запроса.
             ids = ctx.operation_ids
-            text = "\n".join(event.text for event in iter_events(ctx.decoded_text or "")
+            text = "\n".join(event.text for event in iter_events(_log_text(ctx.decoded_text or ""))
                              if belongs_to_operation(event.text, ids, ctx.operation_keys))
             http_info, correlation_hint = _extract_http_artifacts(
                 text.encode("utf-8"), "text", text=text)
@@ -355,7 +353,7 @@ def log_operation_ids(ctx: AttachmentContext) -> frozenset[tuple[str, str]] | No
     """id операций в логе-вложении; ``None`` — вложение не лог (запрос, ответ, документ).
 
     Лог — журнал структурированных записей или текст, где распознаётся хоть одна запись
-    (:func:`is_log_text`). Пустое множество — лог без id операций: сверить его не с чем,
+    (:func:`is_log_text`; журнал JSON-массивом — по записям, :func:`_log_text`). Пустое множество — лог без id операций: сверить его не с чем,
     он остаётся как есть.
     """
     if ctx.detected_type == "binary" or ctx.decoded_text is None:
@@ -364,9 +362,17 @@ def log_operation_ids(ctx: AttachmentContext) -> frozenset[tuple[str, str]] | No
         items = _find_journal_array(ctx.content, ctx.decoded_text)
         if items is not None:
             return operation_ids(ctx.decoded_text, ctx.operation_keys)
-    if not is_log_text(ctx.decoded_text):
+    if not is_log_text(_log_text(ctx.decoded_text)):
         return None
     return operation_ids(ctx.decoded_text, ctx.operation_keys)
+
+
+def _log_text(text: str) -> str:
+    """Текст для разбора на события: журнал массивом (ошибки страницы браузера, выгрузка
+    записей) — записи строками (:func:`json_array_lines`), иначе как есть. Один вид и для
+    событий-ошибок, и для решения «лог ли это» (отбор по операции): иначе массив с id
+    чужих операций отдавал бы их ошибки без отбора (ревью Codex)."""
+    return json_array_lines(text) or text
 
 
 # ---------------------------------------------------------------------------

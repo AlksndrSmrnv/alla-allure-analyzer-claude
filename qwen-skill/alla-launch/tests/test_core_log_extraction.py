@@ -1,5 +1,6 @@
 """Тесты для LogExtractionService — извлечение ERROR-блоков из логов."""
 
+import json
 import logging
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -794,6 +795,23 @@ class TestOperationLog:
         summary, _ = await self._enrich(attachments)
         assert "недостаточно средств" in (summary.log_snippet or "")
         assert summary.operation_logs == []
+
+    @pytest.mark.asyncio
+    async def test_json_array_log_keeps_only_own_operation(self):
+        """Журнал массивом (выгрузка записей) — тоже лог: чужие ошибки отбираются (ревью Codex)."""
+        log = AttachmentMeta(id=1, name="records.json", type="application/json")
+        request = AttachmentMeta(id=2, name="Request", type="application/json")
+        records = json.dumps([
+            {"level": "ERROR", "operUID": "op-own-1", "message": "Order ORD-11 failed"},
+            {"level": "ERROR", "operUID": "op-other-2", "message": "Order ORD-90 failed"},
+        ]).encode()
+        summary, _ = await self._enrich([
+            (log, records), (request, b'{"headers": {"operUID": "op-own-1"}}')])
+
+        snippet = summary.log_snippet or ""
+        assert "ORD-11" in snippet and "ORD-90" not in snippet and "op-other" not in snippet
+        assert summary.operation_ids == ["operUID=op-own-1"]
+        assert summary.operation_logs == ["records.json"] and summary.foreign_log_events == 1
 
     @pytest.mark.asyncio
     async def test_own_id_from_the_message(self):
