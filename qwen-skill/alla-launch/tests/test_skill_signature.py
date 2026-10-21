@@ -76,8 +76,10 @@ def test_process_id_in_the_record_header_does_not_change_the_signature(line: str
                                .replace("deadlock", "lock timeout") + "\n")
 
 
-def test_bracketed_number_after_the_level_is_not_a_process_id() -> None:
-    log = "2026-10-04 11:00:00,731 ERROR [{n}] Billing - tariff rejected\n"
+@pytest.mark.parametrize("level", ["ERROR", "FINE", "INFO", "WARN", "CRIT", "ERR"])
+def test_bracketed_number_after_the_level_is_not_a_process_id(level: str) -> None:
+    log = (f"2026-10-04 11:00:00,731 {level} [{{n}}] Billing - "
+           'errorMessage="tariff rejected"\n')
     assert _signature(ASSERT_500, ASSERT_TRACE, log.format(n=12)) != _signature(
         ASSERT_500, ASSERT_TRACE, log.format(n=13))
 

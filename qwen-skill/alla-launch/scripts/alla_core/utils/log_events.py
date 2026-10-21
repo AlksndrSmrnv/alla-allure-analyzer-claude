@@ -69,7 +69,7 @@ ERROR_LEVELS = frozenset({
     "ERROR", "ERR", "FATAL", "SEVERE", "CRITICAL", "CRIT", "ALERT", "EMERG", "EMERGENCY",
     "PANIC", "DPANIC",  # logrus, zap, zerolog
 })
-_LEVELS = ERROR_LEVELS | frozenset({
+LEVELS = ERROR_LEVELS | frozenset({
     "WARN", "WARNING", "INFO", "DEBUG", "TRACE", "NOTICE", "FINE", "FINER", "FINEST", "CONFIG",
 })
 _LEVEL_SCAN_TOKENS = 6
@@ -251,7 +251,7 @@ def _level_after_timestamp(rest: str) -> str | None:
         word = token.strip(_TOKEN_STRIP).split("/", 1)[0]
         if not word:
             continue
-        if word.upper() in _LEVELS and (decorated or word.isupper()):
+        if word.upper() in LEVELS and (decorated or word.isupper()):
             return word.upper()
     return None
 
@@ -279,7 +279,7 @@ def _json_level(record: dict[str, Any]) -> tuple[bool, str | None]:
         key, value = "log.level", nested["level"]
     if isinstance(value, str):
         level = value.upper()
-        return True, level if level in _LEVELS else None
+        return True, level if level in LEVELS else None
     if key == "level" and isinstance(value, int) and not isinstance(value, bool):
         return True, _ZEROLOG_LEVELS.get(value)
     return True, None
@@ -359,7 +359,7 @@ def _start(line: str) -> tuple[str | None, str | None]:
     ruby = _RUBY_RE.match(line)
     if ruby:
         level = ruby.group("level")
-        return "level", level if level in _LEVELS else None
+        return "level", level if level in LEVELS else None
     dotnet = _DOTNET_RE.match(line)
     if dotnet:
         return "level", _DOTNET_LEVELS[dotnet.group("level")]
@@ -369,7 +369,7 @@ def _start(line: str) -> tuple[str | None, str | None]:
     if _UNCAUGHT_RE.match(line):
         return "exception", None
     python = _PYTHON_LEVEL_RE.match(line)
-    if python and python.group("level") in _LEVELS:
+    if python and python.group("level") in LEVELS:
         return "level", python.group("level")
     return None, None
 
@@ -406,7 +406,7 @@ def iter_events(text: str) -> Iterator[LogEvent]:
             continue
         assert current is not None
         jul = _JUL_LEVEL_RE.match(line)
-        if (jul and jul.group("level") in _LEVELS and current.kind == "level"
+        if (jul and jul.group("level") in LEVELS and current.kind == "level"
                 and current.level is None and len(current.lines) == 1
                 and _TIMESTAMP_RE.match(current.lines[0])):
             current.lines.append(line)  # JUL: «дата класс метод» + «SEVERE: …»
