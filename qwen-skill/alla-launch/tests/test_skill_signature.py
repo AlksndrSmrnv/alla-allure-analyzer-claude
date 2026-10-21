@@ -59,7 +59,7 @@ def _pool_log(time: str, thread: str, request: str, order: int) -> str:
 
 def test_signature_has_the_current_version() -> None:
     assert str(_signature(ASSERT_500, ASSERT_TRACE, "")).startswith(f"v{SIGNATURE_VERSION}:")
-    assert SIGNATURE_VERSION == 9
+    assert SIGNATURE_VERSION == 10
 
 
 def test_same_generic_assertion_with_different_log_errors_differs() -> None:
@@ -422,6 +422,15 @@ SYMPTOMS = [
          "E       socket.timeout: timed out\n\ntests/test_report.py:4: timeout"),
     ("", 'Traceback (most recent call last):\n  File "t.py", line 3, in test\n'
          "    sock.recv(1024)\nConnectionResetError: [Errno 104] Connection reset by peer"),
+    # Ошибка статуса HTTP-клиента — как «expected 200 but was 500» (same_symptom_log_causes).
+    ("httpx.HTTPStatusError: Server error '500 Internal Server Error' for url "
+     "'http://policy-api:8080/v1/policies'",
+     "    def test_issue(client):\n>       resp.raise_for_status()\n"
+     "E       httpx.HTTPStatusError: Server error '500 Internal Server Error' for url "
+     "'http://policy-api:8080/v1/policies'\n\ntests/test_policy.py:7: HTTPStatusError"),
+    ("", 'Traceback (most recent call last):\n  File "t.py", line 3, in test\n'
+         "    resp.raise_for_status()\nrequests.exceptions.HTTPError: 503 Server Error: "
+         "Service Unavailable for url: http://reports/api"),
 ]
 
 

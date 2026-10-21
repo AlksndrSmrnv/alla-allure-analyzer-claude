@@ -507,7 +507,7 @@
       "precision": 1.0,
       "recall": 1.0,
       "signature_log_clusters": 5,
-      "signature_log_unstable": 0,
+      "signature_log_unstable": 1,
       "signature_shared": 0,
       "signature_shared_wrong": 0,
       "tests": 16
@@ -1190,8 +1190,8 @@
       "recall": 1.0,
       "signature_log_clusters": 5,
       "signature_log_unstable": 2,
-      "signature_shared": 3,
-      "signature_shared_wrong": 3,
+      "signature_shared": 0,
+      "signature_shared_wrong": 0,
       "tests": 12
     },
     "selenide_pages": {

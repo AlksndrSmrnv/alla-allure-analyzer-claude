@@ -51,7 +51,7 @@ from alla_core.utils.text_normalization import (
 )
 
 # Префикс версии не даёт старому хэшу совпасть с новым при смене материала.
-SIGNATURE_VERSION = 9
+SIGNATURE_VERSION = 10
 
 # Признаки общего ассерта: ошибка проверки, которая не называет причину. Проверяются по
 # строкам сообщения и трейса (без кадров и префикса pytest «E »); Hamcrest — через строку.
@@ -73,13 +73,16 @@ GENERIC_ASSERTION_RE = re.compile(
 # называет лог сервиса, а не класс. Решает класс корневого исключения, а не текст; UI-ожидания
 # (Selenium ``TimeoutException``, «Timeout: 4 s.» Selenide) — не симптом: их различает
 # локатор. ``ConnectException`` называет хост — тоже не симптом. Голый ``TimeoutError`` —
-# Python; у Playwright JS то же имя, лог тогда тоже входит, локатор различает и так.
+# Python; у Playwright JS то же имя, лог тогда тоже входит, локатор различает и так. Ошибка
+# статуса HTTP-клиента (``httpx.HTTPStatusError``, ``requests.exceptions.HTTPError``) — тот же
+# симптом, что ``expected 200 but was 500``: что сломалось в сервисе, говорит его лог.
 SYMPTOM_EXCEPTION_RE = re.compile(
     r"^(?:"
     r"java\.net\.(?:SocketTimeoutException|SocketException|http\.HttpTimeoutException)"
     r"|java\.util\.concurrent\.TimeoutException"
     r"|(?:requests\.exceptions|httpx)\.(?:ReadTimeout|ConnectTimeout|Timeout)"
     r"|urllib3\.exceptions\.(?:ReadTimeoutError|ConnectTimeoutError)"
+    r"|httpx\.HTTPStatusError|requests\.exceptions\.HTTPError"
     r"|socket\.timeout|TimeoutError|ConnectionResetError"
     r")(?![\w$.])",
 )

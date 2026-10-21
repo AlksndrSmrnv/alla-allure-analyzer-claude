@@ -57,14 +57,15 @@ paths:
 
 ### Сигнатура
 
-- `alla_skill_lib/signature.py`, версия `v9` (`SIGNATURE_VERSION`). Golden-тест
+- `alla_skill_lib/signature.py`, версия `v10` (`SIGNATURE_VERSION`). Golden-тест
   (`test_signature_is_stable_across_runs_and_pinned`) фиксирует хэш: материал меняется только
   осознанно и с новой версией — префикс не даёт старому хэшу совпасть с новым. Чтения и учёта
   старых версий нет: хэши с другим префиксом не совпадают; запись с тестами узнаётся точно
   по тесту и признаку (см. «Смена версии сигнатуры» выше), без тестов — только по
   `error_example`; история повторов с другим префиксом не совпадает. `v9` — ядро распознаёт логи Go и Java, которые раньше не
   доходили до материала (klog, `panic:`/`fatal error:`, `Exception in thread`, уровни
-  `PANIC`/`DPANIC`, длинный MDC, JSON-записи), см. `core.md`, «Сбор данных».
+  `PANIC`/`DPANIC`, длинный MDC, JSON-записи), см. `core.md`, «Сбор данных». `v10` — ошибка
+  статуса HTTP-клиента стала симптомом (лог входит в материал, см. ниже).
 - Материал — то, что называет причину, и то, что различают gates кластеризации
   (`signature_material`: основа `message+trace+resources+log`… и нормализованные части):
   - трейс есть, ошибка называет причину (исключение не-ассерт или `Caused by`) — сообщение и
@@ -106,7 +107,12 @@ paths:
   `java.net.SocketException` (reset, broken pipe), `java.net.http.HttpTimeoutException`,
   `java.util.concurrent.TimeoutException`; `requests.exceptions`/`httpx`
   `ReadTimeout|ConnectTimeout|Timeout`, `urllib3` `ReadTimeoutError|ConnectTimeoutError`,
-  `socket.timeout`, `TimeoutError`, `ConnectionResetError`. Таймаут и обрыв причину не
+  `socket.timeout`, `TimeoutError`, `ConnectionResetError`; ошибка статуса HTTP-клиента
+  `httpx.HTTPStatusError`, `requests.exceptions.HTTPError` (`v10`: 500 от `raise_for_status`
+  — тот же симптом, что `expected 200 but was 500`; dev `same_symptom_log_causes` — три
+  проблемы за одним `HTTPStatusError` получали одну сигнатуру, `signature_shared_wrong` 3 → 0,
+  цена — `signature_log_unstable` 1 из 5 в `log_formats_more`: PID в скобках строки журнала
+  PostgreSQL `[2231] ERROR:` защищён как значение). Таймаут и обрыв причину не
   называют — её называет лог (`timeouts_two_causes`: nginx и медленный запрос за одним
   `Read timed out`); `ResourceAccessException … Caused by: SocketTimeoutException` — тоже
   симптом, а таймаут, обёрнутый `Caused by: IOException: No space left`, — нет. Не симптомы:
@@ -132,7 +138,8 @@ paths:
 - Границы. Gate по шагу в сигнатуру не входит: одна причина на разных шагах (упавший пул)
   должна узнаваться точно. Кластеры, разделённые gate по логу, совпадут по сигнатуре, если их
   свои ошибки не попали в первые 6 строк якоря или отличаются только строками продолжения
-  без признаков ошибки (их берёт gate, но не якорь); в корпусе таких нет, их ловит
+  без признаков ошибки (их берёт gate, но не якорь), или ошибка теста считается называющей
+  причину, а различает их только лог (так было с `httpx.HTTPStatusError` до `v10`); их ловит
   `signature_shared_wrong`.
 - Разделение склеенного кластера (gate кластеризации) сигнатуру не пересчитывает задним
   числом: кластер, которому достался прежний представитель, сохраняет её, отделившийся
