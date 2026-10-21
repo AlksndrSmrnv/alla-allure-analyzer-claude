@@ -62,6 +62,26 @@ def test_signature_has_the_current_version() -> None:
     assert SIGNATURE_VERSION == 10
 
 
+@pytest.mark.parametrize("line", [
+    "E, [2026-10-03T10:58:00.180456 #{pid}] ERROR -- : [req-9] Orders::CreateJob failed: "
+    "warehouse WH-9 has no slot",
+    "2026-10-04 11:00:00.731 UTC [{pid}] ERROR:  deadlock detected",
+])
+def test_process_id_in_the_record_header_does_not_change_the_signature(line: str) -> None:
+    """Перезапуск сервиса меняет PID, а не ошибку (ревью Codex)."""
+    first = _signature(ASSERT_500, ASSERT_TRACE, line.format(pid=54321) + "\n")
+    assert first == _signature(ASSERT_500, ASSERT_TRACE, line.format(pid=54322) + "\n")
+    assert first != _signature(ASSERT_500, ASSERT_TRACE,
+                               line.format(pid=54321).replace("failed", "rejected")
+                               .replace("deadlock", "lock timeout") + "\n")
+
+
+def test_bracketed_number_after_the_level_is_not_a_process_id() -> None:
+    log = "2026-10-04 11:00:00,731 ERROR [{n}] Billing - tariff rejected\n"
+    assert _signature(ASSERT_500, ASSERT_TRACE, log.format(n=12)) != _signature(
+        ASSERT_500, ASSERT_TRACE, log.format(n=13))
+
+
 def test_same_generic_assertion_with_different_log_errors_differs() -> None:
     pool = _signature(ASSERT_500, ASSERT_TRACE, PAYMENT_POOL_LOG)
     npe = _signature(ASSERT_500, ASSERT_TRACE, CATALOG_NPE_LOG)

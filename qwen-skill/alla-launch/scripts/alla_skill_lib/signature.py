@@ -120,6 +120,11 @@ _WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_$.:-]*")
 # JSON и ``key="…"``: ``"account":"40817810000000000301"`` — ID, как ``account=4081…``.
 # Скобки защищают и в логе (``[10001]``, ``<10001>``).
 _LOG_QUOTED_NUMBER_RE = re.compile(r"(?<![<\[])\b\d{4,}\b(?![>\]])")
+# Номер процесса в заголовке записи — сразу после времени: Ruby ``Logger``
+# ``E, [<TS> #54321]``, журнал PostgreSQL ``<TS> UTC [2231]``. Скобки защитили бы его как
+# значение, а после перезапуска сервиса он другой (ревью Codex).
+_LOG_PID_RE = re.compile(
+    r"^((?:[DIWEFAU], \[)?<TS>(?: #| (?!(?:INFO|WARN|LOG|ERR|CRIT)\b)[A-Z]{3,4} \[))\d+\]")
 # Код поля ошибки ответа, который мягкий вид стирает: в нём есть число из 4+ цифр, как у
 # numeric_codes, — и целиком (``10001``), и частью составного (``10001.1``, ``ERR-10001``).
 _LONG_CODE_VALUE_RE = re.compile(r"\d{4,}")
@@ -263,7 +268,8 @@ def _soft(text: str) -> str:
 
 
 def _soft_log(line: str) -> str:
-    """Мягкий вид строки лога: ещё и без длинных чисел в кавычках (:data:`_LOG_QUOTED_NUMBER_RE`).
+    """Мягкий вид строки лога: ещё и без длинных чисел в кавычках (:data:`_LOG_QUOTED_NUMBER_RE`)
+    и без номера процесса в заголовке записи (:data:`_LOG_PID_RE`).
 
     Код в кавычках (``"errorCode":"10001"``) так тоже уходит в ``<NUM>`` — его держит отпечаток:
     к ``numeric_codes`` добавляются коды полей ошибки ответа, где есть число из 4+ цифр —
@@ -271,7 +277,8 @@ def _soft_log(line: str) -> str:
     (``error_field_codes``: имени ``errorcode`` у ``numeric_codes`` нет). Короткий код
     (``"errorCode":6``) остаётся в тексте строки, и отпечаток его не повторяет.
     """
-    normalized = _LOG_QUOTED_NUMBER_RE.sub("<NUM>", normalize_text(replace_thread_names(line)))
+    normalized = _LOG_PID_RE.sub(r"\1<PID>]", normalize_text(replace_thread_names(line)))
+    normalized = _LOG_QUOTED_NUMBER_RE.sub("<NUM>", normalized)
     field_codes = [code for code in error_field_codes(line)
                    if _LONG_CODE_VALUE_RE.search(code.partition("=")[2])]
     codes = list(dict.fromkeys(numeric_codes(line) + field_codes))

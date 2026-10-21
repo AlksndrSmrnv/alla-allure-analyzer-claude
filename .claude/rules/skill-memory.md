@@ -110,9 +110,8 @@ paths:
   `socket.timeout`, `TimeoutError`, `ConnectionResetError`; ошибка статуса HTTP-клиента
   `httpx.HTTPStatusError`, `requests.exceptions.HTTPError` (`v10`: 500 от `raise_for_status`
   — тот же симптом, что `expected 200 but was 500`; dev `same_symptom_log_causes` — три
-  проблемы за одним `HTTPStatusError` получали одну сигнатуру, `signature_shared_wrong` 3 → 0,
-  цена — `signature_log_unstable` 1 из 5 в `log_formats_more`: PID в скобках строки журнала
-  PostgreSQL `[2231] ERROR:` защищён как значение). Таймаут и обрыв причину не
+  проблемы за одним `HTTPStatusError` получали одну сигнатуру, `signature_shared_wrong` 3 → 0).
+  Таймаут и обрыв причину не
   называют — её называет лог (`timeouts_two_causes`: nginx и медленный запрос за одним
   `Read timed out`); `ResourceAccessException … Caused by: SocketTimeoutException` — тоже
   симптом, а таймаут, обёрнутый `Caused by: IOException: No space left`, — нет. Не симптомы:
@@ -163,7 +162,10 @@ paths:
   входят как у текстового лога (иначе компактная строка давала ноль записей и лог выпадал
   из материала).
 - Нормализация: строки трейса и лога и длинное сообщение — мягкая (`normalize_text`: время,
-  UUID, IP, длинные числа, значения полей id операции), коды ошибок — отдельным отпечатком; короткое сообщение (до 10
+  UUID, IP, длинные числа, значения полей id операции; в строке лога — ещё номер процесса в
+  заголовке записи сразу после времени, `_LOG_PID_RE`: Ruby `E, [<TS> #54321]`, журнал
+  PostgreSQL `<TS> UTC [2231]` — скобки защитили бы его как значение, а после перезапуска
+  сервиса он другой, ревью Codex; `ERROR [12]` после уровня — не PID), коды ошибок — отдельным отпечатком; короткое сообщение (до 10
   слов и 120 символов) — строгая, числа остаются. Везде имена потоков заменяются на
   `<THREAD>` (`replace_thread_names`: `http-nio-8080-exec-7`, `pool-3-thread-1`,
   `ForkJoinPool.commonPool-worker-5`, `ForkJoinPool-1-worker-7`, `Thread-42`): одна ошибка на
