@@ -26,6 +26,7 @@ from alla_core.utils.log_events import (
     error_events,
     is_log_text,
     iter_events,
+    json_array_lines,
     render_event_blocks,
 )
 from alla_core.utils.log_utils import (
@@ -242,7 +243,7 @@ class StructuredErrorLogHandler:
 
 @dataclass
 class ErrorBlocksHandler:
-    """Извлекает события-ошибки из текстовых вложений и JSON-логов строками.
+    """Извлекает события-ошибки из текстовых вложений, JSON-логов строками и массивом.
 
     Каждый блок начинается пометкой строк источника (``[строки 120–134]``),
     точные повторы свёрнуты в первое вхождение (:func:`render_error_blocks`).
@@ -258,7 +259,9 @@ class ErrorBlocksHandler:
             return None
         if ctx.decoded_text is None:
             return None
-        events = list(error_events(ctx.decoded_text))
+        # Журнал массивом (ошибки страницы браузера, выгрузка записей) — записи строками.
+        text = json_array_lines(ctx.decoded_text) or ctx.decoded_text
+        events = list(error_events(text))
         foreign = 0
         if ctx.operation_ids is not None:
             ids = ctx.operation_ids

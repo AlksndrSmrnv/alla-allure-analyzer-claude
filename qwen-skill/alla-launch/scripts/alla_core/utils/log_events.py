@@ -22,8 +22,10 @@ INFO-запись со своим временем не поглощается �
 * Java ``Exception in thread "…" pkg.SomeException…`` — исключение без времени;
 * JSON-запись строкой (NDJSON: zap, zerolog, slog, logrus, logstash-logback-encoder,
   ECS, JsonTemplateLayout), возможно с отступом, — объект с полем уровня ``level``/``lvl``/``severity``/
-  ``log.level`` (или ``{"log": {"level": …}}``); JSON без поля уровня (тело ответа
-  после ERROR) остаётся продолжением;
+  ``log.level`` (или ``{"log": {"level": …}}``) или ошибка страницы ``{"type": "pageerror"}``
+  (уровень ERROR); JSON без поля уровня (тело ответа после ERROR) остаётся продолжением.
+  JSON-массив таких записей одним документом сам по себе не лог: его разворачивает в строки
+  :func:`json_array_lines`;
 * Python ``ERROR:root:…`` (``LEVEL:`` без пробела после двоеточия);
 * ``Traceback (most recent call last):`` и строка исключения
   (``pkg.SomeException: …``), за которой идут кадры ``at …`` — если идущее
@@ -270,6 +272,8 @@ def _json_level(record: dict[str, Any]) -> tuple[bool, str | None]:
             value = record[key]
             break
     else:
+        if record.get("type") == "pageerror":
+            return True, "ERROR"  # Playwright, Puppeteer: необработанное исключение страницы
         if not isinstance(nested, dict) or "level" not in nested:
             return False, None
         key, value = "log.level", nested["level"]
@@ -320,6 +324,26 @@ def _json_record(line: str) -> tuple[str | None, list[str]] | None:
     rendered = [json.dumps(header, ensure_ascii=False)]
     rendered += [part.rstrip() for block in blocks for part in block.splitlines() if part.strip()]
     return level, rendered
+
+
+def json_array_lines(text: str) -> str | None:
+    """JSON-массив записей одним документом — те же записи строками (NDJSON); иначе ``None``.
+
+    Массив — журнал, только если каждый его элемент — объект с полем уровня (или ошибка
+    страницы ``{"type": "pageerror"}``): ответ API списком объектов логом не становится. Строка
+    записи — её номер в массиве.
+    """
+    if not text.lstrip().startswith("["):
+        return None
+    try:
+        items = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(items, list) or not items:
+        return None
+    if not all(isinstance(item, dict) and _json_level(item)[0] for item in items):
+        return None
+    return "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in items)
 
 
 def _start(line: str) -> tuple[str | None, str | None]:

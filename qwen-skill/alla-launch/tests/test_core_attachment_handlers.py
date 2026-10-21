@@ -335,6 +335,30 @@ class TestErrorBlocksHandler:
         assert result.section == ('[строка 2]\n'
                                   '{"level":"error","msg":"charge failed","error":"gateway timeout"}')
 
+    def test_page_errors_array_gives_each_page_error(self) -> None:
+        items = [{"type": "pageerror", "message": "ChunkLoadError: Loading chunk 712 failed."},
+                 {"type": "pageerror", "message": "TypeError: x is undefined"}]
+        result = ErrorBlocksHandler().handle(_ctx(json.dumps(items).encode("utf-8"),
+                                                  name="page-errors.json"))
+        assert result is not None and result.label == "файл"
+        assert result.section == (
+            '[строка 1]\n{"type": "pageerror", "message": "ChunkLoadError: Loading chunk 712 '
+            'failed."}\n\n[строка 2]\n{"type": "pageerror", "message": "TypeError: x is '
+            'undefined"}')
+
+    def test_array_of_level_records_gives_its_errors(self) -> None:
+        items = [{"level": "INFO", "message": "page loaded"},
+                 {"level": "SEVERE", "message": "Uncaught ReferenceError: cart is not defined"}]
+        result = ErrorBlocksHandler().handle(_ctx(json.dumps(items, indent=2).encode("utf-8")))
+        assert result is not None
+        assert "cart is not defined" in result.section and "page loaded" not in result.section
+
+    def test_array_with_an_entry_that_is_not_a_record_gives_no_section(self) -> None:
+        for items in ([{"level": "error", "message": "boom"}, {"id": 7, "error": "x"}],
+                      [{"type": "error", "message": "API item, not a page error"}],
+                      [{"level": "error", "message": "boom"}, "text"]):
+            assert ErrorBlocksHandler().handle(_ctx(json.dumps(items).encode("utf-8"))) is None
+
     def test_skips_binary_and_xml(self) -> None:
         for detected_type in ("binary", "xml"):
             ctx = _ctx(b"2026-01-01 10:00:00 [ERROR] Boom", detected_type=detected_type)
