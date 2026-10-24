@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
@@ -34,6 +35,9 @@ from alla_skill_lib.rerun import (
     same_error,
     worker_env,
 )
+
+TIMEOUT_REASON = "вышел потолок времени ALLURE_RERUN_TIMEOUT"
+BUILD_REASON = "сборка не прошла"
 
 
 def main(argv: list[str]) -> int:
@@ -65,6 +69,14 @@ def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
     fallback: set[str] = set()
     pending = list(tests)
     timed_out = False
+
+    def stop(test: PlannedTest, reason: str) -> None:
+        """Тест дальше не проверен: уже воспроизводился — так и есть, но не все запуски."""
+        if runs[test.test_result_id]:
+            outcomes[test.test_result_id] = _outcome(test, "reproduced", runs, cut=reason)
+        else:
+            outcomes[test.test_result_id] = _outcome(test, "not_run", runs, reason=reason)
+
     for attempt in range(1, attempts + 1):
         still: list[PlannedTest] = []
         for group in groups:
@@ -91,18 +103,16 @@ def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
             cases = read_reports(Path(group.fallback_cwd or group.cwd), suffix, started)
             for test in batch:
                 found = method_result(cases, test)
-                if found is None:
-                    reason = ("не уложился в потолок времени" if killed
-                              else "сборка не прошла" if code else "нет в отчётах surefire")
-                    outcomes[test.test_result_id] = _outcome(test, "not_run", runs, reason=reason)
+                if found is None or found.status == "skipped":
+                    stop(test, TIMEOUT_REASON if killed and found is None
+                         else BUILD_REASON if found is None and code
+                         else "нет в отчётах surefire" if found is None
+                         else "пропущен (skipped)")
                     continue
                 runs[test.test_result_id] += 1
                 if found.status == "passed":
                     outcomes[test.test_result_id] = _outcome(
                         test, "passed", runs, attempt=attempt, surefire_flaky=found.flaky)
-                elif found.status == "skipped":
-                    outcomes[test.test_result_id] = _outcome(
-                        test, "not_run", runs, reason="пропущен (skipped)")
                 elif not same_error(found.message, test.message):
                     outcomes[test.test_result_id] = _outcome(
                         test, "other", runs, attempt=attempt, message=safe_text(found.message))
@@ -111,12 +121,11 @@ def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
         pending = still
         if not pending or timed_out:
             break
-    for test in pending:  # каждый раз падал с той же ошибкой (или время вышло)
-        if runs[test.test_result_id]:
-            outcomes[test.test_result_id] = _outcome(test, "reproduced", runs, cut=timed_out)
+    for test in pending:  # каждый раз падал с той же ошибкой — или время вышло раньше
+        if timed_out:
+            stop(test, TIMEOUT_REASON)
         else:
-            outcomes[test.test_result_id] = _outcome(
-                test, "not_run", runs, reason="не уложился в потолок времени")
+            outcomes[test.test_result_id] = _outcome(test, "reproduced", runs)
     return {
         "job": plan["job"],
         "finished": time.time(),
@@ -176,17 +185,33 @@ def _maven(
 
 
 def _kill(process: subprocess.Popen[bytes]) -> None:
-    """Остановить Maven со всеми дочерними (форк surefire): сначала мягко, потом жёстко."""
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(process.pid, sig)
-        except ProcessLookupError:
-            return
-        try:
-            process.wait(timeout=KILL_GRACE_S)
-            return
-        except subprocess.TimeoutExpired:
-            continue
+    """Остановить Maven со всей группой (форк surefire): сначала мягко, потом жёстко.
+
+    Ждём не только Maven: он может выйти по SIGTERM раньше форка surefire, который сигнал
+    игнорирует, — оставшимся в группе после паузы уходит SIGKILL.
+    """
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + KILL_GRACE_S
+    while time.monotonic() < deadline and _group_alive(process):
+        time.sleep(0.2)
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=KILL_GRACE_S)
+
+
+def _group_alive(process: subprocess.Popen[bytes]) -> bool:
+    process.poll()  # Maven-зомби держал бы группу «живой»
+    try:
+        os.killpg(process.pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _says(log: Path, text: str) -> bool:

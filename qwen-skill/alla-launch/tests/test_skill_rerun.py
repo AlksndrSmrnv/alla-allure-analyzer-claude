@@ -33,6 +33,7 @@ from alla_skill_lib.rerun import (
     surefire_filter,
     worker_env,
 )
+from alla_skill_lib import rerun_worker
 from alla_skill_lib.rerun_worker import execute
 
 ORDER = "ru.company.orders.OrderTest"
@@ -387,7 +388,7 @@ def test_time_limit_stops_maven_and_reports_what_did_not_run(tmp_path: Path) -> 
 
     assert time.monotonic() - started < 20  # Maven остановлен, а не дождались его 30 с
     assert result["timed_out"] is True
-    assert [item["reason"] for item in result["tests"]] == ["не уложился в потолок времени"]
+    assert [item["reason"] for item in result["tests"]] == [rerun_worker.TIMEOUT_REASON]
 
 
 def test_maven_args_are_split_like_a_shell() -> None:
@@ -660,3 +661,80 @@ def test_passed_test_without_a_ci_signal_is_not_offered_for_the_knowledge_base(
     assert _rerun(run_dir, capsys, "--remember", "--result", job).startswith(
         "STATUS: ok\nСохранять в базу знаний нечего")
     assert _rerun(run_dir, capsys, "--remember", "--result", "other").startswith("STATUS: error")
+
+
+def test_partly_skipped_method_is_not_a_pass(tmp_path: Path) -> None:
+    """Параметризованный метод: один вызов пропущен — упавший в CI вариант мог не выполниться."""
+    cases = {(ORDER, "param"): [rerun.CaseResult("passed"), rerun.CaseResult("skipped")]}
+
+    assert method_result(cases, _planned("param")) == rerun.CaseResult("skipped")
+
+
+def _job(tmp_path: Path, timeout: int) -> tuple[JobFiles, dict[str, Any]]:
+    files = JobFiles(tmp_path / "rerun")
+    files.root.mkdir()
+    group = rerun.MavenGroup(module="", cwd=str(tmp_path), tool=[str(tmp_path / "mvnw")],
+                             select=[], fallback_cwd="")
+    return files, {"job": "j", "attempts": 3, "timeout": timeout, "maven_args": [],
+                   "tests": [vars(_planned("a"))], "groups": [vars(group)]}
+
+
+def test_timeout_after_a_reproduced_run_keeps_the_reproduction(tmp_path: Path) -> None:
+    skill_fake_maven.install(tmp_path, {f"{ORDER}#a": [FAILED_500]}, sleep=30, sleep_from_call=2)
+    files, plan = _job(tmp_path, timeout=2)
+
+    result = execute(files, plan)
+
+    item = result["tests"][0]
+    assert (item["outcome"], item["runs"], item["cut"]) == (
+        "reproduced", 1, rerun_worker.TIMEOUT_REASON)
+    assert "упал 1 из 1 (дальше не проверен: вышел потолок времени" in "\n".join(
+        rerun.RerunView(3, result["tests"], {}).lines())
+
+
+def test_timeout_kills_the_whole_maven_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Maven выходит по SIGTERM, а его потомок (форк surefire) SIGTERM игнорирует."""
+    import os
+
+    monkeypatch.setattr(rerun_worker, "KILL_GRACE_S", 1)
+    skill_fake_maven.install(tmp_path, {f"{ORDER}#a": ["passed"]}, sleep=30, orphan=True)
+    files, plan = _job(tmp_path, timeout=1)
+
+    execute(files, plan)
+
+    pid = int((tmp_path / skill_fake_maven.ORPHAN_PID_NAME).read_text(encoding="utf-8"))
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    os.kill(pid, 9)
+    raise AssertionError("потомок Maven пережил остановку по времени")
+
+
+def test_second_start_while_running_does_not_replace_the_job(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    skill_fake_maven.install(nested_project / "autotests", {
+        f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]}, sleep=3)
+    run_dir, run, _ = _prepare(nested_project, capsys)
+    order = _problem_of(run, 101)
+    plan = _rerun(run_dir, capsys, order)
+    paths = rerun.ws.RunPaths(run_dir)
+    built = rerun.build_plan(paths, json.loads((run_dir / "run.json").read_text()),
+                             [(entry, test) for entry in json.loads((run_dir / "run.json")
+                                                                     .read_text())["clusters"]
+                              if str(int(entry["file_id"])) == order
+                              for test in rerun.failed_tests_of(run, entry)],
+                             attempts=3, max_tests=20)
+    assert built.digest == _plan_hash(plan)
+
+    first = rerun.start_job(paths, built, 60, [])
+    second = rerun.start_job(paths, built, 60, [])
+
+    assert first is not None and second is None
+    assert json.loads((run_dir / "rerun" / "plan.json").read_text())["job"] == first
+    assert _wait_done(run_dir, capsys).startswith("STATUS: rerun_done")

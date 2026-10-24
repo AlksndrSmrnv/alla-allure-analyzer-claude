@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -21,6 +22,9 @@ from xml.sax.saxutils import quoteattr
 
 SPEC_NAME = "fake-maven.json"
 RUNS_NAME = "fake-maven-runs.json"
+CALLS_NAME = "fake-maven-calls"
+ORPHAN_PID_NAME = "fake-maven-orphan.pid"
+ORPHAN = "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)\n"
 
 
 def install(
@@ -29,18 +33,24 @@ def install(
     *,
     exit_code: int = 0,
     sleep: float = 0.0,
+    sleep_from_call: int = 1,
+    orphan: bool = False,
     not_in_reactor: bool = False,
     python: str = sys.executable,
     script: str = str(Path(__file__).resolve()),
 ) -> Path:
     """Положить ``mvnw`` и сценарий в ``folder``; вернуть путь к ``mvnw``.
 
+    ``sleep`` — пауза с ``sleep_from_call``-го запуска Maven; ``orphan`` — до паузы запустить
+    дочерний процесс, который не реагирует на SIGTERM (как форк surefire), его pid — в
+    ``fake-maven-orphan.pid``.
     ``python`` и ``script`` — для shell: стенд Qwen передаёт пути от папки ``mvnw``
     (``$(dirname "$0")/…``), чтобы песочница не читала ничего вне проекта.
     """
     spec = folder / SPEC_NAME
     spec.write_text(json.dumps({
-        "results": results, "exit": exit_code, "sleep": sleep, "not_in_reactor": not_in_reactor,
+        "results": results, "exit": exit_code, "sleep": sleep, "sleep_from_call": sleep_from_call,
+        "orphan": orphan, "not_in_reactor": not_in_reactor,
     }), encoding="utf-8")
     wrapper = folder / "mvnw"
     wrapper.write_text(
@@ -62,7 +72,13 @@ def main(argv: list[str]) -> int:
     spec: dict[str, Any] = json.loads(spec_path.read_text(encoding="utf-8"))
     args = [arg for arg in argv if arg not in ("--spec", str(spec_path))]
     print("[INFO] Scanning for projects...", flush=True)
-    if spec["sleep"]:
+    calls_file = spec_path.parent / CALLS_NAME
+    calls = int(calls_file.read_text(encoding="utf-8")) + 1 if calls_file.is_file() else 1
+    calls_file.write_text(str(calls), encoding="utf-8")
+    if spec["orphan"]:
+        child = subprocess.Popen([sys.executable, "-c", ORPHAN])
+        (spec_path.parent / ORPHAN_PID_NAME).write_text(str(child.pid), encoding="utf-8")
+    if spec["sleep"] and calls >= int(spec["sleep_from_call"]):
         time.sleep(float(spec["sleep"]))
     module_dir = Path.cwd()
     if "-pl" in args:

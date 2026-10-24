@@ -1600,7 +1600,9 @@ def _rerun(
     if rerun.lock_busy(paths.reports_dir / rerun.LOCK_NAME):
         return "ok", ("В проекте уже идёт перезапуск тестов другого разбора — ничего не запущено. "
                       "Скажи пользователю, что повторить можно после его итога.")
-    rerun.start_job(paths, plan, settings.rerun_timeout, extra)
+    if rerun.start_job(paths, plan, settings.rerun_timeout, extra) is None:
+        status, body = _rerun_state(paths, run, rerun.job_state(files))
+        return status, "Новый перезапуск не начат: в этом разборе он уже идёт.\n" + body
     state = rerun.wait_job(files, rerun.WAIT_BUDGET - (time.monotonic() - started))
     return _rerun_state(paths, run, state)
 

@@ -355,14 +355,16 @@ def _mtime(path: Path) -> float:
 
 
 def method_result(cases: dict[tuple[str, str], list[CaseResult]], test: PlannedTest) -> CaseResult | None:
-    """Итог метода: упал хоть один вызов — упал; все пропущены — пропущен; ``None`` — нет в отчётах."""
+    """Итог метода: упал хоть один вызов — упал; прошёл — только если прошли все; иначе (хоть
+    один пропущен) — пропущен: упавший в CI вариант мог и не выполниться. ``None`` — нет в
+    отчётах."""
     found = cases.get((test.class_name, test.method))
     if not found:
         return None
     failed = next((case for case in found if case.status == "failed"), None)
     if failed is not None:
         return failed
-    if all(case.status == "skipped" for case in found):
+    if any(case.status == "skipped" for case in found):
         return CaseResult("skipped")
     return CaseResult("passed", flaky=any(case.flaky for case in found))
 
@@ -492,11 +494,34 @@ def job_state(files: JobFiles) -> JobState:
                     reason="фоновый процесс перезапуска прервался")
 
 
-def start_job(paths: ws.RunPaths, plan: Plan, timeout: int, extra: list[str]) -> str:
-    """Записать план и запустить фоновый процесс; вернуть id задания."""
+def start_job(paths: ws.RunPaths, plan: Plan, timeout: int, extra: list[str]) -> str | None:
+    """Записать план и запустить фоновый процесс; вернуть id задания.
+
+    Запуски одного разбора — по очереди (``start.lock``): второй одновременный ``--yes`` не
+    затирает файлы идущего задания, а получает ``None`` — задание уже идёт.
+    """
     files = job_files(paths)
-    files.clear()
     files.root.mkdir(parents=True, exist_ok=True)
+    with _start_lock(files):
+        if job_state(files).state == "running":
+            return None
+        return _start(paths, files, plan, timeout, extra)
+
+
+@contextlib.contextmanager
+def _start_lock(files: JobFiles) -> Iterator[None]:
+    import fcntl
+
+    with open(files.root / "start.lock", "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _start(paths: ws.RunPaths, files: JobFiles, plan: Plan, timeout: int, extra: list[str]) -> str:
+    files.clear()
     job = time.strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:6]
     data = {
         "job": job,
@@ -765,7 +790,7 @@ class RerunView:
             return text + (f"; {item['changed']}" if item.get("changed") else "")
         if outcome == "reproduced":
             text = f"упал {item.get('runs')} из {item.get('runs')}"
-            return text + (" (дальше не успел: вышел потолок времени)" if item.get("cut") else "")
+            return text + (f" (дальше не проверен: {item['cut']})" if item.get("cut") else "")
         if outcome == "other":
             return f"«{item.get('message') or 'текст ошибки скрыт'}»"
         reason = str(item.get("reason") or "")
