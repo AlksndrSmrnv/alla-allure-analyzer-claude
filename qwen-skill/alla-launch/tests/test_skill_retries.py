@@ -16,6 +16,7 @@ from alla_skill_lib.retries import (
     render_task_section,
     report_line,
     retry_facts,
+    retry_group,
 )
 from alla_skill_lib.workspace import RunPaths
 from test_skill_flow import _finish, _full_report, _prepare
@@ -37,6 +38,15 @@ def test_facts_put_each_retried_test_in_one_group() -> None:
     assert (facts.tests, facts.retried, facts.attempts) == (5, 4, 5)
     assert (facts.same, facts.different, facts.passed, facts.unknown) == (1, 1, 1, 1)
     assert facts.different_messages == ["ConnectException: refused"]
+
+
+def test_retry_group_of_one_test_follows_the_facts_order() -> None:
+    groups = [retry_group(test) for test in _tests(
+        [SAME, SAME], [SAME, OTHER, {"status": "passed"}], [SAME, {"status": "passed"}],
+        [UNKNOWN, {"status": "skipped"}], [SAME, {"status": "skipped"}], [],
+    )]
+
+    assert groups == ["same", "different", "passed", "unknown", "other", None]
 
 
 def test_task_section_states_facts_and_that_retries_are_not_a_cause() -> None:

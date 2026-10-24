@@ -103,26 +103,28 @@ def retry_facts(tests: Iterable[Mapping[str, Any]]) -> RetryFacts:
     facts = RetryFacts()
     for test in tests:
         facts.tests += 1
-        attempts: Sequence[Mapping[str, Any]] = test.get("attempts") or []
-        if not attempts:
+        group = retry_group(test)
+        if group is None:
             continue
+        attempts: Sequence[Mapping[str, Any]] = test["attempts"]
         omitted = int(test.get("attempts_omitted") or 0)
         facts.retried += 1
         facts.omitted += omitted
-        failures = [a for a in attempts if str(a.get("status")) in FAILURE_STATUSES]
+        failures = _failures(attempts)
         facts.attempts += len(failures)
-        differing = [a for a in failures if a.get("same_as_final") is False]
-        if differing:
+        if group == "different":
             facts.different += 1
-            for attempt in differing:
+            for attempt in failures:
+                if attempt.get("same_as_final") is not False:
+                    continue
                 message = _clip(" ".join(str(attempt.get("message") or "").split()))
                 if message and message not in facts.different_messages:
                     facts.different_messages.append(message)
-        elif any(str(a.get("status")) == "passed" for a in attempts):
+        elif group == "passed":
             facts.passed += 1
-        elif any(a.get("same_as_final") is None for a in failures):
+        elif group == "unknown":
             facts.unknown += 1
-        elif len(failures) < len(attempts):
+        elif group == "other":
             facts.other += 1
             for attempt in attempts:
                 status = str(attempt.get("status") or "unknown")
@@ -133,6 +135,31 @@ def retry_facts(tests: Iterable[Mapping[str, Any]]) -> RetryFacts:
             if omitted:
                 facts.same_partial += 1
     return facts
+
+
+def retry_group(test: Mapping[str, Any]) -> str | None:
+    """Группа повторов теста (см. ``RetryFacts``); ``None`` — повторов не было.
+
+    ``different``, ``passed``, ``unknown``, ``other`` или ``same`` — по тому же
+    старшинству, что в фактах задания и отчёта.
+    """
+    attempts: Sequence[Mapping[str, Any]] = test.get("attempts") or []
+    if not attempts:
+        return None
+    failures = _failures(attempts)
+    if any(a.get("same_as_final") is False for a in failures):
+        return "different"
+    if any(str(a.get("status")) == "passed" for a in attempts):
+        return "passed"
+    if any(a.get("same_as_final") is None for a in failures):
+        return "unknown"
+    if len(failures) < len(attempts):
+        return "other"
+    return "same"
+
+
+def _failures(attempts: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    return [a for a in attempts if str(a.get("status")) in FAILURE_STATUSES]
 
 
 def render_task_section(facts: RetryFacts) -> list[str]:

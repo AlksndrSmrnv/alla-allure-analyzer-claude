@@ -19,6 +19,10 @@
 Совпадение ``full_name`` с исходником должно быть однозначным: одинаковый
 класс в двух модулях (``ru.company.SmokeTest``) модуль не определяет, иначе
 запись базы знаний попала бы в чужой модуль.
+
+Перезапуску тестов (``rerun``) нужна не папка базы знаний, а проект сборки:
+``build_dir`` считает и корень проекта, ``build_tool`` отличает Maven от Gradle,
+``maven_reactor`` находит, откуда запускать Maven.
 """
 
 from __future__ import annotations
@@ -29,11 +33,11 @@ from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path, PurePath
 
-from alla_skill_lib.code_hints import ProjectIndex, sources_of_test
+from alla_skill_lib.code_hints import JVM_EXTENSIONS, ProjectIndex, sources_of_test
 
 BUILD_MARKERS = ("build.gradle", "build.gradle.kts", "pom.xml")
-# Не ``.kts``: это ещё и скрипты сборки (``build.gradle.kts``), а не тесты.
-JVM_EXTENSIONS = frozenset({".java", ".kt", ".groovy", ".scala"})
+MAVEN_MARKER = "pom.xml"
+GRADLE_MARKERS = ("build.gradle", "build.gradle.kts")
 # Код самой сборки (конвенции Gradle) модулем проекта не считается.
 BUILD_SUPPORT_DIRS = frozenset({"buildSrc", "build-logic", "buildLogic"})
 MAX_PROBED_TESTS = 50  # сколько участников кластера смотреть, чтобы выбрать модуль
@@ -130,3 +134,39 @@ def resolve_run_modules(found: Mapping[str, ClusterModule]) -> dict[str, str]:
         else:
             result[key] = run_module
     return result
+
+
+def build_dir(root: Path, source: PurePath) -> PurePath | None:
+    """Проект сборки исходника: ближайшая папка выше него с файлом сборки.
+
+    В отличие от ``module_of`` корень проекта считается: запуску тестов нужен
+    проект сборки, а не папка базы знаний. ``None`` — файла сборки нет нигде.
+    """
+    directory = source.parent
+    while True:
+        if any((root / directory / marker).is_file() for marker in BUILD_MARKERS):
+            return directory
+        if not directory.parts:
+            return None
+        directory = directory.parent
+
+
+def build_tool(root: Path, directory: PurePath) -> str | None:
+    """``maven`` или ``gradle`` по файлу сборки в папке; есть оба — ``maven``."""
+    if (root / directory / MAVEN_MARKER).is_file():
+        return "maven"
+    if any((root / directory / marker).is_file() for marker in GRADLE_MARKERS):
+        return "gradle"
+    return None
+
+
+def maven_reactor(root: Path, directory: PurePath) -> PurePath:
+    """Корень реактора Maven: самая верхняя папка подряд с ``pom.xml`` над модулем.
+
+    ``<modules>`` не разбирается: модуль вне списка реактор не найдёт, и запуск
+    повторяется с ``-f`` (``rerun``). Выше корня проекта не поднимаемся.
+    """
+    reactor = directory
+    while reactor.parts and (root / reactor.parent / MAVEN_MARKER).is_file():
+        reactor = reactor.parent
+    return reactor

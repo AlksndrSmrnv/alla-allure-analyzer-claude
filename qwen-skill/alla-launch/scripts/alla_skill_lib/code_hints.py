@@ -24,6 +24,8 @@ SKIP_DIRS = frozenset({
     ".pytest_cache", ".mypy_cache", ".ruff_cache", "allure-results",
     "allure-report", "alla-reports",
 })
+# Не ``.kts``: это ещё и скрипты сборки (``build.gradle.kts``), а не тесты.
+JVM_EXTENSIONS = frozenset({".java", ".kt", ".groovy", ".scala"})
 MAX_INDEXED_FILES = 50_000
 MAX_SCANNED_BYTES = 1_000_000
 
@@ -164,40 +166,90 @@ def sources_of_test(index: ProjectIndex, full_name: str) -> list[PurePath]:
     Пусто — не нашёлся; больше одного — неоднозначно (одинаковый класс в
     разных модулях).
     """
-    return _match_full_name(index, full_name)[0]
+    return _match_full_name(index, full_name).paths
 
 
-def _match_full_name(index: ProjectIndex, full_name: str) -> tuple[list[PurePath], str | None]:
+@dataclass(frozen=True)
+class JvmTest:
+    """JVM-тест для запуска по имени: исходник, класс с пакетом и метод."""
+
+    source: PurePath
+    class_name: str
+    method: str
+
+
+def jvm_test_of(index: ProjectIndex, full_name: str) -> JvmTest | str:
+    """Класс и метод JVM-теста по ``full_name``; не вышло — причина словами.
+
+    Нужен один исходник ``.java/.kt/.groovy/.scala`` и метод, видный в имени:
+    ``ru.x.OrderTest.create`` или ``ru.x.OrderTest#create``. Класс берётся из
+    ``full_name`` (с пакетом), а не из пути файла: папки не обязаны повторять пакет.
+    """
+    if "::" in full_name:
+        return "не JVM-тест"
+    if "$" in full_name:
+        return "вложенный класс — пока не поддерживается"
+    found = _match_full_name(index, full_name)
+    if not found.paths:
+        return "исходник теста не найден"
+    if len(found.paths) > 1:
+        return "исходник теста неоднозначен: " + ", ".join(p.as_posix() for p in found.paths)
+    source = found.paths[0]
+    if source.suffix not in JVM_EXTENSIONS:
+        return "не JVM-тест"
+    if not found.class_parts or not found.symbol or not found.method_is_last:
+        return "метод теста не виден в имени"
+    return JvmTest(source, ".".join(found.class_parts), found.symbol)
+
+
+@dataclass(frozen=True)
+class _FullNameMatch:
+    """Совпадение ``full_name``: исходники, части имени класса и метод.
+
+    ``method_is_last`` — метод стоит сразу после класса (``Class.method``,
+    ``Class#method``), а не через вложенные части имени.
+    """
+
+    paths: list[PurePath]
+    class_parts: tuple[str, ...] = ()
+    symbol: str | None = None
+    method_is_last: bool = False
+
+
+def _match_full_name(index: ProjectIndex, full_name: str) -> _FullNameMatch:
     """Исходники теста и имя метода (если оно видно в ``full_name``)."""
     full_name = full_name.strip()
     if not full_name or " " in full_name.split("::")[0]:
-        return [], None
+        return _FullNameMatch([])
     if "::" in full_name:
         # pytest node id: tests/api/test_x.py::TestClass::test_method[param]
         file_part, *rest = full_name.split("::")
         matches = index.best_matches(PurePath(file_part.replace("\\", "/")).parts)
         symbol = _PARAMS_RE.sub("", rest[-1]) if rest else None
-    else:
-        # ru.x.y.TestClass#method, ru.x.y.TestClass.method, tests.test_x.TestC.test_m
-        dotted, _, method = full_name.partition("#")
-        parts = [p for p in _PARAMS_RE.sub("", dotted).split(".") if p]
-        matches = []
-        symbol = _PARAMS_RE.sub("", method) or None
-        for end in range(len(parts), 0, -1):
-            matches = index.best_matches(tuple(parts[:end]), need_suffix=min(2, end))
-            if matches:
-                if not symbol and end < len(parts):
-                    symbol = parts[end] if end == len(parts) - 1 else parts[-1]
-                break
-    return matches, symbol
+        return _FullNameMatch(matches, symbol=symbol)
+    # ru.x.y.TestClass#method, ru.x.y.TestClass.method, tests.test_x.TestC.test_m
+    dotted, _, method = full_name.partition("#")
+    parts = [p for p in _PARAMS_RE.sub("", dotted).split(".") if p]
+    symbol = _PARAMS_RE.sub("", method) or None
+    method_is_last = symbol is not None
+    for end in range(len(parts), 0, -1):
+        matches = index.best_matches(tuple(parts[:end]), need_suffix=min(2, end))
+        if matches:
+            if symbol:
+                method_is_last = end == len(parts)
+            elif end < len(parts):
+                method_is_last = end == len(parts) - 1
+                symbol = parts[end] if method_is_last else parts[-1]
+            return _FullNameMatch(matches, tuple(parts[:end]), symbol, method_is_last)
+    return _FullNameMatch([], symbol=symbol)
 
 
 def _hint_from_full_name(index: ProjectIndex, full_name: str) -> CodeHint | None:
-    matches, symbol = _match_full_name(index, full_name)
-    if not matches:
+    found = _match_full_name(index, full_name)
+    if not found.paths:
         return None
-    match = matches[0]
-    line = index.find_line(match, symbol) if symbol else None
+    match = found.paths[0]
+    line = index.find_line(match, found.symbol) if found.symbol else None
     return CodeHint(match.as_posix(), line, "код теста (по full_name)")
 
 

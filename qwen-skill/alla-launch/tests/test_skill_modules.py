@@ -7,10 +7,17 @@ from pathlib import Path, PurePath
 import pytest
 from skill_fixtures import without_libmagic  # noqa: F401
 
-from alla_skill_lib.code_hints import ProjectIndex
+from alla_skill_lib.code_hints import JvmTest, ProjectIndex, jvm_test_of
 from alla_skill_lib.history import recurrence, run_records
 from alla_skill_lib.kb import discover_kb_dirs, kb_dir_for, kb_label
-from alla_skill_lib.modules import ClusterModule, ModuleResolver, resolve_run_modules
+from alla_skill_lib.modules import (
+    ClusterModule,
+    ModuleResolver,
+    build_dir,
+    build_tool,
+    maven_reactor,
+    resolve_run_modules,
+)
 
 
 def _touch(path: Path) -> None:
@@ -253,3 +260,79 @@ def test_history_records_carry_the_module() -> None:
     records = run_records(run, {}, set(), "5-run")
 
     assert [record["module"] for record in records] == ["orders", ""]
+
+
+@pytest.mark.parametrize(
+    "full_name",
+    [
+        "ru.a.AlphaTest.createOrder",
+        "ru.a.AlphaTest#createOrder",
+        "ru.a.AlphaTest.createOrder[1]",  # параметры в имени не мешают
+        "ru.a.AlphaTest.createOrder(String)",
+    ],
+)
+def test_jvm_test_names_the_class_with_its_package_and_the_method(
+    tmp_path: Path, full_name: str
+) -> None:
+    _multimodule(tmp_path)
+
+    found = jvm_test_of(ProjectIndex(tmp_path), full_name)
+
+    source = PurePath("orders/src/test/java/ru/a/AlphaTest.java")
+    assert found == JvmTest(source, "ru.a.AlphaTest", "createOrder")
+
+
+@pytest.mark.parametrize(
+    ("full_name", "reason"),
+    [
+        ("ru.a.MissingTest.create", "исходник теста не найден"),
+        ("ru.company.SmokeTest.check", "исходник теста неоднозначен"),
+        ("ru.a.AlphaTest", "метод теста не виден"),
+        ("ru.a.AlphaTest$Nested.create", "вложенный класс"),
+        ("tests/test_login.py::test_login", "не JVM-тест"),
+        ("tests.test_login.test_login", "не JVM-тест"),
+    ],
+)
+def test_jvm_test_explains_why_a_test_cannot_be_named(
+    tmp_path: Path, full_name: str, reason: str
+) -> None:
+    _multimodule(tmp_path)
+    _two_smoke_modules(tmp_path)
+    _touch(tmp_path / "tests" / "test_login.py")
+
+    found = jvm_test_of(ProjectIndex(tmp_path), full_name)
+
+    assert isinstance(found, str) and found.startswith(reason)
+
+
+def test_build_dir_counts_the_project_root_unlike_the_module(tmp_path: Path) -> None:
+    _touch(tmp_path / "pom.xml")
+    _touch(tmp_path / "orders" / "pom.xml")
+    source = PurePath("src/test/java/RootTest.java")
+
+    assert build_dir(tmp_path, source) == PurePath(".")
+    assert build_dir(tmp_path, PurePath("orders/src/test/java/A.java")) == PurePath("orders")
+    assert build_dir(tmp_path / "orders" / "src", PurePath("test/A.java")) is None
+
+
+def test_build_tool_tells_maven_from_gradle(tmp_path: Path) -> None:
+    _multimodule(tmp_path)
+    _touch(tmp_path / "both" / "pom.xml")
+    _touch(tmp_path / "both" / "build.gradle")
+
+    assert build_tool(tmp_path, PurePath("auth")) == "maven"
+    assert build_tool(tmp_path, PurePath("orders")) == "gradle"
+    assert build_tool(tmp_path, PurePath("both")) == "maven"
+    assert build_tool(tmp_path, PurePath("auth/src")) is None
+
+
+def test_maven_reactor_is_the_topmost_folder_with_poms_in_a_row(tmp_path: Path) -> None:
+    _touch(tmp_path / "autotests" / "pom.xml")
+    _touch(tmp_path / "autotests" / "services" / "pom.xml")
+    _touch(tmp_path / "autotests" / "services" / "orders" / "pom.xml")
+    _touch(tmp_path / "tools" / "lone" / "pom.xml")  # в «tools» pom.xml нет — реактор сам модуль
+
+    assert maven_reactor(tmp_path, PurePath("autotests/services/orders")) == PurePath("autotests")
+    assert maven_reactor(tmp_path, PurePath("tools/lone")) == PurePath("tools/lone")
+    _touch(tmp_path / "pom.xml")
+    assert maven_reactor(tmp_path, PurePath("autotests/services/orders")) == PurePath(".")
