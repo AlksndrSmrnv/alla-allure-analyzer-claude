@@ -685,7 +685,7 @@ def _job(tmp_path: Path, timeout: int, test: PlannedTest | None = None,
 
 def test_timeout_after_a_reproduced_run_keeps_the_reproduction(tmp_path: Path) -> None:
     skill_fake_maven.install(tmp_path, {f"{ORDER}#a": [FAILED_500]}, sleep=30, sleep_from_call=2)
-    files, plan = _job(tmp_path, timeout=2)
+    files, plan = _job(tmp_path, timeout=6)  # с запасом на первый запуск под нагрузкой
 
     result = execute(files, plan)
 
@@ -704,7 +704,7 @@ def test_timeout_kills_the_whole_maven_process_group(
 
     monkeypatch.setattr(rerun_worker, "KILL_GRACE_S", 1)
     skill_fake_maven.install(tmp_path, {f"{ORDER}#a": ["passed"]}, sleep=30, orphan=True)
-    files, plan = _job(tmp_path, timeout=1)
+    files, plan = _job(tmp_path, timeout=4)  # Maven должен успеть запустить потомка
 
     execute(files, plan)
 
