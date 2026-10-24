@@ -784,3 +784,33 @@ def test_project_lock_holds_across_report_folders(
 
     assert out.startswith("STATUS: ok\nВ проекте уже идёт перезапуск")
     assert not (run_dir / "rerun" / "plan.json").exists()
+
+
+def test_multiline_errors_are_compared_whole() -> None:
+    """RestAssured: первая строка у всех одна, а код ответа — ниже."""
+    ci = "1 expectation failed.\nExpected status code <200> but was <500>.\n"
+
+    assert same_error("1 expectation failed.\n  Expected status code <200> but was <500>.", ci)
+    assert not same_error("1 expectation failed.\nExpected status code <200> but was <401>.", ci)
+
+
+def test_failed_invocation_matching_ci_wins_whatever_the_xml_order() -> None:
+    other = rerun.CaseResult("failed", "expected: <200> but was: <401>")
+    same = rerun.CaseResult("failed", "expected: <200> but was: <500>")
+
+    for order in ([other, same], [same, other]):
+        assert method_result({(ORDER, "param"): order}, _planned("param")) == same
+    assert method_result({(ORDER, "param"): [other]}, _planned("param")) == other
+
+
+def test_failure_without_a_message_attribute_drops_the_exception_class(tmp_path: Path) -> None:
+    reports = tmp_path / "target" / "surefire-reports"
+    reports.mkdir(parents=True)
+    (reports / "TEST-x-alla-j-1.xml").write_text(
+        f'<testsuite><testcase name="a" classname="{ORDER}(alla-j-1)"><error type="E">'
+        "java.net.SocketTimeoutException: Read timed out\n\tat x.y(Z.java:1)</error>"
+        "</testcase></testsuite>", encoding="utf-8")
+
+    cases = read_reports(tmp_path, "alla-j-1", {})
+
+    assert method_result(cases, _planned("a")) == rerun.CaseResult("failed", "Read timed out")

@@ -53,6 +53,8 @@ NOT_IN_REACTOR = "Could not find the selected project in the reactor"
 
 OUTCOMES = ("passed", "reproduced", "other", "not_run")
 MAX_SHOWN_SKIPPED = 10
+MESSAGE_KEY_LINES = 20
+MESSAGE_KEEP_CHARS = 4000
 MAX_OFFER_NAMES = 5
 # Признаки нестабильности теста (отбор — ``flaky.py``): код → как назвать пользователю.
 SIGNALS = {
@@ -194,7 +196,7 @@ def build_plan(
             method=jvm.method,
             source=jvm.source.as_posix(),
             module=module,
-            message=first_line(str(test.get("status_message") or "")),
+            message=str(test.get("status_message") or "")[:MESSAGE_KEEP_CHARS],
             duration_ms=test.get("duration_ms"),
             changed=changed,
             signals=list((signals or {}).get(int(test["test_result_id"]), [])),
@@ -313,6 +315,9 @@ class CaseResult:
 _SUFFIXED_CLASS_RE = re.compile(r"\([^()]*\)$")
 _OUR_REPORT_RE = re.compile(r"-alla-[\w-]+-\d+\.xml$")
 _METHOD_END_RE = re.compile(r"[(\[]")
+# «org.opentest4j.AssertionFailedError: …» в тексте отчёта без message: класса в сообщении
+# Allure обычно нет.
+_EXCEPTION_PREFIX_RE = re.compile(r"^[\w.$]+(?:Exception|Error|Throwable|Failure)\w*:\s*")
 
 
 def report_snapshot(module_dir: Path) -> dict[str, int]:
@@ -354,8 +359,9 @@ def _case_result(case: ElementTree.Element) -> CaseResult:
     for tag in ("failure", "error", "rerunFailure", "rerunError"):
         failed = case.find(tag)
         if failed is not None:
-            message = failed.get("message") or first_line(failed.text or "")
-            return CaseResult("failed", first_line(message))
+            message = failed.get("message") or _EXCEPTION_PREFIX_RE.sub(
+                "", first_line(failed.text or ""))
+            return CaseResult("failed", message[:MESSAGE_KEEP_CHARS])
     if case.find("skipped") is not None:
         return CaseResult("skipped")
     flaky = case.find("flakyFailure") is not None or case.find("flakyError") is not None
@@ -384,19 +390,29 @@ def method_result(cases: dict[tuple[str, str], list[CaseResult]], test: PlannedT
     found = cases.get((test.class_name, test.method))
     if not found:
         return None
-    failed = next((case for case in found if case.status == "failed"), None)
-    if failed is not None:
-        return failed
+    failed = [case for case in found if case.status == "failed"]
+    if failed:
+        # Вызовы упали по-разному: важен тот, что повторяет падение в CI, а не порядок в XML.
+        same = [case for case in failed if same_error(case.message, test.message)]
+        return min(same or failed, key=lambda case: case.message)
     if any(case.status == "skipped" for case in found):
         return CaseResult("skipped")
     return CaseResult("passed", flaky=any(case.flaky for case in found))
 
 
 def same_error(local: str, testops: str) -> bool:
-    """Та же ошибка, что в TestOps (``repeat_key`` первых строк); в TestOps ошибки нет — да."""
+    """Та же ошибка, что в TestOps (``message_key``); в TestOps ошибки нет — да."""
     if not testops.strip():
         return True
-    return repeat_key(first_line(local)) == repeat_key(first_line(testops))
+    return message_key(local) == message_key(testops)
+
+
+def message_key(text: str) -> str:
+    """Ключ сообщения целиком (до ``MESSAGE_KEY_LINES`` строк): у многострочных ошибок первая
+    строка бывает общей («1 expectation failed.» RestAssured), а коды ответа — ниже. Пробелы
+    схлопнуты, время, id и длинные числа не различают (``repeat_key``)."""
+    lines = [" ".join(line.split()) for line in text.splitlines() if line.strip()]
+    return repeat_key("\n".join(lines[:MESSAGE_KEY_LINES]))
 
 
 def first_line(text: str) -> str:
