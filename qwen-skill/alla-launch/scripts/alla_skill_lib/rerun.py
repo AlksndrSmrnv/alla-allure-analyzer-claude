@@ -82,6 +82,8 @@ class PlannedTest:
     changed: str = ""  # «правка агента применена» / «код теста изменён» — проверка правки
     signals: list[str] = field(default_factory=list)  # коды ``SIGNALS``
     source_sha: str = ""  # исходник на момент плана (``source_digest``)
+    # Ошибки CI других вариантов (параметров) этого метода в той же проблеме.
+    other_messages: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -167,7 +169,9 @@ def build_plan(
     project_root = Path(run["project_root"])
     plan.project_root = str(project_root)
     index = ProjectIndex(project_root)
-    seen: set[tuple[str, str]] = set()
+    # Параметры одного метода в одной проблеме — один запуск, но с ошибками CI всех вариантов;
+    # тот же метод в другой проблеме — свой тест плана (итог нужен каждой проблеме).
+    seen: dict[tuple[str, str, str], PlannedTest] = {}
     dirty: dict[PurePath, bool] = {}  # git status исходника — один раз на файл
     for entry, test in picks:
         file_id = entry["file_id"]
@@ -177,7 +181,12 @@ def build_plan(
             plan.skipped.append(SkippedTest(file_id, name, located))
             continue
         jvm, module = located
-        if (jvm.class_name, jvm.method) in seen:  # параметры одного метода — один запуск
+        key = (file_id, jvm.class_name, jvm.method)
+        if key in seen:
+            message = str(test.get("status_message") or "")[:MESSAGE_KEEP_CHARS]
+            if message.strip() and not any(same_error(message, known)
+                                           for known in ci_messages(seen[key])):
+                seen[key].other_messages.append(message)
             continue
         # Лимит — до git status: план строится на каждом done, кандидатов бывают сотни.
         if len(plan.tests) >= max_tests:
@@ -189,8 +198,7 @@ def build_plan(
             plan.skipped.append(SkippedTest(
                 file_id, name, f"{changed} — перезапуск не скажет о нестабильности"))
             continue
-        seen.add((jvm.class_name, jvm.method))
-        plan.tests.append(PlannedTest(
+        planned = PlannedTest(
             test_result_id=int(test["test_result_id"]),
             file_id=file_id,
             name=str(test.get("name") or name),
@@ -204,7 +212,9 @@ def build_plan(
             changed=changed,
             signals=list((signals or {}).get(int(test["test_result_id"]), [])),
             source_sha=source_digest(project_root, jvm.source.as_posix()),
-        ))
+        )
+        seen[key] = planned
+        plan.tests.append(planned)
     plan.groups = _groups(project_root, plan)
     if plan.tests and not plan.groups:
         plan.note = ("Maven не найден: нет ни mvnw в проекте, ни mvn в PATH. Пользователю нужно "
@@ -410,11 +420,20 @@ def method_result(cases: dict[tuple[str, str], list[CaseResult]], test: PlannedT
     failed = [case for case in found if case.status == "failed"]
     if failed:
         # Вызовы упали по-разному: важен тот, что повторяет падение в CI, а не порядок в XML.
-        same = [case for case in failed if same_error(case.message, test.message)]
+        same = [case for case in failed if repeats_ci(case.message, test)]
         return min(same or failed, key=lambda case: case.message)
     if any(case.status == "skipped" for case in found):
         return CaseResult("skipped")
     return CaseResult("passed", flaky=any(case.flaky for case in found))
+
+
+def ci_messages(test: PlannedTest) -> list[str]:
+    return [test.message, *test.other_messages]
+
+
+def repeats_ci(local: str, test: PlannedTest) -> bool:
+    """Локальная ошибка — одна из ошибок CI этого метода (любого его варианта)."""
+    return any(same_error(local, message) for message in ci_messages(test))
 
 
 def same_error(local: str, testops: str) -> bool:

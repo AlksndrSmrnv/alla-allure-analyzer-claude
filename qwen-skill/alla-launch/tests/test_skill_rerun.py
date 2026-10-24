@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -853,3 +854,30 @@ def test_plan_limit_is_checked_before_git_status(
     assert [item.reason for item in plan.skipped] == [
         "сверх лимита ALLURE_RERUN_MAX_TESTS (1 за раз)"]
     assert len(calls) == 1  # сверх лимита git status не вызывается
+
+
+def test_variants_of_a_method_keep_every_ci_error_and_each_problem_its_own_test(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    run_dir, run, _ = _prepare(nested_project, capsys)
+    tests = {test["test_result_id"]: test for test in run["triage"]["failed_tests"]}
+    tests[102].update(full_name=f"{ORDER}.createOrder[2]", status_message="boom 2")
+    tests[103].update(full_name=f"{ORDER}.createOrder[3]")  # тот же метод в другой проблеме
+    order, login = _problem_of(run, 101), _problem_of(run, 103)
+    picks = [(entry, test) for entry in run["clusters"]
+             if str(int(entry["file_id"])) in (order, login)
+             for test in rerun.failed_tests_of(run, entry)]
+
+    plan = rerun.build_plan(rerun.ws.RunPaths(run_dir), run, picks, attempts=3, max_tests=20)
+
+    assert [(int(t.file_id), t.method) for t in plan.tests] == [
+        (int(order), "createOrder"), (int(login), "createOrder")]
+    assert plan.tests[0].other_messages == ["boom 2"]
+    assert surefire_filter(plan.tests) == f"{ORDER}#createOrder"
+
+    # Локально воспроизводится ошибка второго варианта — это падение из CI, а не «иначе».
+    skill_fake_maven.install(tmp_path, {f"{ORDER}#createOrder": ["failed:boom 2"]})
+    files, job = _job(tmp_path, timeout=60, test=replace(plan.tests[0], module=""))
+    item = execute(files, job)["tests"][0]
+    assert (item["outcome"], item["runs"]) == ("reproduced", 3)

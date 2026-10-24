@@ -31,9 +31,9 @@ from alla_skill_lib.rerun import (
     maven_command,
     method_result,
     read_reports,
+    repeats_ci,
     report_snapshot,
     safe_text,
-    same_error,
     source_digest,
     worker_env,
 )
@@ -119,7 +119,7 @@ def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
                     outcomes[test.test_result_id] = _outcome(
                         test, "passed", runs, attempt=attempt, surefire_flaky=found.flaky,
                         **({"changed": test.changed or EDITED_REASON} if edited else {}))
-                elif not same_error(found.message, test.message):
+                elif not repeats_ci(found.message, test):
                     outcomes[test.test_result_id] = _outcome(
                         test, "other", runs, attempt=attempt, message=safe_text(found.message))
                 else:
