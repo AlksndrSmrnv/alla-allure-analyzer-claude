@@ -215,6 +215,10 @@ def locate(project_root: Path, index: ProjectIndex, full_name: str) -> tuple[Jvm
     found = jvm_test_of(index, full_name) if full_name else "у теста нет полного имени"
     if isinstance(found, str):
         return found
+    if not all(_IDENT_RE.fullmatch(part) for part in [*found.class_name.split("."), found.method]):
+        # Имя из TestOps — недоверенные данные: «+», «*», «,» surefire понял бы как шаблон и
+        # запустил бы больше, чем показано в плане.
+        return "в имени теста есть символы, которые Maven понял бы как шаблон"
     directory = build_dir(project_root, found.source)
     if directory is None:
         return "нет файла сборки (pom.xml)"
@@ -312,6 +316,7 @@ class CaseResult:
     flaky: bool = False  # прошёл при повторе самого surefire (rerunFailingTestsCount)
 
 
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _SUFFIXED_CLASS_RE = re.compile(r"\([^()]*\)$")
 _OUR_REPORT_RE = re.compile(r"-alla-[\w-]+-\d+\.xml$")
 _METHOD_END_RE = re.compile(r"[(\[]")

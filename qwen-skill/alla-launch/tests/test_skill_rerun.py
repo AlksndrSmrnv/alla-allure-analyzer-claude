@@ -814,3 +814,18 @@ def test_failure_without_a_message_attribute_drops_the_exception_class(tmp_path:
     cases = read_reports(tmp_path, "alla-j-1", {})
 
     assert method_result(cases, _planned("a")) == rerun.CaseResult("failed", "Read timed out")
+
+
+@pytest.mark.parametrize("full_name", [
+    f"{ORDER}#createOrder+updateOrder", f"{ORDER}#*", f"{ORDER}#create?rder",
+    f"{ORDER}#createOrder,ru.x.Other", f"{ORDER}#should create order",
+])
+def test_selector_characters_from_testops_never_reach_maven(
+    nested_project: Path, full_name: str,
+) -> None:
+    """Имя теста — данные TestOps: шаблон surefire запустил бы больше показанного в плане."""
+    index = rerun.ProjectIndex(nested_project)
+
+    found = rerun.locate(nested_project, index, full_name)
+
+    assert found == "в имени теста есть символы, которые Maven понял бы как шаблон"
