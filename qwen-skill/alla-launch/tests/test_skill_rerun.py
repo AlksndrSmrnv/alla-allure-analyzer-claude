@@ -7,6 +7,7 @@ Maven — фейковый ``mvnw`` проекта (``skill_fake_maven``): он 
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -333,7 +334,7 @@ def test_surefire_reports_are_read_per_method_with_parameters_and_reruns(tmp_pat
         '<testsuite><testcase name="param" classname="ru.company.orders.OrderTest"/></testsuite>',
         encoding="utf-8")
 
-    cases = read_reports(tmp_path, "alla-j-1", started=time.time())
+    cases = read_reports(tmp_path, "alla-j-1", before={})
 
     assert method_result(cases, _planned("param")) == rerun.CaseResult("failed", "boom 2")
     assert method_result(cases, _planned("flaky")) == rerun.CaseResult("passed", flaky=True)
@@ -342,15 +343,21 @@ def test_surefire_reports_are_read_per_method_with_parameters_and_reruns(tmp_pat
     assert method_result(cases, _planned("missing")) is None
 
 
-def test_reports_without_our_suffix_are_taken_by_time(tmp_path: Path) -> None:
+def test_reports_without_our_suffix_count_only_if_this_run_wrote_them(tmp_path: Path) -> None:
+    """pom со своим суффиксом: свежий отчёт прошлого запуска не выдаёт себя за итог этого."""
     reports = tmp_path / "target" / "surefire-reports"
     reports.mkdir(parents=True)
-    (reports / "TEST-ru.company.orders.OrderTest.xml").write_text(
-        '<testsuite><testcase name="flaky" classname="ru.company.orders.OrderTest"/></testsuite>',
-        encoding="utf-8")
+    old = reports / "TEST-ru.company.orders.OrderTest.xml"
+    old.write_text('<testsuite><testcase name="flaky" classname="ru.company.orders.OrderTest"/>'
+                   "</testsuite>", encoding="utf-8")
+    before = rerun.report_snapshot(tmp_path)
 
-    assert read_reports(tmp_path, "alla-j-1", started=time.time() - 10)
-    assert not read_reports(tmp_path, "alla-j-1", started=time.time() + 10)
+    assert not read_reports(tmp_path, "alla-j-1", before)  # сборка упала — отчёт прежний
+    old.write_text(old.read_text(encoding="utf-8"), encoding="utf-8")
+    import os
+    os.utime(old, ns=(before[old.name] + 10**9, before[old.name] + 10**9))
+    assert read_reports(tmp_path, "alla-j-1", before)  # этот запуск переписал его
+    assert read_reports(tmp_path, "alla-j-1", {})  # и новый файл — тоже
 
 
 def test_same_error_ignores_ids_and_time_but_not_codes() -> None:
@@ -376,12 +383,7 @@ def test_worker_env_drops_skill_settings_and_qwen_session() -> None:
 
 def test_time_limit_stops_maven_and_reports_what_did_not_run(tmp_path: Path) -> None:
     skill_fake_maven.install(tmp_path, {f"{ORDER}#a": ["passed"]}, sleep=30)
-    files = JobFiles(tmp_path / "rerun")
-    files.root.mkdir()
-    group = rerun.MavenGroup(module="", cwd=str(tmp_path), tool=[str(tmp_path / "mvnw")],
-                             select=[], fallback_cwd="")
-    plan = {"job": "j", "attempts": 3, "timeout": 1, "maven_args": [],
-            "tests": [vars(_planned("a"))], "groups": [vars(group)]}
+    files, plan = _job(tmp_path, timeout=1)
 
     started = time.monotonic()
     result = execute(files, plan)
@@ -670,13 +672,15 @@ def test_partly_skipped_method_is_not_a_pass(tmp_path: Path) -> None:
     assert method_result(cases, _planned("param")) == rerun.CaseResult("skipped")
 
 
-def _job(tmp_path: Path, timeout: int) -> tuple[JobFiles, dict[str, Any]]:
+def _job(tmp_path: Path, timeout: int, test: PlannedTest | None = None,
+         ) -> tuple[JobFiles, dict[str, Any]]:
     files = JobFiles(tmp_path / "rerun")
     files.root.mkdir()
     group = rerun.MavenGroup(module="", cwd=str(tmp_path), tool=[str(tmp_path / "mvnw")],
                              select=[], fallback_cwd="")
     return files, {"job": "j", "attempts": 3, "timeout": timeout, "maven_args": [],
-                   "tests": [vars(_planned("a"))], "groups": [vars(group)]}
+                   "project_root": str(tmp_path), "tests": [vars(test or _planned("a"))],
+                   "groups": [vars(group)]}
 
 
 def test_timeout_after_a_reproduced_run_keeps_the_reproduction(tmp_path: Path) -> None:
@@ -738,3 +742,23 @@ def test_second_start_while_running_does_not_replace_the_job(
     assert first is not None and second is None
     assert json.loads((run_dir / "rerun" / "plan.json").read_text())["job"] == first
     assert _wait_done(run_dir, capsys).startswith("STATUS: rerun_done")
+
+
+def test_test_edited_during_the_rerun_is_a_check_of_the_fix(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "OrderTest.java"
+    source.parent.mkdir()
+    source.write_text("class OrderTest {}\n", encoding="utf-8")
+    planned = PlannedTest(1, "01", "a", f"{ORDER}.a", ORDER, "a", "src/OrderTest.java", "", "",
+                          source_sha=rerun.source_digest(tmp_path, "src/OrderTest.java"))
+    skill_fake_maven.install(tmp_path, {f"{ORDER}#a": [FAILED_500, "passed"]})
+    files, plan = _job(tmp_path, timeout=60, test=planned)
+    assert execute(files, plan)["tests"][0]["changed"] == ""  # код тот же
+
+    shutil.rmtree(files.root)
+    (tmp_path / skill_fake_maven.RUNS_NAME).unlink()
+    files, plan = _job(tmp_path, timeout=60, test=planned)
+    source.write_text("class OrderTest { /* правка */ }\n", encoding="utf-8")
+    item = execute(files, plan)["tests"][0]
+
+    assert (item["outcome"], item["changed"]) == ("passed", rerun_worker.EDITED_REASON)
+    assert rerun.RerunView.group(item) == "fixed"

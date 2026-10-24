@@ -31,13 +31,16 @@ from alla_skill_lib.rerun import (
     maven_command,
     method_result,
     read_reports,
+    report_snapshot,
     safe_text,
     same_error,
+    source_digest,
     worker_env,
 )
 
 TIMEOUT_REASON = "вышел потолок времени ALLURE_RERUN_TIMEOUT"
 BUILD_REASON = "сборка не прошла"
+EDITED_REASON = "код теста изменён во время перезапуска"
 
 
 def main(argv: list[str]) -> int:
@@ -59,6 +62,7 @@ def main(argv: list[str]) -> int:
 def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
     """Запуски по модулям, до ``attempts`` раз; в следующий — только упавшие с той же ошибкой."""
     tests = [PlannedTest(**item) for item in plan["tests"]]
+    root = Path(plan["project_root"])
     groups = [MavenGroup(**item) for item in plan["groups"]]
     attempts = int(plan["attempts"])
     extra = [str(arg) for arg in plan["maven_args"]]
@@ -90,7 +94,7 @@ def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
             _progress(files, plan, attempt, group.module, outcomes)
             suffix = f"alla-{plan['job']}-{attempt}"
             log = files.maven_log(attempt, group.module)
-            started = time.time()
+            before = report_snapshot(Path(group.fallback_cwd or group.cwd))
             use_fallback = group.module in fallback
             code, killed = _maven(group, batch, suffix, extra, log, deadline, use_fallback)
             if code and not killed and not use_fallback and group.fallback_cwd and _says(log, NOT_IN_REACTOR):
@@ -100,7 +104,7 @@ def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
             timed_out = timed_out or killed
             if code and not killed:
                 build[group.module] = build_errors(log)
-            cases = read_reports(Path(group.fallback_cwd or group.cwd), suffix, started)
+            cases = read_reports(Path(group.fallback_cwd or group.cwd), suffix, before)
             for test in batch:
                 found = method_result(cases, test)
                 if found is None or found.status == "skipped":
@@ -111,8 +115,10 @@ def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
                     continue
                 runs[test.test_result_id] += 1
                 if found.status == "passed":
+                    edited = source_digest(root, test.source) != test.source_sha
                     outcomes[test.test_result_id] = _outcome(
-                        test, "passed", runs, attempt=attempt, surefire_flaky=found.flaky)
+                        test, "passed", runs, attempt=attempt, surefire_flaky=found.flaky,
+                        **({"changed": test.changed or EDITED_REASON} if edited else {}))
                 elif not same_error(found.message, test.message):
                     outcomes[test.test_result_id] = _outcome(
                         test, "other", runs, attempt=attempt, message=safe_text(found.message))

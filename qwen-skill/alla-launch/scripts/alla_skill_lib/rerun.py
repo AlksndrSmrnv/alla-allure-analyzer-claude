@@ -79,6 +79,7 @@ class PlannedTest:
     duration_ms: int | None = None
     changed: str = ""  # «правка агента применена» / «код теста изменён» — проверка правки
     signals: list[str] = field(default_factory=list)  # коды ``SIGNALS``
+    source_sha: str = ""  # исходник на момент плана (``source_digest``)
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,7 @@ class Plan:
     groups: list[MavenGroup] = field(default_factory=list)
     attempts: int = 3
     note: str = ""  # почему перезапустить нельзя вообще (не Maven, нет Maven…)
+    project_root: str = ""
 
     @property
     def digest(self) -> str:
@@ -161,6 +163,7 @@ def build_plan(
         plan.note = "перезапуск тестов пока работает только на macOS и Linux"
         return plan
     project_root = Path(run["project_root"])
+    plan.project_root = str(project_root)
     index = ProjectIndex(project_root)
     seen: set[tuple[str, str]] = set()
     for entry, test in picks:
@@ -195,6 +198,7 @@ def build_plan(
             duration_ms=test.get("duration_ms"),
             changed=changed,
             signals=list((signals or {}).get(int(test["test_result_id"]), [])),
+            source_sha=source_digest(project_root, jvm.source.as_posix()),
         ))
     plan.groups = _groups(project_root, plan)
     if plan.tests and not plan.groups:
@@ -311,17 +315,28 @@ _OUR_REPORT_RE = re.compile(r"-alla-[\w-]+-\d+\.xml$")
 _METHOD_END_RE = re.compile(r"[(\[]")
 
 
-def read_reports(module_dir: Path, suffix: str, started: float) -> dict[tuple[str, str], list[CaseResult]]:
+def report_snapshot(module_dir: Path) -> dict[str, int]:
+    """Отчёты surefire модуля до запуска: имя → время изменения (нс)."""
+    reports = module_dir / "target" / "surefire-reports"
+    return {path.name: _mtime_ns(path) for path in reports.glob("TEST-*.xml")}
+
+
+def read_reports(
+    module_dir: Path, suffix: str, before: dict[str, int],
+) -> dict[tuple[str, str], list[CaseResult]]:
     """Результаты по (класс, метод) из ``target/surefire-reports`` этого запуска.
 
     Файлы запуска — ``TEST-<класс>-<суффикс>.xml`` (``-Dsurefire.reportNameSuffix``); если их
-    нет (pom задаёт свой суффикс), — ``TEST-*.xml`` не старше начала запуска.
+    нет (pom задаёт свой суффикс), — ``TEST-*.xml``, которых не было до запуска или которые
+    с тех пор изменились (``before`` — ``report_snapshot``). Время «не старше начала» не
+    годится: отчёт прошлого запуска секундной давности выдал бы себя за итог сломанной сборки.
     """
     reports = module_dir / "target" / "surefire-reports"
     files = sorted(reports.glob(f"TEST-*-{suffix}.xml"))
     if not files:  # отчёты прежних перезапусков (свой суффикс) — не этого запуска
         files = [path for path in sorted(reports.glob("TEST-*.xml"))
-                 if not _OUR_REPORT_RE.search(path.name) and _mtime(path) >= started - 1]
+                 if not _OUR_REPORT_RE.search(path.name)
+                 and before.get(path.name) != _mtime_ns(path)]
     cases: dict[tuple[str, str], list[CaseResult]] = {}
     for path in files:
         try:
@@ -347,11 +362,19 @@ def _case_result(case: ElementTree.Element) -> CaseResult:
     return CaseResult("passed", flaky=flaky)
 
 
-def _mtime(path: Path) -> float:
+def _mtime_ns(path: Path) -> int:
     try:
-        return path.stat().st_mtime
+        return path.stat().st_mtime_ns
     except OSError:
-        return 0.0
+        return 0
+
+
+def source_digest(project_root: Path, source: str) -> str:
+    """Хэш исходника теста: изменился во время перезапуска — итог «проверка правки»."""
+    try:
+        return hashlib.sha256((project_root / source).read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def method_result(cases: dict[tuple[str, str], list[CaseResult]], test: PlannedTest) -> CaseResult | None:
@@ -530,6 +553,7 @@ def _start(paths: ws.RunPaths, files: JobFiles, plan: Plan, timeout: int, extra:
         "timeout": timeout,
         "maven_args": extra,
         "lock": str(paths.reports_dir / LOCK_NAME),
+        "project_root": plan.project_root,
         "started": time.time(),
         "tests": [asdict(test) for test in plan.tests],
         "groups": [asdict(group) for group in plan.groups],
