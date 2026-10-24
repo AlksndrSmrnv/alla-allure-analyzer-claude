@@ -1597,7 +1597,7 @@ def _rerun(
     if args.plan_hash != plan.digest:
         return "rerun", ("План изменился или хэш не тот — ничего не запущено. Покажи пользователю "
                          "новый план и спроси снова.\n" + shown)
-    if rerun.lock_busy(paths.reports_dir / rerun.LOCK_NAME):
+    if rerun.lock_busy(rerun.project_lock(Path(run["project_root"]))):
         return "ok", ("В проекте уже идёт перезапуск тестов другого разбора — ничего не запущено. "
                       "Скажи пользователю, что повторить можно после его итога.")
     if rerun.start_job(paths, plan, settings.rerun_timeout, extra) is None:

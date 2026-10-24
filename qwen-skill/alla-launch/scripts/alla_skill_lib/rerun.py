@@ -552,7 +552,7 @@ def _start(paths: ws.RunPaths, files: JobFiles, plan: Plan, timeout: int, extra:
         "attempts": plan.attempts,
         "timeout": timeout,
         "maven_args": extra,
-        "lock": str(paths.reports_dir / LOCK_NAME),
+        "lock": str(project_lock(Path(plan.project_root))),
         "project_root": plan.project_root,
         "started": time.time(),
         "tests": [asdict(test) for test in plan.tests],
@@ -598,6 +598,20 @@ def count_wait(files: JobFiles) -> int:
         count = 1
     files.waits.write_text(str(count), encoding="utf-8")
     return count
+
+
+def project_lock(project_root: Path) -> Path:
+    """Блокировка «один перезапуск на проект»: в папке отчётов по умолчанию этого проекта.
+
+    Не в папке разбора и не в ``--reports-dir``: разборы одного проекта с разными папками
+    отчётов иначе гоняли бы Maven по одним исходникам и ``target/`` одновременно.
+    """
+    folder = project_root / ws.REPORTS_DIRNAME
+    folder.mkdir(parents=True, exist_ok=True)
+    ignore = folder / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text("# Отчёты alla-launch не коммитятся\n*\n", encoding="utf-8")
+    return folder / LOCK_NAME
 
 
 def lock_busy(lock: Path) -> bool:

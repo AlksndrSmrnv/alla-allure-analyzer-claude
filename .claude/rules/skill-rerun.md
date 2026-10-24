@@ -89,8 +89,10 @@ paths:
   идущего, и итог первого не совпадал с `job`). Окружение (`worker_env`) без `ALLURE_*` (токен),
   `QWEN_CODE_*` и `PYTHONPATH`; значения `ALLURE_RERUN_MAVEN_ARGS` не печатаются ни в плане,
   ни в логе (`<доп. аргументы>`).
-- Один перезапуск на проект: воркер держит `fcntl`-блокировку `<папка отчётов>/.rerun.lock`;
-  `--yes` проверяет её заранее (`lock_busy`). Состояние (`job_state`): `result.json` того же
+- Один перезапуск на проект: воркер держит `fcntl`-блокировку
+  `<проект>/alla-reports/.rerun.lock` (`project_lock` — папка отчётов по умолчанию, с
+  `.gitignore`, даже при своём `--reports-dir`: разборы одного проекта с разными папками
+  иначе гоняли Maven одновременно — ревью Codex); `--yes` проверяет её заранее (`lock_busy`). Состояние (`job_state`): `result.json` того же
   `job` — done; `failed` — причина; живой `pid` (не старше потолка + `STALE_MARGIN_S`, зомби
   своей команды — `waitpid`) — running; иначе «прервался».
 - Команда Maven: `-B test -Dtest=A#m1+m2,B#m3 -Dsurefire.failIfNoSpecifiedTests=false

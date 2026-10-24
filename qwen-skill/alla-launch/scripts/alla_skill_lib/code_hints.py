@@ -191,6 +191,8 @@ def jvm_test_of(index: ProjectIndex, full_name: str) -> JvmTest | str:
         return "вложенный класс — пока не поддерживается"
     found = _match_full_name(index, full_name)
     if not found.paths:
+        found = _match_by_package(index, full_name)
+    if not found.paths:
         return "исходник теста не найден"
     if len(found.paths) > 1:
         return "исходник теста неоднозначен: " + ", ".join(p.as_posix() for p in found.paths)
@@ -200,6 +202,40 @@ def jvm_test_of(index: ProjectIndex, full_name: str) -> JvmTest | str:
     if not found.class_parts or not found.symbol or not found.method_is_last:
         return "метод теста не виден в имени"
     return JvmTest(source, ".".join(found.class_parts), found.symbol)
+
+
+_PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)", re.MULTILINE)
+
+
+def _match_by_package(index: ProjectIndex, full_name: str) -> _FullNameMatch:
+    """JVM-исходник, чьи папки не повторяют пакет (``src/test/kotlin/OrderTest.kt``).
+
+    Берётся единственный файл с именем класса и тем же ``package``, что в ``full_name``:
+    компилятору (и Maven) папки не важны, а по одному имени файла класс неоднозначен.
+    """
+    dotted, _, method = full_name.strip().partition("#")
+    parts = [p for p in _PARAMS_RE.sub("", dotted).split(".") if p]
+    symbol = _PARAMS_RE.sub("", method)
+    class_parts = parts if symbol else parts[:-1]
+    symbol = symbol or (parts[-1] if parts else "")
+    if not class_parts or not symbol:
+        return _FullNameMatch([])
+    package = ".".join(class_parts[:-1])
+    matches = [path for path in index.candidates(class_parts[-1])
+               if path.suffix in JVM_EXTENSIONS and _package_of(index.root / path) == package]
+    if len(matches) != 1:
+        return _FullNameMatch(matches if len(matches) > 1 else [])
+    return _FullNameMatch(matches, tuple(class_parts), symbol, True)
+
+
+def _package_of(path: Path) -> str:
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            head = handle.read(MAX_SCANNED_BYTES)
+    except OSError:
+        return ""
+    found = _PACKAGE_RE.search(head)
+    return found.group(1) if found else ""
 
 
 @dataclass(frozen=True)

@@ -762,3 +762,25 @@ def test_test_edited_during_the_rerun_is_a_check_of_the_fix(tmp_path: Path) -> N
 
     assert (item["outcome"], item["changed"]) == ("passed", rerun_worker.EDITED_REASON)
     assert rerun.RerunView.group(item) == "fixed"
+
+
+def test_project_lock_holds_across_report_folders(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    skill_fake_maven.install(nested_project / "autotests", {})
+    reports = tmp_path / "elsewhere"
+    code, out = _run(["prepare", "777", "--project-root", str(nested_project),
+                      "--reports-dir", str(reports)], capsys)
+    assert code == 0, out
+    run_dir = next(path for path in reports.iterdir() if (path / "run.json").is_file())
+    run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    order = _problem_of(run, 101)
+    plan = _rerun(run_dir, capsys, order)
+
+    with rerun.hold_lock(rerun.project_lock(nested_project)) as held:  # перезапуск другого разбора
+        assert held
+        out = _rerun(run_dir, capsys, order, "--yes", "--plan", _plan_hash(plan))
+
+    assert out.startswith("STATUS: ok\nВ проекте уже идёт перезапуск")
+    assert not (run_dir / "rerun" / "plan.json").exists()

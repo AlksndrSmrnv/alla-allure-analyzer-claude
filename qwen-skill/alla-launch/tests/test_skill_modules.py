@@ -336,3 +336,19 @@ def test_maven_reactor_is_the_topmost_folder_with_poms_in_a_row(tmp_path: Path) 
     assert maven_reactor(tmp_path, PurePath("tools/lone")) == PurePath("tools/lone")
     _touch(tmp_path / "pom.xml")
     assert maven_reactor(tmp_path, PurePath("autotests/services/orders")) == PurePath(".")
+
+
+def test_jvm_test_found_by_package_when_folders_do_not_repeat_it(tmp_path: Path) -> None:
+    kotlin = tmp_path / "src" / "test" / "kotlin"
+    kotlin.mkdir(parents=True)
+    (kotlin / "OrderTest.kt").write_text("package ru.company.orders\n\nclass OrderTest\n")
+    other = tmp_path / "src" / "test" / "java" / "misc"
+    other.mkdir(parents=True)
+    (other / "OrderTest.java").write_text("package ru.company.misc;\n\nclass OrderTest {}\n")
+
+    found = jvm_test_of(ProjectIndex(tmp_path), "ru.company.orders.OrderTest.createOrder")
+
+    assert found == JvmTest(PurePath("src/test/kotlin/OrderTest.kt"),
+                            "ru.company.orders.OrderTest", "createOrder")
+    assert jvm_test_of(ProjectIndex(tmp_path), "ru.company.other.OrderTest.x") == \
+        "исходник теста не найден"
