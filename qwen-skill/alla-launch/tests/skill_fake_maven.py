@@ -30,15 +30,21 @@ def install(
     exit_code: int = 0,
     sleep: float = 0.0,
     not_in_reactor: bool = False,
+    python: str = sys.executable,
+    script: str = str(Path(__file__).resolve()),
 ) -> Path:
-    """Положить ``mvnw`` и сценарий в ``folder``; вернуть путь к ``mvnw``."""
+    """Положить ``mvnw`` и сценарий в ``folder``; вернуть путь к ``mvnw``.
+
+    ``python`` и ``script`` — для shell: стенд Qwen передаёт пути от папки ``mvnw``
+    (``$(dirname "$0")/…``), чтобы песочница не читала ничего вне проекта.
+    """
     spec = folder / SPEC_NAME
     spec.write_text(json.dumps({
         "results": results, "exit": exit_code, "sleep": sleep, "not_in_reactor": not_in_reactor,
     }), encoding="utf-8")
     wrapper = folder / "mvnw"
     wrapper.write_text(
-        f'#!/bin/sh\nexec "{sys.executable}" "{Path(__file__).resolve()}" --spec "{spec}" "$@"\n',
+        f'#!/bin/sh\nexec "{python}" "{script}" --spec "{spec}" "$@"\n',
         encoding="utf-8",
     )
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

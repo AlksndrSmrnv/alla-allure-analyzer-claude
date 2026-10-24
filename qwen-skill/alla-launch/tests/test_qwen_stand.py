@@ -952,3 +952,41 @@ def test_screenshot_checks(tmp_path: Path) -> None:
 def test_screenshot_fixture_serves_the_real_picture() -> None:
     fixture = build_fixture("screenshot")
     assert fixture.contents[9401].startswith(b"\x89PNG") and len(fixture.contents[9401]) > 10_000
+
+
+def test_flaky_scenario_project_has_a_clean_fake_maven(tmp_path: Path) -> None:
+    """F01: pom.xml и mvnw в корне, mvnw берёт Python и скрипт из проекта; отчёты surefire и
+    счётчик запусков git не видит."""
+    project = build_project(tmp_path, "http://127.0.0.1:1", venv=None,
+                            maven=SCENARIOS["F01"].maven)
+    wrapper = (project / "mvnw").read_text(encoding="utf-8")
+    assert '"$(dirname "$0")/.venv/bin/python" "$(dirname "$0")/.stand-maven/fake_maven.py"' in wrapper
+    assert (project / "pom.xml").is_file() and (project / ".stand-maven" / "fake_maven.py").is_file()
+    (project / "target" / "surefire-reports").mkdir(parents=True)
+    (project / "target" / "surefire-reports" / "TEST-x.xml").write_text("<testsuite/>")
+    (project / "fake-maven-runs.json").write_text("{}")
+    status = subprocess.run(["git", "-C", str(project), "status", "--porcelain"],
+                            capture_output=True, text=True, check=True).stdout
+    assert status == ""
+
+
+def test_flaky_checks_need_the_commands_and_the_mark(tmp_path: Path) -> None:
+    run_dir = tmp_path / "p" / "alla-reports" / "793-run"
+    rerun_cmd = f"python3 {SKILL} rerun --run {run_dir}"
+    ctx = context(tmp_path, events(
+        ("run_shell_command", {"command": f"{rerun_cmd} --yes --plan abcd1234"},
+         "STATUS: rerun_done"),
+        ("run_shell_command", {"command": f"{rerun_cmd} --remember --result j1"}, "STATUS: saved"),
+        final="Нестабильные — упали в CI, а при перезапуске прошли (1):"), case="F01")
+    assert CHECKS["rerun_started"](ctx)["status"] == "fail"  # итога на диске нет
+    (run_dir / "rerun").mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}")
+    (run_dir / "rerun" / "result.json").write_text("{}")
+    assert CHECKS["rerun_started"](ctx)["status"] == "pass"
+    assert CHECKS["rerun_result_shown"](ctx)["status"] == "pass"
+    assert CHECKS["flaky_saved"](ctx)["status"] == "fail"
+    marks = tmp_path / "p" / "alla-kb" / "flaky"
+    marks.mkdir(parents=True)
+    (marks / "OrderTest_createOrder_1.json").write_text(
+        json.dumps({"test": "ru.company.orders.OrderTest.createOrder"}))
+    assert CHECKS["flaky_saved"](ctx)["status"] == "pass"

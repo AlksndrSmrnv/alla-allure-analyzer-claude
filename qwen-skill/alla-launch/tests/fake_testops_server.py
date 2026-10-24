@@ -27,6 +27,7 @@ from skill_fake_testops import (  # noqa: E402
     FakeTestOps,
     LaunchFixture,
     default_launch,
+    flaky_launch,
     green_launch,
     info_only_launch,
     injection_launch,
@@ -50,6 +51,7 @@ FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
     "unique": lambda: _unique_launch(),
     "shared": lambda: _shared_launch(),
     "test_bug": test_bug_launch,
+    "flaky": flaky_launch,
     "no_logs": no_logs_launch,
     "screenshot": lambda: screenshot_launch(
         png=(Path(__file__).parent / "fixtures" / "images" / "cookie_banner.png").read_bytes()),

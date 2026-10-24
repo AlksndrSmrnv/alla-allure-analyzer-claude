@@ -40,6 +40,7 @@ sys.path.insert(0, str(TESTS_DIR))
 
 from fake_testops_server import FakeTestOpsServer, build_fixture  # noqa: E402
 from quality_harness import fingerprint, skill_files  # noqa: E402
+import skill_fake_maven  # noqa: E402
 from skill_fake_testops import TOKEN  # noqa: E402
 from skill_fixtures import LOGIN_TEST_JAVA, ORDER_TEST_JAVA  # noqa: E402 — и scripts/ в sys.path
 
@@ -203,11 +204,17 @@ class Scenario:
     edits: tuple[str, ...] = ()
     # Репозиторий тестируемого приложения для sut-code (bare внутри проекта, STAND_SUT).
     sut_repo: bool = False
+    # Фейковый Maven проекта (``mvnw`` и pom.xml в корне): итоги запусков по «класс#метод»
+    # (``skill_fake_maven``). Настоящий Maven песочнице не дать: JDK и ~/.m2 вне проекта.
+    maven: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 STAND_ORDER_TEST = "src/test/java/ru/company/orders/OrderTest.java"
 STAND_REMOTE = ".stand-remote.git"  # bare-remote сценариев с расширениями, внутри проекта
 STAND_SUT = ".stand-sut.git"  # репозиторий тестируемого приложения (sut-code), внутри проекта
+STAND_MAVEN = ".stand-maven"  # копия фейкового Maven (skill_fake_maven.py), внутри проекта
+STAND_ORDER = "ru.company.orders.OrderTest"
+FAILED_500 = "failed:expected: <200> but was: <500>"
 SUT_SERVICE = "src/main/java/ru/company/OrderService.java"
 SUT_CONTROLLER = "src/main/java/ru/company/OrderController.java"
 SUT_SERVICE_OK = """\
@@ -429,6 +436,18 @@ SCENARIOS: dict[str, Scenario] = {
         (*FULL_RUN, "prepare_launch", "no_log_noise"), launch_id=792,
         review=("Evidence: причины 422 и 500 с исключением названы по тексту ответа сервиса, "
                 "голый 500 — «неизвестно»; отсутствие лога не повторяется в каждом разборе",)),
+    "F01": Scenario(
+        "Флаки: после отчёта — перезапуск, «да» → Maven в фоне → итог → «да» → отметка в базе "
+        "знаний", "flaky",
+        ("/alla-launch 793", "Да, перезапусти.", "Да, отметь их в базе знаний."),
+        (*[name for name in FULL_RUN if name != "report_verbatim"], "prepare_launch",
+         "rerun_started", "rerun_result_shown", "flaky_saved"),
+        launch_id=793, edits=("alla-kb/",),
+        maven=((f"{STAND_ORDER}#createOrder", (FAILED_500, "passed")),
+               (f"{STAND_ORDER}#updateOrder", (FAILED_500,))),
+        review=("Вопрос о перезапуске задан один раз, после краткого разбора: число тестов, "
+                "проблемы, время и что тесты пойдут на этой машине; итог выведен дословно; "
+                "вопрос о базе знаний — отдельно, после итога",)),
     "P04": Scenario(
         "40 кластеров: пакеты субагентов", "many:40", ("/alla-launch 900",),
         (*FULL_RUN, "prepare_launch", "subagents_used", "batch_agent_used"), launch_id=900),
@@ -499,7 +518,8 @@ KNOWLEDGE_TARGETS: dict[str, tuple[str, ...]] = {
 
 def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str = "",
                   env_ready: bool = True, extensions: tuple[str, ...] = (),
-                  sut_repo: bool = False) -> Path:
+                  sut_repo: bool = False,
+                  maven: tuple[tuple[str, tuple[str, ...]], ...] = ()) -> Path:
     project = work / "project"
     java = project / "src" / "test" / "java" / "ru" / "company"
     write(java / "orders" / "OrderTest.java", ORDER_TEST_JAVA)
@@ -510,7 +530,16 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
     # .qwen/tmp пишет сам Qwen Code (аргументы slash-вызова скилла) — это не правка агента.
     write(project / ".gitignore",
           ".qwen/skills/alla-launch/.env\n/.venv\n.qwen/tmp/\n"
-          f".qwen/sandbox-macos-{STAND_PROFILE}.sb\n/{STAND_REMOTE}/\n/{STAND_SUT}/\n")
+          f".qwen/sandbox-macos-{STAND_PROFILE}.sb\n/{STAND_REMOTE}/\n/{STAND_SUT}/\n"
+          f"/target/\n/{skill_fake_maven.RUNS_NAME}\n")
+    if maven:
+        # Пути — от папки mvnw: песочница читает только проект и окружение скилла.
+        write(project / "pom.xml", "<project/>\n")
+        write(project / STAND_MAVEN / "fake_maven.py",
+              (TESTS_DIR / "skill_fake_maven.py").read_text(encoding="utf-8"))
+        skill_fake_maven.install(project, {key: list(runs) for key, runs in maven},
+                                 python='$(dirname "$0")/.venv/bin/python',
+                                 script=f'$(dirname "$0")/{STAND_MAVEN}/fake_maven.py')
     skill = project / SKILL_IN_PROJECT
     shutil.copytree(SKILL_ROOT, skill, ignore=COPY_IGNORE)
     if env_ready:
@@ -1627,6 +1656,41 @@ def check_testops_read_only(ctx: Context) -> dict[str, Any]:
 
 
 
+def _rerun_calls(ctx: Context, *flags: str) -> list[ToolCall]:
+    return [call for call in ctx.trace.skill_commands()
+            if " rerun" in str(call.input.get("command", ""))
+            and all(flag in str(call.input.get("command", "")) for flag in flags)]
+
+
+def check_rerun_started(ctx: Context) -> dict[str, Any]:
+    """Перезапуск запущен командой из ответа (``--yes --plan``) и закончился итогом."""
+    calls = _rerun_calls(ctx, "--yes", "--plan")
+    if not calls:
+        return bad("rerun --yes --plan не выполнялся")
+    results = [run_dir / "rerun" / "result.json" for run_dir in ctx.run_dirs()]
+    if not any(path.is_file() for path in results):
+        return bad(at(calls[0], "итога перезапуска нет (rerun/result.json)"))
+    return ok(at(calls[0], f"вызовов rerun: {len(_rerun_calls(ctx))}"))
+
+
+def check_rerun_result_shown(ctx: Context) -> dict[str, Any]:
+    """Итог перезапуска (между маркерами ответа rerun_done) показан пользователю."""
+    title = "Нестабильные — упали в CI, а при перезапуске прошли"
+    shown = [result for result in ctx.trace.results if title in str(result.get("result") or "")]
+    return ok() if shown else bad("в ответах пользователю нет группы «Нестабильные» из итога")
+
+
+def check_flaky_saved(ctx: Context) -> dict[str, Any]:
+    """После «да» отметка «нестабильный» записана командой rerun --remember, а не руками."""
+    if not _rerun_calls(ctx, "--remember", "--result"):
+        return bad("rerun --remember --result не выполнялся")
+    marks = [json.loads(path.read_text(encoding="utf-8"))
+             for path in (ctx.project / "alla-kb" / "flaky").glob("*.json")]
+    tests = sorted(str(mark.get("test")) for mark in marks)
+    expected = [f"{STAND_ORDER}.createOrder"]
+    return ok(", ".join(tests)) if tests == expected else bad(f"отметки: {tests}, ждём {expected}")
+
+
 def check_project_unchanged(ctx: Context) -> dict[str, Any]:
     status = run(["git", "-C", str(ctx.project), "status", "--porcelain",
                   "--untracked-files=all"]).stdout
@@ -1669,7 +1733,8 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
     traces: list[Path] = []
     with FakeTestOpsServer(build_fixture(scenario.fixture), log_path=log) as server:
         project = build_project(work, server.endpoint, venv, scenario.knowledge,
-                                scenario.env_ready, scenario.extensions, scenario.sut_repo)
+                                scenario.env_ready, scenario.extensions, scenario.sut_repo,
+                                scenario.maven)
         home = build_home(work, settings)
         session: str | None = None
         for number, prompt in enumerate(scenario.turns, start=1):

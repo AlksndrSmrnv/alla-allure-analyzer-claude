@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 import skill_fake_maven
-from skill_fake_testops import FakeTestOps, default_launch
+from skill_fake_testops import FakeTestOps, default_launch, flaky_launch
 from skill_fixtures import (  # noqa: F401
     multimodule_project_fixture,
     nested_project_fixture,
@@ -48,16 +48,8 @@ UNKNOWN_500 = (
 
 @pytest.fixture(name="flaky_testops")
 def flaky_testops_fixture(monkeypatch: pytest.MonkeyPatch) -> FakeTestOps:
-    """Прогон по умолчанию, где у createOrder повтор упал иначе, а у updateOrder — прошёл."""
-    launch = default_launch()
-    by_id = {result["id"]: result for result in launch.results}
-    by_id[101]["historyId"] = "h-create"
-    by_id[102]["historyId"] = "h-update"
-    by_id[106].update(historyId="h-create",
-                      statusDetails={"message": "java.net.SocketTimeoutException: Read timed out"})
-    launch.results.append({"id": 109, "name": "updateOrder retry", "status": "passed",
-                           "hidden": True, "historyId": "h-update"})
-    fake = FakeTestOps(launch)
+    """Прогон 777, где у createOrder повтор упал иначе, а у updateOrder — прошёл."""
+    fake = FakeTestOps(flaky_launch(777))
     fake.install(monkeypatch)
     return fake
 

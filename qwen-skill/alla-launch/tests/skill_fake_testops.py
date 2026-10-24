@@ -140,6 +140,19 @@ def many_launch(count: int, launch_id: int = 900) -> LaunchFixture:
     )
 
 
+def flaky_launch(launch_id: int = 793) -> LaunchFixture:
+    """Прогон по умолчанию, где у createOrder повтор упал иначе, а у updateOrder — прошёл."""
+    launch = default_launch(launch_id)
+    by_id = {result["id"]: result for result in launch.results}
+    by_id[101]["historyId"] = "h-create"
+    by_id[102]["historyId"] = "h-update"
+    by_id[106].update(historyId="h-create",
+                      statusDetails={"message": "java.net.SocketTimeoutException: Read timed out"})
+    launch.results.append({"id": 109, "name": "updateOrder retry", "status": "passed",
+                           "hidden": True, "historyId": "h-update"})
+    return launch
+
+
 def test_bug_launch(launch_id: int = 782) -> LaunchFixture:
     """Дефект автотеста: API по контракту отвечает 201 Created, а тест ждёт 200 (стенд X01)."""
     trace = ORDER_TRACE.replace("<500>", "<201>").format(method="createOrder", line=6)
