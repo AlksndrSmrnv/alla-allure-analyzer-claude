@@ -75,7 +75,7 @@ paths:
 `apply N --run DIR [--yes --diff ХЭШ] [--repeat]`, `revert N --run DIR`,
 `remember N --run DIR [--entry ID] [--from-analysis | --from-extension ИМЯ]`, `reject N <id> --run DIR`,
 `extensions [list|enable|disable|run|action]` (`skill-extensions.md`),
-`rerun N [N…] --run DIR [--yes --plan ХЭШ | --wait]` (`skill-rerun.md`).
+`rerun [N…] --run DIR [--yes --plan ХЭШ | --wait]` (`skill-rerun.md`).
 
 - Где в синтаксисе есть `--run DIR`, он обязателен: `.last_run` после нового `prepare`
   указывает на другой прогон.

@@ -2,6 +2,7 @@
 paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/rerun.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/rerun_worker.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/flaky.py"
   - "qwen-skill/alla-launch/commands/alla/rerun.md"
   - "qwen-skill/alla-launch/tests/test_skill_rerun.py"
   - "qwen-skill/alla-launch/tests/skill_fake_maven.py"
@@ -13,9 +14,31 @@ paths:
 плюс `/alla:rerun N`; только Maven (JUnit/TestNG через surefire); до 3 запусков до первого
 успеха; итог — в отчёт и, после «да», в базу знаний.
 
+## Кандидаты (`flaky.py`) и предложение после отчёта
+
+- Признаки теста (`signals_of`, коды — `rerun.SIGNALS`): сильные — `retry_group` `passed`
+  или `different`; средний — `TRANSIENT_RE` по тексту сообщения (в сообщении Allure класса
+  исключения обычно нет: `SYMPTOM_EXCEPTION_RE` сигнатуры не подходит), если категория разбора
+  не «тест»/«данные» и повторы не `same`. «Окружение» само по себе — не признак (стенд лежал в
+  CI и поднялся — тест пройдёт, но не нестабилен); `Connection refused` — тоже нет (называет
+  упавший хост). Порядок — сильные, затем крупные проблемы.
+- Исключаются проблемы с подтверждённым выводом расширения и с применённой правкой
+  (`states == applied`); в плане кандидатов (`build_plan(auto=True)`) тест с `changed` идёт в
+  «Запустить нельзя».
+- `next` на `done` (`cli._rerun_offer`): кандидаты → план → пункт «Похожи на нестабильные
+  (флаки): …» в «После отчёта» (`rerun.render_offer`) с готовой командой `rerun --run DIR
+  --yes --plan <хэш>` — один вопрос пользователю, без второго «да» на план; кандидаты — в
+  `rerun/offer.json` (по нему `rerun` без номеров строит тот же план и хэш). Пункта нет, если
+  перезапуск в разборе уже был, выключен (`ALLURE_RERUN_MAX_TESTS=0`), `.env` неверен или
+  запускать нечего (не Maven, нет Maven). Пункт велит не спрашивать снова, если пользователь
+  уже ответил в этом сеансе: `done` выводится и после `remember`.
+- В `rerun N` признаки считаются без категории (разборов команда не читает) — только для
+  показа и для записи в базу знаний.
+
 ## Команда и статусы (`cli.cmd_rerun`)
 
-- `rerun N [N…] --run DIR` — план (`STATUS: rerun`), ничего не запускает. Тесты — все
+- `rerun [N…] --run DIR` — план (`STATUS: rerun`), ничего не запускает; без номеров — по
+  `offer.json` (нет его — `ok` «тестов, похожих на нестабильные, нет»). Тесты — все
   участники проблем (`rerun.failed_tests_of`: представитель первым), параметры одного
   метода — один запуск. Готовая команда — `--yes --plan <хэш>`: `Plan.digest` от тестов
   (id, класс, метод, модуль) и числа запусков; другой хэш или без `--plan` — снова

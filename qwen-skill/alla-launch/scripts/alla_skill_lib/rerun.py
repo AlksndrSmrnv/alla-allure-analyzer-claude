@@ -27,7 +27,7 @@ import sys
 import time
 import uuid
 import xml.etree.ElementTree as ElementTree
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePath
 from typing import Any
@@ -52,6 +52,13 @@ DROPPED_ENV = frozenset({"PYTHONPATH"})
 NOT_IN_REACTOR = "Could not find the selected project in the reactor"
 
 OUTCOMES = ("passed", "reproduced", "other", "not_run")
+MAX_SHOWN_SKIPPED = 10
+# Признаки нестабильности теста (отбор — ``flaky.py``): код → как назвать пользователю.
+SIGNALS = {
+    "retry_passed": "в TestOps повтор прошёл",
+    "retry_different": "в TestOps повтор упал с другой ошибкой",
+    "transient": "ошибка похожа на временный сбой",
+}
 
 
 @dataclass(frozen=True)
@@ -69,6 +76,7 @@ class PlannedTest:
     message: str  # первая строка ошибки в TestOps
     duration_ms: int | None = None
     changed: str = ""  # «правка агента применена» / «код теста изменён» — проверка правки
+    signals: list[str] = field(default_factory=list)  # коды ``SIGNALS``
 
 
 @dataclass(frozen=True)
@@ -138,8 +146,14 @@ def build_plan(
     *,
     attempts: int,
     max_tests: int,
+    signals: Mapping[int, list[str]] | None = None,
+    auto: bool = False,
 ) -> Plan:
-    """План по парам (запись кластера, тест): что запустить, что нельзя и почему."""
+    """План по парам (запись кластера, тест): что запустить, что нельзя и почему.
+
+    ``auto`` — кандидаты скилла (``flaky.py``): тест с изменённым кодом в план не идёт, его
+    перезапуск — проверка правки, а не нестабильности.
+    """
     plan = Plan(attempts=attempts)
     if os.name == "nt":
         plan.note = "перезапуск тестов пока работает только на macOS и Linux"
@@ -157,6 +171,11 @@ def build_plan(
         jvm, module = located
         if (jvm.class_name, jvm.method) in seen:  # параметры одного метода — один запуск
             continue
+        changed = _changed(paths, project_root, file_id, jvm.source)
+        if auto and changed:
+            plan.skipped.append(SkippedTest(
+                file_id, name, f"{changed} — перезапуск не скажет о нестабильности"))
+            continue
         if len(plan.tests) >= max_tests:
             plan.skipped.append(SkippedTest(file_id, name, f"больше {max_tests} тестов за раз"))
             continue
@@ -172,7 +191,8 @@ def build_plan(
             module=module,
             message=first_line(str(test.get("status_message") or "")),
             duration_ms=test.get("duration_ms"),
-            changed=_changed(paths, project_root, file_id, jvm.source),
+            changed=changed,
+            signals=list((signals or {}).get(int(test["test_result_id"]), [])),
         ))
     plan.groups = _groups(project_root, plan)
     if plan.tests and not plan.groups:
@@ -418,6 +438,11 @@ class JobFiles:
         return self.root / "waits"
 
     @property
+    def offer(self) -> Path:
+        """Кандидаты скилла с последнего ``done``: по ним ``rerun`` без номеров строит план."""
+        return self.root / "offer.json"
+
+    @property
     def worker_log(self) -> Path:
         return self.root / "worker.log"
 
@@ -600,6 +625,7 @@ def render_plan(plan: Plan, command: str, *, has_extra: bool) -> str:
     lines = [f"План перезапуска локально (Maven): {_tests(len(plan.tests))}, каждый до "
              f"{plan.attempts} раз — до первого успеха."]
     lines += [f"- {_who(test.file_id, test.full_name)}{_module(test.module)}"
+              + (f" — {describe(test.signals)}" if test.signals else "")
               + (f" — проверка правки ({test.changed}): о нестабильности не скажет"
                  if test.changed else "")
               for test in plan.tests]
@@ -696,11 +722,42 @@ def render_result(state: JobState, logs: Path) -> str:
     return "\n".join(lines)
 
 
+def render_offer(plan: Plan, command: str) -> str:
+    """Пункт «После отчёта»: предложить перезапуск кандидатов скилла одним вопросом."""
+    numbers = ", ".join(dict.fromkeys(str(int(test.file_id)) for test in plan.tests))
+    return (
+        f"- Похожи на нестабильные (флаки): {_tests(len(plan.tests))} в проблемах {numbers} — "
+        f"их можно перезапустить локально (Maven, каждый до {plan.attempts} раз, до "
+        f"~{plan.estimate_minutes()} мин). После краткого разбора спроси пользователя, "
+        "перезапустить ли их; если в этом сеансе он уже ответил на этот вопрос — не спрашивай "
+        f"снова. Только после явного «да» выполни: {command} — дальше по SKILL.md, раздел 8."
+    )
+
+
+def describe(signals: Iterable[str]) -> str:
+    return ", ".join(SIGNALS.get(signal, signal) for signal in signals)
+
+
+def write_offer(files: JobFiles, picks: Iterable[tuple[str, int, list[str]]]) -> None:
+    ws.write_json(files.offer, {"tests": [[file_id, test_id, signals]
+                                          for file_id, test_id, signals in picks]})
+
+
+def read_offer(files: JobFiles) -> list[tuple[str, int, list[str]]]:
+    data = _read(files.offer) or {}
+    return [(str(item[0]), int(item[1]), [str(code) for code in item[2]])
+            for item in data.get("tests") or []]
+
+
 def _skipped_lines(plan: Plan) -> list[str]:
     if not plan.skipped:
         return []
-    return ["Запустить нельзя:",
-            *(f"- {_who(item.file_id, item.name)} — {item.reason}" for item in plan.skipped)]
+    shown = plan.skipped[:MAX_SHOWN_SKIPPED]
+    lines = ["Запустить нельзя:",
+             *(f"- {_who(item.file_id, item.name)} — {item.reason}" for item in shown)]
+    if len(plan.skipped) > len(shown):
+        lines.append(f"- … и ещё {_tests(len(plan.skipped) - len(shown))}")
+    return lines
 
 
 def _who(file_id: str, name: str) -> str:

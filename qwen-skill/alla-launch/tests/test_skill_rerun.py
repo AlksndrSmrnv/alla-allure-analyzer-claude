@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 import skill_fake_maven
-from skill_fake_testops import FakeTestOps
+from skill_fake_testops import FakeTestOps, default_launch
 from skill_fixtures import (  # noqa: F401
     multimodule_project_fixture,
     nested_project_fixture,
@@ -21,9 +21,9 @@ from skill_fixtures import (  # noqa: F401
     testops_fixture,
     without_libmagic,
 )
-from test_skill_flow import _prepare, _run
+from test_skill_flow import MARKDOWN_ANALYSIS, _finish, _prepare, _run
 
-from alla_skill_lib import rerun
+from alla_skill_lib import flaky, rerun
 from alla_skill_lib.rerun import (
     JobFiles,
     PlannedTest,
@@ -37,6 +37,29 @@ from alla_skill_lib.rerun_worker import execute
 
 ORDER = "ru.company.orders.OrderTest"
 FAILED_500 = "failed:expected: <200> but was: <500>"
+UNKNOWN_500 = (
+    "ЧТО СЛОМАЛОСЬ: Тест получил ответ 500 вместо 200.\n\n"
+    "ПРИЧИНА: неизвестно — по коду ответа причину не видно.\n\n"
+    "НАБЛЮДЕНИЯ:\n- [S1] «expected: <200> but was: <500>»\n"
+    "НЕ ХВАТАЕТ: лога сервиса заказов за время теста.\n\n"
+    "КАК ИСПРАВИТЬ:\n1. Посмотреть лог сервиса заказов за время теста.\n"
+)
+
+
+@pytest.fixture(name="flaky_testops")
+def flaky_testops_fixture(monkeypatch: pytest.MonkeyPatch) -> FakeTestOps:
+    """Прогон по умолчанию, где у createOrder повтор упал иначе, а у updateOrder — прошёл."""
+    launch = default_launch()
+    by_id = {result["id"]: result for result in launch.results}
+    by_id[101]["historyId"] = "h-create"
+    by_id[102]["historyId"] = "h-update"
+    by_id[106].update(historyId="h-create",
+                      statusDetails={"message": "java.net.SocketTimeoutException: Read timed out"})
+    launch.results.append({"id": 109, "name": "updateOrder retry", "status": "passed",
+                           "hidden": True, "historyId": "h-update"})
+    fake = FakeTestOps(launch)
+    fake.install(monkeypatch)
+    return fake
 
 
 def _problem_of(run: dict[str, Any], test_id: int) -> str:
@@ -389,3 +412,96 @@ def test_rerun_settings_need_no_testops_but_keep_their_bounds() -> None:
         Settings.load(environ={"ALLURE_RERUN_ATTEMPTS": "9"}, require_testops=False)
     with pytest.raises(ConfigurationError, match="ALLURE_ENDPOINT"):
         Settings.load(environ={})
+
+
+# ---------------------------------------------------------------------------
+# кандидаты скилла (flaky.py) и предложение после отчёта
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("message", [
+    "Expected condition failed: waiting for visibility of element (tried for 10 second(s))",
+    "java.net.SocketTimeoutException: Read timed out",
+    "stale element reference: element is not attached to the page document",
+    "element click intercepted: Element <button> is not clickable",
+    "expected: <200> but was: <503>",
+    "Status code: 502 Bad Gateway",
+    "HTTP/1.1 504 Gateway Time-out",
+    "Connection reset by peer",
+])
+def test_transient_messages_are_recognised(message: str) -> None:
+    assert flaky.transient(message)
+
+
+@pytest.mark.parametrize("message", [
+    "expected: <200> but was: <500>",
+    "java.net.ConnectException: Connection refused: auth-service:8080",
+    "Order 503 not found",  # число без контекста статуса
+    "NullPointerException: customer is null",
+])
+def test_stable_messages_are_not_transient(message: str) -> None:
+    assert not flaky.transient(message)
+
+
+def _failed(message: str = "", *attempts: dict[str, Any]) -> dict[str, Any]:
+    return {"status_message": message, "attempts": list(attempts)}
+
+
+def test_signals_need_a_retry_or_a_transient_error_outside_test_and_data() -> None:
+    passed = {"status": "passed"}
+    other = {"status": "failed", "message": "x", "same_as_final": False}
+    same = {"status": "failed", "message": "Read timed out", "same_as_final": True}
+
+    assert flaky.signals_of(_failed("", passed), "тест") == ["retry_passed"]
+    assert flaky.signals_of(_failed("Read timed out", other), None) == [
+        "retry_different", "transient"]
+    assert flaky.signals_of(_failed("Read timed out"), "окружение") == ["transient"]
+    assert flaky.signals_of(_failed("Read timed out"), "данные") == []
+    assert flaky.signals_of(_failed("Read timed out", same), None) == []  # все повторы — так же
+    assert flaky.signals_of(_failed("expected: <200> but was: <500>"), "окружение") == []
+
+
+def test_offer_after_the_report_reruns_the_candidates_with_one_yes(
+    nested_project: Path, flaky_testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    skill_fake_maven.install(nested_project / "autotests", {
+        f"{ORDER}#createOrder": [FAILED_500, "passed"], f"{ORDER}#updateOrder": ["passed"]})
+    run_dir, run, _ = _prepare(nested_project, capsys)
+    order, login = _problem_of(run, 101), _problem_of(run, 103)
+
+    done = _finish(run_dir, capsys, {f"{int(order):02d}": UNKNOWN_500,
+                                     f"{int(login):02d}": MARKDOWN_ANALYSIS})
+
+    offer = next(line for line in done.splitlines() if "Похожи на нестабильные" in line)
+    assert f"2 теста в проблемах {order}" in offer and "Только после явного «да»" in offer
+    assert "если в этом сеансе он уже ответил на этот вопрос — не спрашивай снова" in offer
+    plan = _rerun(run_dir, capsys)
+    assert plan.startswith("STATUS: rerun\n"), plan
+    assert "createOrder (модуль autotests) — в TestOps повтор упал с другой ошибкой" in plan
+    assert "updateOrder (модуль autotests) — в TestOps повтор прошёл" in plan
+    command = offer.split("выполни: ", 1)[1].split(" — дальше", 1)[0]
+    assert command.endswith(f"rerun --run {run_dir} --yes --plan {_plan_hash(plan)}")
+
+    out = _rerun(run_dir, capsys, "--yes", "--plan", _plan_hash(plan))
+    out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
+    assert "Нестабильные — упали в CI, а при перезапуске прошли (2):" in out
+    assert "Похожи на нестабильные" not in _run(["next", str(run_dir)], capsys)[1]  # уже был
+
+
+@pytest.mark.parametrize("fixture", ["project", "nested_project"])
+def test_no_offer_without_maven_or_with_an_applied_fix(
+    fixture: str, flaky_testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    request: pytest.FixtureRequest,
+) -> None:
+    root: Path = request.getfixturevalue(fixture)
+    run_dir, run, _ = _prepare(root, capsys)
+    order = f"{int(_problem_of(run, 101)):02d}"
+    if fixture == "nested_project":  # Maven есть, кандидаты есть, но правка уже применена
+        (run_dir / "proposals").mkdir(exist_ok=True)
+        (run_dir / "proposals" / f"{order}.applied.json").write_text("{}", encoding="utf-8")
+
+    done = _finish(run_dir, capsys, {order: UNKNOWN_500,
+                                     f"{int(_problem_of(run, 103)):02d}": MARKDOWN_ANALYSIS})
+
+    assert "Похожи на нестабильные" not in done
+    assert _rerun(run_dir, capsys).startswith("STATUS: ok\nТестов, похожих на нестабильные")

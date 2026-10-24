@@ -10,8 +10,9 @@
 * ``skip NN`` — пропустить кластер по просьбе пользователя;
 * ``remember NN`` / ``reject NN <id>`` — обратная связь в базу знаний проекта;
 * ``apply NN [--yes --diff ХЭШ] [--repeat]`` / ``revert NN`` — показать, применить или откатить правку автотеста;
-* ``rerun N [N…] [--yes --plan ХЭШ | --wait]`` — перезапустить тесты проблем локально (Maven)
-  фоновым заданием: нестабильный тест или нет (``rerun.py``);
+* ``rerun [N…] [--yes --plan ХЭШ | --wait]`` — перезапустить тесты проблем локально (Maven)
+  фоновым заданием: нестабильный тест или нет (``rerun.py``); без номеров — тесты, похожие на
+  нестабильные (``flaky.py``), которые ``done`` предложил после отчёта;
 * ``check`` — проверить окружение и доступ к TestOps; ``clean`` — удалить старые разборы;
 * ``extensions [list|enable|disable|run|action]`` — расширения скилла (``extensions.py``):
   показать, включить, выключить, повторить хук, выполнить действие расширения;
@@ -50,7 +51,7 @@ from alla_core.exceptions import AllaError, ConfigurationError
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib import extensions as ext
-from alla_skill_lib import rerun
+from alla_skill_lib import flaky, rerun
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.agent_rules import (
     ANALYSIS_FORMAT_REF,
@@ -1070,7 +1071,8 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     ws.write_text(paths.report, full)
     # Уже применённую или неоднозначную правку повторно не предлагаем.
     offered = {file_id: p for file_id, p in fixes.items() if states[file_id] == "not_applied"}
-    return "done", _done_body(console, paths, offered, feedback=True)
+    offer = _rerun_offer(paths, run, analyses, flagged, set(confirmed), states)
+    return "done", _done_body(console, paths, offered, feedback=True, rerun_offer=offer)
 
 
 REJECTED_NOT_PROPOSED = (
@@ -1462,6 +1464,7 @@ def _done_body(
     paths: ws.RunPaths,
     fixes: dict[str, Proposal],
     feedback: bool = False,
+    rerun_offer: str | None = None,
 ) -> str:
     lines = [
         f"Отчёт сохранён: {paths.report}",
@@ -1475,7 +1478,7 @@ def _done_body(
         console,
         REPORT_END,
     ]
-    if fixes or feedback:
+    if fixes or feedback or rerun_offer:
         lines.append("После отчёта:")
     for file_id in fixes:
         show = ws.skill_command("apply", file_id, "--run", str(paths.root))
@@ -1501,6 +1504,8 @@ def _done_body(
             f"{ws.skill_command('remember', 'N', '--run', run, '--from-extension', '<имя расширения>')}",
             f"  известная проблема не подходит: {ws.skill_command('reject', 'N', '<id>', '--run', run)}",
         ]
+    if rerun_offer:
+        lines.append(rerun_offer)
     return "\n".join(lines)
 
 
@@ -1542,25 +1547,32 @@ def _rerun(
     unknown = [cluster for cluster, entry in zip(args.clusters, entries) if entry is None]
     if unknown:
         return "error", f"В разборе {paths.root} нет проблем: {', '.join(unknown)}."
-    if not entries:
-        return "ok", "Назови номера проблем, тесты которых перезапустить. Спроси у пользователя."
-    env_file = ws.SKILL_DIR / ".env"
-    try:
-        settings = Settings.load(env_file=env_file, require_testops=False)
-    except ConfigurationError as exc:
-        return "error", f"Настройки скилла ({env_file}) неверны: {exc}. {USER_ACTION_NOTE}"
+    settings = _rerun_settings()
+    if isinstance(settings, str):
+        return "error", settings
     if settings.rerun_max_tests == 0:
         return "ok", ("Перезапуск тестов выключен в настройках скилла (ALLURE_RERUN_MAX_TESTS=0). "
                       "Покажи это пользователю.")
-    picks = [(entry, test) for entry in entries if entry is not None
-             for test in rerun.failed_tests_of(run, entry)]
+    numbers = [str(int(entry["file_id"])) for entry in entries if entry is not None]
+    if numbers:
+        picks = [(entry, test) for entry in entries if entry is not None
+                 for test in rerun.failed_tests_of(run, entry)]
+        signals = {int(test["test_result_id"]): flaky.signals_of(test, None) for _, test in picks}
+    else:
+        offered = _offered_picks(run, rerun.read_offer(files))
+        if not offered:
+            return "ok", ("Тестов, похожих на нестабильные, в этом разборе нет (или разбор ещё не "
+                          "закончен). Перезапустить тесты конкретной проблемы — "
+                          f"{ws.skill_command('rerun', 'N', '--run', str(paths.root))}. Покажи это "
+                          "пользователю и спроси номера проблем.")
+        picks = [(entry, test) for entry, test, _ in offered]
+        signals = {int(test["test_result_id"]): codes for _, test, codes in offered}
     plan = rerun.build_plan(paths, run, picks, attempts=settings.rerun_attempts,
-                            max_tests=settings.rerun_max_tests)
+                            max_tests=settings.rerun_max_tests, signals=signals, auto=not numbers)
     if plan.note or not plan.tests:
         return "ok", rerun.render_nothing(plan)
-    command = ws.skill_command("rerun", *(str(int(entry["file_id"])) for entry in entries
-                                         if entry is not None),
-                               "--run", str(paths.root), "--yes", "--plan", plan.digest)
+    command = ws.skill_command("rerun", *numbers, "--run", str(paths.root), "--yes",
+                               "--plan", plan.digest)
     extra = rerun.maven_args(settings.rerun_maven_args)
     shown = rerun.render_plan(plan, command, has_extra=bool(extra))
     if not args.yes:
@@ -1574,6 +1586,66 @@ def _rerun(
     rerun.start_job(paths, plan, settings.rerun_timeout, extra)
     state = rerun.wait_job(files, rerun.WAIT_BUDGET - (time.monotonic() - started))
     return _rerun_state(paths, state)
+
+
+def _rerun_settings() -> Settings | str:
+    """Настройки перезапуска (TestOps не нужен); неверный ``.env`` — текст ошибки."""
+    env_file = ws.SKILL_DIR / ".env"
+    try:
+        return Settings.load(env_file=env_file, require_testops=False)
+    except ConfigurationError as exc:
+        return f"Настройки скилла ({env_file}) неверны: {exc}. {USER_ACTION_NOTE}"
+
+
+def _offered_picks(
+    run: dict[str, Any], offer: list[tuple[str, int, list[str]]],
+) -> list[tuple[dict[str, Any], dict[str, Any], list[str]]]:
+    """Кандидаты из ``rerun/offer.json`` — записи и тесты этого разбора."""
+    picks = []
+    for file_id, test_id, codes in offer:
+        entry = next((item for item in run["clusters"] if item["file_id"] == file_id), None)
+        test = next((item for item in rerun.failed_tests_of(run, entry)
+                     if item.get("test_result_id") == test_id), None) if entry else None
+        if entry is not None and test is not None:
+            picks.append((entry, test, codes))
+    return picks
+
+
+def _rerun_offer(
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    analyses: dict[str, ClusterAnalysis],
+    flagged: set[str],
+    confirmed: set[str],
+    states: dict[str, str],
+) -> str | None:
+    """Пункт «После отчёта» с перезапуском похожих на нестабильные; кандидаты — в ``offer.json``.
+
+    Не предлагается, если перезапуск уже был в этом разборе, выключен или запускать нечего
+    (не Maven, нет Maven): иначе «да» пользователя упиралось бы в отказ.
+    """
+    files = rerun.job_files(paths)
+    settings = _rerun_settings()
+    if (isinstance(settings, str) or settings.rerun_max_tests == 0
+            or rerun.job_state(files).state != "none"):
+        files.offer.unlink(missing_ok=True)
+        return None
+    categories = {file_id: analysis.category for file_id, analysis in analyses.items()
+                  if file_id not in flagged}
+    applied = {file_id for file_id, state in states.items() if state == "applied"}
+    found = flaky.candidates(run, categories, confirmed | applied)
+    plan = rerun.build_plan(
+        paths, run, [(entry, test) for entry, test, _ in found],
+        attempts=settings.rerun_attempts, max_tests=settings.rerun_max_tests,
+        signals={int(test["test_result_id"]): codes for _, test, codes in found}, auto=True,
+    ) if found else None
+    if plan is None or plan.note or not plan.tests:
+        files.offer.unlink(missing_ok=True)
+        return None
+    rerun.write_offer(files, [(entry["file_id"], int(test["test_result_id"]), codes)
+                              for entry, test, codes in found])
+    command = ws.skill_command("rerun", "--run", str(paths.root), "--yes", "--plan", plan.digest)
+    return rerun.render_offer(plan, command)
 
 
 def _rerun_state(paths: ws.RunPaths, state: rerun.JobState) -> tuple[str, str]:
