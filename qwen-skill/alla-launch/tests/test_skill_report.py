@@ -855,3 +855,28 @@ def test_summary_data_keeps_problems_with_an_agent_fix_apart(tmp_path: Path) -> 
             "правка агента у проблем 1, 2") in data
     data = build_summary_data(run, analyses, set(), related=related, separate={"01", "02", "03"})
     assert "в отчёте они отдельно: своя правка агента у проблем 1, 2, 3" in data
+
+
+def test_merged_problem_keeps_rerun_results_and_flaky_marks(tmp_path: Path) -> None:
+    from alla_skill_lib.rerun import RerunView
+
+    run = _run([3, 2, 4])
+    related = _related(([1, 2], "в заказе не заполнен покупатель"), run=run)
+    rerun = RerunView(3, [
+        {"file_id": "01", "full_name": "a", "outcome": "passed", "attempt": 2},
+        {"file_id": "02", "full_name": "b", "outcome": "passed", "attempt": 1},
+        {"file_id": "02", "full_name": "c", "outcome": "reproduced", "runs": 3},
+    ], {})
+    marked = {"01": ["a (с 2026-10-24)"], "02": ["b (с 2026-10-24)"]}
+
+    console, full = _render(tmp_path, run, [APP, APP, ENV], related=related, rerun=rerun,
+                            flaky_marked=marked)
+
+    title = next(line for line in console.splitlines() if line.startswith("**Проблема 1 и 2**"))
+    assert "[прошёл при перезапуске: 2 из 3]" in title  # сумма, а не одна метка на двоих
+    assert "[нестабильные по базе знаний: 2]" in title
+    item = _section(full, "Требуют вашего внимания")
+    assert ("- Перезапуск локально, проблема 1: 1 тест: нестабильные — 1 (раздел «Перезапуск "
+            "локально»)") in item
+    assert "- Перезапуск локально, проблема 2: 2 теста: нестабильные — 1, воспроизводятся — 1" in item
+    assert "- Нестабильные по базе знаний: a (с 2026-10-24); b (с 2026-10-24)" in item

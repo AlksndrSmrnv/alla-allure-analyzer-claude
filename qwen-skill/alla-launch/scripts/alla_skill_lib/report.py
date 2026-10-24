@@ -833,6 +833,7 @@ def _merged_item(unit: list[_Problem], tests: _Tests, not_proposed: dict[str, st
     listed = _test_links([test for p in unit for test in tests.of_cluster(p.entry)], size)
     if listed:
         lines.append(f"- Тесты: {listed}")
+    lines += _flaky_lines(sorted(unit, key=lambda p: p.number))
     lines.append(f"- Разбор каждой проблемы — в подробностях ниже: {_numbers_phrase(numbers)}")
     return lines
 
@@ -884,12 +885,22 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
     listed = _test_links(tests.of_cluster(problem.entry), problem.size)
     if listed:
         lines.append(f"- Тесты: {listed}")
-    if problem.rerun_summary:
-        lines.append(f"- Перезапуск локально: {problem.rerun_summary} (раздел «Перезапуск "
-                     "локально»)")
-    if problem.flaky_marked:
-        lines.append("- Нестабильные по базе знаний: " + "; ".join(problem.flaky_marked))
+    lines += _flaky_lines([problem])
     lines += _history_lines(problem)
+    return lines
+
+
+def _flaky_lines(unit: list[_Problem]) -> list[str]:
+    """Итог перезапуска (по проблеме, если их несколько) и отмеченные нестабильные тесты."""
+    lines = []
+    for problem in unit:
+        if problem.rerun_summary:
+            which = f", проблема {problem.number}" if len(unit) > 1 else ""
+            lines.append(f"- Перезапуск локально{which}: {problem.rerun_summary} (раздел "
+                         "«Перезапуск локально»)")
+    marked = [name for problem in unit for name in problem.flaky_marked]
+    if marked:
+        lines.append("- Нестабильные по базе знаний: " + "; ".join(marked))
     return lines
 
 
@@ -1059,7 +1070,7 @@ def _brief_known(unit: list[_Problem], tests: _Tests) -> list[str]:
     numbers = _merged_title([p.entry["file_id"] for p in unit], MAX_BRIEF_GROUP_NUMBERS)
     lines = [
         (f"**{numbers}** · {size} {_plural(size, 'тест', 'теста', 'тестов')} "
-         f"· [известная проблема: {record.id}]"),
+         f"· [известная проблема: {record.id}]" + "".join(f" · [{tag}]" for tag in _flaky_tags(unit))),
         _truncate(f"Одна известная проблема: «{_plain_line(_one_line(record.title))}»", BRIEF_TEXT_CHARS),
     ]
     reason = record.description or _one_line(_reason(first))
@@ -1102,10 +1113,20 @@ def _brief_merged(unit: list[_Problem], tests: _Tests, not_proposed: dict[str, s
 
 
 def _merged_tags(unit: list[_Problem]) -> list[str]:
-    """Метки участников объединённого пункта без повторов; повтор — по самому частому."""
-    tags = [tag for p in unit for tag in _brief_tags(p, related=False, history=False)]
+    """Метки участников объединённого пункта без повторов; повтор — по самому частому,
+    нестабильность — суммой по участникам (одинаковые метки не схлопываются в одну)."""
+    tags = [tag for p in unit for tag in _brief_tags(p, related=False, history=False, flaky=False)]
     repeated = max(unit, key=lambda p: (p.entry.get("history") or {}).get("launches", 0))
-    return list(dict.fromkeys([*tags, *_history_tags(repeated)]))
+    return list(dict.fromkeys([*tags, *_history_tags(repeated), *_flaky_tags(unit)]))
+
+
+def _flaky_tags(unit: list[_Problem]) -> list[str]:
+    """Перезапуск локально и отметки базы знаний — суммой по проблемам пункта."""
+    passed = sum(p.rerun[0] for p in unit)
+    total = sum(p.rerun[1] for p in unit)
+    marked = sum(len(p.flaky_marked) for p in unit)
+    tags = [f"прошёл при перезапуске: {passed} из {total}"] if passed else []
+    return tags + ([f"нестабильные по базе знаний: {marked}"] if marked else [])
 
 
 def _brief_lines(items: list[str], prefix: str, what: str) -> list[str]:
@@ -1270,7 +1291,9 @@ def _history_tags(problem: _Problem) -> list[str]:
     ]
 
 
-def _brief_tags(problem: _Problem, *, related: bool = True, history: bool = True) -> list[str]:
+def _brief_tags(
+    problem: _Problem, *, related: bool = True, history: bool = True, flaky: bool = True,
+) -> list[str]:
     tags: list[str] = [CONFIRMED_TAG] if problem.confirmed is not None else []
     if not problem.flagged and problem.analysis.consistency_kind == "different":
         tags.append(MIXED_GROUP_NOTE)
@@ -1282,10 +1305,8 @@ def _brief_tags(problem: _Problem, *, related: bool = True, history: bool = True
         tags.append(f"расходится с базой знаний: {problem.mismatch.id}")
     if problem.rejected is not None:
         tags.append(REJECTED_TAG)
-    if problem.rerun[0]:
-        tags.append(f"прошёл при перезапуске: {problem.rerun[0]} из {problem.rerun[1]}")
-    if problem.flaky_marked:
-        tags.append(f"нестабильные по базе знаний: {len(problem.flaky_marked)}")
+    if flaky:
+        tags += _flaky_tags([problem])
     if related and problem.related is not None:
         others = _others(problem.related, problem.number)
         tags.append(f"та же причина {_at_problems(others, MAX_BRIEF_GROUP_NUMBERS)} ({MERGED_TAG})")
