@@ -24,6 +24,8 @@ SPEC_NAME = "fake-maven.json"
 RUNS_NAME = "fake-maven-runs.json"
 CALLS_NAME = "fake-maven-calls"
 ORPHAN_PID_NAME = "fake-maven-orphan.pid"
+# Что скрипт пишет рядом со сценарием при запусках: стенд прячет это от git.
+GENERATED = (RUNS_NAME, CALLS_NAME, ORPHAN_PID_NAME)
 ORPHAN = "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)\n"
 
 

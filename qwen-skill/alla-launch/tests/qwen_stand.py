@@ -531,7 +531,7 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
     write(project / ".gitignore",
           ".qwen/skills/alla-launch/.env\n/.venv\n.qwen/tmp/\n"
           f".qwen/sandbox-macos-{STAND_PROFILE}.sb\n/{STAND_REMOTE}/\n/{STAND_SUT}/\n"
-          f"/target/\n/{skill_fake_maven.RUNS_NAME}\n")
+          "/target/\n" + "".join(f"/{name}\n" for name in skill_fake_maven.GENERATED))
     if maven:
         # Пути — от папки mvnw: песочница читает только проект и окружение скилла.
         write(project / "pom.xml", "<project/>\n")

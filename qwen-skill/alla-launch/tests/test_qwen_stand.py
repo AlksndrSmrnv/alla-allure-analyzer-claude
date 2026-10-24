@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
+import skill_fake_maven
 
 import skill_fixtures  # noqa: F401 — добавляет scripts/ в sys.path
 from fake_testops_server import FakeTestOpsServer, build_fixture
@@ -964,7 +965,8 @@ def test_flaky_scenario_project_has_a_clean_fake_maven(tmp_path: Path) -> None:
     assert (project / "pom.xml").is_file() and (project / ".stand-maven" / "fake_maven.py").is_file()
     (project / "target" / "surefire-reports").mkdir(parents=True)
     (project / "target" / "surefire-reports" / "TEST-x.xml").write_text("<testsuite/>")
-    (project / "fake-maven-runs.json").write_text("{}")
+    for name in skill_fake_maven.GENERATED:  # всё, что фейковый Maven пишет при запусках
+        (project / name).write_text("1")
     status = subprocess.run(["git", "-C", str(project), "status", "--porcelain"],
                             capture_output=True, text=True, check=True).stdout
     assert status == ""
