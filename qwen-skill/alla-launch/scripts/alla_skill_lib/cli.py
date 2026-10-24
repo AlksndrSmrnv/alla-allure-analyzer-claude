@@ -485,9 +485,17 @@ def _build_parser() -> argparse.ArgumentParser:
     mode_rerun.add_argument(
         "--wait", action="store_true", help="показать ход или итог идущего перезапуска",
     )
+    mode_rerun.add_argument(
+        "--remember", action="store_true",
+        help="отметить нестабильные тесты в базе знаний (только после согласия пользователя); "
+             "нужен --result",
+    )
     again_tests.add_argument(
         "--plan", dest="plan_hash",
         help="хэш плана, который только что показала команда без --yes (запускается ровно он)",
+    )
+    again_tests.add_argument(
+        "--result", dest="result_id", help="id итога перезапуска из ответа rerun_done",
     )
     extensions = commands.add_parser(
         "extensions", parents=[common], help="расширения скилла: список, включение, повтор, действия",
@@ -1067,6 +1075,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     console, full = render_report(
         run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed, known,
         related, confirmed, rerun.RerunView.of(rerun.job_state(rerun.job_files(paths))),
+        flaky.marked_by_problem(run, flaky.marks_for_run(run)),
     )
     ws.write_text(paths.report, full)
     # Уже применённую или неоднозначную правку повторно не предлагаем.
@@ -1535,15 +1544,17 @@ def _rerun(
 ) -> tuple[str, str]:
     files = rerun.job_files(paths)
     state = rerun.job_state(files)
+    if args.remember:
+        return _rerun_remember(paths, run, state, args.result_id)
     if args.wait or (not args.clusters and not args.yes and state.state != "none"):
         # Без номеров после перезапуска — его ход или итог: «итог покажет /alla:rerun».
         if state.state == "none":
             return "ok", "Перезапуска тестов в этом разборе не было. Покажи это пользователю."
         if state.state == "running":
             state = rerun.wait_job(files, rerun.WAIT_BUDGET - (time.monotonic() - started))
-        return _rerun_state(paths, state)
+        return _rerun_state(paths, run, state)
     if state.state == "running":
-        status, body = _rerun_state(paths, state)
+        status, body = _rerun_state(paths, run, state)
         return status, ("Новый перезапуск не начат: в этом разборе ещё идёт прежний. Скажи это "
                         "пользователю; повторить его просьбу можно после итога.\n" + body)
     entries = [find_entry(run, cluster) for cluster in args.clusters]
@@ -1560,7 +1571,10 @@ def _rerun(
     if numbers:
         picks = [(entry, test) for entry in entries if entry is not None
                  for test in rerun.failed_tests_of(run, entry)]
-        signals = {int(test["test_result_id"]): flaky.signals_of(test, None) for _, test in picks}
+        marks = flaky.marks_for_run(run)
+        signals = {int(test["test_result_id"]): flaky.signals_of(
+                       test, None, marked=int(test["test_result_id"]) in marks)
+                   for _, test in picks}
     else:
         offered = _offered_picks(run, rerun.read_offer(files))
         if not offered:
@@ -1588,7 +1602,7 @@ def _rerun(
                       "Скажи пользователю, что повторить можно после его итога.")
     rerun.start_job(paths, plan, settings.rerun_timeout, extra)
     state = rerun.wait_job(files, rerun.WAIT_BUDGET - (time.monotonic() - started))
-    return _rerun_state(paths, state)
+    return _rerun_state(paths, run, state)
 
 
 def _rerun_settings() -> Settings | str:
@@ -1637,7 +1651,7 @@ def _rerun_offer(
                   if file_id not in flagged}
     # Проблема с правкой агента (предложенной или применённой) — дефект теста; её перезапуск —
     # проверка правки, а применённая после вопроса правка изменила бы план под «да».
-    found = flaky.candidates(run, categories, confirmed | set(states))
+    found = flaky.candidates(run, categories, confirmed | set(states), flaky.marks_for_run(run))
     plan = rerun.build_plan(
         paths, run, [(entry, test) for entry, test, _ in found],
         attempts=settings.rerun_attempts, max_tests=settings.rerun_max_tests,
@@ -1652,7 +1666,9 @@ def _rerun_offer(
     return rerun.render_offer(plan, command)
 
 
-def _rerun_state(paths: ws.RunPaths, state: rerun.JobState) -> tuple[str, str]:
+def _rerun_state(
+    paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState,
+) -> tuple[str, str]:
     files = rerun.job_files(paths)
     if state.state == "running":
         wait = ws.skill_command("rerun", "--run", str(paths.root), "--wait")
@@ -1663,11 +1679,74 @@ def _rerun_state(paths: ws.RunPaths, state: rerun.JobState) -> tuple[str, str]:
         return "ok", rerun.render_failed(state, retry)
     # Разбор не закончен — итог попадёт в отчёт, когда next его соберёт.
     refreshed = _refresh_report(paths)
-    return "rerun_done", "\n".join([
+    lines = [
         "Выведи пользователю итог между маркерами дословно, без пересказа; краткий разбор "
         "заново не выводи:",
         rerun.render_result(view, files.logs, paths.report if refreshed else None),
-    ])
+    ]
+    assert state.result is not None and state.plan is not None
+    keep = flaky.remember_plan(state.result, state.plan, flaky.marks_for_run(run))
+    if keep:
+        what = []
+        if keep.mark:
+            names = "; ".join(str(item["full_name"]) for item in keep.mark)
+            what.append(f"отметить нестабильными {rerun.tests_phrase(len(keep.mark))} ({names})")
+        if keep.unmark:
+            names = "; ".join(str(item["full_name"]) for item in keep.unmark)
+            what.append(f"снять отметку «нестабильный» ({names}): "
+                        + ("тест воспроизводится" if len(keep.unmark) == 1
+                           else "тесты воспроизводятся") + " каждый раз")
+        command = ws.skill_command("rerun", "--run", str(paths.root), "--remember", "--result",
+                                   str(state.result["job"]))
+        lines.append(
+            "После итога спроси пользователя, сохранить ли это в базу знаний: "
+            + "; ".join(what) + ". Тогда следующие разборы сразу покажут, какие тесты "
+            f"нестабильны. Только после явного «да» на этот вопрос выполни: {command}"
+        )
+    return "rerun_done", "\n".join(lines)
+
+
+def _rerun_remember(
+    paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, job_id: str | None,
+) -> tuple[str, str]:
+    """Отметить нестабильные тесты в базе знаний (``alla-kb/flaky/``) по итогу перезапуска."""
+    if state.state != "done" or state.result is None or state.plan is None \
+            or state.result.get("job") != job_id:
+        return "error", (f"Итога перезапуска «{job_id}» в разборе {paths.root} нет — сохранять "
+                         "нечего. Команду не повторяй; id итога — из ответа rerun_done.")
+    keep = flaky.remember_plan(state.result, state.plan, flaky.marks_for_run(run))
+    if not keep:
+        return "ok", "Сохранять в базу знаний нечего. Покажи это пользователю."
+    keys = flaky.keys_of_tests(run)
+    entries = {entry["file_id"]: entry for entry in run["clusters"]}
+    project_root = Path(run["project_root"])
+    today = date.today().isoformat()
+    marked: list[str] = []
+    unmarked: list[str] = []
+    folders: set[str] = set()
+    for item in [*keep.mark, *keep.unmark]:
+        entry = entries.get(str(item.get("file_id")))
+        key = keys.get(int(item["test_result_id"]))
+        if entry is None or not key:
+            continue
+        store = flaky.FlakyStore(Path(entry["kb_dir"]))
+        if item in keep.mark:
+            store.mark(key, {"launch_id": run["launch_id"], "passed_on": item.get("attempt"),
+                             "attempts": state.result.get("attempts"),
+                             "signals": item.get("signals") or []}, today)
+            marked.append(str(item["full_name"]))
+        elif store.unmark(key):
+            unmarked.append(str(item["full_name"]))
+        folders.add(kb_label(project_root, Path(entry["kb_dir"])))
+    lines = ["Сохранено в базу знаний."]
+    if marked:
+        lines.append("Отмечены нестабильными: " + "; ".join(marked) + ".")
+    if unmarked:
+        lines.append("Сняты отметки (тест воспроизводится): " + "; ".join(unmarked) + ".")
+    shown = ", ".join(sorted(folders))
+    lines.append(f"Скажи это пользователю и напомни закоммитить папку базы знаний {shown} "
+                 f"(отметки — в {shown}/{flaky.FLAKY_DIRNAME}/).")
+    return "saved", "\n".join(lines)
 
 
 def _refresh_report(paths: ws.RunPaths) -> bool:

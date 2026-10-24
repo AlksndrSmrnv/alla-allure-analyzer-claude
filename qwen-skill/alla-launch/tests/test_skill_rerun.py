@@ -586,3 +586,85 @@ def test_problem_with_a_proposed_fix_is_not_offered(
 
     assert f"Правка автотеста для проблемы {int(order)}" in done
     assert "Похожи на нестабильные" not in done  # повтор в TestOps прошёл, но правка предложена
+
+
+# ---------------------------------------------------------------------------
+# отметки «нестабильный» в базе знаний
+# ---------------------------------------------------------------------------
+
+
+def _remember_command(out: str) -> list[str]:
+    command = out.split("Только после явного «да» на этот вопрос выполни: ", 1)[1].split("\n")[0]
+    return command.split(" rerun ", 1)[1].split()
+
+
+def test_flaky_tests_are_remembered_offered_next_time_and_unmarked_when_they_reproduce(
+    nested_project: Path, flaky_testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    autotests = nested_project / "autotests"
+    skill_fake_maven.install(autotests, {
+        f"{ORDER}#createOrder": [FAILED_500, "passed"], f"{ORDER}#updateOrder": [FAILED_500]})
+    run_dir, run, _ = _prepare(nested_project, capsys)
+    order, login = _problem_of(run, 101), _problem_of(run, 103)
+    _finish(run_dir, capsys, {f"{int(order):02d}": UNKNOWN_500,
+                              f"{int(login):02d}": MARKDOWN_ANALYSIS})
+    out = _rerun(run_dir, capsys, "--yes", "--plan", _plan_hash(_rerun(run_dir, capsys)))
+    out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
+    assert f"отметить нестабильными 1 тест ({ORDER}.createOrder)" in out
+    args = _remember_command(out)
+    assert args[:3] == ["--run", str(run_dir), "--remember"]
+
+    saved = _run(["rerun", *args], capsys)[1]
+
+    assert saved.startswith("STATUS: saved\nСохранено в базу знаний.")
+    assert f"Отмечены нестабильными: {ORDER}.createOrder." in saved
+    assert "закоммитить папку базы знаний alla-kb (отметки — в alla-kb/flaky/)" in saved
+    marks = list((nested_project / "alla-kb" / "flaky").glob("*.json"))
+    assert [path.name.split("_")[:2] for path in marks] == [["OrderTest", "createOrder"]]
+    mark = json.loads(marks[0].read_text(encoding="utf-8"))
+    assert mark["test"] == f"{ORDER}.createOrder" and mark["launch_id"] == 777
+    assert (mark["passed_on"], mark["attempts"], mark["signals"]) == (2, 3, ["retry_different"])
+    assert "Папка `flaky/`" in (nested_project / "alla-kb" / "README.md").read_text(encoding="utf-8")
+
+    # Следующий прогон: повторов нет, но тест отмечен — его снова предлагают, отчёт его помечает.
+    FakeTestOps(default_launch(778)).install(monkeypatch)
+    skill_fake_maven.install(autotests, {f"{ORDER}#createOrder": [FAILED_500]})
+    run_dir, run, prepared = _prepare(nested_project, capsys, launch_id=778)
+    assert "База знаний: пропущен" not in prepared  # подпапка отметок — не запись базы знаний
+    order = _problem_of(run, 101)
+    done = _finish(run_dir, capsys, {f"{int(order):02d}": UNKNOWN_500,
+                                     f"{int(_problem_of(run, 103)):02d}": MARKDOWN_ANALYSIS})
+    assert "Похожи на нестабильные (флаки): 1 тест" in done
+    assert "[нестабильные по базе знаний: 1]" in done
+    today = mark["since"]
+    assert f"- Нестабильные по базе знаний: {ORDER}.createOrder (с {today})" in \
+        (run_dir / "report.md").read_text(encoding="utf-8")
+    plan = _rerun(run_dir, capsys)
+    assert "createOrder (модуль autotests) — отмечен нестабильным в базе знаний" in plan
+
+    out = _rerun(run_dir, capsys, "--yes", "--plan", _plan_hash(plan))
+    out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
+    assert f"снять отметку «нестабильный» ({ORDER}.createOrder): тест воспроизводится " \
+           "каждый раз" in out
+    saved = _run(["rerun", *_remember_command(out)], capsys)[1]
+    assert f"Сняты отметки (тест воспроизводится): {ORDER}.createOrder." in saved
+    assert not list((nested_project / "alla-kb" / "flaky").glob("*.json"))
+
+
+def test_passed_test_without_a_ci_signal_is_not_offered_for_the_knowledge_base(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    skill_fake_maven.install(nested_project / "autotests", {
+        f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
+    run_dir, run, _ = _prepare(nested_project, capsys)
+
+    out = _start(run_dir, capsys, _problem_of(run, 101))  # 500 без повторов: стенд мог лежать
+    out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
+
+    assert "Нестабильные — упали в CI, а при перезапуске прошли (2):" in out
+    assert "--remember" not in out
+    job = json.loads((run_dir / "rerun" / "result.json").read_text(encoding="utf-8"))["job"]
+    assert _rerun(run_dir, capsys, "--remember", "--result", job).startswith(
+        "STATUS: ok\nСохранять в базу знаний нечего")
+    assert _rerun(run_dir, capsys, "--remember", "--result", "other").startswith("STATUS: error")

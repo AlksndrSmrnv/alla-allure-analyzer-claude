@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from alla_core.models.clustering import ClusteringReport
@@ -195,6 +195,8 @@ class _Problem:
     # и итог проблемы строкой (``RerunView``).
     rerun: tuple[int, int] = (0, 0)
     rerun_summary: str = ""
+    # Тесты проблемы, отмеченные нестабильными в базе знаний: «имя (с даты)».
+    flaky_marked: list[str] = field(default_factory=list)
 
     @property
     def applied(self) -> bool:
@@ -537,6 +539,7 @@ def render_report(
     related: Related | None = None,
     confirmed: dict[str, dict[str, Any]] | None = None,
     rerun: RerunView | None = None,
+    flaky_marked: dict[str, list[str]] | None = None,
 ) -> tuple[str, str]:
     """Вернуть (краткий текст для консоли, полный текст report.md).
 
@@ -549,7 +552,8 @@ def render_report(
     показываются одним пунктом «Проблема 4 и 5 и 8» и считаются одной проблемой;
     ``confirmed`` — выводы расширений, подтверждённые пользователем (``confirmed.py``): их
     категория важнее разбора модели; ``rerun`` — итог перезапуска тестов локально (``rerun.py``):
-    строка в шапке, метка у проблемы и раздел в report.md. В данные сводки он не входит.
+    строка в шапке, метка у проблемы и раздел в report.md. В данные сводки он не входит;
+    ``flaky_marked`` — тесты проблемы, отмеченные нестабильными в базе знаний (``flaky.py``).
     """
     proposals = proposals or {}
     apply_states = apply_states or {}
@@ -566,6 +570,8 @@ def render_report(
         for problem in problems:
             problem.rerun = rerun.flaky_in(problem.entry["file_id"])
             problem.rerun_summary = rerun.summary_of(problem.entry["file_id"])
+    for problem in problems:
+        problem.flaky_marked = (flaky_marked or {}).get(problem.entry["file_id"], [])
     reasons = not_proposed or {}
     link = _report_link(paths)
 
@@ -881,6 +887,8 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
     if problem.rerun_summary:
         lines.append(f"- Перезапуск локально: {problem.rerun_summary} (раздел «Перезапуск "
                      "локально»)")
+    if problem.flaky_marked:
+        lines.append("- Нестабильные по базе знаний: " + "; ".join(problem.flaky_marked))
     lines += _history_lines(problem)
     return lines
 
@@ -1276,6 +1284,8 @@ def _brief_tags(problem: _Problem, *, related: bool = True, history: bool = True
         tags.append(REJECTED_TAG)
     if problem.rerun[0]:
         tags.append(f"прошёл при перезапуске: {problem.rerun[0]} из {problem.rerun[1]}")
+    if problem.flaky_marked:
+        tags.append(f"нестабильные по базе знаний: {len(problem.flaky_marked)}")
     if related and problem.related is not None:
         others = _others(problem.related, problem.number)
         tags.append(f"та же причина {_at_problems(others, MAX_BRIEF_GROUP_NUMBERS)} ({MERGED_TAG})")

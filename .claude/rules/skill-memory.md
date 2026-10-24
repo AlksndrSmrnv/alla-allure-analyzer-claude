@@ -5,6 +5,7 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/feedback.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/history.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/signature.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/flaky.py"
   - "qwen-skill/alla-launch/references/feedback.md"
   - "qwen-skill/alla-launch/tests/test_skill_memory.py"
   - "qwen-skill/alla-launch/tests/test_skill_signature.py"
@@ -214,6 +215,22 @@ paths:
   сохраняется.
 - Новый отбор ранее обрезавшихся логов может изменить точные `confirmed_signatures`/повторы;
   узнавание по `error_example` остаётся.
+
+### Отметки «нестабильный тест» (`flaky.py`, `skill-rerun.md`)
+
+- `<kb_dir>/flaky/<Класс>_<метод>_<sha1(ключ)[:10]>.json` — одна отметка на тест (общий
+  `flaky.json` в `alla-kb/` читался бы как запись без `id`: `ProjectKB.load` берёт `*.json` без
+  подпапок, `discover_kb_dirs` в `alla-kb` не спускается). Поля: `test` (`key_of_test`),
+  `since`, `seen`, `launch_id`, `passed_on`, `attempts`, `signals`; текста ошибки нет (нечего
+  проверять сканером секретов). Свои поля файла сохраняются; битый файл пропускается.
+- Пишет только `rerun --remember --result <job>` после «да» (`flaky.remember_plan`): отметить
+  — прошёл, код как в CI (`changed` пуст) и был признак из CI (`signals` плана: повтор,
+  временный сбой, прежняя отметка); снять — отмеченный тест упал все `attempts` раз той же
+  ошибкой (не `cut`). Без признака из CI не отмечается: стенд мог лежать в CI и подняться.
+- Читают при сборке отчёта и отборе (`marks_for_run`: база модуля каждой проблемы, как
+  `known_issues`): отметка — сильный признак `kb` (и при повторах `same`), метка проблемы в
+  брифе и строка в `report.md`. В `run.json` не пишется, `RUN_SCHEMA` не менялся.
+- `README.md` базы (`kb.README`) говорит про `flaky/`; создаётся и первой отметкой.
 
 ## Модули (`modules`)
 

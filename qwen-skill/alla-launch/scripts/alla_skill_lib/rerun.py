@@ -56,6 +56,7 @@ MAX_SHOWN_SKIPPED = 10
 MAX_OFFER_NAMES = 5
 # Признаки нестабильности теста (отбор — ``flaky.py``): код → как назвать пользователю.
 SIGNALS = {
+    "kb": "отмечен нестабильным в базе знаний",
     "retry_passed": "в TestOps повтор прошёл",
     "retry_different": "в TestOps повтор упал с другой ошибкой",
     "transient": "ошибка похожа на временный сбой",
@@ -832,6 +833,11 @@ def _who(file_id: str, name: str) -> str:
 
 def _module(module: str) -> str:
     return f" (модуль {module})" if module else ""
+
+
+def tests_phrase(count: int) -> str:
+    """«1 тест», «2 теста», «5 тестов»."""
+    return _tests(count)
 
 
 def _tests(count: int) -> str:

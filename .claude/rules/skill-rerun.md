@@ -107,6 +107,16 @@ paths:
   skipped, время). Потолок `ALLURE_RERUN_TIMEOUT` — общий; по нему `killpg` SIGTERM, через
   `KILL_GRACE_S` — SIGKILL.
 
+## База знаний (`rerun --remember`)
+
+- `rerun_done` с тем, что сохранить (`flaky.remember_plan`), добавляет вопрос и команду
+  `rerun --run DIR --remember --result <job>`; id итога — защита от сохранения не того, что
+  видел пользователь (чужой id — `error`). Нечего сохранять — `ok`. Ответ — `saved` с папкой
+  базы знаний. Подробности формата — `skill-memory.md`, «Отметки «нестабильный тест»».
+- Отметка — сильный признак `kb` в отборе (`flaky.signals_of(marked=…)`, `marks_for_run`) и
+  в `rerun N`; в отчёте — метка «нестабильные по базе знаний: k» и строка «Нестабильные по
+  базе знаний: имя (с даты)» (`render_report(flaky_marked=…)`).
+
 ## Отчёт
 
 - `rerun.RerunView` (законченное задание): группы итога (`RESULT_TITLES`; прошёл на
