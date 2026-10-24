@@ -505,3 +505,42 @@ def test_no_offer_without_maven_or_with_an_applied_fix(
 
     assert "Похожи на нестабильные" not in done
     assert _rerun(run_dir, capsys).startswith("STATUS: ok\nТестов, похожих на нестабильные")
+
+
+def test_rerun_result_goes_to_the_report_without_a_new_summary_or_hooks(
+    nested_project: Path, flaky_testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from alla_skill_lib import extensions as ext
+    from test_skill_extensions import ext_cli, make_demo
+
+    make_demo(nested_project)
+    ext_cli(nested_project, capsys, "enable", "demo")
+    skill_fake_maven.install(nested_project / "autotests", {
+        f"{ORDER}#createOrder": [FAILED_500, "passed"], f"{ORDER}#updateOrder": [FAILED_500]})
+    run_dir, run, _ = _prepare(nested_project, capsys)
+    order, login = _problem_of(run, 101), _problem_of(run, 103)
+    done = _finish(run_dir, capsys, {f"{int(order):02d}": UNKNOWN_500,
+                                     f"{int(login):02d}": MARKDOWN_ANALYSIS})
+    assert "событие after_report" in done
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+
+    plan = _rerun(run_dir, capsys)
+    out = _rerun(run_dir, capsys, "--yes", "--plan", _plan_hash(plan))
+    out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
+
+    assert f"Итог добавлен в полный разбор: {run_dir / 'report.md'}" in out
+    report = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert "Перезапуск локально: нестабильных 1 из 2 перезапущенных тестов — раздел" in report
+    section = report.split("### Перезапуск локально (2)", 1)[1].split("\n### ", 1)[0]
+    assert "Нестабильные — упали в CI, а при перезапуске прошли (1):" in section
+    assert f"- Проблема {order}: {ORDER}.updateOrder — упал 3 из 3" in section
+    assert ("- Перезапуск локально: 2 теста: нестабильные — 1, воспроизводятся — 1 "
+            "(раздел «Перезапуск локально»)") in report
+    brief = _run(["next", str(run_dir)], capsys)[1]
+    assert "Перезапуск локально: нестабильных 1 из 2 перезапущенных тестов (список в полном " \
+           "разборе)" in brief
+    assert "[прошёл при перезапуске: 1 из 2]" in brief
+    assert ext.BLOCK_HEADING not in brief  # after_report на итог перезапуска не повторяется
+    after = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert after["summary_data_hash"] == state["summary_data_hash"]
+    assert (run_dir / "summary.md").is_file()

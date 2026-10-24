@@ -33,6 +33,7 @@ from alla_skill_lib.history import format_date
 from alla_skill_lib.known_issues import KnownIssue, KnownIssues, KnownRecord
 from alla_skill_lib.proposals import Proposal, weakening_warnings
 from alla_skill_lib.related import Related, RelatedGroup
+from alla_skill_lib.rerun import RerunView
 from alla_skill_lib.retries import MAX_REPORT_PASSED, passed_after_retry, report_line, retry_facts
 from alla_skill_lib.sources import IMAGE_KIND, describe
 from alla_skill_lib.workspace import RunPaths
@@ -190,6 +191,10 @@ class _Problem:
     related: RelatedGroup | None = None
     # Вывод расширения, который подтвердил пользователь (``confirmed/NN.json``).
     confirmed: dict[str, Any] | None = None
+    # Перезапуск локально: сколько тестов проблемы прошло (нестабильные) из перезапущенных
+    # и итог проблемы строкой (``RerunView``).
+    rerun: tuple[int, int] = (0, 0)
+    rerun_summary: str = ""
 
     @property
     def applied(self) -> bool:
@@ -531,6 +536,7 @@ def render_report(
     known: KnownIssues | None = None,
     related: Related | None = None,
     confirmed: dict[str, dict[str, Any]] | None = None,
+    rerun: RerunView | None = None,
 ) -> tuple[str, str]:
     """Вернуть (краткий текст для консоли, полный текст report.md).
 
@@ -542,7 +548,8 @@ def render_report(
     ``related`` — группы «одна причина» (``related.py``): проблемы группы в одном разделе
     показываются одним пунктом «Проблема 4 и 5 и 8» и считаются одной проблемой;
     ``confirmed`` — выводы расширений, подтверждённые пользователем (``confirmed.py``): их
-    категория важнее разбора модели.
+    категория важнее разбора модели; ``rerun`` — итог перезапуска тестов локально (``rerun.py``):
+    строка в шапке, метка у проблемы и раздел в report.md. В данные сводки он не входит.
     """
     proposals = proposals or {}
     apply_states = apply_states or {}
@@ -555,6 +562,10 @@ def render_report(
     if related is not None:
         for problem in problems:
             problem.related = related.group_of(problem.entry["file_id"])
+    if rerun is not None:
+        for problem in problems:
+            problem.rerun = rerun.flaky_in(problem.entry["file_id"])
+            problem.rerun_summary = rerun.summary_of(problem.entry["file_id"])
     reasons = not_proposed or {}
     link = _report_link(paths)
 
@@ -564,7 +575,7 @@ def render_report(
     ]
     groups = [(bucket, title, units) for bucket, title, units in groups if units]
     count = sum(len(units) for _, _, units in groups)
-    brief = _brief_header(run, groups, count)
+    brief = _brief_header(run, groups, count, rerun)
     summary = _plain_text(summary)
     brief += ["", "### Коротко", summary, "", "---"]
     for bucket, title, group in groups:
@@ -573,7 +584,7 @@ def render_report(
         brief += ["", "### Замечания", *_brief_lines(notes, "- ", "замечаний")]
     brief += ["", "---", "", FEEDBACK_INVITATION, "", link]
 
-    full = _header(run, count)
+    full = _header(run, count, rerun)
     full += ["", "### Коротко", summary]
     if known and known.groups:
         full += ["", *_known_section(known, problems)]
@@ -581,6 +592,8 @@ def render_report(
     for bucket, title, units in groups:
         full += ["", *_section(title, hints[bucket], units, tests, reasons)]
     full += _passed_after_retry_section(run)
+    if rerun is not None:
+        full += ["", f"### Перезапуск локально ({len(rerun.tests)})", *rerun.lines()[1:]]
     if notes:
         full += ["", "### Замечания", *(f"- {note}" for note in notes)]
     full += [
@@ -710,7 +723,7 @@ def _merged_scope(run: dict[str, Any], count: int | None) -> str:
     return text
 
 
-def _header(run: dict[str, Any], count: int | None = None) -> list[str]:
+def _header(run: dict[str, Any], count: int | None = None, rerun: RerunView | None = None) -> list[str]:
     counts = run["counts"]
     title = f"## Разбор прогона #{run['launch_id']}"
     if run.get("launch_name"):
@@ -732,7 +745,15 @@ def _header(run: dict[str, Any], count: int | None = None) -> list[str]:
         lines.append(scope + _muted_note(counts) + ".")
     if passed := len(passed_after_retry(run)):
         lines.append(f"Прошли после повтора: {passed} — в разбор не входят, список ниже.")
+    if rerun is not None:
+        lines.append(f"{_rerun_line(rerun)} — раздел «Перезапуск локально» ниже.")
     return lines + [f"Внимание: {warning}" for warning in run.get("warnings", [])]
+
+
+def _rerun_line(rerun: RerunView) -> str:
+    total = len(rerun.tests)
+    return (f"Перезапуск локально: нестабильных {rerun.flaky} из {total} "
+            f"{_plural(total, 'перезапущенного теста', 'перезапущенных тестов', 'перезапущенных тестов')}")
 
 
 def _known_section(known: KnownIssues, problems: list[_Problem]) -> list[str]:
@@ -857,6 +878,9 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
     listed = _test_links(tests.of_cluster(problem.entry), problem.size)
     if listed:
         lines.append(f"- Тесты: {listed}")
+    if problem.rerun_summary:
+        lines.append(f"- Перезапуск локально: {problem.rerun_summary} (раздел «Перезапуск "
+                     "локально»)")
     lines += _history_lines(problem)
     return lines
 
@@ -906,6 +930,7 @@ def _brief_header(
     run: dict[str, Any],
     groups: list[tuple[str, str, list[list[_Problem]]]],
     count: int,
+    rerun: RerunView | None = None,
 ) -> list[str]:
     """Шапка краткого разбора: полоска прошедших тестов, счётчики без нулей и обзор разделов."""
     counts = run["counts"]
@@ -925,6 +950,8 @@ def _brief_header(
     lines = [title, "", f"{_pass_bar(counts['passed'], total)} {stats}" if total else stats]
     if passed := len(passed_after_retry(run)):
         lines.append(f"Прошли после повтора: {passed} (список в полном разборе)")
+    if rerun is not None:
+        lines.append(f"{_rerun_line(rerun)} (список в полном разборе)")
     if run["clusters"]:
         active = counts["active_failures"]
         scope = (
@@ -1247,6 +1274,8 @@ def _brief_tags(problem: _Problem, *, related: bool = True, history: bool = True
         tags.append(f"расходится с базой знаний: {problem.mismatch.id}")
     if problem.rejected is not None:
         tags.append(REJECTED_TAG)
+    if problem.rerun[0]:
+        tags.append(f"прошёл при перезапуске: {problem.rerun[0]} из {problem.rerun[1]}")
     if related and problem.related is not None:
         others = _others(problem.related, problem.number)
         tags.append(f"та же причина {_at_problems(others, MAX_BRIEF_GROUP_NUMBERS)} ({MERGED_TAG})")

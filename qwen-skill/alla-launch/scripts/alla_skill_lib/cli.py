@@ -1066,7 +1066,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
 
     console, full = render_report(
         run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed, known,
-        related, confirmed,
+        related, confirmed, rerun.RerunView.of(rerun.job_state(rerun.job_files(paths))),
     )
     ws.write_text(paths.report, full)
     # Уже применённую или неоднозначную правку повторно не предлагаем.
@@ -1653,12 +1653,39 @@ def _rerun_state(paths: ws.RunPaths, state: rerun.JobState) -> tuple[str, str]:
     if state.state == "running":
         wait = ws.skill_command("rerun", "--run", str(paths.root), "--wait")
         return "running", rerun.render_running(state, rerun.count_wait(files), wait)
-    if state.state == "failed":
+    view = rerun.RerunView.of(state)
+    if view is None:
         return "ok", rerun.render_failed(state)
+    refreshed = _refresh_report(paths)
     return "rerun_done", "\n".join([
         "Выведи пользователю итог между маркерами дословно, без пересказа:",
-        rerun.render_result(state, files.logs),
+        rerun.render_result(view, files.logs),
+        f"Итог добавлен в полный разбор: {paths.report}" if refreshed else
+        f"Полный разбор ещё не обновлён — выполни {paths.next_command()} (краткий разбор "
+        "заново не выводи).",
     ])
+
+
+def _refresh_report(paths: ws.RunPaths) -> bool:
+    """Пересобрать ``report.md`` с итогом перезапуска; ``False`` — разбор не закончен.
+
+    Это не новый отчёт: хуки ``after_report`` не повторяются — отметка расширения, сработавшего
+    на прежний отчёт, переносится на новый.
+    """
+    if not paths.report.is_file():
+        return False
+    before = hashlib.sha256(paths.report.read_bytes()).hexdigest()
+    status, _ = _next_step(paths, [])
+    if status != "done":
+        return False
+    after = hashlib.sha256(paths.report.read_bytes()).hexdigest()
+    state = _read_state(paths)
+    fired = dict(state.get("extension_reports") or {})
+    if after != before and before in fired.values():
+        state["extension_reports"] = {name: after if digest == before else digest
+                                      for name, digest in fired.items()}
+        ws.write_json(paths.state_json, state)
+    return True
 
 
 # ---------------------------------------------------------------------------

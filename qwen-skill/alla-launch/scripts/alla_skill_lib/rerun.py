@@ -676,50 +676,100 @@ def render_failed(state: JobState) -> str:
             "Покажи это пользователю; повторить можно командой /alla:rerun.")
 
 
-def render_result(state: JobState, logs: Path) -> str:
-    """Итог по группам: нестабильные, воспроизводятся, падают иначе, не запустились."""
-    result = state.result or {}
-    attempts = int(result.get("attempts") or 0)
-    tests = list(result.get("tests") or [])
-    groups: dict[str, list[str]] = {key: [] for key in (
-        "flaky", "fixed", "reproduced", "other", "not_run")}
-    for item in tests:
-        who = _who(str(item.get("file_id") or ""), str(item.get("full_name") or ""))
+RESULT_TITLES = {
+    "flaky": "Нестабильные — упали в CI, а при перезапуске прошли",
+    "fixed": "Прошли на изменённом коде теста — проверка правки, не нестабильность",
+    "reproduced": "Воспроизводятся — упали каждый раз с той же ошибкой, что в CI",
+    "other": "Падают локально с другой ошибкой — о нестабильности не говорят",
+    "not_run": "Не запустились",
+}
+
+SHORT_TITLES = {
+    "flaky": "нестабильные",
+    "fixed": "прошли на изменённом коде",
+    "reproduced": "воспроизводятся",
+    "other": "падают локально иначе",
+    "not_run": "не запустились",
+}
+
+
+@dataclass(frozen=True)
+class RerunView:
+    """Итог законченного перезапуска для ответа команды и для отчёта."""
+
+    attempts: int
+    tests: list[dict[str, Any]]
+    build_errors: dict[str, list[str]]
+
+    @classmethod
+    def of(cls, state: JobState) -> RerunView | None:
+        if state.state != "done" or state.result is None:
+            return None
+        result = state.result
+        return cls(int(result.get("attempts") or 0), list(result.get("tests") or []),
+                   dict(result.get("build_errors") or {}))
+
+    @staticmethod
+    def group(item: dict[str, Any]) -> str:
+        """Группа итога (ключ ``RESULT_TITLES``)."""
         outcome = item.get("outcome")
         if outcome == "passed":
-            text = f"- {who} — прошёл на запуске {item.get('attempt')} из {attempts}"
+            return "fixed" if item.get("changed") else "flaky"
+        return outcome if outcome in ("reproduced", "other") else "not_run"
+
+    @property
+    def flaky(self) -> int:
+        return sum(1 for item in self.tests if self.group(item) == "flaky")
+
+    def flaky_in(self, file_id: str) -> tuple[int, int]:
+        """Сколько тестов проблемы прошло при перезапуске (не проверка правки) и сколько шло."""
+        own = [item for item in self.tests if item.get("file_id") == file_id]
+        return sum(1 for item in own if self.group(item) == "flaky"), len(own)
+
+    def summary_of(self, file_id: str) -> str:
+        """Итог проблемы одной строкой: «2 теста: нестабильные — 1, воспроизводятся — 1»."""
+        own = [self.group(item) for item in self.tests if item.get("file_id") == file_id]
+        if not own:
+            return ""
+        parts = [f"{SHORT_TITLES[key]} — {own.count(key)}" for key in RESULT_TITLES if key in own]
+        return f"{_tests(len(own))}: " + ", ".join(parts)
+
+    def lines(self) -> list[str]:
+        """Итог по группам: заголовок группы с числом и тесты строками ``- …``."""
+        groups: dict[str, list[str]] = {key: [] for key in RESULT_TITLES}
+        for item in self.tests:
+            key = self.group(item)
+            groups[key].append(f"- {_who(str(item.get('file_id') or ''), str(item.get('full_name') or ''))}"
+                               f" — {self._detail(item)}")
+        lines = [f"Перезапуск локально (Maven): {_tests(len(self.tests))}, каждый до "
+                 f"{self.attempts} раз."]
+        for key, title in RESULT_TITLES.items():
+            if groups[key]:
+                lines += ["", f"{title} ({len(groups[key])}):", *groups[key]]
+        return lines
+
+    def _detail(self, item: dict[str, Any]) -> str:
+        outcome = item.get("outcome")
+        if outcome == "passed":
+            text = f"прошёл на запуске {item.get('attempt')} из {self.attempts}"
             if item.get("surefire_flaky"):
                 text += " (surefire повторял его сам)"
-            groups["fixed" if item.get("changed") else "flaky"].append(
-                text + (f"; {item['changed']}" if item.get("changed") else ""))
-        elif outcome == "reproduced":
-            text = f"- {who} — упал {item.get('runs')} из {item.get('runs')}"
-            if item.get("cut"):
-                text += " (дальше не успел: вышел потолок времени)"
-            groups["reproduced"].append(text)
-        elif outcome == "other":
-            message = item.get("message") or "текст ошибки скрыт"
-            groups["other"].append(f"- {who} — «{message}»")
-        else:
-            reason = str(item.get("reason") or "")
-            errors = (result.get("build_errors") or {}).get(item.get("module"), [])
-            if errors and reason == "сборка не прошла":
-                reason += f": {errors[0]}"
-            groups["not_run"].append(f"- {who} — {reason}")
-    titles = {
-        "flaky": "Нестабильные — упали в CI, а при перезапуске прошли",
-        "fixed": "Прошли на изменённом коде теста — проверка правки, не нестабильность",
-        "reproduced": "Воспроизводятся — упали каждый раз с той же ошибкой, что в CI",
-        "other": "Падают локально с другой ошибкой — о нестабильности не говорят",
-        "not_run": "Не запустились",
-    }
-    lines = [RESULT_BEGIN,
-             f"Перезапуск локально (Maven): {_tests(len(tests))}, каждый до {attempts} раз."]
-    for key, title in titles.items():
-        if groups[key]:
-            lines += ["", f"{title} ({len(groups[key])}):", *groups[key]]
-    lines += ["", f"Логи Maven: {logs}", RESULT_END]
-    return "\n".join(lines)
+            return text + (f"; {item['changed']}" if item.get("changed") else "")
+        if outcome == "reproduced":
+            text = f"упал {item.get('runs')} из {item.get('runs')}"
+            return text + (" (дальше не успел: вышел потолок времени)" if item.get("cut") else "")
+        if outcome == "other":
+            return f"«{item.get('message') or 'текст ошибки скрыт'}»"
+        reason = str(item.get("reason") or "")
+        errors = self.build_errors.get(str(item.get("module") or ""), [])
+        if errors and reason == "сборка не прошла":
+            reason += f": {errors[0]}"
+        return reason
+
+
+def render_result(view: RerunView, logs: Path) -> str:
+    """Итог для ответа ``rerun_done``: между маркерами, со ссылкой на логи Maven."""
+    return "\n".join([RESULT_BEGIN, *view.lines(), "", f"Логи Maven: {logs}", RESULT_END])
 
 
 def render_offer(plan: Plan, command: str) -> str:
