@@ -1535,14 +1535,17 @@ def _rerun(
 ) -> tuple[str, str]:
     files = rerun.job_files(paths)
     state = rerun.job_state(files)
-    if args.wait:
+    if args.wait or (not args.clusters and not args.yes and state.state != "none"):
+        # Без номеров после перезапуска — его ход или итог: «итог покажет /alla:rerun».
         if state.state == "none":
             return "ok", "Перезапуска тестов в этом разборе не было. Покажи это пользователю."
         if state.state == "running":
             state = rerun.wait_job(files, rerun.WAIT_BUDGET - (time.monotonic() - started))
         return _rerun_state(paths, state)
     if state.state == "running":
-        return _rerun_state(paths, state)
+        status, body = _rerun_state(paths, state)
+        return status, ("Новый перезапуск не начат: в этом разборе ещё идёт прежний. Скажи это "
+                        "пользователю; повторить его просьбу можно после итога.\n" + body)
     entries = [find_entry(run, cluster) for cluster in args.clusters]
     unknown = [cluster for cluster, entry in zip(args.clusters, entries) if entry is None]
     if unknown:
@@ -1632,8 +1635,9 @@ def _rerun_offer(
         return None
     categories = {file_id: analysis.category for file_id, analysis in analyses.items()
                   if file_id not in flagged}
-    applied = {file_id for file_id, state in states.items() if state == "applied"}
-    found = flaky.candidates(run, categories, confirmed | applied)
+    # Проблема с правкой агента (предложенной или применённой) — дефект теста; её перезапуск —
+    # проверка правки, а применённая после вопроса правка изменила бы план под «да».
+    found = flaky.candidates(run, categories, confirmed | set(states))
     plan = rerun.build_plan(
         paths, run, [(entry, test) for entry, test, _ in found],
         attempts=settings.rerun_attempts, max_tests=settings.rerun_max_tests,
@@ -1655,14 +1659,14 @@ def _rerun_state(paths: ws.RunPaths, state: rerun.JobState) -> tuple[str, str]:
         return "running", rerun.render_running(state, rerun.count_wait(files), wait)
     view = rerun.RerunView.of(state)
     if view is None:
-        return "ok", rerun.render_failed(state)
+        retry = ws.skill_command("rerun", *rerun.plan_problems(state), "--run", str(paths.root))
+        return "ok", rerun.render_failed(state, retry)
+    # Разбор не закончен — итог попадёт в отчёт, когда next его соберёт.
     refreshed = _refresh_report(paths)
     return "rerun_done", "\n".join([
-        "Выведи пользователю итог между маркерами дословно, без пересказа:",
-        rerun.render_result(view, files.logs),
-        f"Итог добавлен в полный разбор: {paths.report}" if refreshed else
-        f"Полный разбор ещё не обновлён — выполни {paths.next_command()} (краткий разбор "
-        "заново не выводи).",
+        "Выведи пользователю итог между маркерами дословно, без пересказа; краткий разбор "
+        "заново не выводи:",
+        rerun.render_result(view, files.logs, paths.report if refreshed else None),
     ])
 
 

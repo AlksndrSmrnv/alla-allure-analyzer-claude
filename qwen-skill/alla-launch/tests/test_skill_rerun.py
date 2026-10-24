@@ -214,7 +214,9 @@ def test_running_job_is_waited_for_and_then_left_to_the_background(
         assert "Пользователю пока" in _rerun(run_dir, capsys, "--wait")
     out = _rerun(run_dir, capsys, "--wait")
     assert "продолжается в фоне" in out and "Сам больше не жди" in out
-    assert _rerun(run_dir, capsys, "2").startswith("STATUS: running")  # нового не начинает
+    again = _rerun(run_dir, capsys, "2")
+    assert again.startswith("STATUS: running\nНовый перезапуск не начат")
+    assert "ход и итог можно спросить позже: /alla:rerun" in again
 
     monkeypatch.setattr(rerun, "WAIT_BUDGET", 30.0)
     assert _rerun(run_dir, capsys, "--wait").startswith("STATUS: rerun_done")
@@ -474,7 +476,8 @@ def test_offer_after_the_report_reruns_the_candidates_with_one_yes(
 
     offer = next(line for line in done.splitlines() if "Похожи на нестабильные" in line)
     assert f"2 теста в проблемах {order}" in offer and "Только после явного «да»" in offer
-    assert "если в этом сеансе он уже ответил на этот вопрос — не спрашивай снова" in offer
+    assert "уже ответил на этот вопрос или сам попросил перезапустить тесты, не спрашивай" in offer
+    assert f"({ORDER}.createOrder; {ORDER}.updateOrder)" in offer and "на этой машине" in offer
     plan = _rerun(run_dir, capsys)
     assert plan.startswith("STATUS: rerun\n"), plan
     assert "createOrder (модуль autotests) — в TestOps повтор упал с другой ошибкой" in plan
@@ -486,6 +489,7 @@ def test_offer_after_the_report_reruns_the_candidates_with_one_yes(
     out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
     assert "Нестабильные — упали в CI, а при перезапуске прошли (2):" in out
     assert "Похожи на нестабильные" not in _run(["next", str(run_dir)], capsys)[1]  # уже был
+    assert _rerun(run_dir, capsys).startswith("STATUS: rerun_done")  # без номеров — итог
 
 
 @pytest.mark.parametrize("fixture", ["project", "nested_project"])
@@ -528,7 +532,7 @@ def test_rerun_result_goes_to_the_report_without_a_new_summary_or_hooks(
     out = _rerun(run_dir, capsys, "--yes", "--plan", _plan_hash(plan))
     out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
 
-    assert f"Итог добавлен в полный разбор: {run_dir / 'report.md'}" in out
+    assert f"Полный разбор с итогом: {run_dir / 'report.md'}\n===КОНЕЦ===" in out
     report = (run_dir / "report.md").read_text(encoding="utf-8")
     assert "Перезапуск локально: нестабильных 1 из 2 перезапущенных тестов — раздел" in report
     section = report.split("### Перезапуск локально (2)", 1)[1].split("\n### ", 1)[0]
@@ -544,3 +548,41 @@ def test_rerun_result_goes_to_the_report_without_a_new_summary_or_hooks(
     after = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     assert after["summary_data_hash"] == state["summary_data_hash"]
     assert (run_dir / "summary.md").is_file()
+
+
+def test_failed_job_offers_the_retry_command(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir, run, _ = _prepare(nested_project, capsys)
+    order = _problem_of(run, 101)
+    files = JobFiles(run_dir / "rerun")
+    files.root.mkdir()
+    files.plan.write_text(json.dumps({"job": "j", "tests": [{"file_id": f"{int(order):02d}"}]}),
+                          encoding="utf-8")
+    files.failed.write_text("сбой перезапуска: OSError: диск полон\n", encoding="utf-8")
+
+    out = _rerun(run_dir, capsys)
+
+    assert out.startswith("STATUS: ok\nПерезапуск тестов не удался: сбой перезапуска: OSError")
+    assert "Повторить (покажет план заново): " in out
+    assert out.rstrip().endswith(f"rerun {order} --run {run_dir}")
+
+
+def test_problem_with_a_proposed_fix_is_not_offered(
+    nested_project: Path, flaky_testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from test_skill_flow import PROPOSAL, TEST_ANALYSIS
+
+    source = "src/test/java/ru/company/orders/OrderTest.java"
+    run_dir, run, _ = _prepare(nested_project, capsys)
+    order, login = f"{int(_problem_of(run, 101)):02d}", f"{int(_problem_of(run, 103)):02d}"
+    (run_dir / "analyses" / f"{order}.md").write_text(
+        TEST_ANALYSIS.replace(source, f"autotests/{source}"), encoding="utf-8")
+    assert _run(["next", str(run_dir)], capsys)[1].startswith("STATUS: propose")
+    (run_dir / "proposals" / f"{order}.md").write_text(
+        PROPOSAL.replace(source, f"autotests/{source}"), encoding="utf-8")
+
+    done = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+
+    assert f"Правка автотеста для проблемы {int(order)}" in done
+    assert "Похожи на нестабильные" not in done  # повтор в TestOps прошёл, но правка предложена

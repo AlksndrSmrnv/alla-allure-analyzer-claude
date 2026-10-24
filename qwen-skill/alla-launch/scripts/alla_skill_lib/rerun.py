@@ -53,6 +53,7 @@ NOT_IN_REACTOR = "Could not find the selected project in the reactor"
 
 OUTCOMES = ("passed", "reproduced", "other", "not_run")
 MAX_SHOWN_SKIPPED = 10
+MAX_OFFER_NAMES = 5
 # Признаки нестабильности теста (отбор — ``flaky.py``): код → как назвать пользователю.
 SIGNALS = {
     "retry_passed": "в TestOps повтор прошёл",
@@ -667,13 +668,19 @@ def render_running(state: JobState, waits: int, wait_command: str) -> str:
                 f"{int(WAIT_BUDGET)} с) — и так, пока ответ не сменится. Пользователю пока "
                 "ничего не пиши.")
     return (f"{line}\nПерезапуск идёт долго. Скажи пользователю, что он продолжается в фоне, "
-            "а итог покажет /alla:rerun (или просьба «покажи итог перезапуска»). Сам больше не "
-            "жди и команду не повторяй.")
+            "а ход и итог можно спросить позже: /alla:rerun или «покажи итог перезапуска». Сам "
+            "больше не жди и команду не повторяй.")
 
 
-def render_failed(state: JobState) -> str:
+def render_failed(state: JobState, retry_command: str) -> str:
     return (f"Перезапуск тестов не удался: {state.reason or 'причина неизвестна'}.\n"
-            "Покажи это пользователю; повторить можно командой /alla:rerun.")
+            f"Покажи это пользователю. Повторить (покажет план заново): {retry_command}")
+
+
+def plan_problems(state: JobState) -> list[str]:
+    """Номера проблем задания (для команды повтора)."""
+    tests = (state.plan or {}).get("tests") or []
+    return list(dict.fromkeys(str(int(item["file_id"])) for item in tests))
 
 
 RESULT_TITLES = {
@@ -767,20 +774,28 @@ class RerunView:
         return reason
 
 
-def render_result(view: RerunView, logs: Path) -> str:
-    """Итог для ответа ``rerun_done``: между маркерами, со ссылкой на логи Maven."""
-    return "\n".join([RESULT_BEGIN, *view.lines(), "", f"Логи Maven: {logs}", RESULT_END])
+def render_result(view: RerunView, logs: Path, report: Path | None = None) -> str:
+    """Итог для ответа ``rerun_done``: между маркерами, со ссылками на логи Maven и отчёт."""
+    links = [f"Логи Maven: {logs}"]
+    if report is not None:
+        links.append(f"Полный разбор с итогом: {report}")
+    return "\n".join([RESULT_BEGIN, *view.lines(), "", *links, RESULT_END])
 
 
 def render_offer(plan: Plan, command: str) -> str:
     """Пункт «После отчёта»: предложить перезапуск кандидатов скилла одним вопросом."""
     numbers = ", ".join(dict.fromkeys(str(int(test.file_id)) for test in plan.tests))
+    names = [test.full_name for test in plan.tests[:MAX_OFFER_NAMES]]
+    if len(plan.tests) > len(names):
+        names.append(f"и ещё {len(plan.tests) - len(names)}")
     return (
-        f"- Похожи на нестабильные (флаки): {_tests(len(plan.tests))} в проблемах {numbers} — "
-        f"их можно перезапустить локально (Maven, каждый до {plan.attempts} раз, до "
-        f"~{plan.estimate_minutes()} мин). После краткого разбора спроси пользователя, "
-        "перезапустить ли их; если в этом сеансе он уже ответил на этот вопрос — не спрашивай "
-        f"снова. Только после явного «да» выполни: {command} — дальше по SKILL.md, раздел 8."
+        f"- Похожи на нестабильные (флаки): {_tests(len(plan.tests))} в проблемах {numbers} "
+        f"({'; '.join(names)}). Их можно перезапустить на этой машине (Maven, с настройками "
+        f"проекта; каждый до {plan.attempts} раз, до ~{plan.estimate_minutes()} мин). После "
+        "ответов о правках спроси пользователя отдельным вопросом, перезапустить ли их: назови "
+        "число тестов, проблемы, время и что тесты пойдут на этой машине. Если в этом сеансе он "
+        "уже ответил на этот вопрос или сам попросил перезапустить тесты, не спрашивай. Только "
+        f"после явного «да» на этот вопрос выполни: {command} — дальше по SKILL.md, раздел 8."
     )
 
 
