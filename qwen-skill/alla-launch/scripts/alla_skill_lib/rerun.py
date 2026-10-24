@@ -183,10 +183,14 @@ def build_plan(
         jvm, module = located
         key = (file_id, jvm.class_name, jvm.method)
         if key in seen:
+            merged = seen[key]
             message = str(test.get("status_message") or "")[:MESSAGE_KEEP_CHARS]
             if message.strip() and not any(same_error(message, known)
-                                           for known in ci_messages(seen[key])):
-                seen[key].other_messages.append(message)
+                                           for known in ci_messages(merged)):
+                merged.other_messages.append(message)
+            for code in (signals or {}).get(int(test["test_result_id"]), []):
+                if code not in merged.signals:  # признак CI любого варианта — признак метода
+                    merged.signals.append(code)
             continue
         # Лимит — до git status: план строится на каждом done, кандидатов бывают сотни.
         if len(plan.tests) >= max_tests:
@@ -530,8 +534,10 @@ class JobFiles:
         return self.root / "logs"
 
     def maven_log(self, attempt: int, module: str) -> Path:
+        """Лог запуска модуля; хэш пути — чтобы ``a/b`` и ``a_b`` не писали в один файл."""
         name = re.sub(r"[^\w.-]+", "_", module) or "root"
-        return self.logs / f"attempt-{attempt}-{name}.log"
+        digest = hashlib.sha1(module.encode("utf-8")).hexdigest()[:6]
+        return self.logs / f"attempt-{attempt}-{name}-{digest}.log"
 
     def clear(self) -> None:
         for path in (self.plan, self.progress, self.result, self.failed, self.pid, self.waits,

@@ -127,9 +127,8 @@ def test_rerun_until_the_first_pass_tells_flaky_from_reproduced(
     assert f"Проблема {order}: {ORDER}.updateOrder — упал 3 из 3" in body
     assert skill_fake_maven.runs(autotests) == {
         f"{ORDER}#createOrder": 2, f"{ORDER}#updateOrder": 3}
-    logs = run_dir / "rerun" / "logs"
-    assert sorted(path.name for path in logs.iterdir()) == [
-        "attempt-1-autotests.log", "attempt-2-autotests.log", "attempt-3-autotests.log"]
+    files = JobFiles(run_dir / "rerun")
+    assert sorted(files.logs.iterdir()) == [files.maven_log(k, "autotests") for k in (1, 2, 3)]
     result = json.loads((run_dir / "rerun" / "result.json").read_text(encoding="utf-8"))
     assert [item["outcome"] for item in result["tests"]] == ["passed", "reproduced"]
 
@@ -176,7 +175,7 @@ def test_module_missing_from_the_reactor_runs_as_its_own_project(
     out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
 
     assert "Нестабильные — упали в CI, а при перезапуске прошли (2):" in out
-    log = (run_dir / "rerun" / "logs" / "attempt-1-autotests.log").read_text(encoding="utf-8")
+    log = JobFiles(run_dir / "rerun").maven_log(1, "autotests").read_text(encoding="utf-8")
     assert "Could not find the selected project in the reactor" in log
     assert f"$ cd {nested_project / 'autotests'} && " in log  # повтор из папки модуля
 
@@ -874,6 +873,11 @@ def test_variants_of_a_method_keep_every_ci_error_and_each_problem_its_own_test(
     assert [(int(t.file_id), t.method) for t in plan.tests] == [
         (int(order), "createOrder"), (int(login), "createOrder")]
     assert plan.tests[0].other_messages == ["boom 2"]
+    signals = {int(t["test_result_id"]): codes for t, codes in ((tests[101], []),
+                                                                 (tests[102], ["retry_passed"]))}
+    merged = rerun.build_plan(rerun.ws.RunPaths(run_dir), run, picks, attempts=3, max_tests=20,
+                              signals=signals)
+    assert merged.tests[0].signals == ["retry_passed"]  # признак второго варианта не теряется
     assert surefire_filter(plan.tests) == f"{ORDER}#createOrder"
 
     # Локально воспроизводится ошибка второго варианта — это падение из CI, а не «иначе».
@@ -881,3 +885,10 @@ def test_variants_of_a_method_keep_every_ci_error_and_each_problem_its_own_test(
     files, job = _job(tmp_path, timeout=60, test=replace(plan.tests[0], module=""))
     item = execute(files, job)["tests"][0]
     assert (item["outcome"], item["runs"]) == ("reproduced", 3)
+
+
+def test_module_logs_never_share_a_file(tmp_path: Path) -> None:
+    files = JobFiles(tmp_path)
+
+    assert files.maven_log(1, "a/b") != files.maven_log(1, "a_b")
+    assert files.maven_log(1, "").name.startswith("attempt-1-root-")
