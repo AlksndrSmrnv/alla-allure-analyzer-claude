@@ -162,6 +162,11 @@ class RunPaths:
         """Вывод расширения, который пользователь подтвердил (``remember --from-extension``)."""
         return self.root / "confirmed" / f"{file_id}.json"
 
+    @property
+    def rerun_dir(self) -> Path:
+        """Перезапуск тестов локально (``rerun.py``): план, ход, итог и логи Maven."""
+        return self.root / "rerun"
+
     def next_command(self) -> str:
         return skill_command("next", str(self.root))
 

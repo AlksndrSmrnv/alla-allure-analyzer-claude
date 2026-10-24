@@ -53,7 +53,7 @@ paths:
 
 - `commands/alla/*.md` — команды Qwen Code (`FileCommandLoader`: подпапка `alla/` даёт имя
   `alla:<файл>`): `run`, `continue`, `apply`, `revert`, `remember`, `reject`, `review`,
-  `setup`, `extensions`. Frontmatter — `description`, `argument-hint` (у команд с аргументами, тогда в теле
+  `setup`, `extensions`, `rerun`. Frontmatter — `description`, `argument-hint` (у команд с аргументами, тогда в теле
   `{{args}}`), `disable-model-invocation: true` (без него команду может вызвать сама модель).
 - Тело — короткая просьба «вызови скилл alla-launch (инструмент skill) и действуй по разделу
   N»: шаги и правила не копируются, источник — `SKILL.md`. Папку разбора для `apply`,
@@ -74,7 +74,8 @@ paths:
 `review [run_dir | --run DIR] [--no-model]`,
 `apply N --run DIR [--yes --diff ХЭШ] [--repeat]`, `revert N --run DIR`,
 `remember N --run DIR [--entry ID] [--from-analysis | --from-extension ИМЯ]`, `reject N <id> --run DIR`,
-`extensions [list|enable|disable|run|action]` (`skill-extensions.md`).
+`extensions [list|enable|disable|run|action]` (`skill-extensions.md`),
+`rerun N [N…] --run DIR [--yes --plan ХЭШ | --wait]` (`skill-rerun.md`).
 
 - Где в синтаксисе есть `--run DIR`, он обязателен: `.last_run` после нового `prepare`
   указывает на другой прогон.
@@ -87,7 +88,7 @@ paths:
 ## Статусы и коды возврата
 
 - Первая строка вывода — `STATUS: analyze|analyze_batch|fix|propose|relate|summary|done|diff|
-  applied|reverted|saved|ok|ready|reviewed|setup_required|error`.
+  applied|reverted|saved|rerun|running|rerun_done|ok|ready|reviewed|setup_required|error`.
 - Ошибка аргументов и любое необработанное исключение тоже дают `STATUS: error`.
 - Код возврата 0 у всех статусов, кроме `error`: статус с инструкцией — не авария.
 

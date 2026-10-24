@@ -37,7 +37,8 @@ LIB = SKILL_DIR / "scripts" / "alla_skill_lib"
 
 STATUSES = (
     "analyze", "analyze_batch", "fix", "propose", "relate", "summary", "done", "diff", "applied",
-    "reverted", "saved", "ok", "ready", "reviewed", "setup_required", "error",
+    "reverted", "saved", "rerun", "running", "rerun_done", "ok", "ready", "reviewed",
+    "setup_required", "error",
 )
 _EXAMPLE_RE = re.compile(
     r"<!--\s*example:\s*(?P<kind>[\w-]+)\s*(?:\|\s*(?P<arg>.*?))?\s*-->[ \t]*\n"

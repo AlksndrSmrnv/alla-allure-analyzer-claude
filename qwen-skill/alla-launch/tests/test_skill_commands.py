@@ -21,7 +21,7 @@ from alla_skill_lib import workspace as ws
 SKILL_DIR = Path(__file__).resolve().parents[1]
 COMMANDS_DIR = SKILL_DIR / "commands" / "alla"
 SKILL_MD = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-WITH_ARGS = {"run", "continue", "apply", "revert", "remember", "reject", "extensions"}
+WITH_ARGS = {"run", "continue", "apply", "revert", "remember", "reject", "extensions", "rerun"}
 # Регулярка parseMarkdownCommand из Qwen Code (FileCommandLoader).
 FRONTMATTER = re.compile(r"^---\n(?:([\s\S]*?)\n)?---(?:\n|$)([\s\S]*)$")
 # С этих символов простое значение YAML начинаться не может (кроме «<»).

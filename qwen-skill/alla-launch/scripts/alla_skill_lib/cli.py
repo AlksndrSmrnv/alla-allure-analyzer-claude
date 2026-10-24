@@ -10,6 +10,8 @@
 * ``skip NN`` — пропустить кластер по просьбе пользователя;
 * ``remember NN`` / ``reject NN <id>`` — обратная связь в базу знаний проекта;
 * ``apply NN [--yes --diff ХЭШ] [--repeat]`` / ``revert NN`` — показать, применить или откатить правку автотеста;
+* ``rerun N [N…] [--yes --plan ХЭШ | --wait]`` — перезапустить тесты проблем локально (Maven)
+  фоновым заданием: нестабильный тест или нет (``rerun.py``);
 * ``check`` — проверить окружение и доступ к TestOps; ``clean`` — удалить старые разборы;
 * ``extensions [list|enable|disable|run|action]`` — расширения скилла (``extensions.py``):
   показать, включить, выключить, повторить хук, выполнить действие расширения;
@@ -19,7 +21,7 @@
 
 Первая строка вывода всегда ``STATUS: <статус>``:
 analyze | analyze_batch | fix | propose | summary | done | diff | applied | reverted | saved |
-ok | ready | reviewed | error.
+rerun | running | rerun_done | ok | ready | reviewed | error.
 Код возврата 0 всегда, кроме ``error``: статус с инструкцией — не авария.
 """
 
@@ -48,6 +50,7 @@ from alla_core.exceptions import AllaError, ConfigurationError
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib import extensions as ext
+from alla_skill_lib import rerun
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.agent_rules import (
     ANALYSIS_FORMAT_REF,
@@ -328,6 +331,8 @@ def _dispatch(argv: list[str] | None) -> int:
         ))
     if args.command == "extensions":
         return cmd_extensions(args, project_root, reports_dir)
+    if args.command == "rerun":
+        return cmd_rerun(args, reports_dir)
     raise AssertionError(f"неизвестная команда {args.command}")
 
 
@@ -464,6 +469,24 @@ def _build_parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "revert", parents=[common, run_option],
         help="вернуть файл, изменённый командой apply, если его после этого не меняли",
+    )
+    again_tests = commands.add_parser(
+        "rerun", parents=[common],
+        help="перезапустить упавшие тесты проблем локально (Maven): нестабильные или нет",
+    )
+    again_tests.add_argument("clusters", nargs="*", metavar="N", help="номера проблем")
+    again_tests.add_argument("--run", required=True, help="папка разбора")
+    mode_rerun = again_tests.add_mutually_exclusive_group()
+    mode_rerun.add_argument(
+        "--yes", action="store_true",
+        help="запустить (только после согласия пользователя); нужен --plan",
+    )
+    mode_rerun.add_argument(
+        "--wait", action="store_true", help="показать ход или итог идущего перезапуска",
+    )
+    again_tests.add_argument(
+        "--plan", dest="plan_hash",
+        help="хэш плана, который только что показала команда без --yes (запускается ровно он)",
     )
     extensions = commands.add_parser(
         "extensions", parents=[common], help="расширения скилла: список, включение, повтор, действия",
@@ -1479,6 +1502,91 @@ def _done_body(
             f"  известная проблема не подходит: {ws.skill_command('reject', 'N', '<id>', '--run', run)}",
         ]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# rerun
+# ---------------------------------------------------------------------------
+
+
+def cmd_rerun(args: argparse.Namespace, reports_dir: Path) -> int:
+    """Перезапуск тестов локально: план, запуск после «да», ход и итог (``rerun.py``)."""
+    started = time.monotonic()
+    try:
+        paths = ws.resolve_run(args.run, reports_dir)
+    except ws.RunNotFoundError as exc:
+        print("STATUS: error")
+        print(exc)
+        return 1
+    run = ws.read_json(paths.run_json)
+    status, body = _rerun(paths, run, args, started)
+    print(f"STATUS: {status}")
+    print(body)
+    return _exit_code(status)
+
+
+def _rerun(
+    paths: ws.RunPaths, run: dict[str, Any], args: argparse.Namespace, started: float,
+) -> tuple[str, str]:
+    files = rerun.job_files(paths)
+    state = rerun.job_state(files)
+    if args.wait:
+        if state.state == "none":
+            return "ok", "Перезапуска тестов в этом разборе не было. Покажи это пользователю."
+        if state.state == "running":
+            state = rerun.wait_job(files, rerun.WAIT_BUDGET - (time.monotonic() - started))
+        return _rerun_state(paths, state)
+    if state.state == "running":
+        return _rerun_state(paths, state)
+    entries = [find_entry(run, cluster) for cluster in args.clusters]
+    unknown = [cluster for cluster, entry in zip(args.clusters, entries) if entry is None]
+    if unknown:
+        return "error", f"В разборе {paths.root} нет проблем: {', '.join(unknown)}."
+    if not entries:
+        return "ok", "Назови номера проблем, тесты которых перезапустить. Спроси у пользователя."
+    env_file = ws.SKILL_DIR / ".env"
+    try:
+        settings = Settings.load(env_file=env_file, require_testops=False)
+    except ConfigurationError as exc:
+        return "error", f"Настройки скилла ({env_file}) неверны: {exc}. {USER_ACTION_NOTE}"
+    if settings.rerun_max_tests == 0:
+        return "ok", ("Перезапуск тестов выключен в настройках скилла (ALLURE_RERUN_MAX_TESTS=0). "
+                      "Покажи это пользователю.")
+    picks = [(entry, test) for entry in entries if entry is not None
+             for test in rerun.failed_tests_of(run, entry)]
+    plan = rerun.build_plan(paths, run, picks, attempts=settings.rerun_attempts,
+                            max_tests=settings.rerun_max_tests)
+    if plan.note or not plan.tests:
+        return "ok", rerun.render_nothing(plan)
+    command = ws.skill_command("rerun", *(str(int(entry["file_id"])) for entry in entries
+                                         if entry is not None),
+                               "--run", str(paths.root), "--yes", "--plan", plan.digest)
+    extra = rerun.maven_args(settings.rerun_maven_args)
+    shown = rerun.render_plan(plan, command, has_extra=bool(extra))
+    if not args.yes:
+        return "rerun", shown
+    if args.plan_hash != plan.digest:
+        return "rerun", ("План изменился или хэш не тот — ничего не запущено. Покажи пользователю "
+                         "новый план и спроси снова.\n" + shown)
+    if rerun.lock_busy(paths.reports_dir / rerun.LOCK_NAME):
+        return "ok", ("В проекте уже идёт перезапуск тестов другого разбора — ничего не запущено. "
+                      "Скажи пользователю, что повторить можно после его итога.")
+    rerun.start_job(paths, plan, settings.rerun_timeout, extra)
+    state = rerun.wait_job(files, rerun.WAIT_BUDGET - (time.monotonic() - started))
+    return _rerun_state(paths, state)
+
+
+def _rerun_state(paths: ws.RunPaths, state: rerun.JobState) -> tuple[str, str]:
+    files = rerun.job_files(paths)
+    if state.state == "running":
+        wait = ws.skill_command("rerun", "--run", str(paths.root), "--wait")
+        return "running", rerun.render_running(state, rerun.count_wait(files), wait)
+    if state.state == "failed":
+        return "ok", rerun.render_failed(state)
+    return "rerun_done", "\n".join([
+        "Выведи пользователю итог между маркерами дословно, без пересказа:",
+        rerun.render_result(state, files.logs),
+    ])
 
 
 # ---------------------------------------------------------------------------

@@ -54,14 +54,26 @@ class Settings:
     # Ключи id операции проекта через запятую (``ufsBusinessId,ufsRqUID``) — к реестру
     # ``log_utils._CANONICAL_CORRELATION_KEYS``: по ним из общего лога берутся записи операции.
     operation_id_keys: str = ""
+    # Перезапуск тестов локально (``rerun`` скилла): запусков каждого теста до первого
+    # успеха, тестов за раз (0 — выключено), общий потолок времени и свои аргументы Maven.
+    rerun_attempts: int = 3
+    rerun_max_tests: int = 20
+    rerun_timeout: int = 1800
+    rerun_maven_args: str = ""
 
     @classmethod
     def load(
         cls,
         env_file: Path | None = None,
         environ: Mapping[str, str] | None = None,
+        *,
+        require_testops: bool = True,
     ) -> Settings:
-        """Собрать настройки из ``env_file`` и окружения и проверить обязательные."""
+        """Собрать настройки из ``env_file`` и окружения и проверить обязательные.
+
+        ``require_testops=False`` — для команд без TestOps (перезапуск тестов): адрес и токен
+        не обязательны, остальные значения проверяются как обычно.
+        """
         values: dict[str, str] = {}
         if env_file is not None and env_file.is_file():
             values.update(read_env_file(env_file))
@@ -74,7 +86,7 @@ class Settings:
                 continue
             kwargs[item.name] = _coerce(item.name, type(item.default), raw.strip())
         settings = cls(**kwargs)  # type: ignore[arg-type]
-        settings.validate()
+        settings.validate(require_testops=require_testops)
         return settings
 
     @property
@@ -87,19 +99,9 @@ class Settings:
                 keys.setdefault(key.lower(), key)
         return tuple(keys.values())
 
-    def validate(self) -> None:
-        endpoint = self.endpoint.strip()
-        if not endpoint:
-            raise ConfigurationError(
-                "Не задан ALLURE_ENDPOINT — URL сервера Allure TestOps "
-                "(например https://allure.company.com)"
-            )
-        if not endpoint.startswith(("http://", "https://")):
-            raise ConfigurationError(
-                f"ALLURE_ENDPOINT должен начинаться с http:// или https://, получено: {endpoint!r}"
-            )
-        if not self.token.strip():
-            raise ConfigurationError("Не задан ALLURE_TOKEN — API-токен Allure TestOps")
+    def validate(self, *, require_testops: bool = True) -> None:
+        if require_testops:
+            self._validate_testops()
         for key in self.operation_keys:
             if not _OPERATION_KEY_RE.fullmatch(key):
                 raise ConfigurationError(
@@ -113,6 +115,20 @@ class Settings:
                 raise ConfigurationError(
                     f"{ENV_PREFIX}{name.upper()}: допустимо {allowed}, получено {value}"
                 )
+
+    def _validate_testops(self) -> None:
+        endpoint = self.endpoint.strip()
+        if not endpoint:
+            raise ConfigurationError(
+                "Не задан ALLURE_ENDPOINT — URL сервера Allure TestOps "
+                "(например https://allure.company.com)"
+            )
+        if not endpoint.startswith(("http://", "https://")):
+            raise ConfigurationError(
+                f"ALLURE_ENDPOINT должен начинаться с http:// или https://, получено: {endpoint!r}"
+            )
+        if not self.token.strip():
+            raise ConfigurationError("Не задан ALLURE_TOKEN — API-токен Allure TestOps")
 
 
 _OPERATION_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
@@ -138,6 +154,9 @@ BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "retry_max_detail_requests": (0, None),
     "images_per_problem": (0, 3),
     "images_max_bytes": (64 * 1024, 20 * 1024 * 1024),
+    "rerun_attempts": (1, 5),
+    "rerun_max_tests": (0, 100),
+    "rerun_timeout": (60, 14400),
 }
 
 
