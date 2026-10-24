@@ -613,6 +613,9 @@ def test_flaky_tests_are_remembered_offered_next_time_and_unmarked_when_they_rep
     saved = _run(["rerun", *args], capsys)[1]
 
     assert saved.startswith("STATUS: saved\nСохранено в базу знаний.")
+    assert f"Полный разбор обновлён: {run_dir / 'report.md'}" in saved
+    assert f"- Нестабильные по базе знаний: {ORDER}.createOrder (с " in \
+        (run_dir / "report.md").read_text(encoding="utf-8")
     assert f"Отмечены нестабильными: {ORDER}.createOrder." in saved
     assert "закоммитить папку базы знаний alla-kb (отметки — в alla-kb/flaky/)" in saved
     marks = list((nested_project / "alla-kb" / "flaky").glob("*.json"))
@@ -645,6 +648,7 @@ def test_flaky_tests_are_remembered_offered_next_time_and_unmarked_when_they_rep
     saved = _run(["rerun", *_remember_command(out)], capsys)[1]
     assert f"Сняты отметки (тест воспроизводится): {ORDER}.createOrder." in saved
     assert not list((nested_project / "alla-kb" / "flaky").glob("*.json"))
+    assert "Нестабильные по базе знаний" not in (run_dir / "report.md").read_text(encoding="utf-8")
 
 
 def test_passed_test_without_a_ci_signal_is_not_offered_for_the_knowledge_base(
@@ -829,3 +833,23 @@ def test_selector_characters_from_testops_never_reach_maven(
     found = rerun.locate(nested_project, index, full_name)
 
     assert found == "в имени теста есть символы, которые Maven понял бы как шаблон"
+
+
+def test_plan_limit_is_checked_before_git_status(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_fake_maven.install(nested_project / "autotests", {})
+    run_dir, run, _ = _prepare(nested_project, capsys)
+    entry = next(item for item in run["clusters"] if str(int(item["file_id"])) == _problem_of(run, 101))
+    calls: list[str] = []
+    monkeypatch.setattr(rerun, "_git_dirty", lambda root, source: calls.append(str(source)) or False)
+
+    plan = rerun.build_plan(rerun.ws.RunPaths(run_dir), run,
+                            [(entry, test) for test in rerun.failed_tests_of(run, entry)],
+                            attempts=3, max_tests=1)
+
+    assert [test.method for test in plan.tests] == ["createOrder"]
+    assert [item.reason for item in plan.skipped] == [
+        "сверх лимита ALLURE_RERUN_MAX_TESTS (1 за раз)"]
+    assert len(calls) == 1  # сверх лимита git status не вызывается

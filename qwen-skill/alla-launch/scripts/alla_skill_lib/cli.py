@@ -1745,6 +1745,9 @@ def _rerun_remember(
         lines.append("Отмечены нестабильными: " + "; ".join(marked) + ".")
     if unmarked:
         lines.append("Сняты отметки (тест воспроизводится): " + "; ".join(unmarked) + ".")
+    # Отметки показывает отчёт: после записи он пересобирается (хуки не повторяются).
+    if _refresh_report(paths):
+        lines.append(f"Полный разбор обновлён: {paths.report}")
     shown = ", ".join(sorted(folders))
     lines.append(f"Скажи это пользователю и напомни закоммитить папку базы знаний {shown} "
                  f"(отметки — в {shown}/{flaky.FLAKY_DIRNAME}/).")

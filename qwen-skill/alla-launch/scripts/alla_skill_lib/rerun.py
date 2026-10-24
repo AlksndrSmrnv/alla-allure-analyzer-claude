@@ -168,6 +168,7 @@ def build_plan(
     plan.project_root = str(project_root)
     index = ProjectIndex(project_root)
     seen: set[tuple[str, str]] = set()
+    dirty: dict[PurePath, bool] = {}  # git status исходника — один раз на файл
     for entry, test in picks:
         file_id = entry["file_id"]
         name = str(test.get("full_name") or test.get("name") or test.get("test_result_id"))
@@ -178,13 +179,15 @@ def build_plan(
         jvm, module = located
         if (jvm.class_name, jvm.method) in seen:  # параметры одного метода — один запуск
             continue
-        changed = _changed(paths, project_root, file_id, jvm.source)
+        # Лимит — до git status: план строится на каждом done, кандидатов бывают сотни.
+        if len(plan.tests) >= max_tests:
+            plan.skipped.append(SkippedTest(
+                file_id, name, f"сверх лимита ALLURE_RERUN_MAX_TESTS ({max_tests} за раз)"))
+            continue
+        changed = _changed(paths, project_root, file_id, jvm.source, dirty)
         if auto and changed:
             plan.skipped.append(SkippedTest(
                 file_id, name, f"{changed} — перезапуск не скажет о нестабильности"))
-            continue
-        if len(plan.tests) >= max_tests:
-            plan.skipped.append(SkippedTest(file_id, name, f"больше {max_tests} тестов за раз"))
             continue
         seen.add((jvm.class_name, jvm.method))
         plan.tests.append(PlannedTest(
@@ -261,10 +264,19 @@ def maven_tool(project_root: Path, reactor: PurePath) -> list[str] | None:
     return [mvn] if mvn else None
 
 
-def _changed(paths: ws.RunPaths, project_root: Path, file_id: str, source: PurePath) -> str:
+def _changed(
+    paths: ws.RunPaths, project_root: Path, file_id: str, source: PurePath,
+    dirty: dict[PurePath, bool],
+) -> str:
     """Код теста не тот, что в CI: прошедший тест тогда — проверка правки, а не нестабильность."""
     if paths.proposal_record(file_id).is_file():
         return "правка агента применена"
+    if source not in dirty:
+        dirty[source] = _git_dirty(project_root, source)
+    return "код теста изменён" if dirty[source] else ""
+
+
+def _git_dirty(project_root: Path, source: PurePath) -> bool:
     try:
         result = subprocess.run(
             ["git", "-C", str(project_root), "status", "--porcelain", "--", source.as_posix()],
@@ -272,8 +284,8 @@ def _changed(paths: ws.RunPaths, project_root: Path, file_id: str, source: PureP
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
     except (OSError, subprocess.SubprocessError):
-        return ""
-    return "код теста изменён" if result.returncode == 0 and result.stdout.strip() else ""
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
 
 
 def surefire_filter(tests: Iterable[PlannedTest]) -> str:
