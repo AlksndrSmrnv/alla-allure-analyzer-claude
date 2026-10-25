@@ -24,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import tomllib
 from collections.abc import Collection
 from dataclasses import dataclass, field, replace
@@ -55,8 +56,14 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 # Имена, чей субагент alla-<имя> затёр бы субагента самого скилла в .qwen/agents/.
 RESERVED_NAMES = frozenset({BATCH_AGENT.removeprefix("alla-")})
 ACTION_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
-DEFAULT_TIMEOUT = 120  # секунд на скрипт расширения
+DEFAULT_TIMEOUT = 120  # секунд на скрипт расширения (манифест)
 MAX_TIMEOUT = 600
+# Qwen Code обрывает команду shell через 120 с, а хуки идут внутри команды скилла (next, apply,
+# revert, extensions run): все её скрипты расширений делят этот бюджет, сколько бы ни просил
+# манифест. Убитая команда не выводила ни отчёта, ни отметки, и next зацикливался на хуке.
+HOOK_BUDGET_S = 60
+# Действие расширения — отдельная команда из shell субагента: его потолок — под лимит Qwen.
+ACTION_LIMIT_S = 110
 OUTPUT_LIMIT = 4000  # символов вывода скрипта в ответе скилла
 # [ \t], а не \s: \s захватил бы перевод строки и пустые строки после enabled.
 _ENABLED_LINE_RE = re.compile(r"^[ \t]*enabled[ \t]*=[ \t]*\[[^\]\n]*\][ \t]*(?:#.*)?$",
@@ -607,27 +614,37 @@ def fire(
     data: dict[str, Any],
     *,
     only: Collection[str] | None = None,
+    deadline: float | None = None,
 ) -> list[str]:
     """Выполнить хуки события; строки блока «Расширения:» (пусто — расширений нет).
 
     ``data`` — поля события: ``problem`` для событий проблемы, ``console`` и
     ``problems`` для ``after_report``. ``only`` — хуки только этих расширений.
+    ``deadline`` — ``time.monotonic()``, до которого должны уложиться скрипты хуков этой
+    команды (по умолчанию — :data:`HOOK_BUDGET_S` от вызова); общий для нескольких вызовов.
     """
     project_root = Path(run["project_root"])
     current = active(project_root)
     lines = problem_lines(current.problems) if only is None else []
+    if deadline is None:
+        deadline = hook_deadline()
     for extension, settings in current.extensions:
         if only is not None and extension.name not in only:
             continue
         for hook in extension.hooks_for(event):
             try:
-                lines += _fire_hook(extension, settings, hook, paths, run, data)
+                lines += _fire_hook(extension, settings, hook, paths, run, data, deadline)
             except Exception as exc:  # расширение не должно ронять команду скилла
                 lines.append(
                     f"- {extension.title} ({extension.name}): не сработало — {type(exc).__name__}: "
                     f"{exc}. Покажи пользователю эту строку."
                 )
     return lines
+
+
+def hook_deadline() -> float:
+    """Срок для скриптов хуков одной команды скилла (см. :data:`HOOK_BUDGET_S`)."""
+    return time.monotonic() + HOOK_BUDGET_S
 
 
 def problem_lines(problems: list[str]) -> list[str]:
@@ -648,6 +665,7 @@ def _fire_hook(
     paths: ws.RunPaths,
     run: dict[str, Any],
     data: dict[str, Any],
+    deadline: float,
 ) -> list[str]:
     directory = out_dir(paths, extension)
     directory.mkdir(parents=True, exist_ok=True)
@@ -673,7 +691,12 @@ def _fire_hook(
     ws.write_json(context_file, context)
     label = f"{extension.title} ({extension.name})"
     if hook.script is not None:
-        code, output = run_script(extension, hook.script, context_file, Path(run["project_root"]))
+        left = deadline - time.monotonic()
+        if left < 1:
+            return [f"- {label}: не запущено — время команды скилла на расширения вышло. Покажи "
+                    "пользователю эту строку."]
+        code, output = run_script(extension, hook.script, context_file, Path(run["project_root"]),
+                                  timeout=min(extension.timeout, left))
         if code != 0:
             return [f"- {label}: не сработало ({output or f'код {code}'}). Покажи пользователю эту строку."]
         if not output:
@@ -750,8 +773,14 @@ def run_script(
     context_file: Path,
     project_root: Path,
     args: list[str] | None = None,
+    *,
+    timeout: float | None = None,
 ) -> tuple[int, str]:
-    """Запустить скрипт расширения отдельным процессом; (код возврата, вывод)."""
+    """Запустить скрипт расширения отдельным процессом; (код возврата, вывод).
+
+    ``timeout`` — потолок времени, если он меньше ``timeout`` манифеста.
+    """
+    limit = extension.timeout if timeout is None else min(extension.timeout, timeout)
     env = {
         **os.environ,
         "ALLA_CONTEXT": str(context_file),
@@ -767,11 +796,11 @@ def run_script(
             cwd=project_root,
             env=env,
             capture_output=True,
-            timeout=extension.timeout,
+            timeout=limit,
             stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
-        return 124, f"скрипт {script.name} не уложился в {extension.timeout} с"
+        return 124, f"скрипт {script.name} не уложился в {limit:.0f} с"
     except OSError as exc:
         return 126, f"скрипт {script.name} не запустился: {exc}"
     output = result.stdout.decode("utf-8", "replace").strip()
@@ -813,7 +842,8 @@ def run_action(
             f"контекст {context} — не файл расширения {name} из папки разбора "
             f"({reports}/<разбор>/extensions/{name}/…json)"
         )
-    code, output = run_script(extension, script, context_file, project_root, args)
+    code, output = run_script(extension, script, context_file, project_root, args,
+                              timeout=ACTION_LIMIT_S)
     first, _, rest = output.partition("\n")
     status = first.removeprefix("STATUS:").strip() if first.startswith("STATUS:") else ""
     if status not in ("ok", "error"):

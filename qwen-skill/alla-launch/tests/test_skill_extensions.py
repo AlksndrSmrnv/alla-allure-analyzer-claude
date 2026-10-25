@@ -287,6 +287,49 @@ def test_hanging_script_hook_times_out(project: Path, testops: FakeTestOps, caps
     assert code == 0 and "не уложился в 1 с" in out
 
 
+def test_script_hooks_of_one_command_share_its_time_budget(
+    project: Path, testops: FakeTestOps, capsys, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Qwen обрывает команду через 120 с: скрипты хуков укладываются в общий бюджет команды,
+    # сколько бы ни просил манифест.
+    second = '[[hooks]]\nevent = "after_revert"\nscript = "hook.py"\n\n[[hooks]]\nevent = "after_report"'
+    make_demo(project, hook_py="import time\ntime.sleep(5)\n",
+              extension_toml=MANIFEST.replace('[[hooks]]\nevent = "after_report"', second))
+    ext_cli(project, capsys, "enable", "demo")
+    run_dir, _, _ = applied(project, capsys)
+    monkeypatch.setattr(ext, "HOOK_BUDGET_S", 1.5)
+    code, out = _run(["revert", "1", "--run", str(run_dir)], capsys)
+    assert code == 0 and out.startswith("STATUS: reverted")
+    assert "скрипт hook.py не уложился в" in out
+    assert "- Демо (demo): не запущено — время команды скилла на расширения вышло." in out
+
+
+def test_report_hook_is_marked_before_it_runs(
+    project: Path, testops: FakeTestOps, capsys, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Команду, оборванную на зависшем хуке, следующий next не повторяет: он показывает отчёт.
+    make_demo(project)
+    ext_cli(project, capsys, "enable", "demo")
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    (run_dir / "analyses" / f"{order}.md").write_text(
+        TEST_ANALYSIS.replace("тест —", "окружение —"), encoding="utf-8")
+    (run_dir / "analyses" / f"{login}.md").write_text(LOGIN_ANALYSIS, encoding="utf-8")
+    out = _run(["next", str(run_dir)], capsys)[1]
+    assert out.startswith("STATUS: summary"), out
+    (run_dir / "summary.md").write_text("Итог прогона.", encoding="utf-8")
+
+    def killed(*args: object, **kwargs: object) -> list[str]:
+        raise RuntimeError("команду оборвал Qwen")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ext, "fire", killed)
+        assert _run(["next", str(run_dir)], capsys)[0] == 1
+    code, out = _run(["next", str(run_dir)], capsys)
+    assert code == 0 and out.startswith("STATUS: done")
+    assert ext.BLOCK_HEADING not in out
+
+
 def test_broken_enabled_extension_is_reported_not_fatal(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project)
     ext_cli(project, capsys, "enable", "demo")

@@ -2216,12 +2216,13 @@ def _extensions_request(
             raise ext.ExtensionError(f"В разборе {paths.root} нет проблемы №{cluster}.")
         entries.append(entry)
     lines: list[str] = []
+    deadline = ext.hook_deadline()  # один бюджет на все проблемы команды
     for entry in entries:
         lines += ext.fire(ext.REQUEST_EVENT, paths, run, {
             "problem": ext.problem_context(
                 paths, entry, _load_apply_record(paths, entry["file_id"]), run),
             "params": params,
-        }, only={extension.name})
+        }, only={extension.name}, deadline=deadline)
     return ext.block(lines)
 
 
@@ -2268,12 +2269,15 @@ def _with_report_hooks(paths: ws.RunPaths, body: str) -> str:
     fired = dict(state.get("extension_reports") or {})
     pending = [name for name in names if fired.get(name) != digest]
     if pending:
-        lines += ext.fire("after_report", paths, run, _report_data(paths, run, body), only=pending)
         state["extension_reports"] = {**fired, **dict.fromkeys(pending, digest)}
         changed = True
-    # Отметку пишем и при пустом выводе: молчаливый хук тоже сработал и повторяться не должен.
+    # Отметку пишем и при пустом выводе (молчаливый хук тоже сработал и повторяться не должен),
+    # и до запуска хуков: команду, оборванную на зависшем хуке, следующий next не повторяет
+    # хук снова и снова, а показывает отчёт.
     if changed:
         ws.write_json(paths.state_json, state)
+    if pending:
+        lines += ext.fire("after_report", paths, run, _report_data(paths, run, body), only=pending)
     return f"{body}\n{ext.block(lines)}" if lines else body
 
 
