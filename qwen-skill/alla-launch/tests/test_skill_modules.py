@@ -135,6 +135,21 @@ def test_single_project_in_a_nested_folder_is_not_multimodule(tmp_path: Path) ->
     assert resolver.cluster_module(["ru.a.AlphaTest.x"]) == ClusterModule("")  # база остаётся в корне
 
 
+def test_application_copy_of_sut_code_is_not_indexed(tmp_path: Path) -> None:
+    # Копия приложения (/alla:code) со своим pom.xml не делает проект многомодульным.
+    _touch(tmp_path / "autotests" / "pom.xml")
+    _touch(tmp_path / "autotests" / "src" / "test" / "java" / "ru" / "a" / "AlphaTest.java")
+    tree = tmp_path / ".alla-sut" / "app-abcdef" / "trees" / "123456789012"
+    _touch(tree / "pom.xml")
+    _touch(tree / "src" / "main" / "java" / "ru" / "app" / "OrderService.java")
+    resolver = _resolver(tmp_path)
+
+    assert not resolver.is_multimodule
+    assert resolver.cluster_module(["ru.a.AlphaTest.x"]) == ClusterModule("")
+    assert ProjectIndex(tmp_path).candidates("OrderService") == []
+    assert discover_kb_dirs(tmp_path) == []
+
+
 def test_build_scripts_and_build_logic_do_not_make_a_project_multimodule(tmp_path: Path) -> None:
     _touch(tmp_path / "build.gradle.kts")
     _touch(tmp_path / "settings.gradle.kts")  # ``.kts`` — скрипты сборки, а не тесты

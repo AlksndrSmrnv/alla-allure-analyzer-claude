@@ -23,6 +23,9 @@ SKIP_DIRS = frozenset({
     "node_modules", "build", "target", "out", "dist", "__pycache__",
     ".pytest_cache", ".mypy_cache", ".ruff_cache", "allure-results",
     "allure-report", "alla-reports",
+    # Копии кода приложения расширения sut-code: os.walk не читает их .gitignore, и pom.xml
+    # копии делал проект многомодульным, а её исходники вытесняли автотесты из индекса.
+    ".alla-sut",
 })
 # Не ``.kts``: это ещё и скрипты сборки (``build.gradle.kts``), а не тесты.
 JVM_EXTENSIONS = frozenset({".java", ".kt", ".groovy", ".scala"})
