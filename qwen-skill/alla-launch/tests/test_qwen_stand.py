@@ -775,6 +775,28 @@ def test_operation_log_respected_check(tmp_path: Path, refund: str, loyalty: str
     assert CHECKS["operation_log_respected"](context(tmp_path, [], "L01"))["status"] == status
 
 
+RUNNING = "STATUS: running\nПрогон #777 большой: выгрузка из TestOps идёт в фоне уже 1 мин."
+
+
+@pytest.mark.parametrize(("calls", "run_dirs", "status"), [
+    ([("prepare 777", RUNNING), ("prepare 777", "STATUS: analyze")], 1, "pass"),
+    ([("prepare 777", "STATUS: analyze")], 1, "fail"),  # выгрузка уложилась в одну команду
+    ([("prepare 777", RUNNING)], 0, "fail"),  # агент остановился
+    ([("prepare 777", RUNNING), ("prepare 777 --fresh", "STATUS: analyze")], 1, "fail"),
+    ([("prepare 777", RUNNING), ("prepare 777", "STATUS: analyze")], 2, "fail"),
+])
+def test_prepare_waited_check(tmp_path: Path, calls: list[tuple[str, str]], run_dirs: int,
+                              status: str) -> None:
+    ctx = context(tmp_path, events(*(
+        ("run_shell_command", {"command": f"python3 {SKILL} {command}"}, result)
+        for command, result in calls)), "L02")
+    for number in range(run_dirs):
+        run_dir = tmp_path / "p" / "alla-reports" / f"777-2026102{number}-100000"
+        run_dir.mkdir(parents=True)
+        (run_dir / "run.json").write_text("{}", encoding="utf-8")
+    assert CHECKS["prepare_waited"](ctx)["status"] == status
+
+
 @pytest.mark.parametrize(("task", "report", "status"), [
     ("--- Повторы в TestOps ---\n", "### Прошли после повтора (1)\n- **Повторы:** …\n", "pass"),
     ("", "### Прошли после повтора (1)\n- **Повторы:** …\n", "fail"),
