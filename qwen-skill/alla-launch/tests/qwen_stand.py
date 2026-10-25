@@ -448,6 +448,15 @@ SCENARIOS: dict[str, Scenario] = {
         review=("Вопрос о перезапуске задан один раз, после краткого разбора: число тестов, "
                 "проблемы, время и что тесты пойдут на этой машине; итог выведен дословно; "
                 "вопрос о базе знаний — отдельно, после итога",)),
+    "F02": Scenario(
+        "Проверка правки: «да» на правку → вопрос о перезапуске тестов проблемы → «да» → итог",
+        "test_bug", ("/alla-launch 782", "Да, применяй правку.", "Да, перезапусти тесты."),
+        (*[name for name in FULL_RUN if name != "report_verbatim"], "prepare_launch",
+         "fix_applied", "rerun_started", "fix_checked"),
+        launch_id=782, edits=(STAND_ORDER_TEST,),
+        maven=((f"{STAND_ORDER}#createOrder", ("passed",)),),
+        review=("После apply вопрос о перезапуске задан отдельно от «да» на правку, с числом "
+                "тестов и что они пойдут на этой машине; итог выведен дословно",)),
     "P04": Scenario(
         "40 кластеров: пакеты субагентов", "many:40", ("/alla-launch 900",),
         (*FULL_RUN, "prepare_launch", "subagents_used", "batch_agent_used"), launch_id=900),
@@ -1678,6 +1687,13 @@ def check_rerun_result_shown(ctx: Context) -> dict[str, Any]:
     title = "Нестабильные — упали в CI, а при перезапуске прошли"
     shown = [result for result in ctx.trace.results if title in str(result.get("result") or "")]
     return ok() if shown else bad("в ответах пользователю нет группы «Нестабильные» из итога")
+
+
+def check_fix_checked(ctx: Context) -> dict[str, Any]:
+    """Перезапуск после правки показал «проверку правки», а не нестабильность."""
+    title = "Прошли на изменённом коде теста — проверка правки"
+    shown = [result for result in ctx.trace.results if title in str(result.get("result") or "")]
+    return ok() if shown else bad("в ответах пользователю нет группы «проверка правки» из итога")
 
 
 def check_flaky_saved(ctx: Context) -> dict[str, Any]:

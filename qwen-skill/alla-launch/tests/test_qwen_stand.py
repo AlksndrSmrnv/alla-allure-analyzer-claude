@@ -986,6 +986,7 @@ def test_flaky_checks_need_the_commands_and_the_mark(tmp_path: Path) -> None:
     (run_dir / "rerun" / "result.json").write_text("{}")
     assert CHECKS["rerun_started"](ctx)["status"] == "pass"
     assert CHECKS["rerun_result_shown"](ctx)["status"] == "pass"
+    assert CHECKS["fix_checked"](ctx)["status"] == "fail"  # итог флаки, а не проверка правки
     assert CHECKS["flaky_saved"](ctx)["status"] == "fail"
     marks = tmp_path / "p" / "alla-kb" / "flaky"
     marks.mkdir(parents=True)
