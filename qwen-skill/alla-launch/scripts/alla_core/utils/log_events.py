@@ -248,8 +248,8 @@ def error_field_codes(text: str) -> list[str]:
     return list(dict.fromkeys(codes))
 
 
-def _level_after_timestamp(rest: str) -> str | None:
-    """Первый уровень среди первых слов после времени; дальше — уже сообщение.
+def _level_after_timestamp(rest: str, limit: int = _LEVEL_SCAN_TOKENS) -> str | None:
+    """Первый уровень среди первых ``limit`` слов после времени; дальше — уже сообщение.
 
     Группа в ``[]`` из нескольких слов (MDC, поток с пробелами) занимает одно место:
     проверяется её первое слово (``[INFO ]``), остальные пропускаются.
@@ -260,7 +260,7 @@ def _level_after_timestamp(rest: str) -> str | None:
         if in_group:
             in_group = not token.endswith("]")
             continue
-        if places == _LEVEL_SCAN_TOKENS:
+        if places == limit:
             break
         places += 1
         in_group = token.startswith("[") and "]" not in token
@@ -421,32 +421,48 @@ def _continues(rest: str) -> bool:
     return bool(_CONTINUATION_RE.match(rest) or _EXCEPTION_RE.match(rest) or _TRACEBACK_RE.match(rest))
 
 
+def _jul_level(current: LogEvent | None, line: str) -> str | None:
+    """Уровень JUL, если ``line`` — вторая строка записи «дата класс метод» + ``SEVERE: …``."""
+    jul = _JUL_LEVEL_RE.match(line)
+    if (jul and jul.group("level") in LEVELS and current is not None and current.kind == "level"
+            and current.level is None and len(current.lines) == 1
+            and _TIMESTAMP_RE.match(current.lines[0])):
+        return jul.group("level")
+    return None
+
+
 def iter_events(text: str) -> Iterator[LogEvent]:
     """События лога по порядку; каждая строка принадлежит ровно одному событию.
 
     Вывод сборщика логов контейнера (:func:`_collector_prefixes`) разбирается по телу строк,
     без префикса. Если у приложения свои записи (время, уровень, JSON…), префикс — лишнее
-    время: лог разбирается и показывается как без сборщика. Своих записей нет — новую запись
-    начинает каждая строка вывода, кроме продолжений (:func:`_continues`), и строки
-    показываются с префиксом: другого времени у них нет. Номера строк — прежние.
+    время: лог разбирается и показывается как без сборщика; только строка, у которой уровень
+    — первое слово (``[ERROR] …`` соседнего процесса без своего времени), всё равно начинает
+    запись. Своих записей нет — новую запись начинает каждая строка вывода, кроме продолжений
+    (:func:`_continues`). Запись, которую начало время сборщика, показывается с префиксом:
+    другого времени у неё нет. Номера строк — прежние.
     """
     lines = text.splitlines()
     prefixes = _collector_prefixes(lines)
     body = lines if prefixes is None else [line[size:] for line, size in zip(lines, prefixes)]
     own = prefixes is None or any(
         _start(rest)[0] is not None or _json_record(rest) is not None for rest in body)
-    shown = body if own else lines
     current: LogEvent | None = None
     for index, rest in enumerate(body):
         number = index + 1
-        line = shown[index]
+        line = rest if own else lines[index]
         started, level = _start(rest)
         rendered: list[str] = []
         if started is None and (record := _json_record(rest)) is not None:
             started = "level"
             level, rendered = record
-        if started is None and not own and not _continues(rest):
-            started, level = "level", _level_after_timestamp(rest)  # время сборщика — граница
+        if started is None and prefixes is not None:
+            # Время сборщика — граница записи: без своих записей у каждой строки вывода, кроме
+            # продолжений; со своими — у строки с уровнем первым словом.
+            leading = None if _jul_level(current, rest) else _level_after_timestamp(rest, limit=1)
+            if leading is not None or (not own and not _continues(rest)):
+                started, level = "level", leading if own else _level_after_timestamp(rest)
+                line = lines[index]
         if started is not None:
             if current is not None:
                 yield current
@@ -467,12 +483,10 @@ def iter_events(text: str) -> Iterator[LogEvent]:
             current = LogEvent(number, None, kind, [line])
             continue
         assert current is not None
-        jul = _JUL_LEVEL_RE.match(rest)
-        if (jul and jul.group("level") in LEVELS and current.kind == "level"
-                and current.level is None and len(current.lines) == 1
-                and _TIMESTAMP_RE.match(current.lines[0])):
+        jul = _jul_level(current, rest)
+        if jul:
             current.lines.append(line)  # JUL: «дата класс метод» + «SEVERE: …»
-            current.level = jul.group("level")
+            current.level = jul
             current.level_line = 1
             continue
         if len(current.lines) == 1 and _DOTNET_RE.match(current.lines[0]):

@@ -16,6 +16,7 @@ from alla_core.utils.log_events import (
     has_error_fields,
     parse_events,
     render_error_blocks,
+    strip_source_marks,
 )
 from eval import corpus_dev
 
@@ -607,6 +608,27 @@ def test_without_own_records_the_collector_time_bounds_records() -> None:
         (7, "traceback", None, 3), (10, "level", "ERROR", 1), (11, "level", None, 1)]
     assert events[1].lines[1] == "2026-09-01T10:00:01.000000103Z \tat ru.company.Worker.poll(Worker.java:42)"
     assert [event.first_line for event in error_events(log)] == [2, 7, 10]
+
+
+def test_level_first_line_without_own_time_starts_a_record_among_own_records() -> None:
+    """Смешанный вывод контейнера: JSON-записи приложения и ``[ERROR] …`` соседнего процесса
+    без своего времени. Строка с уровнем первым словом — своя запись со временем сборщика (с
+    префиксом в показе), её стек — продолжение; к INFO она не пристаёт (ревью Codex)."""
+    log = ('2026-09-01T10:00:00.000000101Z {"level":"info","message":"startup"}\n'
+           "2026-09-01T10:00:00.000000102Z [ERROR] database unavailable\n"
+           "2026-09-01T10:00:00.000000103Z java.lang.IllegalStateException: pool closed\n"
+           "2026-09-01T10:00:00.000000104Z \tat a.B.c(B.java:1)\n")
+
+    events = parse_events(log)
+
+    assert [(event.level, event.lines) for event in events] == [
+        ("INFO", ['{"level":"info","message":"startup"}']),
+        ("ERROR", ["2026-09-01T10:00:00.000000102Z [ERROR] database unavailable",
+                   "java.lang.IllegalStateException: pool closed", "\tat a.B.c(B.java:1)"])]
+    blocks = render_error_blocks(log)
+    # отрендеренный блок разбирается обратно в то же событие (так его читает сигнатура)
+    assert [(event.level, event.lines) for event in parse_events(strip_source_marks(blocks))] == [
+        ("ERROR", events[1].lines)]
 
 
 @pytest.mark.parametrize("log", [
