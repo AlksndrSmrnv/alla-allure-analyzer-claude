@@ -112,6 +112,37 @@ def test_slow_prepare_answers_running_and_the_repeat_attaches(
     assert len(list((autotests / ws.REPORTS_DIRNAME).glob(f"{LAUNCH}-*"))) == 1
 
 
+def test_every_waiting_call_gets_the_result_of_the_job(
+    autotests: Path, server: FakeTestOpsServer, capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Два вызова ждут одно задание: первый показал итог, второй — тоже, а не «без итога»
+    # (ревью Codex).
+    code, first = _prepare(autotests, capsys)
+    assert code == 0 and first.startswith("STATUS: analyze"), first
+    files = _job(autotests)
+    assert jobs.job_state(files).state == "done" and not jobs.job_state(files).active
+
+    code = cli._finish_job(files, time.monotonic(), lambda state: "идёт", "повтор")
+    second = capsys.readouterr().out
+    assert code == 0 and second == first
+
+
+def test_relative_paths_of_the_environment_keep_their_meaning(
+    autotests: Path, server: FakeTestOpsServer, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Сертификат прокси задан путём от папки, где запущена команда: задание видит тот же файл.
+    import certifi
+
+    (autotests / "proxy-ca.pem").write_bytes(Path(certifi.where()).read_bytes())
+    monkeypatch.chdir(autotests)
+    monkeypatch.setenv("SSL_CERT_FILE", "proxy-ca.pem")
+
+    code, out = _prepare(autotests, capsys)
+
+    assert code == 0 and out.startswith("STATUS: analyze"), out
+
+
 def test_fetch_error_of_the_job_is_shown(
     autotests: Path, server: FakeTestOpsServer, capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -618,7 +618,7 @@ def cmd_prepare(
         with jobs.start_lock(files):
             # Идущая выгрузка этого прогона (или законченная, чей итог ещё не показан) — её
             # итог, даже с --fresh: повтор после running не должен начинать её заново.
-            if jobs.job_state(files).state == "none":
+            if not jobs.job_state(files).active:
                 if not fresh:
                     unfinished = ws.find_unfinished_run(reports_dir, launch_id)
                     if unfinished is not None:
@@ -988,7 +988,7 @@ def cmd_review(
         # Задание — в папке отчётов самого разбора: --reports-dir мог быть и не указан.
         files = jobs.job_files(paths.reports_dir, f"review-{paths.root.name}")
         with jobs.start_lock(files):
-            if jobs.job_state(files).state == "none":
+            if not jobs.job_state(files).active:
                 jobs.start(files, ["review", "--run", str(paths.root),
                                    "--reports-dir", str(paths.reports_dir)])
         return _finish_job(files, started, lambda state: _review_running(state, str(repeat)),

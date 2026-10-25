@@ -70,26 +70,34 @@ def job_files(reports_dir: Path, key: str) -> JobFiles:
 
 @dataclass(frozen=True)
 class JobState:
-    """``none`` — задания нет (или его итог уже показан), ``running``, ``done``, ``lost`` —
-    процесс завершился без итога."""
+    """``none`` — задания нет, ``running``, ``done``, ``lost`` — процесс завершился без итога.
+
+    ``delivered`` — итог законченного задания уже показан: новый вызов команды начинает своё,
+    а вызов, который ждал это задание, всё равно получает его итог (ждать могут двое).
+    """
 
     state: str
     started: float | None = None
     progress: str = ""
+    delivered: bool = False
+
+    @property
+    def active(self) -> bool:
+        """Новый вызов подключается к заданию, а не начинает своё."""
+        return self.state == "running" or (self.state in ("done", "lost") and not self.delivered)
 
 
 def job_state(files: JobFiles) -> JobState:
-    if files.delivered.is_file():
-        return JobState("none")
     started = _started(files)
+    delivered = files.delivered.is_file()
     if files.exit.is_file():
-        return JobState("done", started)
+        return JobState("done", started, delivered=delivered)
     if started is None:
         return JobState("none")
     progress = _read(files.progress)
     if _alive(files, started):
         return JobState("running", started, progress)
-    return JobState("lost", started, progress)
+    return JobState("lost", started, progress, delivered=delivered)
 
 
 @contextlib.contextmanager
@@ -108,15 +116,22 @@ def start_lock(files: JobFiles) -> Iterator[None]:
 
 
 def start(files: JobFiles, args: list[str]) -> None:
-    """Запустить команду скрипта ``args`` фоновым процессом (под :func:`start_lock`)."""
+    """Запустить команду скрипта ``args`` фоновым процессом (под :func:`start_lock`).
+
+    Рабочая папка — та же, что у команды: относительные пути окружения (``SSL_CERT_FILE``
+    сертификата прокси) должны значить то же самое. Модуль — через ``PYTHONPATH``, а ``-P`` не
+    ставит рабочую папку в начало ``sys.path``: файл проекта ``json.py`` не подменит модуль.
+    """
     files.clear()
     files.root.mkdir(parents=True, exist_ok=True)
+    scripts = str(Path(__file__).resolve().parents[1])
+    path = os.pathsep.join(part for part in (scripts, os.environ.get("PYTHONPATH")) if part)
     with open(files.output, "wb") as out, open(files.log, "wb") as log:
         process = subprocess.Popen(
-            [sys.executable, "-m", "alla_skill_lib.jobs", str(files.root), *args],
-            cwd=str(Path(__file__).resolve().parents[1]),
+            [sys.executable, "-P", "-m", "alla_skill_lib.jobs", str(files.root), *args],
             stdin=subprocess.DEVNULL, stdout=out, stderr=log,
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"}, start_new_session=True,
+            env={**os.environ, "PYTHONPATH": path, "PYTHONIOENCODING": "utf-8"},
+            start_new_session=True,
         )
     files.pid.write_text(f"{process.pid} {time.time():.0f}", encoding="utf-8")
 
