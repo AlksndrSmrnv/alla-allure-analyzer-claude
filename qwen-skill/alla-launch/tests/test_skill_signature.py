@@ -59,7 +59,21 @@ def _pool_log(time: str, thread: str, request: str, order: int) -> str:
 
 def test_signature_has_the_current_version() -> None:
     assert str(_signature(ASSERT_500, ASSERT_TRACE, "")).startswith(f"v{SIGNATURE_VERSION}:")
-    assert SIGNATURE_VERSION == 10
+    assert SIGNATURE_VERSION == 11
+
+
+@pytest.mark.parametrize("causes", [
+    ("Пул соединений базы данных исчерпан", "Отсутствует конфигурация продукта"),
+    ("Database connection pool exhausted", "Product configuration missing"),
+])
+def test_log_errors_in_any_alphabet_tell_a_generic_assertion_apart(
+    causes: tuple[str, str],
+) -> None:
+    """Русская строка ERROR — причина, как английская (ревью Codex, v11)."""
+    first, second = (_signature(ASSERT_500, ASSERT_TRACE,
+                                f"2026-10-25 10:00:00 [ERROR] {cause}\n") for cause in causes)
+    assert first != second
+    assert first != _signature(ASSERT_500, ASSERT_TRACE, "")
 
 
 @pytest.mark.parametrize("line", [

@@ -52,7 +52,7 @@ from alla_core.utils.text_normalization import (
 )
 
 # Префикс версии не даёт старому хэшу совпасть с новым при смене материала.
-SIGNATURE_VERSION = 10
+SIGNATURE_VERSION = 11
 
 # Признаки общего ассерта: ошибка проверки, которая не называет причину. Проверяются по
 # строкам сообщения и трейса (без кадров и префикса pytest «E »); Hamcrest — через строку.
@@ -115,7 +115,10 @@ _JSON_TEXT_KEYS = ("message", "msg", "errormessage", "error", "exception")
 _JSON_CODE_KEYS = {"errorcode": "error_code", "error_code": "error_code", "code": "code",
                    "statuscode": "status_code", "status_code": "status_code",
                    "status": "status"}
-_WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_$.:-]*")
+# Слово начинается с буквы любого алфавита: только латиница отбрасывала русские строки
+# ERROR («Пул соединений исчерпан»), и разные ошибки за одним ассертом давали одну
+# сигнатуру (ревью Codex, v11).
+_WORD_RE = re.compile(r"[^\W\d_][\w$.:-]*")
 # Длинное число, оставшееся после normalize_text, — у кавычки или скобки: её защита — для
 # значений ассерта (``expected:<10001>``, ``"-1001"``). В строке лога кавычки — синтаксис
 # JSON и ``key="…"``: ``"account":"40817810000000000301"`` — ID, как ``account=4081…``.
@@ -431,7 +434,7 @@ def _log_anchor(log: str) -> _LogAnchor:
             # Строки заголовка записи: у JUL причина — во второй строке («ALERT: database
             # unavailable»), под «дата класс метод»; у .NET — сообщение под «fail: Category[1]».
             # Ошибка у записи любого уровня — и строки с полями ошибки ответа: «error» внутри
-            # имени поля _ERROR_HINT_RE не видит, а двух латинских слов в них может не быть
+            # имени поля _ERROR_HINT_RE не видит, а двух слов в них может не быть
             # (``"errorCode": 6`` тела ответа, ``"errorMessage": "счет закрыт"``); у
             # ERROR-записи тело ответа бывает строкой ниже заголовка (ревью Codex).
             heading: set[str] = set()
