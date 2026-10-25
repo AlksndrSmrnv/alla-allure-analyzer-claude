@@ -610,12 +610,14 @@ def test_without_own_records_the_collector_time_bounds_records() -> None:
     assert [event.first_line for event in error_events(log)] == [2, 7, 10]
 
 
-def test_level_first_line_without_own_time_starts_a_record_among_own_records() -> None:
-    """Смешанный вывод контейнера: JSON-записи приложения и ``[ERROR] …`` соседнего процесса
-    без своего времени. Строка с уровнем первым словом — своя запись со временем сборщика (с
-    префиксом в показе), её стек — продолжение; к INFO она не пристаёт (ревью Codex)."""
+@pytest.mark.parametrize("record", ["[ERROR] database unavailable",
+                                    "[worker-1] ERROR database unavailable"])
+def test_level_line_without_own_time_starts_a_record_among_own_records(record: str) -> None:
+    """Смешанный вывод контейнера: JSON-записи приложения и ``… ERROR …`` соседнего процесса
+    без своего времени. Строка с уровнем в позиции уровня — своя запись со временем сборщика
+    (с префиксом в показе), её стек — продолжение; к INFO она не пристаёт (ревью Codex)."""
     log = ('2026-09-01T10:00:00.000000101Z {"level":"info","message":"startup"}\n'
-           "2026-09-01T10:00:00.000000102Z [ERROR] database unavailable\n"
+           f"2026-09-01T10:00:00.000000102Z {record}\n"
            "2026-09-01T10:00:00.000000103Z java.lang.IllegalStateException: pool closed\n"
            "2026-09-01T10:00:00.000000104Z \tat a.B.c(B.java:1)\n")
 
@@ -623,12 +625,29 @@ def test_level_first_line_without_own_time_starts_a_record_among_own_records() -
 
     assert [(event.level, event.lines) for event in events] == [
         ("INFO", ['{"level":"info","message":"startup"}']),
-        ("ERROR", ["2026-09-01T10:00:00.000000102Z [ERROR] database unavailable",
+        ("ERROR", [f"2026-09-01T10:00:00.000000102Z {record}",
                    "java.lang.IllegalStateException: pool closed", "\tat a.B.c(B.java:1)"])]
     blocks = render_error_blocks(log)
     # отрендеренный блок разбирается обратно в то же событие (так его читает сигнатура)
     assert [(event.level, event.lines) for event in parse_events(strip_source_marks(blocks))] == [
         ("ERROR", events[1].lines)]
+
+
+def test_error_level_line_keeps_its_level_unless_it_continues_an_error() -> None:
+    """Строка с уровнем ошибки в позиции уровня не теряет его из-за сборщика: после WARN
+    ``Caused by: … ERROR: …`` — своя ошибка (как до сборщика), внутри стека ошибки — продолжение."""
+    log = _collected(
+        "2026-09-01 10:00:00.100 WARN  [db] PoolMonitor : retrying insert\n"
+        "Caused by: org.postgresql.util.PSQLException: ERROR: duplicate key value\n"
+        "2026-09-01 10:00:00.200 ERROR [db] OrderRepo : insert failed\n"
+        "Caused by: org.postgresql.util.PSQLException: ERROR: deadlock detected\n"
+        "\tat org.postgresql.core.v3.QueryExecutorImpl.receiveErrorResponse(QueryExecutorImpl.java:2713)\n",
+        "docker")
+
+    events = parse_events(log)
+
+    assert [(event.first_line, event.level, len(event.lines)) for event in events] == [
+        (1, "WARN", 1), (2, "ERROR", 1), (3, "ERROR", 3)]
 
 
 @pytest.mark.parametrize("log", [

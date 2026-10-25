@@ -248,8 +248,8 @@ def error_field_codes(text: str) -> list[str]:
     return list(dict.fromkeys(codes))
 
 
-def _level_after_timestamp(rest: str, limit: int = _LEVEL_SCAN_TOKENS) -> str | None:
-    """Первый уровень среди первых ``limit`` слов после времени; дальше — уже сообщение.
+def _level_after_timestamp(rest: str) -> str | None:
+    """Первый уровень среди первых слов после времени; дальше — уже сообщение.
 
     Группа в ``[]`` из нескольких слов (MDC, поток с пробелами) занимает одно место:
     проверяется её первое слово (``[INFO ]``), остальные пропускаются.
@@ -260,7 +260,7 @@ def _level_after_timestamp(rest: str, limit: int = _LEVEL_SCAN_TOKENS) -> str | 
         if in_group:
             in_group = not token.endswith("]")
             continue
-        if places == limit:
+        if places == _LEVEL_SCAN_TOKENS:
             break
         places += 1
         in_group = token.startswith("[") and "]" not in token
@@ -436,11 +436,12 @@ def iter_events(text: str) -> Iterator[LogEvent]:
 
     Вывод сборщика логов контейнера (:func:`_collector_prefixes`) разбирается по телу строк,
     без префикса. Если у приложения свои записи (время, уровень, JSON…), префикс — лишнее
-    время: лог разбирается и показывается как без сборщика; только строка, у которой уровень
-    — первое слово (``[ERROR] …`` соседнего процесса без своего времени), всё равно начинает
-    запись. Своих записей нет — новую запись начинает каждая строка вывода, кроме продолжений
-    (:func:`_continues`). Запись, которую начало время сборщика, показывается с префиксом:
-    другого времени у неё нет. Номера строк — прежние.
+    время: лог разбирается и показывается как без сборщика; только строка вывода с уровнем в
+    позиции уровня (``[worker-1] ERROR …`` соседнего процесса без своего времени), если она не
+    продолжение (:func:`_continues`), всё равно начинает запись — как до сборщика. Своих
+    записей нет — запись начинает каждая строка вывода, кроме продолжений. Запись, которую
+    начало время сборщика, показывается с префиксом: другого времени у неё нет. Номера строк —
+    прежние.
     """
     lines = text.splitlines()
     prefixes = _collector_prefixes(lines)
@@ -456,13 +457,15 @@ def iter_events(text: str) -> Iterator[LogEvent]:
         if started is None and (record := _json_record(rest)) is not None:
             started = "level"
             level, rendered = record
-        if started is None and prefixes is not None:
-            # Время сборщика — граница записи: без своих записей у каждой строки вывода, кроме
-            # продолжений; со своими — у строки с уровнем первым словом.
-            leading = None if _jul_level(current, rest) else _level_after_timestamp(rest, limit=1)
-            if leading is not None or (not own and not _continues(rest)):
-                started, level = "level", leading if own else _level_after_timestamp(rest)
-                line = lines[index]
+        if started is None and prefixes is not None and not _jul_level(current, rest):
+            # Время сборщика — граница записи. Строка с уровнем в позиции уровня — запись, как
+            # до сборщика, кроме продолжения стека идущей ошибки (``Caused by: … ERROR: …``);
+            # без своих записей — и любая строка, которая не продолжение.
+            level = _level_after_timestamp(rest)
+            continues = _continues(rest)
+            in_error = current is not None and current.is_error and not current.closed
+            if (level is not None and not (continues and in_error)) or (not own and not continues):
+                started, line = "level", lines[index]
         if started is not None:
             if current is not None:
                 yield current
