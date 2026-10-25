@@ -256,6 +256,18 @@ def repeat_key(text: str) -> str:
     return normalize_text(unthreaded) + "\0" + "|".join(numeric_codes(text))
 
 
+# Строк сообщения в ключе :func:`message_key`.
+MESSAGE_KEY_LINES = 20
+
+
+def message_key(text: str) -> str:
+    """Ключ сообщения об ошибке целиком (до ``MESSAGE_KEY_LINES`` строк): у многострочных
+    ошибок первая строка бывает общей («1 expectation failed.» RestAssured), а коды ответа —
+    ниже. Пробелы схлопнуты, время, id и длинные числа не различают (:func:`repeat_key`)."""
+    lines = [" ".join(line.split()) for line in text.splitlines() if line.strip()]
+    return repeat_key("\n".join(lines[:MESSAGE_KEY_LINES]))
+
+
 # Обрезанные имена потоков веб-сервера: Spring Boot печатает имя потока не длиннее 15
 # символов («[nio-8080-exec-1]», «[io-8080-exec-10]»). Только для свёртки повторов: в
 # сигнатуре (:func:`replace_thread_names`) их нет, и менять её материал нельзя.

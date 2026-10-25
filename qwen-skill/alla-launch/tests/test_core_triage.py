@@ -119,6 +119,30 @@ async def test_analyze_launch_fills_trace_from_detail_fallback(
 
 
 @pytest.mark.asyncio
+async def test_missing_trace_is_fetched_even_when_message_is_known(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """В списке только сообщение (общий ассерт), трейс с причиной — в GET /api/testresult/{id}."""
+    settings = _make_settings(monkeypatch, tmp_path)
+    result = _make_failed_result(id=3, statusDetails={"message": "expected: <200> but was: <500>"})
+    detail = ResultResponse.model_validate({
+        "id": 3,
+        "statusDetails": {"message": "other text"},
+        "trace": "java.lang.AssertionError: expected: <200> but was: <500>\n"
+                 "\tat ru.OrderTest.create(OrderTest.java:42)\n"
+                 "Caused by: java.lang.NullPointerException",
+    })
+    client = _Client(results=[result], detail_by_id={3: detail})
+
+    report = await TriageService(client, settings).analyze_launch(123)
+
+    assert client.detail_calls == 1
+    assert report.failed_tests[0].status_message == "expected: <200> but was: <500>"
+    assert "NullPointerException" in (report.failed_tests[0].status_trace or "")
+
+
+@pytest.mark.asyncio
 async def test_step_path_reaches_deepest_but_message_stays_at_outer_failed_step(
     monkeypatch,
     tmp_path,

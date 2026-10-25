@@ -248,13 +248,18 @@ def _details(message: str) -> dict[str, Any]:
     return {"statusDetails": {"message": message}}
 
 
+def _final(message: str) -> dict[str, Any]:
+    """Финальный результат с трейсом в списке: без трейса скилл запросил бы его отдельно."""
+    return {"statusDetails": {"message": message, "trace": message + "\n\tat ru.T.t(T.java:1)"}}
+
+
 @pytest.mark.asyncio
 async def test_attempt_errors_from_list_need_no_requests() -> None:
     client = _Client([
         _result(1, hidden=True, historyId="h", **_details("Total 0 at 2026-10-03 10:00:00")),
         _result(2, "broken", hidden=True, historyId="h",
                 **_details("ConnectException: Connection refused")),
-        _result(3, historyId="h", **_details("Total 0 at 2026-10-03 11:30:00")),
+        _result(3, historyId="h", **_final("Total 0 at 2026-10-03 11:30:00")),
     ])
 
     report = await TriageService(client, _settings()).analyze_launch(9)  # type: ignore[arg-type]
@@ -312,7 +317,7 @@ async def test_errors_are_compared_before_clipping() -> None:
 async def test_attempt_without_list_error_is_fetched_and_failures_stay_unknown() -> None:
     client = _Client(
         [_result(1, hidden=True, historyId="h"), _result(2, hidden=True, historyId="h"),
-         _result(3, historyId="h", **_details("boom"))],
+         _result(3, historyId="h", **_final("boom"))],
         details={1: ResultResponse(id=1, trace="java.lang.IllegalStateException: boom\n\tat x"),
                  2: RuntimeError("503")},
     )
@@ -330,7 +335,7 @@ async def test_attempt_without_list_error_is_fetched_and_failures_stay_unknown()
 @pytest.mark.asyncio
 async def test_only_last_five_attempts_and_request_cap() -> None:
     hidden = [_result(index, hidden=True, historyId="h") for index in range(1, 8)]
-    client = _Client([*hidden, _result(8, historyId="h", **_details("boom"))])
+    client = _Client([*hidden, _result(8, historyId="h", **_final("boom"))])
 
     report = await TriageService(  # type: ignore[arg-type]
         client, _settings(retry_max_detail_requests=2)).analyze_launch(9)
@@ -364,6 +369,42 @@ async def test_passed_after_retry_is_listed_without_requests() -> None:
         "message": "expected: <3> but was: <2>",
     }]
     assert report.failed_tests == []
+
+
+@pytest.mark.asyncio
+async def test_attempt_errors_compare_the_whole_message() -> None:
+    # RestAssured: первая строка общая, код ответа — ниже (ревью Codex).
+    unauthorized = "1 expectation failed.\nExpected status code <200> but was <401>."
+    server_error = "1 expectation failed.\nExpected status code <200> but was <500>."
+    client = _Client([
+        _result(1, hidden=True, historyId="h", **_details(unauthorized)),
+        _result(2, hidden=True, historyId="h", **_details(server_error)),
+        _result(3, historyId="h", **_final(server_error)),
+    ])
+
+    report = await TriageService(client, _settings()).analyze_launch(9)  # type: ignore[arg-type]
+
+    attempts = report.failed_tests[0].attempts
+    assert [a.message for a in attempts] == ["1 expectation failed."] * 2  # показ — первая строка
+    assert [a.same_as_final for a in attempts] == [False, True]
+
+
+def test_attempt_text_ignores_stack_frames() -> None:
+    from alla_core.services.triage_service import _attempt_text
+    from alla_core.utils.text_normalization import message_key
+
+    def key(trace: str) -> str:
+        text = _attempt_text({}, trace)
+        assert text is not None
+        return message_key(text)
+
+    java = "java.lang.IllegalStateException: boom\n\tat ru.A.b(A.java:{})\n\t... 3 more"
+    python = ('Traceback (most recent call last):\n  File "t.py", line {}, in test\n'
+              "    assert total == {}\nAssertionError: {}")
+    assert key(java.format(10)) == key(java.format(12)) == message_key(
+        "java.lang.IllegalStateException: boom")
+    assert key(python.format(3, "x", "boom")) == key(python.format(5, "y", "boom"))
+    assert key(python.format(3, "x", "boom")) != key(python.format(3, "x", "other"))
 
 
 def test_long_attempt_message_is_clipped_to_first_line() -> None:

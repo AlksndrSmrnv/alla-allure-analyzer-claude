@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from collections import Counter
 
 from alla_core.clients.base import TestResultsProvider
@@ -18,7 +19,7 @@ from alla_core.models.testops import (
     TriageReport,
 )
 from alla_core.services.retry_linking import RetryLinks, link_attempts
-from alla_core.utils.text_normalization import repeat_key
+from alla_core.utils.text_normalization import message_key
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,8 @@ logger = logging.getLogger(__name__)
 # стольких символов.
 MAX_ATTEMPTS_PER_TEST = 5
 ATTEMPT_MESSAGE_CHARS = 300
+_JAVA_FRAME_RE = re.compile(r"^\s+at\s|^\s*\.\.\.\s*\d+\s+more\b")
+_PYTHON_FRAME_RE = re.compile(r'^\s+File "')
 
 
 def _diagnostic_text(value: object) -> str | None:
@@ -50,6 +53,39 @@ def _attempt_line(status_details: object, trace: str | None) -> str | None:
         _first_line(_diagnostic_text(details.get("message")))
         or _first_line(_diagnostic_text(details.get("trace")))
         or _first_line(_diagnostic_text(trace))
+    )
+
+
+def _without_frames(text: str | None) -> str | None:
+    """Текст ошибки без кадров стека (Java ``at …``, ``... N more``, Python ``File "…"`` и
+    строка кода под ним): сообщение, ``Caused by`` и строка исключения Python остаются."""
+    kept: list[str] = []
+    after_file = False
+    for line in (text or "").splitlines():
+        if _JAVA_FRAME_RE.match(line):
+            after_file = False
+            continue
+        if _PYTHON_FRAME_RE.match(line):
+            after_file = True
+            continue
+        if after_file and line[:1].isspace():
+            continue  # строка кода под кадром Python
+        after_file = False
+        kept.append(line)
+    block = "\n".join(kept)
+    return block if block.strip() else None
+
+
+def _attempt_text(status_details: object, trace: str | None) -> str | None:
+    """Ошибка попытки для сравнения «та же ошибка»: сообщение целиком, иначе трейс без кадров.
+
+    Не первая строка: у RestAssured она общая («1 expectation failed.»), а код ответа ниже.
+    """
+    details = status_details if isinstance(status_details, dict) else {}
+    return (
+        _without_frames(_diagnostic_text(details.get("message")))
+        or _without_frames(_diagnostic_text(details.get("trace")))
+        or _without_frames(_diagnostic_text(trace))
     )
 
 
@@ -105,7 +141,7 @@ def fetch_warnings(info: FetchInfo, launch_id: int) -> list[str]:
     if lost:
         warnings.append(
             f"TestOps не отдал данные части падений даже после повторов ({', '.join(lost)}): "
-            f"у этих тестов может не быть сообщения об ошибке или шага, и они могут попасть "
+            f"у этих тестов может не быть сообщения об ошибке, трейса или шага, и они могут попасть "
             f"не в ту проблему — {again}."
         )
     return warnings
@@ -303,24 +339,22 @@ class TriageService:
         summaries: list[FailedTestSummary],
         fetch: FetchInfo | None = None,
     ) -> None:
-        """Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}.
+        """Fallback: для тестов без трейса — запросить GET /api/testresult/{id}.
 
-        Некоторые тесты имеют все execution steps в статусе passed, а statusDetails
-        в пагинированном списке пустой. В таких случаях trace доступен только
-        на индивидуальном эндпоинте ``GET /api/testresult/{id}``.
+        Некоторые тесты имеют все execution steps в статусе passed, а в пагинированном
+        списке ``trace`` обычно пустой: и при сообщении из списка (общий ассерт о коде
+        ответа) трейс с причиной и местом падения доступен только на индивидуальном
+        эндпоинте ``GET /api/testresult/{id}``.
 
-        Мутирует объекты summaries in-place, заполняя status_trace и status_message.
+        Мутирует объекты summaries in-place: заполняет status_trace, а status_message —
+        только если его не было.
         """
-        missing = [
-            s for s in summaries
-            if not s.status_message and not s.status_trace
-        ]
+        missing = [s for s in summaries if not s.status_trace]
         if not missing:
             return
 
         logger.info(
-            "Fallback: %d тестов без message/trace, "
-            "запрос GET /api/testresult/{id} для каждого",
+            "Fallback: %d тестов без trace, запрос GET /api/testresult/{id} для каждого",
             len(missing),
         )
 
@@ -344,13 +378,17 @@ class TriageService:
             fetch.detail_failed = sum(1 for detail in results if detail is None)
 
         for summary, detail in zip(missing, results):
-            if detail is None or not detail.trace:
+            if detail is None:
                 continue
-            summary.status_trace = detail.trace
+            details = detail.status_details if isinstance(detail.status_details, dict) else {}
+            trace = _diagnostic_text(detail.trace) or _diagnostic_text(details.get("trace"))
+            if not trace:
+                continue
+            summary.status_trace = trace
             if not summary.status_message:
-                first_line = detail.trace.strip().split("\n", 1)[0]
-                if first_line:
-                    summary.status_message = first_line
+                summary.status_message = (
+                    _diagnostic_text(details.get("message")) or _first_line(trace)
+                )
             logger.debug(
                 "Fallback: получен trace для теста %d из GET /api/testresult/{id}",
                 summary.test_result_id,
@@ -373,22 +411,23 @@ class TriageService:
         info = links.info()
         failure_statuses = TestStatus.failure_statuses()
         pending: list[AttemptSummary] = []
-        # Полные первые строки ошибок попыток по id: «та же ошибка» сравнивается до
-        # обрезки, иначе различие после ATTEMPT_MESSAGE_CHARS (код ошибки) терялось бы.
-        lines: dict[int, str] = {}
+        # Ключи ошибок попыток по id: «та же ошибка» — сообщение целиком (``message_key``), а
+        # не показанная первая строка до ATTEMPT_MESSAGE_CHARS (общая у RestAssured, код ответа
+        # бывает ниже или в конце длинной строки).
+        keys: dict[int, str] = {}
         for summary in summaries:
             attempts = links.attempts.get(summary.test_result_id, [])
             recent = attempts[-MAX_ATTEMPTS_PER_TEST:]
             summary.attempts_omitted = len(attempts) - len(recent)
             for attempt in recent:
-                line = _attempt_line(attempt.status_details, attempt.trace)
                 item = AttemptSummary(
                     test_result_id=attempt.id,
                     status=self._normalize_status(attempt.status),
-                    message=_clip_attempt_line(line),
+                    message=_attempt_message(attempt.status_details, attempt.trace),
                 )
-                if line is not None:
-                    lines[attempt.id] = line
+                text = _attempt_text(attempt.status_details, attempt.trace)
+                if text is not None:
+                    keys[attempt.id] = message_key(text)
                 summary.attempts.append(item)
                 if item.status in failure_statuses:
                     info.errors_total += 1
@@ -412,24 +451,30 @@ class TriageService:
                         "Не удалось получить ошибку попытки %d: %s", item.test_result_id, exc,
                     )
                     return
-            line = _attempt_line(detail.status_details, detail.trace)
-            item.message = _clip_attempt_line(line)
-            if line is not None:
-                lines[item.test_result_id] = line
+            item.message = _attempt_message(detail.status_details, detail.trace)
+            text = _attempt_text(detail.status_details, detail.trace)
+            if text is not None:
+                keys[item.test_result_id] = message_key(text)
 
         await asyncio.gather(*(fetch_one(item) for item in allowed))
 
+        by_id = {result.id: result for result in results}
         for summary in summaries:
-            # Первая строка финального падения выбирается так же, как у попыток.
-            final = _attempt_line({"message": summary.status_message}, summary.status_trace)
+            # Ошибка финального результата — из того же списка результатов, что у попыток
+            # (у execution-дерева текст бывает другим); нет её там — из сводки.
+            listed = by_id.get(summary.test_result_id)
+            final_text = (
+                _attempt_text(listed.status_details, listed.trace) if listed is not None else None
+            ) or _attempt_text({"message": summary.status_message}, summary.status_trace)
+            final = message_key(final_text) if final_text is not None else None
             for item in summary.attempts:
                 if item.status not in failure_statuses:
                     continue
-                line = lines.get(item.test_result_id)
-                if line is not None:
+                key = keys.get(item.test_result_id)
+                if key is not None:
                     info.errors_known += 1
                     if final is not None:
-                        item.same_as_final = repeat_key(line) == repeat_key(final)
+                        item.same_as_final = key == final
 
         info.passed_after_retry = self._passed_after_retry(links, results, launch_id)
         return info

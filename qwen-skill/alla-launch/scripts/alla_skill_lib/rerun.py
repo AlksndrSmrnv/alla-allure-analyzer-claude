@@ -32,7 +32,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePath
 from typing import Any
 
-from alla_core.utils.text_normalization import repeat_key
+from alla_core.utils.text_normalization import message_key
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.code_hints import JvmTest, ProjectIndex, jvm_test_of
 from alla_skill_lib.kb import secret_lines
@@ -53,7 +53,6 @@ NOT_IN_REACTOR = "Could not find the selected project in the reactor"
 
 OUTCOMES = ("passed", "reproduced", "other", "not_run")
 MAX_SHOWN_SKIPPED = 10
-MESSAGE_KEY_LINES = 20
 MESSAGE_KEEP_CHARS = 4000
 MAX_OFFER_NAMES = 5
 # Признаки нестабильности теста (отбор — ``flaky.py``): код → как назвать пользователю.
@@ -445,14 +444,6 @@ def same_error(local: str, testops: str) -> bool:
     if not testops.strip():
         return True
     return message_key(local) == message_key(testops)
-
-
-def message_key(text: str) -> str:
-    """Ключ сообщения целиком (до ``MESSAGE_KEY_LINES`` строк): у многострочных ошибок первая
-    строка бывает общей («1 expectation failed.» RestAssured), а коды ответа — ниже. Пробелы
-    схлопнуты, время, id и длинные числа не различают (``repeat_key``)."""
-    lines = [" ".join(line.split()) for line in text.splitlines() if line.strip()]
-    return repeat_key("\n".join(lines[:MESSAGE_KEY_LINES]))
 
 
 def first_line(text: str) -> str:
