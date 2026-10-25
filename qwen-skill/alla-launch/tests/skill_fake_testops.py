@@ -160,7 +160,14 @@ class WideCase:
 
 
 def _log(*lines: str) -> str:
-    return "".join(f"2026-09-01 10:0{index // 10}:{index % 10}0 {line}\n" for index, line in enumerate(lines))
+    """Лог в духе logback: время — только у записей (``[LEVEL] …``); строка исключения и кадры
+    ``at`` под записью — без времени, продолжение её (со временем стали бы отдельными записями
+    без уровня, и отбор ошибок их бы отбросил)."""
+    out = []
+    for index, line in enumerate(lines):
+        out.append(f"2026-09-01 10:0{index // 10}:{index % 10}0 {line}\n" if line.startswith("[")
+                   else f"{line}\n")
+    return "".join(out)
 
 
 _ASSERT_FRAMES = ("\tat org.junit.jupiter.api.AssertionUtils.fail(AssertionUtils.java:55)\n"

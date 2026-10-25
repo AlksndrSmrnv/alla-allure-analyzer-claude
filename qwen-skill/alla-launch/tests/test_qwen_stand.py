@@ -93,6 +93,10 @@ def test_wide_scenario_is_nine_clusters_with_their_test_classes(
         path = f"src/test/java/ru/company/{case.domain}/{case.cls}.java"
         assert re.search(rf"^- {re.escape(path)}:\d+ — код теста", tasks, re.MULTILINE), path
         assert f"({case.cls}.java:{wide_test_class(case)[1]})" in tasks  # кадр стека — строка падения
+    # исключение сервиса под записью [ERROR] — в задании, а не только «split failed»
+    for exception in ("java.lang.NullPointerException: warehouse is null",
+                      "java.lang.ArithmeticException: / by zero", "java.lang.ClassCastException"):
+        assert exception in tasks, exception
         assert 280 <= FIXTURE_SOURCES["wide"][f"{case.domain}/{case.cls}.java"].count("\n") <= 320
 
 
