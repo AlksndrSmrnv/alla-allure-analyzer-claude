@@ -171,12 +171,17 @@ class RunPaths:
         return skill_command("next", str(self.root))
 
 
-def create_run_dir(reports_dir: Path, launch_id: int, now: datetime) -> RunPaths:
-    """Создать новую папку ``<launch_id>-<YYYYmmdd-HHMMSS>`` в ``reports_dir``."""
+def ensure_reports_dir(reports_dir: Path) -> None:
+    """Папка отчётов с ``.gitignore``: разборы и задания в git не попадают."""
     reports_dir.mkdir(parents=True, exist_ok=True)
     gitignore = reports_dir / ".gitignore"
     if not gitignore.exists():
         gitignore.write_text("# Отчёты alla-launch не коммитятся\n*\n", encoding="utf-8")
+
+
+def create_run_dir(reports_dir: Path, launch_id: int, now: datetime) -> RunPaths:
+    """Создать новую папку ``<launch_id>-<YYYYmmdd-HHMMSS>`` в ``reports_dir``."""
+    ensure_reports_dir(reports_dir)
 
     base = f"{launch_id}-{now.strftime('%Y%m%d-%H%M%S')}"
     root = reports_dir / base

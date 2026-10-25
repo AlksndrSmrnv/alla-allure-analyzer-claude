@@ -33,12 +33,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import date, datetime, timezone
 from itertools import islice
 from pathlib import Path
@@ -51,7 +52,7 @@ from alla_core.exceptions import AllaError, ConfigurationError
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib import extensions as ext
-from alla_skill_lib import flaky, rerun
+from alla_skill_lib import flaky, jobs, rerun
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.agent_rules import (
     ANALYSIS_FORMAT_REF,
@@ -166,6 +167,12 @@ logger = logging.getLogger(__name__)
 
 MAX_FIX_ATTEMPTS = 3
 MAX_PROPOSALS = 5
+# Долгие команды (prepare, review с моделью) — фоновым заданием (jobs.py): Qwen обрывает
+# команду shell через 120 с. Синхронно — на Windows (нет fcntl, os.kill завершает процесс) и в
+# тестах с подменами в памяти процесса.
+RUN_IN_BACKGROUND = os.name != "nt"
+# Папка задания, если команда сама идёт фоновым заданием (``--job``): туда пишется её стадия.
+_JOB_DIR: Path | None = None
 # Много неразобранных кластеров раздаются субагентам пакетами (SKILL.md, STATUS: analyze_batch).
 PARALLEL_MIN_PENDING = 10  # с такого числа кластеров без разбора включается пакетный режим
 BATCH_SIZE = 6  # кластеров в пакете одного субагента
@@ -273,6 +280,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+def _same_command(argv: list[str]) -> str:
+    """Та же команда для повтора после ``running``: без ``--fresh`` (иначе разбор начался бы
+    заново) и без служебного ``--job``."""
+    kept: list[str] = []
+    skip = False
+    for arg in argv:
+        if skip:
+            skip = False
+        elif arg == "--job":
+            skip = True
+        elif arg != "--fresh" and not arg.startswith("--job="):
+            kept.append(arg)
+    return ws.skill_command(*kept)
+
+
 def _exit_code(status: str) -> int:
     """Только ``error`` — авария; остальные статусы несут инструкцию для агента."""
     return 1 if status == "error" else 0
@@ -287,6 +309,8 @@ def _dispatch(argv: list[str] | None) -> int:
         argv, extra = argv[:cut], argv[cut + 1:]
     args = _build_parser().parse_args(argv)
     args.extra = extra
+    global _JOB_DIR
+    _JOB_DIR = Path(args.job) if args.job else None
     project_root = (
         Path(args.project_root).resolve() if args.project_root else ws.detect_project_root()
     )
@@ -296,7 +320,8 @@ def _dispatch(argv: list[str] | None) -> int:
         else project_root / ws.REPORTS_DIRNAME
     )
     if args.command == "prepare":
-        return cmd_prepare(args.launch_id, project_root, reports_dir, fresh=args.fresh)
+        return cmd_prepare(args.launch_id, project_root, reports_dir, fresh=args.fresh,
+                           in_job=_JOB_DIR is not None, repeat=_same_command(argv))
     if args.command == "next":
         return cmd_next(
             args.run_dir or args.run, reports_dir, workers=1 if args.serial else args.workers
@@ -304,7 +329,8 @@ def _dispatch(argv: list[str] | None) -> int:
     if args.command == "verify":
         return cmd_verify(args.run, args.clusters, reports_dir)
     if args.command == "review":
-        return cmd_review(args.run_dir or args.run, reports_dir, use_model=not args.no_model)
+        return cmd_review(args.run_dir or args.run, reports_dir, use_model=not args.no_model,
+                          in_job=_JOB_DIR is not None, repeat=_same_command(argv))
     if args.command == "check":
         return cmd_check(project_root, reports_dir)
     if args.command == "clean":
@@ -370,6 +396,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--reports-dir",
         help="папка отчётов (по умолчанию <project>/alla-reports)",
     )
+    # Служебный: команда идёт фоновым заданием этой папки (jobs.py), а не запускает его.
+    common.add_argument("--job", help=argparse.SUPPRESS)
     parser = _Parser(prog="alla_skill.py", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     prepare = commands.add_parser(
@@ -531,8 +559,34 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _progress(message: str) -> None:
-    """Стадии выгрузки — в stderr, чтобы первой строкой stdout оставался STATUS."""
+    """Стадии выгрузки — в stderr, чтобы первой строкой stdout оставался STATUS; у фонового
+    задания — ещё и в его папку (ответ ``running`` называет стадию)."""
     print(message, file=sys.stderr, flush=True)
+    jobs.note_progress(_JOB_DIR, message)
+
+
+def _finish_job(
+    files: jobs.JobFiles,
+    started: float,
+    running: Callable[[jobs.JobState], str],
+    repeat: str,
+) -> int:
+    """Дождаться фонового задания команды до ``jobs.WAIT_BUDGET`` от её начала и ответить:
+    итог задания как есть, ``running`` (``running(state)`` — текст) или ошибка."""
+    state = jobs.wait(files, jobs.WAIT_BUDGET - (time.monotonic() - started))
+    if state.state == "done":
+        output, code = jobs.deliver(files)
+        print(output, end="" if output.endswith("\n") else "\n")
+        return code
+    if state.state == "running":
+        print("STATUS: running")
+        print(running(state))
+        return 0
+    jobs.mark_delivered(files)
+    print("STATUS: error")
+    print(f"Фоновый процесс команды завершился без итога (подробности — {files.log}). "
+          f"Повторить: {repeat}")
+    return 1
 
 
 def cmd_prepare(
@@ -541,29 +595,52 @@ def cmd_prepare(
     reports_dir: Path,
     *,
     fresh: bool = False,
+    in_job: bool = False,
+    repeat: str | None = None,
 ) -> int:
+    """Выгрузить прогон и подготовить задания.
+
+    Выгрузка большого прогона дольше, чем Qwen даёт команде (120 с), поэтому она идёт
+    фоновым заданием (:mod:`alla_skill_lib.jobs`): команда ждёт до ``jobs.WAIT_BUDGET`` и
+    отвечает ``running``, а повтор подключается к идущей выгрузке. ``in_job`` — это и есть
+    фоновое задание: выгрузка здесь, синхронно (как и при ``RUN_IN_BACKGROUND = False``).
+    """
+    started = time.monotonic()
     installed = install_batch_agent(project_root)
     if installed is not None:
         _progress(f"Установлен субагент пакетов {installed} (Qwen Code увидит его со следующего сеанса).")
     if install_commands(project_root):
         _progress("Установлены команды /alla:* (Qwen Code увидит их со следующего сеанса).")
     _install_extension_agents(project_root)
+    if RUN_IN_BACKGROUND and not in_job:
+        repeat = repeat or ws.skill_command("prepare", str(launch_id))
+        files = jobs.job_files(reports_dir, f"prepare-{launch_id}")
+        with jobs.start_lock(files):
+            # Идущая выгрузка этого прогона (или законченная, чей итог ещё не показан) — её
+            # итог, даже с --fresh: повтор после running не должен начинать её заново.
+            if jobs.job_state(files).state == "none":
+                if not fresh:
+                    unfinished = ws.find_unfinished_run(reports_dir, launch_id)
+                    if unfinished is not None:
+                        return _resume(unfinished, launch_id, reports_dir)
+                if isinstance(_prepare_settings(), int):
+                    return 2
+                jobs.start(files, ["prepare", str(launch_id), "--fresh",
+                                   "--project-root", str(project_root),
+                                   "--reports-dir", str(reports_dir)])
+        return _finish_job(files, started,
+                           lambda state: _prepare_running(launch_id, state, str(repeat)),
+                           str(repeat))
+
     if not fresh:
         unfinished = ws.find_unfinished_run(reports_dir, launch_id)
         if unfinished is not None:
             return _resume(unfinished, launch_id, reports_dir)
 
     env_file = ws.SKILL_DIR / ".env"
-    try:
-        settings = Settings.load(env_file=env_file)
-    except ConfigurationError as exc:
-        print("STATUS: error")
-        print(f"Ошибка конфигурации: {exc}")
-        print(
-            f"Пользователю нужно заполнить {env_file} по образцу .env.example или задать "
-            "переменные окружения ALLURE_ENDPOINT и ALLURE_TOKEN. " + USER_ACTION_NOTE
-        )
-        return 2
+    settings = _prepare_settings()
+    if isinstance(settings, int):
+        return settings
 
     # Кластеризация тянет numpy/scipy/sklearn (~0,5 с) — грузим только здесь, а не в каждом next.
     from alla_skill_lib.pipeline import collect_launch
@@ -610,6 +687,34 @@ def cmd_prepare(
         print(f"Внимание: {warning}")
     print(body)
     return 0
+
+
+def _prepare_settings() -> Settings | int:
+    """Настройки TestOps; неверные — ответ ``error`` напечатан, код возврата."""
+    env_file = ws.SKILL_DIR / ".env"
+    try:
+        return Settings.load(env_file=env_file)
+    except ConfigurationError as exc:
+        print("STATUS: error")
+        print(f"Ошибка конфигурации: {exc}")
+        print(
+            f"Пользователю нужно заполнить {env_file} по образцу .env.example или задать "
+            "переменные окружения ALLURE_ENDPOINT и ALLURE_TOKEN. " + USER_ACTION_NOTE
+        )
+        return 2
+
+
+def _prepare_running(launch_id: int, state: jobs.JobState, repeat: str) -> str:
+    stage = (state.progress or "подключаюсь к TestOps").rstrip(".…")
+    return "\n".join([
+        f"Прогон #{launch_id} большой: выгрузка из TestOps идёт в фоне уже {jobs.minutes(state)} "
+        f"мин (сейчас: {stage}).",
+        f"Подожди итога: выполни ту же команду ещё раз — {repeat} (она ждёт до "
+        f"{int(jobs.WAIT_BUDGET)} с) — и так, пока ответ не сменится. --fresh не добавляй: "
+        "идущая выгрузка не начнётся заново, повтор просто дождётся её.",
+        "Пользователю один раз коротко скажи, что прогон большой и данные ещё выгружаются; "
+        "разбор начнётся, когда выгрузка закончится.",
+    ])
 
 
 def _fetch_failed(
@@ -857,16 +962,37 @@ def _member_full_names(
 # ---------------------------------------------------------------------------
 
 
-def cmd_review(run_dir: str | None, reports_dir: Path, *, use_model: bool = True) -> int:
-    """Проверка законченного разбора. Сеанс не запоминается: проверка — не часть разбора."""
+def cmd_review(
+    run_dir: str | None,
+    reports_dir: Path,
+    *,
+    use_model: bool = True,
+    in_job: bool = False,
+    repeat: str | None = None,
+) -> int:
+    """Проверка законченного разбора. Сеанс не запоминается: проверка — не часть разбора.
+
+    Оценка моделью идёт минуты — фоновым заданием, как выгрузка в ``prepare``.
+    """
     from alla_skill_lib import review
 
+    started = time.monotonic()
     try:
         paths = ws.resolve_run(run_dir, reports_dir)
     except ws.RunNotFoundError as exc:
         print("STATUS: error")
         print(exc)
         return 1
+    if use_model and RUN_IN_BACKGROUND and not in_job:
+        repeat = repeat or ws.skill_command("review", "--run", str(paths.root))
+        # Задание — в папке отчётов самого разбора: --reports-dir мог быть и не указан.
+        files = jobs.job_files(paths.reports_dir, f"review-{paths.root.name}")
+        with jobs.start_lock(files):
+            if jobs.job_state(files).state == "none":
+                jobs.start(files, ["review", "--run", str(paths.root),
+                                   "--reports-dir", str(paths.reports_dir)])
+        return _finish_job(files, started, lambda state: _review_running(state, str(repeat)),
+                           str(repeat))
     facts = review.collect_facts(paths)
     if use_model:
         _progress("Оценка диагнозов моделью с чистым контекстом — до нескольких минут…")
@@ -882,6 +1008,16 @@ def cmd_review(run_dir: str | None, reports_dir: Path, *, use_model: bool = True
     print("===КОНЕЦ===")
     print("Выведи пользователю текст между ===ОТЧЁТ=== и ===КОНЕЦ=== дословно; разбор заново не начинай.")
     return 0
+
+
+def _review_running(state: jobs.JobState, repeat: str) -> str:
+    stage = (state.progress or "собираю факты разбора").rstrip(".…")
+    return "\n".join([
+        f"Проверка разбора идёт в фоне уже {jobs.minutes(state)} мин (сейчас: {stage}).",
+        f"Подожди итога: выполни ту же команду ещё раз — {repeat} (она ждёт до "
+        f"{int(jobs.WAIT_BUDGET)} с) — и так, пока ответ не сменится. Пользователю пока ничего "
+        "не пиши.",
+    ])
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,9 @@
 одни. Слушает только 127.0.0.1. Каждый запрос пишется строкой JSON в журнал.
 
     python tests/fake_testops_server.py --fixture default --port 8777 --log requests.jsonl
+
+``--delay СЕК`` — задержка каждого ответа: медленный TestOps, на котором ``prepare`` уходит
+в фоновое задание (ответ ``running``).
 """
 
 from __future__ import annotations
@@ -126,9 +129,10 @@ class FakeTestOpsServer:
     """HTTP-обёртка над ``FakeTestOps`` в фоновом потоке."""
 
     def __init__(self, fixture: LaunchFixture, *, port: int = 0,
-                 log_path: Path | None = None) -> None:
+                 log_path: Path | None = None, delay: float = 0.0) -> None:
         self.fake = FakeTestOps(fixture)
         self.log_path = log_path
+        self.delay = delay
         self._lock = threading.Lock()
         self._httpd = ThreadingHTTPServer(("127.0.0.1", port), self._handler_class())
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
@@ -165,6 +169,8 @@ class FakeTestOpsServer:
             def _serve(self) -> None:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(length) if length else b""
+                if server.delay:
+                    time.sleep(server.delay)
                 request = httpx.Request(self.command, f"http://testops.local{self.path}",
                                         headers=dict(self.headers), content=body)
                 try:
@@ -197,8 +203,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fixture", default="default")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--log", type=Path)
+    parser.add_argument("--delay", type=float, default=0.0, help="задержка каждого ответа, с")
     args = parser.parse_args(argv)
-    server = FakeTestOpsServer(build_fixture(args.fixture), port=args.port, log_path=args.log)
+    server = FakeTestOpsServer(build_fixture(args.fixture), port=args.port, log_path=args.log,
+                               delay=args.delay)
     with server:
         print(f"ALLURE_ENDPOINT={server.endpoint}", flush=True)
         try:

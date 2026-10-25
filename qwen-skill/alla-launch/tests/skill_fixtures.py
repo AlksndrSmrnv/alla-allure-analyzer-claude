@@ -54,11 +54,14 @@ def _write(path: Path, text: str = "") -> None:
 
 def _isolate_skill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Изолированная папка скилла и настройки TestOps из окружения."""
-    from alla_skill_lib import workspace
+    from alla_skill_lib import cli, workspace
 
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     monkeypatch.setattr(workspace, "SKILL_DIR", skill_dir)
+    # Подмены (папка скилла, фейковый TestOps) живут в памяти процесса: фоновое задание
+    # prepare/review их не увидело бы. Задания проверяет test_skill_jobs.py.
+    monkeypatch.setattr(cli, "RUN_IN_BACKGROUND", False)
     monkeypatch.setenv("ALLURE_ENDPOINT", "https://testops.example")
     monkeypatch.setenv("ALLURE_TOKEN", TOKEN)
     monkeypatch.setenv("ALLURE_PAGE_SIZE", "3")

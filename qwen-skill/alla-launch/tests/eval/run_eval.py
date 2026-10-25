@@ -112,6 +112,8 @@ def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
         monkeypatch.setenv("ALLURE_TOKEN", TOKEN)
         monkeypatch.setattr(workspace, "SKILL_DIR", skill_dir)
         monkeypatch.setattr(pipeline, "collect_launch", collect)
+        # Кассета подменяет TestOps в памяти процесса: выгрузка — здесь, не фоновым заданием.
+        monkeypatch.setattr(cli, "RUN_IN_BACKGROUND", False)
         # В venv скилла нет python-magic: тип вложения — из метаданных TestOps.
         monkeypatch.setattr(log_extraction_service, "_MAGIC_AVAILABLE", False)
         out = io.StringIO()
