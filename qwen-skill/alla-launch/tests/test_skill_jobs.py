@@ -100,7 +100,8 @@ def test_slow_prepare_answers_running_and_the_repeat_attaches(
     assert code == 0 and out.startswith("STATUS: running"), out
     assert f"Прогон #{LAUNCH} большой: выгрузка из TestOps идёт в фоне" in out
     repeat = ws.skill_command("prepare", LAUNCH, "--project-root", str(autotests))
-    assert f"выполни ту же команду ещё раз — {repeat}" in out  # без --fresh
+    assert out.rstrip().splitlines()[-1] == repeat  # команда — последней строкой, без --fresh
+    assert "пока первая строка ответа — STATUS: running" in out
     pid = _job(autotests).pid.read_text(encoding="utf-8")
 
     _prepare(autotests, capsys, "--fresh")  # и с --fresh: подключается, а не запускает снова
