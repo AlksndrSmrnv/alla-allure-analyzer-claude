@@ -10,6 +10,7 @@ import skill_fixtures  # noqa: F401  # scripts/ в sys.path
 
 from alla_core.services.log_extraction_service import _detect_content_type, _extract_error_blocks
 from alla_core.utils.log_events import (
+    _TIMESTAMP_RE,
     error_events,
     error_field_codes,
     has_error_fields,
@@ -539,3 +540,88 @@ def test_old_format_extraction_is_byte_identical(log: str) -> None:
 def test_bracketed_text_log_is_not_mistaken_for_json(content: bytes, expected: str) -> None:
     assert _detect_content_type(content, fallback_mime="text/plain") == expected
     assert _detect_content_type(content) == expected
+
+
+# --- префикс сборщика логов контейнера: docker logs -t, kubectl logs --timestamps, CRI -------
+
+def _collected(text: str, collector: str) -> str:
+    """Вывод сборщика: время RFC3339 перед каждой строкой (у kubectl доли без хвостовых нулей)."""
+    out = []
+    for index, line in enumerate(text.splitlines()):
+        fraction = f"{(index * 7919 + 13) % 10**9:09d}"
+        if collector == "kubectl":
+            fraction = fraction.rstrip("0") or "0"
+        prefix = f"2026-09-01T10:00:{index % 60:02d}.{fraction}Z "
+        out.append(prefix + ("stdout F " if collector == "cri" else "") + line)
+    return "\n".join(out) + "\n"
+
+
+@pytest.mark.parametrize("collector", ["docker", "kubectl", "cri"])
+@pytest.mark.parametrize("log", [log for log, _ in FORMAT_LOGS.values()], ids=list(FORMAT_LOGS))
+def test_collector_prefix_gives_the_same_error_blocks(log: str, collector: str) -> None:
+    """Приложение пишет свои записи — префикс сборщика снимается: блоки ошибок, пометки строк
+    и показ те же, что у лога без сборщика (кадры, ``Caused by``, Traceback — продолжение)."""
+    assert render_error_blocks(_collected(log, collector)) == render_error_blocks(log)
+
+
+def test_collector_prefix_keeps_the_stack_under_its_record() -> None:
+    log = _collected(
+        "2026-09-01 10:00:00.120  INFO 1 --- [exec-1] r.c.OrderController : POST /orders\n"
+        "2026-09-01 10:00:00.125 ERROR 1 --- [exec-1] r.c.OrderService    : failed to create order\n"
+        "java.lang.NullPointerException: customer is null\n"
+        "\tat ru.company.OrderService.create(OrderService.java:10)\n"
+        "Caused by: java.lang.IllegalStateException: profile cache empty\n"
+        "\t... 12 more\n"
+        "2026-09-01 10:00:00.130  INFO 1 --- [exec-1] r.c.OrderController : responded 500\n",
+        "docker")
+
+    events = parse_events(log)
+
+    assert [(event.first_line, event.level, len(event.lines)) for event in events] == [
+        (1, "INFO", 1), (2, "ERROR", 5), (7, "INFO", 1)]
+    assert events[1].lines[1] == "java.lang.NullPointerException: customer is null"  # без префикса
+
+
+def test_without_own_records_the_collector_time_bounds_records() -> None:
+    """Приложение пишет без времени и уровня (``printStackTrace``, ``console.log``): запись —
+    строка вывода, продолжения (отступ, ``Caused by``, исключение со стеком, Traceback, пустая)
+    к ней пристают; строки — с префиксом, другого времени у них нет."""
+    log = (
+        "2026-09-01T10:00:00.000000101Z Starting order worker\n"
+        "2026-09-01T10:00:01.000000102Z java.lang.IllegalStateException: queue closed\n"
+        "2026-09-01T10:00:01.000000103Z \tat ru.company.Worker.poll(Worker.java:42)\n"
+        "2026-09-01T10:00:01.000000104Z Caused by: java.io.IOException: broken pipe\n"
+        "2026-09-01T10:00:01.000000105Z \n"
+        "2026-09-01T10:00:02.000000106Z   INFO aligned level is a record\n"
+        "2026-09-01T10:00:03.000000107Z Traceback (most recent call last):\n"
+        '2026-09-01T10:00:03.000000108Z   File "/app/sync.py", line 7, in run\n'
+        "2026-09-01T10:00:03.000000109Z KeyError: 'zone_id'\n"
+        "2026-09-01T10:00:04.000000110Z ERROR retry budget exhausted\n"
+        "2026-09-01T10:00:04.000000111Z Next tick\n"
+    )
+
+    events = parse_events(log)
+
+    assert [(event.first_line, event.kind, event.level, len(event.lines)) for event in events] == [
+        (1, "level", None, 1), (2, "exception", None, 4), (6, "level", "INFO", 1),
+        (7, "traceback", None, 3), (10, "level", "ERROR", 1), (11, "level", None, 1)]
+    assert events[1].lines[1] == "2026-09-01T10:00:01.000000103Z \tat ru.company.Worker.poll(Worker.java:42)"
+    assert [event.first_line for event in error_events(log)] == [2, 7, 10]
+
+
+@pytest.mark.parametrize("log", [
+    # своё время ISO с миллисекундами и Z, стек без времени — лог приложения, не сборщика
+    "2026-09-01T10:00:00.123Z ERROR boom\njava.lang.IllegalStateException: x\n"
+    "\tat a.B.c(B.java:1)\n2026-09-01T10:00:00.130Z INFO next\n",
+    # Spring Boot 3 в UTC: выравнивание уровня двумя пробелами — не продолжение
+    "2026-09-01T10:00:00.123Z ERROR 1 --- [main] c.e.Svc : failed\n"
+    "2026-09-01T10:00:00.124Z  INFO 1 --- [main] c.e.Svc : next\n",
+    # префикс только у половины строк
+    "2026-09-01T10:00:00.000000101Z ERROR boom\nplain line\n"
+    "2026-09-01T10:00:00.000000102Z INFO next\nanother plain line\n",
+])
+def test_application_iso_log_is_not_taken_for_a_collector(log: str) -> None:
+    lines = log.splitlines()
+    events = parse_events(log)
+    assert [line for event in events for line in event.lines] == lines  # показ дословный
+    assert all(_TIMESTAMP_RE.match(event.lines[0]) for event in events if event.kind == "level")

@@ -31,6 +31,10 @@ INFO-запись со своим временем не поглощается �
   (``pkg.SomeException: …``), за которой идут кадры ``at …`` — если идущее
   событие не ошибка (иначе это продолжение её стека).
 
+Вывод сборщика логов контейнера (``docker logs -t``, ``kubectl logs --timestamps``, файл
+CRI) — время RFC3339 перед каждой строкой, в том числе перед кадрами стека. Признаки выше
+ищутся в теле строки, без этого префикса: стек остаётся продолжением записи.
+
 Уровень берётся только из позиции уровня: первые слова после времени
 (``ERROR``, ``[ERROR]``, ``|ERROR|``, ``ERROR/Worker``…; в скобках регистр
 любой, без скобок — только заглавные; группа в ``[]`` из нескольких слов, как
@@ -114,6 +118,17 @@ _JUL_LEVEL_RE = re.compile(r"^(?P<level>[A-Z]+): ")
 _TRACEBACK_RE = re.compile(r"^Traceback \(most recent call last\):")
 _EXCEPTION_RE = re.compile(r"^[\w.$]+(?:Exception|Error|Throwable)(?::\s.*)?$")
 _FRAME_RE = re.compile(r"^\s*at\s+\S")
+# Префикс сборщика логов контейнера перед каждой строкой вывода: время RFC3339 —
+# ``docker logs -t`` (9 знаков долей), ``kubectl logs --timestamps`` (RFC3339Nano, без
+# хвостовых нулей), файл CRI ``/var/log/containers`` (ещё поток и признак ``F``/``P``).
+_COLLECTOR_PREFIX_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(?P<fraction>\d{1,9}))?(?:Z|[+-]\d{2}:\d{2})"
+    r"(?: (?:(?:stdout|stderr) [FP](?: |$))?|$)")
+# Время сборщика — наносекунды; приложение пишет миллисекунды или микросекунды (3 и 6 знаков),
+# и его собственный лог со временем ISO у каждой записи за вывод сборщика не принимается.
+_COLLECTOR_FRACTION = 7
+_COLLECTOR_SHARE = 0.9  # доля непустых строк с префиксом: обрезанная первая строка вложения
+_CONTINUATION_RE = re.compile(r"^(?:Caused by|Suppressed): |^\s*\.\.\. \d+ (?:more|common frames omitted)")
 _TOKEN_STRIP = "[]|:,;()<>"
 # Поля ошибки ответа: JSON (``"errorCode":6``), ``key=value`` и ``key: value``, XML.
 _ERROR_FIELD_KEY = (r"[A-Za-z_]*?(?:error|err|fault)_?"
@@ -376,17 +391,62 @@ def _start(line: str) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _collector_prefixes(lines: list[str]) -> list[int] | None:
+    """Длина префикса сборщика у каждой строки; ``None`` — лог не из сборщика.
+
+    Сборщик ставит время перед **каждой** строкой вывода, в том числе перед кадрами стека,
+    а у лога приложения со своим временем ISO его нет у продолжений. Поэтому вывод сборщика —
+    префикс почти у всех непустых строк и хотя бы у половины из них наносекунды.
+    """
+    matches = [_COLLECTOR_PREFIX_RE.match(line) for line in lines]
+    filled = [match for line, match in zip(lines, matches) if line.strip()]
+    prefixed = [match for match in filled if match]
+    if not prefixed or len(prefixed) < _COLLECTOR_SHARE * len(filled):
+        return None
+    nanos = sum(1 for match in prefixed if len(match.group("fraction") or "") >= _COLLECTOR_FRACTION)
+    if nanos * 2 < len(prefixed):
+        return None
+    return [match.end() if match else 0 for match in matches]
+
+
+def _continues(rest: str) -> bool:
+    """Строка вывода сборщика без своей записи продолжает идущую: пустая, с отступом (кадры
+    ``at``, тело Traceback, дамп Go), ``Caused by:``, ``... N more``, строка исключения или
+    Traceback (их дальше разбирает общий порядок). Отступ с уровнем первым словом — запись
+    с выравниванием уровня (``  INFO …``)."""
+    if not rest.strip():
+        return True
+    if rest[0].isspace():
+        return _level_after_timestamp(rest) is None
+    return bool(_CONTINUATION_RE.match(rest) or _EXCEPTION_RE.match(rest) or _TRACEBACK_RE.match(rest))
+
+
 def iter_events(text: str) -> Iterator[LogEvent]:
-    """События лога по порядку; каждая строка принадлежит ровно одному событию."""
+    """События лога по порядку; каждая строка принадлежит ровно одному событию.
+
+    Вывод сборщика логов контейнера (:func:`_collector_prefixes`) разбирается по телу строк,
+    без префикса. Если у приложения свои записи (время, уровень, JSON…), префикс — лишнее
+    время: лог разбирается и показывается как без сборщика. Своих записей нет — новую запись
+    начинает каждая строка вывода, кроме продолжений (:func:`_continues`), и строки
+    показываются с префиксом: другого времени у них нет. Номера строк — прежние.
+    """
     lines = text.splitlines()
+    prefixes = _collector_prefixes(lines)
+    body = lines if prefixes is None else [line[size:] for line, size in zip(lines, prefixes)]
+    own = prefixes is None or any(
+        _start(rest)[0] is not None or _json_record(rest) is not None for rest in body)
+    shown = body if own else lines
     current: LogEvent | None = None
-    for index, line in enumerate(lines):
+    for index, rest in enumerate(body):
         number = index + 1
-        started, level = _start(line)
+        line = shown[index]
+        started, level = _start(rest)
         rendered: list[str] = []
-        if started is None and (record := _json_record(line)) is not None:
+        if started is None and (record := _json_record(rest)) is not None:
             started = "level"
             level, rendered = record
+        if started is None and not own and not _continues(rest):
+            started, level = "level", _level_after_timestamp(rest)  # время сборщика — граница
         if started is not None:
             if current is not None:
                 yield current
@@ -394,10 +454,10 @@ def iter_events(text: str) -> Iterator[LogEvent]:
             continue
         in_error = current is not None and current.is_error and not current.closed
         kind = None
-        if not in_error and _TRACEBACK_RE.match(line):
+        if not in_error and _TRACEBACK_RE.match(rest):
             kind = "traceback"
-        elif (not in_error and _EXCEPTION_RE.match(line)
-                and index + 1 < len(lines) and _FRAME_RE.match(lines[index + 1])):
+        elif (not in_error and _EXCEPTION_RE.match(rest)
+                and index + 1 < len(body) and _FRAME_RE.match(body[index + 1])):
             kind = "exception"
         elif current is None or current.closed:
             kind = "plain"
@@ -407,7 +467,7 @@ def iter_events(text: str) -> Iterator[LogEvent]:
             current = LogEvent(number, None, kind, [line])
             continue
         assert current is not None
-        jul = _JUL_LEVEL_RE.match(line)
+        jul = _JUL_LEVEL_RE.match(rest)
         if (jul and jul.group("level") in LEVELS and current.kind == "level"
                 and current.level is None and len(current.lines) == 1
                 and _TIMESTAMP_RE.match(current.lines[0])):
@@ -418,7 +478,7 @@ def iter_events(text: str) -> Iterator[LogEvent]:
         if len(current.lines) == 1 and _DOTNET_RE.match(current.lines[0]):
             current.level_line = 1  # .NET: заголовок — категория, сообщение строкой ниже
         current.lines.append(line)
-        if current.kind == "traceback" and line.strip() and not line[0].isspace():
+        if current.kind == "traceback" and rest.strip() and not rest[0].isspace():
             current.closed = True  # строка исключения завершает Traceback
     if current is not None:
         yield current

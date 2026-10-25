@@ -1608,6 +1608,90 @@ def log_level_controls() -> Case:
     return builder.build("log_level_controls")
 
 
+def _collected(text: str, collector: str, second: int) -> str:
+    """Лог через сборщик контейнера: время RFC3339 перед каждой строкой — ``docker logs -t``
+    (9 знаков долей), ``kubectl logs --timestamps`` (без хвостовых нулей), файл CRI."""
+    out = []
+    for index, line in enumerate(text.splitlines()):
+        fraction = f"{(index * 104_729 + 7) % 10**9:09d}"
+        if collector == "kubectl":
+            fraction = fraction.rstrip("0") or "0"
+        prefix = f"2026-10-05T09:{second // 60:02d}:{second % 60:02d}.{fraction}Z "
+        out.append(prefix + ("stderr F " if collector == "cri" else "") + line)
+        second += index % 2
+    return "\n".join(out) + "\n"
+
+
+_COLLECTED = [
+    # (группа, причина, категория, сборщик, сервис, сообщение, шаг, лог, строка-доказательство)
+    ("collected-npe", "orders-customer-null", "приложение", "docker", "orders",
+     ASSERT_500, "Создать заказ",
+     "2026-10-05 09:14:02.311  INFO 1 --- [nio-8080-exec-3] r.s.orders.OrderController   : "
+     "POST /api/orders cart=C-5531\n"
+     "2026-10-05 09:14:02.348 ERROR 1 --- [nio-8080-exec-3] r.s.orders.OrderService      : "
+     "order creation failed for cart C-5531\n"
+     'java.lang.NullPointerException: Cannot invoke "Customer.getSegment()" because "customer" is null\n'
+     "\tat ru.shop.orders.OrderService.applySegment(OrderService.java:118)\n"
+     "\tat ru.shop.orders.OrderService.create(OrderService.java:64)\n"
+     "Caused by: java.lang.IllegalStateException: customer profile not loaded\n"
+     "\tat ru.shop.profile.ProfileCache.get(ProfileCache.java:27)\n"
+     "\t... 87 more\n"
+     "2026-10-05 09:14:02.351  INFO 1 --- [nio-8080-exec-3] r.s.orders.OrderController   : "
+     "responded 500\n",
+     'java.lang.NullPointerException: Cannot invoke "Customer.getSegment()" because "customer" is null'),
+    ("collected-pool", "payments-db-pool", "окружение", "kubectl", "payments",
+     "expected: <200> but was: <503>", "Оплатить заказ",
+     "2026-10-05 09:15:10,004 INFO  [payment-worker-2] PaymentGateway - charge order=O-7781\n"
+     "2026-10-05 09:15:40,019 ERROR [payment-worker-2] PaymentGateway - charge failed order=O-7781\n"
+     "org.springframework.jdbc.CannotGetJdbcConnectionException: Failed to obtain JDBC Connection\n"
+     "\tat org.springframework.jdbc.datasource.DataSourceUtils.getConnection(DataSourceUtils.java:84)\n"
+     "\tat ru.shop.payments.ChargeRepository.save(ChargeRepository.java:33)\n"
+     "Caused by: java.sql.SQLTransientConnectionException: HikariPool-1 - Connection is not "
+     "available, request timed out after 30000ms.\n"
+     "\tat com.zaxxer.hikari.pool.HikariPool.createTimeoutException(HikariPool.java:696)\n"
+     "\t... 41 more\n",
+     "HikariPool-1 - Connection is not available, request timed out after 30000ms."),
+    ("collected-traceback", "stock-zone-missing", "данные", "cri", "stock",
+     'expected: <"done"> but was: <"failed">', "Синхронизировать склад",
+     "2026-10-05 09:16:21,502 INFO stock.sync: sync started zone=Z-14\n"
+     "2026-10-05 09:16:21,690 ERROR stock.sync: zone sync failed\n"
+     "Traceback (most recent call last):\n"
+     '  File "/app/stock/sync.py", line 88, in sync_zone\n'
+     '    capacity = layout["zone_capacity"][zone]\n'
+     "KeyError: 'Z-14'\n"
+     "2026-10-05 09:16:21,702 INFO stock.sync: sync finished status=failed\n",
+     "KeyError: 'Z-14'"),
+    # Своих записей нет (printStackTrace): границы — время сборщика, стек — продолжение.
+    ("collected-bare", "reports-template-missing", "окружение", "docker", "reports",
+     "expected: <201> but was: <500>", "Сформировать отчёт",
+     "Report renderer ready on :8090\n"
+     "Rendering report R-2208 for period 2026-09\n"
+     "java.lang.IllegalStateException: template monthly-v2.xlsx not found in /templates\n"
+     "\tat ru.shop.reports.TemplateStore.load(TemplateStore.java:51)\n"
+     "\tat ru.shop.reports.Renderer.render(Renderer.java:19)\n"
+     "Report R-2208 aborted\n",
+     "java.lang.IllegalStateException: template monthly-v2.xlsx not found in /templates"),
+]
+
+
+def collector_prefixed_logs() -> Case:
+    """Логи сервисов через сборщик контейнера: время RFC3339 перед каждой строкой, в том числе
+    перед строкой исключения и кадрами — стек остаётся продолжением записи об ошибке."""
+    builder = LaunchBuilder(6204, "Containers")
+    for number, (group, cause, category, collector, service, message, step, log,
+                 evidence) in enumerate(_COLLECTED):
+        test_class = f"ru.shop.{service}.{service.title()}ContainerTest"
+        for index, method in enumerate(("check", "checkAgain")):
+            builder.add_failure(
+                group, cause=cause, category=category, name=f"{service} {method}",
+                full_name=f"{test_class}.{method}", message=message,
+                trace=_assert_trace(message, test_class, method, 40 + index * 10),
+                step=step, log=_collected(log, collector, 120 * number + 30 * index),
+                log_name=f"{service}.log", evidence=[evidence],
+            )
+    return builder.build("collector_prefixed_logs")
+
+
 # ---------------------------------------------------------------------------
 # Большой прогон
 # ---------------------------------------------------------------------------
@@ -3182,6 +3266,7 @@ CASES: dict[str, Callable[[], Case]] = {
     "go_log_formats": go_log_formats,
     "java_log_formats": java_log_formats,
     "log_level_controls": log_level_controls,
+    "collector_prefixed_logs": collector_prefixed_logs,
     "shared_service_log": shared_service_log,
     "info_business_error": info_business_error,
     "log_formats_more": log_formats_more,
