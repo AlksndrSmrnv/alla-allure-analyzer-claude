@@ -330,7 +330,7 @@ def _dispatch(argv: list[str] | None) -> int:
         return cmd_verify(args.run, args.clusters, reports_dir)
     if args.command == "review":
         return cmd_review(args.run_dir or args.run, reports_dir, use_model=not args.no_model,
-                          in_job=_JOB_DIR is not None, repeat=_same_command(argv))
+                          in_job=_JOB_DIR is not None)
     if args.command == "check":
         return cmd_check(project_root, reports_dir)
     if args.command == "clean":
@@ -616,20 +616,21 @@ def cmd_prepare(
     _install_extension_agents(project_root)
     if RUN_IN_BACKGROUND and not in_job:
         repeat = repeat or ws.skill_command("prepare", str(launch_id))
-        files = jobs.job_files(reports_dir, f"prepare-{launch_id}")
-        with jobs.start_lock(files):
+        slot = jobs.job_slot(reports_dir, f"prepare-{launch_id}")
+        with jobs.start_lock(slot):
+            files = slot.current()
             # Идущая выгрузка этого прогона (или законченная, чей итог ещё не показан) — её
             # итог, даже с --fresh: повтор после running не должен начинать её заново.
-            if not jobs.job_state(files).active:
+            if files is None or not jobs.job_state(files).active:
                 if not fresh:
                     unfinished = ws.find_unfinished_run(reports_dir, launch_id)
                     if unfinished is not None:
                         return _resume(unfinished, launch_id, reports_dir)
                 if isinstance(_prepare_settings(), int):
                     return 2
-                jobs.start(files, ["prepare", str(launch_id), "--fresh",
-                                   "--project-root", str(project_root),
-                                   "--reports-dir", str(reports_dir)])
+                files = jobs.start(slot, ["prepare", str(launch_id), "--fresh",
+                                          "--project-root", str(project_root),
+                                          "--reports-dir", str(reports_dir)])
         return _finish_job(files, started,
                            lambda state: _prepare_running(launch_id, state, str(repeat)),
                            str(repeat))
@@ -972,7 +973,6 @@ def cmd_review(
     *,
     use_model: bool = True,
     in_job: bool = False,
-    repeat: str | None = None,
 ) -> int:
     """Проверка законченного разбора. Сеанс не запоминается: проверка — не часть разбора.
 
@@ -988,15 +988,16 @@ def cmd_review(
         print(exc)
         return 1
     if use_model and RUN_IN_BACKGROUND and not in_job:
-        repeat = repeat or ws.skill_command("review", "--run", str(paths.root))
+        # Повтор — с этой папкой: review без неё взял бы .last_run, а его может сменить prepare.
+        repeat = ws.skill_command("review", "--run", str(paths.root))
         # Задание — в папке отчётов самого разбора: --reports-dir мог быть и не указан.
-        files = jobs.job_files(paths.reports_dir, f"review-{paths.root.name}")
-        with jobs.start_lock(files):
-            if not jobs.job_state(files).active:
-                jobs.start(files, ["review", "--run", str(paths.root),
-                                   "--reports-dir", str(paths.reports_dir)])
-        return _finish_job(files, started, lambda state: _review_running(state, str(repeat)),
-                           str(repeat))
+        slot = jobs.job_slot(paths.reports_dir, f"review-{paths.root.name}")
+        with jobs.start_lock(slot):
+            files = slot.current()
+            if files is None or not jobs.job_state(files).active:
+                files = jobs.start(slot, ["review", "--run", str(paths.root),
+                                          "--reports-dir", str(paths.reports_dir)])
+        return _finish_job(files, started, lambda state: _review_running(state, repeat), repeat)
     facts = review.collect_facts(paths)
     if use_model:
         _progress("Оценка диагнозов моделью с чистым контекстом — до нескольких минут…")

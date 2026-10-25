@@ -389,22 +389,42 @@ async def test_attempt_errors_compare_the_whole_message() -> None:
     assert [a.same_as_final for a in attempts] == [False, True]
 
 
-def test_attempt_text_ignores_stack_frames() -> None:
-    from alla_core.services.triage_service import _attempt_text
-    from alla_core.utils.text_normalization import message_key
+def test_error_keys_ignore_stack_frames() -> None:
+    from alla_core.services.triage_service import _error_keys, _same_error
 
-    def key(trace: str) -> str:
-        text = _attempt_text({}, trace)
-        assert text is not None
-        return message_key(text)
+    def same(first: str, second: str) -> bool | None:
+        return _same_error(_error_keys({}, first), _error_keys({}, second))
 
     java = "java.lang.IllegalStateException: boom\n\tat ru.A.b(A.java:{})\n\t... 3 more"
     python = ('Traceback (most recent call last):\n  File "t.py", line {}, in test\n'
               "    assert total == {}\nAssertionError: {}")
-    assert key(java.format(10)) == key(java.format(12)) == message_key(
-        "java.lang.IllegalStateException: boom")
-    assert key(python.format(3, "x", "boom")) == key(python.format(5, "y", "boom"))
-    assert key(python.format(3, "x", "boom")) != key(python.format(3, "x", "other"))
+    assert same(java.format(10), java.format(12))
+    assert same(python.format(3, "x", "boom"), python.format(5, "y", "boom"))
+    assert same(python.format(3, "x", "boom"), python.format(3, "x", "other")) is False
+
+
+@pytest.mark.parametrize(("final", "same"), [
+    ({"message": "boom", "trace": "<trace>"}, True),  # у обеих есть трейс — сравниваются трейсы
+    ({"message": "boom"}, True),  # сообщение против текста исключения без класса
+    ({"message": "other"}, False),
+])
+@pytest.mark.asyncio
+async def test_attempt_with_only_a_trace_is_compared_like_for_like(
+    final: dict[str, Any], same: bool,
+) -> None:
+    # У попытки только трейс (с Caused by), у финального — сообщение: сравнивается то
+    # представление, что есть у обеих сторон (ревью Codex).
+    trace = ("java.lang.IllegalStateException: boom\n\tat ru.A.b(A.java:1)\n"
+             "Caused by: java.io.IOException: closed\n\t... 1 more")
+    details = {key: trace if value == "<trace>" else value for key, value in final.items()}
+    client = _Client([
+        _result(1, hidden=True, historyId="h", statusDetails={"trace": trace}),
+        _result(2, historyId="h", statusDetails=details),
+    ])
+
+    report = await TriageService(client, _settings()).analyze_launch(9)  # type: ignore[arg-type]
+
+    assert report.failed_tests[0].attempts[0].same_as_final is same
 
 
 def test_long_attempt_message_is_clipped_to_first_line() -> None:

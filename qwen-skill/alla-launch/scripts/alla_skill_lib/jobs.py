@@ -6,18 +6,22 @@ alla_skill_lib.jobs <папка> <аргументы>``, новая сессия
 дольше ``WAIT_BUDGET``. Не дождалась — отвечает ``STATUS: running``, и повтор той же команды
 подключается к идущему заданию, а не начинает заново. Итог — вывод дочерней команды как есть.
 
-Файлы задания — ``<папка отчётов>/.jobs/<ключ>/``: ``pid`` (pid и время запуска),
+Задания одной команды — ``<папка отчётов>/.jobs/<ключ>/``: ``start.lock``, ``current`` (имя
+папки текущего запуска) и папка на каждый запуск (``<время>-<id>``): ``pid`` (pid и время),
 ``output.txt`` (stdout команды), ``exit`` (код, пишется последним), ``progress.txt`` (стадия),
-``worker.log`` (stderr), ``delivered`` (итог уже показан), ``start.lock``.
+``worker.log`` (stderr), ``delivered`` (итог уже показан). Новый запуск не трогает папку
+прежнего: вызов, который ещё ждал прежний, заберёт его итог.
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +30,7 @@ from alla_skill_lib import workspace as ws
 
 WAIT_BUDGET = 75.0  # секунд на один ответ: Qwen обрывает команду через 120 с
 CEILING_S = 3600  # задание дольше — процесс уже не наш или завис
+KEEP_S = 86400  # папки прежних запусков старше суток удаляет следующий запуск
 JOBS_DIRNAME = ".jobs"
 POLL_S = 0.5
 
@@ -58,14 +63,25 @@ class JobFiles:
     def delivered(self) -> Path:
         return self.root / "delivered"
 
-    def clear(self) -> None:
-        for path in (self.pid, self.output, self.exit, self.progress, self.log, self.delivered):
-            path.unlink(missing_ok=True)
+
+@dataclass(frozen=True)
+class JobSlot:
+    """Задания одной команды (``prepare-<id>``, ``review-<разбор>``): текущий запуск и замок."""
+
+    root: Path
+
+    def current(self) -> JobFiles | None:
+        """Текущий запуск; ``None`` — запусков не было."""
+        try:
+            name = (self.root / "current").read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return JobFiles(self.root / name) if name and (self.root / name).is_dir() else None
 
 
-def job_files(reports_dir: Path, key: str) -> JobFiles:
+def job_slot(reports_dir: Path, key: str) -> JobSlot:
     ws.ensure_reports_dir(reports_dir)
-    return JobFiles(reports_dir / JOBS_DIRNAME / key)
+    return JobSlot(reports_dir / JOBS_DIRNAME / key)
 
 
 @dataclass(frozen=True)
@@ -101,13 +117,13 @@ def job_state(files: JobFiles) -> JobState:
 
 
 @contextlib.contextmanager
-def start_lock(files: JobFiles) -> Iterator[None]:
+def start_lock(slot: JobSlot) -> Iterator[None]:
     """Решение «подключиться или запустить» — по одному: два одновременных вызова не
     запускают два процесса."""
     import fcntl
 
-    files.root.mkdir(parents=True, exist_ok=True)
-    with open(files.root / "start.lock", "a+", encoding="utf-8") as handle:
+    slot.root.mkdir(parents=True, exist_ok=True)
+    with open(slot.root / "start.lock", "a+", encoding="utf-8") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             yield
@@ -115,15 +131,17 @@ def start_lock(files: JobFiles) -> Iterator[None]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def start(files: JobFiles, args: list[str]) -> None:
-    """Запустить команду скрипта ``args`` фоновым процессом (под :func:`start_lock`).
+def start(slot: JobSlot, args: list[str]) -> JobFiles:
+    """Запустить команду скрипта ``args`` фоновым процессом (под :func:`start_lock`); папка
+    запуска — новая, она же становится текущей.
 
     Рабочая папка — та же, что у команды: относительные пути окружения (``SSL_CERT_FILE``
     сертификата прокси) должны значить то же самое. Модуль — через ``PYTHONPATH``, а ``-P`` не
     ставит рабочую папку в начало ``sys.path``: файл проекта ``json.py`` не подменит модуль.
     """
-    files.clear()
-    files.root.mkdir(parents=True, exist_ok=True)
+    _drop_old(slot)
+    files = JobFiles(slot.root / f"{time.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}")
+    files.root.mkdir(parents=True)
     scripts = str(Path(__file__).resolve().parents[1])
     path = os.pathsep.join(part for part in (scripts, os.environ.get("PYTHONPATH")) if part)
     with open(files.output, "wb") as out, open(files.log, "wb") as log:
@@ -134,6 +152,20 @@ def start(files: JobFiles, args: list[str]) -> None:
             start_new_session=True,
         )
     files.pid.write_text(f"{process.pid} {time.time():.0f}", encoding="utf-8")
+    ws.write_atomic(slot.root / "current", files.root.name)
+    return files
+
+
+def _drop_old(slot: JobSlot) -> None:
+    """Папки прежних запусков старше суток (не текущую): их итог давно никто не ждёт."""
+    current = slot.current()
+    limit = time.time() - KEEP_S
+    for folder in slot.root.iterdir() if slot.root.is_dir() else ():
+        if not folder.is_dir() or (current is not None and folder == current.root):
+            continue
+        with contextlib.suppress(OSError):
+            if folder.stat().st_mtime < limit:
+                shutil.rmtree(folder, ignore_errors=True)
 
 
 def wait(files: JobFiles, budget: float) -> JobState:

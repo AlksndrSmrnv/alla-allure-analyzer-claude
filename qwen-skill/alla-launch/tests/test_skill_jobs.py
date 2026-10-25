@@ -72,8 +72,15 @@ def _prepare(root: Path, capsys: pytest.CaptureFixture[str], *extra: str) -> tup
     return _run(["prepare", LAUNCH, "--project-root", str(root), *extra], capsys)
 
 
+def _slot(root: Path, key: str = f"prepare-{LAUNCH}") -> jobs.JobSlot:
+    return jobs.JobSlot(root / ws.REPORTS_DIRNAME / jobs.JOBS_DIRNAME / key)
+
+
 def _job(root: Path, key: str = f"prepare-{LAUNCH}") -> jobs.JobFiles:
-    return jobs.JobFiles(root / ws.REPORTS_DIRNAME / jobs.JOBS_DIRNAME / key)
+    """Текущий запуск задания."""
+    files = _slot(root, key).current()
+    assert files is not None
+    return files
 
 
 def test_quick_prepare_answers_with_the_job_output(
@@ -127,6 +134,15 @@ def test_every_waiting_call_gets_the_result_of_the_job(
     second = capsys.readouterr().out
     assert code == 0 and second == first
 
+    # Третий вызов начал новое задание, а второй всё ещё ждёт прежнее: его итог цел.
+    with jobs.start_lock(_slot(autotests)):
+        newer = jobs.start(_slot(autotests), ["prepare", LAUNCH, "--fresh", "--project-root",
+                                              str(autotests)])
+    assert newer.root != files.root and _job(autotests) == newer
+    code = cli._finish_job(files, time.monotonic(), lambda state: "идёт", "повтор")
+    assert code == 0 and capsys.readouterr().out == first
+    jobs.wait(newer, 60)
+
 
 def test_relative_paths_of_the_environment_keep_their_meaning(
     autotests: Path, server: FakeTestOpsServer, capsys: pytest.CaptureFixture[str],
@@ -158,8 +174,10 @@ def test_fetch_error_of_the_job_is_shown(
 def test_job_that_died_without_a_result_is_an_error(
     autotests: Path, server: FakeTestOpsServer, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    files = _job(autotests)
+    slot = _slot(autotests)
+    files = jobs.JobFiles(slot.root / "20261025000000-dead00")
     files.root.mkdir(parents=True)
+    (slot.root / "current").write_text(files.root.name, encoding="utf-8")
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
     # Процесс задания завершился, а итога (exit) нет: оборвался.
@@ -182,7 +200,7 @@ def test_config_error_is_answered_without_a_job(
     code, out = _prepare(autotests, capsys)
 
     assert code == 2 and out.startswith("STATUS: error") and "ALLURE_ENDPOINT" in out
-    assert not _job(autotests).pid.exists()
+    assert _slot(autotests).current() is None
 
 
 def test_same_command_drops_fresh_and_job() -> None:
@@ -207,3 +225,26 @@ def test_review_with_model_runs_as_a_job(
         "assessment"]["problems"]
     assert _job(project, f"review-{run_dir.name}").delivered.is_file()
     assert log.is_file()
+
+
+def test_review_repeat_names_its_run_folder(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # review без папки взял последний разбор; повтор после running — с этой папкой: .last_run
+    # мог смениться новым prepare (ревью Codex).
+    run_dir, done, qdir = _finished_run(project, capsys, monkeypatch, tmp_path)
+    save_main(_journal(project, run_dir, done), qdir)
+    script, _ = _fake_qwen(tmp_path, "ok")
+    slow = tmp_path / "slow-qwen"
+    slow.write_text(f"#!/bin/sh\nsleep 3\nexec {script} \"$@\"\n", encoding="utf-8")
+    slow.chmod(0o755)
+    monkeypatch.setenv(review_model.QWEN_ENV, str(slow))
+    monkeypatch.setattr(cli, "RUN_IN_BACKGROUND", True)
+    monkeypatch.setattr(jobs, "WAIT_BUDGET", 0.5)
+
+    code, out = _run(["review", "--reports-dir", str(run_dir.parent)], capsys)
+
+    assert code == 0 and out.startswith("STATUS: running"), out
+    assert out.rstrip().splitlines()[-1] == ws.skill_command("review", "--run", str(run_dir))
+    assert jobs.wait(_job(project, f"review-{run_dir.name}"), 60).state == "done"

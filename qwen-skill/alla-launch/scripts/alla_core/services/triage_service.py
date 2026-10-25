@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 from collections import Counter
+from dataclasses import dataclass
 
 from alla_core.clients.base import TestResultsProvider
 from alla_core.config import Settings
@@ -30,6 +31,8 @@ MAX_ATTEMPTS_PER_TEST = 5
 ATTEMPT_MESSAGE_CHARS = 300
 _JAVA_FRAME_RE = re.compile(r"^\s+at\s|^\s*\.\.\.\s*\d+\s+more\b")
 _PYTHON_FRAME_RE = re.compile(r'^\s+File "')
+_TRACEBACK_RE = re.compile(r"^Traceback \(most recent call last\):")
+_EXCEPTION_CLASS_RE = re.compile(r"^[\w.$]+(?:Exception|Error|Throwable|Failure)\w*:\s*")
 
 
 def _diagnostic_text(value: object) -> str | None:
@@ -58,7 +61,8 @@ def _attempt_line(status_details: object, trace: str | None) -> str | None:
 
 def _without_frames(text: str | None) -> str | None:
     """Текст ошибки без кадров стека (Java ``at …``, ``... N more``, Python ``File "…"`` и
-    строка кода под ним): сообщение, ``Caused by`` и строка исключения Python остаются."""
+    строка кода под ним) и без заголовка ``Traceback``: сообщение, ``Caused by`` и строка
+    исключения Python остаются."""
     kept: list[str] = []
     after_file = False
     for line in (text or "").splitlines():
@@ -71,22 +75,69 @@ def _without_frames(text: str | None) -> str | None:
         if after_file and line[:1].isspace():
             continue  # строка кода под кадром Python
         after_file = False
-        kept.append(line)
+        if not _TRACEBACK_RE.match(line):
+            kept.append(line)
     block = "\n".join(kept)
     return block if block.strip() else None
 
 
-def _attempt_text(status_details: object, trace: str | None) -> str | None:
-    """Ошибка попытки для сравнения «та же ошибка»: сообщение целиком, иначе трейс без кадров.
+def _top_exception(trace: str) -> str | None:
+    """Текст верхнего исключения трейса без класса — то, что Allure кладёт в ``message``:
+    Java — строки до первого кадра, Python — после последнего кадра."""
+    lines = trace.splitlines()
+    if any(_TRACEBACK_RE.match(line) for line in lines):
+        last = max((index for index, line in enumerate(lines)
+                    if _PYTHON_FRAME_RE.match(line) or line[:1].isspace()), default=-1)
+        top = lines[last + 1:]
+    else:
+        first = next((index for index, line in enumerate(lines) if _JAVA_FRAME_RE.match(line)),
+                     len(lines))
+        top = lines[:first]
+    return _without_class("\n".join(top))
 
-    Не первая строка: у RestAssured она общая («1 expectation failed.»), а код ответа ниже.
-    """
+
+def _without_class(text: str | None) -> str | None:
+    text = _EXCEPTION_CLASS_RE.sub("", (text or "").strip(), count=1)
+    return text if text.strip() else None
+
+
+@dataclass(frozen=True)
+class _ErrorKeys:
+    """Ключи «та же ошибка» в трёх представлениях: сообщение целиком, трейс без кадров, текст
+    верхнего исключения без класса. Сравнивается то представление, что есть у обеих сторон
+    (:func:`_same_error`), — иначе одна и та же ошибка по сообщению и по трейсу (с ``Caused
+    by``) выглядела бы разной (ревью Codex)."""
+
+    message: str | None
+    trace: str | None
+    top: str | None
+
+    @property
+    def known(self) -> bool:
+        return self.top is not None or self.trace is not None
+
+
+def _error_keys(status_details: object, trace: str | None) -> _ErrorKeys:
+    """Ключи ошибки попытки или результата: ``statusDetails.message``/``.trace`` и верхний
+    ``trace``. Не первая строка: у RestAssured она общая («1 expectation failed.»)."""
     details = status_details if isinstance(status_details, dict) else {}
-    return (
-        _without_frames(_diagnostic_text(details.get("message")))
-        or _without_frames(_diagnostic_text(details.get("trace")))
-        or _without_frames(_diagnostic_text(trace))
+    message = _without_frames(_diagnostic_text(details.get("message")))
+    raw = _diagnostic_text(details.get("trace")) or _diagnostic_text(trace)
+    full = _without_frames(raw)
+    top = _without_class(message) if message else (_top_exception(raw) if raw else None)
+    return _ErrorKeys(
+        message=message_key(message) if message else None,
+        trace=message_key(full) if full else None,
+        top=message_key(top) if top else None,
     )
+
+
+def _same_error(a: _ErrorKeys, b: _ErrorKeys) -> bool | None:
+    """Та же ошибка по представлению, которое есть у обеих сторон; ``None`` — сравнить нечем."""
+    for left, right in ((a.message, b.message), (a.trace, b.trace), (a.top, b.top)):
+        if left is not None and right is not None:
+            return left == right
+    return None
 
 
 def _clip_attempt_line(line: str | None) -> str | None:
@@ -414,7 +465,7 @@ class TriageService:
         # Ключи ошибок попыток по id: «та же ошибка» — сообщение целиком (``message_key``), а
         # не показанная первая строка до ATTEMPT_MESSAGE_CHARS (общая у RestAssured, код ответа
         # бывает ниже или в конце длинной строки).
-        keys: dict[int, str] = {}
+        keys: dict[int, _ErrorKeys] = {}
         for summary in summaries:
             attempts = links.attempts.get(summary.test_result_id, [])
             recent = attempts[-MAX_ATTEMPTS_PER_TEST:]
@@ -425,9 +476,9 @@ class TriageService:
                     status=self._normalize_status(attempt.status),
                     message=_attempt_message(attempt.status_details, attempt.trace),
                 )
-                text = _attempt_text(attempt.status_details, attempt.trace)
-                if text is not None:
-                    keys[attempt.id] = message_key(text)
+                found = _error_keys(attempt.status_details, attempt.trace)
+                if found.known:
+                    keys[attempt.id] = found
                 summary.attempts.append(item)
                 if item.status in failure_statuses:
                     info.errors_total += 1
@@ -452,9 +503,9 @@ class TriageService:
                     )
                     return
             item.message = _attempt_message(detail.status_details, detail.trace)
-            text = _attempt_text(detail.status_details, detail.trace)
-            if text is not None:
-                keys[item.test_result_id] = message_key(text)
+            found = _error_keys(detail.status_details, detail.trace)
+            if found.known:
+                keys[item.test_result_id] = found
 
         await asyncio.gather(*(fetch_one(item) for item in allowed))
 
@@ -463,18 +514,16 @@ class TriageService:
             # Ошибка финального результата — из того же списка результатов, что у попыток
             # (у execution-дерева текст бывает другим); нет её там — из сводки.
             listed = by_id.get(summary.test_result_id)
-            final_text = (
-                _attempt_text(listed.status_details, listed.trace) if listed is not None else None
-            ) or _attempt_text({"message": summary.status_message}, summary.status_trace)
-            final = message_key(final_text) if final_text is not None else None
+            final = _error_keys(listed.status_details, listed.trace) if listed is not None else None
+            if final is None or not final.known:
+                final = _error_keys({"message": summary.status_message}, summary.status_trace)
             for item in summary.attempts:
                 if item.status not in failure_statuses:
                     continue
                 key = keys.get(item.test_result_id)
                 if key is not None:
                     info.errors_known += 1
-                    if final is not None:
-                        item.same_as_final = key == final
+                    item.same_as_final = _same_error(key, final)
 
         info.passed_after_retry = self._passed_after_retry(links, results, launch_id)
         return info
