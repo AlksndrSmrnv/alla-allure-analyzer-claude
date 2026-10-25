@@ -2,7 +2,8 @@
 
 Записи повторяют настоящие журналы стенда: ``user`` (``provenance: real_user``),
 ``assistant`` с ``functionCall``/текстом/``usageMetadata``, ``tool_result`` с
-``functionResponse`` и ``toolCallResult``, ``system``/``ui_telemetry``. У shell результат
+``functionResponse`` и ``toolCallResult``, ``system``/``ui_telemetry`` и
+``system``/``chat_compression`` (сжатие истории, Qwen Code 0.26). У shell результат
 в ``response.output`` обёрнут строками ``Command:``/``Directory:``/``Output:``, чистый вывод
 — в ``resultDisplay.output``.
 """
@@ -96,6 +97,12 @@ class Journal:
         self._record("system", subtype="ui_telemetry", provenance="system",
                      systemPayload={"uiEvent": {"event.name": "qwen-code.api_error",
                                                 "error_message": "Request timeout after 45s."}})
+
+    def compression(self, before: int, after: int) -> None:
+        self._record("system", subtype="chat_compression", provenance="system",
+                     systemPayload={"info": {"originalTokenCount": before, "newTokenCount": after},
+                                    "compressedHistory": [{"role": "user",
+                                                           "parts": [{"text": "пересказ"}]}]})
 
     def write(self, path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from skill_fake_testops import FakeTestOps, tiny_png
 from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
-from skill_journal import Journal, qwen_dirs, save_main
+from skill_journal import Clock, Journal, qwen_dirs, save_main, save_subagent
 from test_skill_flow import MARKDOWN_ANALYSIS, VALID_ANALYSIS, _finish, _prepare, _run
 
 from alla_skill_lib import review, review_model
@@ -77,6 +77,39 @@ def test_review_of_clean_run(project: Path, testops: FakeTestOps, capsys,
     assert "## Правила исполнителя" in report and "**нарушено**" not in report
     # проверка — не часть разбора: её сеанс в state.json не попадает
     assert (run_dir / "state.json").read_text(encoding="utf-8") == state_before
+    assert "Сжатий истории" not in block
+    assert "- Наибольший контекст запроса: 100 токенов; сжатий истории: 0." in report
+
+
+def test_review_shows_context_peak_and_compressions(
+    project: Path, testops: FakeTestOps, capsys, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Пик контекста и сжатия истории — в отчёте, сводке для разработчика и кратком итоге."""
+    run_dir, done, qdir = _finished_run(project, capsys, monkeypatch, tmp_path)
+    clock = Clock()
+    main = Journal("pilot-1", project, clock)
+    main.user("/alla-launch 777")
+    main.skill("prepare 777", f"STATUS: analyze_batch\nПапка разбора: {run_dir}", tokens=20_000)
+    sub = Journal("sub", project, clock)
+    sub.call("read_file", {"file_path": str(run_dir / "batches" / "1.md")}, "пакет", tokens=24_000)
+    main.call("agent", {"subagent_type": "alla-batch", "prompt": "пакет 1"}, "Готово.",
+              tokens=181_000)
+    main.compression(before=181_000, after=50_000)
+    main.skill(f"next {run_dir}", done, tokens=60_000)
+    main.text(_report_block(done), tokens=61_000)
+    save_main(main, qdir)
+    save_subagent(sub, qdir, "pilot-1", "alla-batch-1")
+
+    code, out = _run(["review", "--run", str(run_dir), "--no-model"], capsys)
+
+    assert code == 0
+    assert "Сжатий истории у модели: 1 — контекст доходил до предела окна." in _report_block(out)
+    report = (run_dir / "review" / "report.md").read_text(encoding="utf-8")
+    assert ("- Наибольший контекст запроса: 181000 токенов (у субагентов — 24000); "
+            "сжатий истории: 1.") in report
+    summary = (run_dir / "review" / "pilot-summary.md").read_text(encoding="utf-8")
+    assert ("- пик контекста: основной агент 181000, субагенты 24000; сжатий истории: "
+            "основной агент 1, субагенты 0") in summary
 
 
 def test_review_finds_rule_violations_and_failures(

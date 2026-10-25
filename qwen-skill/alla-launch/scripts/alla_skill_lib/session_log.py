@@ -117,11 +117,36 @@ class Usage:
 
 
 @dataclass
+class ContextUse:
+    """Заполнение окна модели: наибольший запрос (``promptTokenCount`` — вся история с
+    кэшем) и сжатия истории (записи ``chat_compression`` журнала Qwen Code ≥ 0.26) — у
+    основного агента и у субагентов; у субагентов пик — наибольший из всех."""
+
+    peak: int = 0
+    compressions: int = 0
+    subagent_peak: int = 0
+    subagent_compressions: int = 0
+
+    def add(self, entry: _Entry) -> None:
+        if entry.kind == "usage":
+            prompt = _int(entry.usage.get("promptTokenCount"))
+            if entry.subagent:
+                self.subagent_peak = max(self.subagent_peak, prompt)
+            else:
+                self.peak = max(self.peak, prompt)
+        elif entry.kind == "compression":
+            if entry.subagent:
+                self.subagent_compressions += 1
+            else:
+                self.compressions += 1
+
+
+@dataclass
 class _Entry:
     """Событие журнала в порядке времени."""
 
     timestamp: str
-    kind: str  # call | result | text | user | usage | api_error
+    kind: str  # call | result | text | user | usage | compression | api_error
     subagent: bool = False
     session: str = ""
     call: ToolCall | None = None
@@ -145,6 +170,7 @@ class SessionLog:
     model: str = ""
     version: str = ""
     usage: Usage = field(default_factory=Usage)
+    context: ContextUse = field(default_factory=ContextUse)
     api_errors: int = 0
     subagents: int = 0
     skill_problems: list[str] = field(default_factory=list)
@@ -179,6 +205,21 @@ def load_session(
     entries.sort(key=lambda entry: entry.timestamp)
     _cut_window(log, entries, str(run_root))
     return log
+
+
+def project_context(project_dir: Path) -> ContextUse:
+    """Заполнение окна по всем журналам папки проекта Qwen (``…/projects/<проект>``), без
+    окна разбора: стенду, у которого в отдельном HOME только сеансы сценария."""
+    context = ContextUse()
+    scratch = SessionLog()
+    for chat in sorted((project_dir / "chats").glob("*.jsonl")):
+        session = chat.stem
+        journals = [(chat, False)] + [
+            (journal, True) for journal in sorted((project_dir / "subagents" / session).glob("agent-*.jsonl"))]
+        for journal, subagent in journals:
+            for entry in _read_journal(journal, subagent=subagent, log=scratch, session=session):
+                context.add(entry)
+    return context
 
 
 def _read_journal(path: Path, *, subagent: bool, log: SessionLog, session: str) -> list[_Entry]:
@@ -222,6 +263,8 @@ def _read_journal(path: Path, *, subagent: bool, log: SessionLog, session: str) 
                 found.is_error = status == "error"
         elif kind == "user" and record.get("provenance") == "real_user" and not subagent:
             entries.append(_Entry(timestamp, "user"))
+        elif kind == "system" and record.get("subtype") == "chat_compression":
+            entries.append(_Entry(timestamp, "compression", subagent))
         elif kind == "system" and record.get("subtype") == "ui_telemetry":
             event = (record.get("systemPayload") or {}).get("uiEvent") or {}
             if event.get("event.name") == "qwen-code.api_error":
@@ -339,6 +382,9 @@ def _cut_window(log: SessionLog, entries: list[_Entry], root: str) -> None:
             log.calls.append(entry.call)
         elif entry.kind == "usage":
             log.usage.add(entry.usage)
+            log.context.add(entry)
+        elif entry.kind == "compression":
+            log.context.add(entry)
         elif entry.kind == "api_error":
             log.api_errors += 1
     log.subagents = sum(1 for call in log.calls if call.name == "agent" and not call.subagent)

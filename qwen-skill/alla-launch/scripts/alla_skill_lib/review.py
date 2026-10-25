@@ -264,6 +264,7 @@ def _journal_facts(log: SessionLog, project_root: Path, paths: ws.RunPaths) -> d
         "reached_done": log.reached_done,
         "duration_seconds": log.duration_seconds,
         "usage": vars(log.usage).copy(),
+        "context": vars(log.context).copy(),
         "api_errors": log.api_errors,
         "tool_calls": len(log.calls),
         "subagent_calls": sum(1 for call in log.calls if call.subagent),
@@ -518,6 +519,7 @@ def render_report(facts: Mapping[str, Any]) -> str:
                 f"{journal['model'] or '?'}, Qwen Code {journal['qwen_version'] or '?'}.",
                 f"- Запросов к модели: {usage['requests']}, токенов: {usage['total']} "
                 f"(из кэша {usage['cached']}, ответ {usage['output']}); ошибок API: {journal['api_errors']}.",
+                _context_line(journal["context"]),
                 f"- Вызовов инструментов: {journal['tool_calls']} (у субагентов — "
                 f"{journal['subagent_calls']}), субагентов: {journal['subagents']}.", ""]
     out += ["## Что передать разработчику", "",
@@ -559,6 +561,17 @@ def _duration(seconds: int | None) -> str:
     return f"{seconds // 60} мин {seconds % 60} с" if seconds >= 60 else f"{seconds} с"
 
 
+def _context_line(context: Mapping[str, int]) -> str:
+    """Строка отчёта о заполнении окна модели: сжатие истории — признак, что разбор упёрся в
+    размер окна и модель продолжала по пересказу начала."""
+    line = (f"- Наибольший контекст запроса: {context['peak']} токенов"
+            + (f" (у субагентов — {context['subagent_peak']})" if context["subagent_peak"] else "")
+            + f"; сжатий истории: {context['compressions']}")
+    if context["subagent_compressions"]:
+        line += f" (у субагентов — {context['subagent_compressions']})"
+    return line + "."
+
+
 # --- сводка для разработчика (без данных прогона) -----------------------------------------
 
 def render_pilot_summary(facts: Mapping[str, Any]) -> str:
@@ -592,11 +605,14 @@ def render_pilot_summary(facts: Mapping[str, Any]) -> str:
     if not journal["found"]:
         out.append("- не найден")
     else:
-        usage = journal["usage"]
+        usage, context = journal["usage"], journal["context"]
         out += [f"- модель: {_safe_word(journal['model'])}, Qwen Code: {_safe_word(journal['qwen_version'])}",
                 f"- время: {journal['duration_seconds']} с, запросов: {usage['requests']}, "
                 f"токенов: {usage['total']} (кэш {usage['cached']}, ответ {usage['output']}), "
                 f"ошибок API: {journal['api_errors']}",
+                f"- пик контекста: основной агент {context['peak']}, субагенты {context['subagent_peak']}; "
+                f"сжатий истории: основной агент {context['compressions']}, "
+                f"субагенты {context['subagent_compressions']}",
                 f"- вызовов инструментов: {journal['tool_calls']} (субагенты: {journal['subagent_calls']}), "
                 f"субагентов: {journal['subagents']}",
                 "- команды скилла: " + (", ".join(f"{k} ×{v}" for k, v in journal["skill_commands"].items()) or "нет"),
@@ -701,6 +717,10 @@ def render_console(facts: Mapping[str, Any], report: Path, summary: Path) -> str
         lines.append(f"Правила исполнителя: соблюдено {kept} из {checked}; сбоев команд: "
                      f"{len(journal['status_errors']) + len(journal['exceptions']) + len(journal['no_status'])}.")
         lines.append(f"Время: {_duration(journal['duration_seconds'])}, токенов: {usage['total']}.")
+        context = journal["context"]
+        compressions = context["compressions"] + context["subagent_compressions"]
+        if compressions:
+            lines.append(f"Сжатий истории у модели: {compressions} — контекст доходил до предела окна.")
     lines.append(f"Проблем скилла записано: {len(skill_problems(facts))}.")
     lines.append(f"Разобрано моделью: {quality['analysed']}; «неизвестно»: {quality['unknown']}; "
                  f"причина не подтверждена логом: {quality['unconfirmed_by_log']}.")

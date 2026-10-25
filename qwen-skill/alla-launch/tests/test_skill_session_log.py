@@ -14,8 +14,10 @@ from test_skill_flow import _next, _prepare
 
 from alla_skill_lib.session_log import (
     MAX_SESSIONS,
+    ContextUse,
     load_session,
     note_session,
+    project_context,
     read_skill_problems,
     sanitize_cwd,
     skill_status,
@@ -182,6 +184,51 @@ def test_subagents_inside_window_are_included(tmp_path: Path) -> None:
     assert log.subagents == 1 and log.api_errors == 1
     assert log.skill_problems == ["verify не видит файл"]
     assert all("/etc/hosts" not in json.dumps(c.input) for c in log.calls)
+
+
+def _context_journals(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Разбор со сжатием у основного агента и у субагента; посторонний ход — с большим запросом."""
+    project = tmp_path / "project"
+    run = _run_dir(project)
+    other = project / "alla-reports" / "555-20261009-100000"
+    qdir = qwen_dirs(tmp_path, project)
+    clock = Clock()
+    main = Journal("sess-c", project, clock)
+    main.user("разбери прогон 555")
+    main.skill("prepare 555", f"STATUS: analyze\nПапка разбора: {other}", tokens=90_000)
+    main.user("разбери прогон 777")
+    main.skill("prepare 777", f"STATUS: analyze_batch\nПапка разбора: {run}", tokens=1_000)
+    sub = Journal("sub", project, clock)
+    sub.call("read_file", {"file_path": str(run / "batches" / "1.md")}, "пакет", tokens=300)
+    sub.compression(before=700, after=200)
+    sub.skill(f"verify 01 --run {run}", "STATUS: ok", tokens=800)
+    main.call("agent", {"subagent_type": "alla-batch", "prompt": "пакет 1"}, "Готово.", tokens=5_000)
+    main.compression(before=5_000, after=1_500)
+    main.skill(f"next {run}", _done_output(run), tokens=2_000)
+    main.text(REPORT, tokens=2_100)
+    save_main(main, qdir)
+    save_subagent(sub, qdir, "sess-c", "alla-batch-1")
+    return project, run, qdir
+
+
+def test_context_peak_and_compressions_in_run_window(tmp_path: Path) -> None:
+    """Пик — наибольший запрос (не сумма), отдельно у основного агента и у субагентов; запрос
+    постороннего хода (90 тыс.) в окно разбора не входит."""
+    project, run, qdir = _context_journals(tmp_path)
+
+    log = load_session(run, project, _state("sess-c", qdir))
+
+    assert log.context == ContextUse(peak=5_000, compressions=1, subagent_peak=800,
+                                     subagent_compressions=1)
+
+
+def test_project_context_reads_every_journal(tmp_path: Path) -> None:
+    """Стенду — все журналы папки проекта Qwen, без окна разбора."""
+    _, _, qdir = _context_journals(tmp_path)
+
+    assert project_context(qdir) == ContextUse(peak=90_000, compressions=1, subagent_peak=800,
+                                               subagent_compressions=1)
+    assert project_context(tmp_path / "нет") == ContextUse()
 
 
 def test_missing_journal_is_explained(tmp_path: Path) -> None:
