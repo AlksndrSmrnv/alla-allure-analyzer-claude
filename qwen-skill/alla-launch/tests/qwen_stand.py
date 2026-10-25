@@ -20,6 +20,7 @@ TestOps), поднимает ``fake_testops_server`` на 127.0.0.1 и запу�
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -41,9 +42,10 @@ sys.path.insert(0, str(TESTS_DIR))
 from fake_testops_server import FakeTestOpsServer, build_fixture  # noqa: E402
 from quality_harness import fingerprint, skill_files  # noqa: E402
 import skill_fake_maven  # noqa: E402
-from skill_fake_testops import TOKEN  # noqa: E402
+from skill_fake_testops import TOKEN, wide_sources  # noqa: E402
 from skill_fixtures import LOGIN_TEST_JAVA, ORDER_TEST_JAVA  # noqa: E402 — и scripts/ в sys.path
 
+from alla_skill_lib import session_log  # noqa: E402
 from alla_skill_lib import session_rules as rules  # noqa: E402
 from alla_skill_lib.related import parse_related  # noqa: E402
 from alla_skill_lib.session_rules import (  # noqa: E402
@@ -176,6 +178,10 @@ STAND_SOURCES: dict[str, str] = {
          "return $(\"#payment-status\").shouldBe(visible);"),
     ]),
 }
+
+
+# Классы тестов, которые нужны только своим данным (путь от src/test/java/ru/company/).
+FIXTURE_SOURCES: dict[str, dict[str, str]] = {"wide": wide_sources()}
 
 
 @dataclass(frozen=True)
@@ -460,6 +466,11 @@ SCENARIOS: dict[str, Scenario] = {
     "P04": Scenario(
         "40 кластеров: пакеты субагентов", "many:40", ("/alla-launch 900",),
         (*FULL_RUN, "prepare_launch", "subagents_used", "batch_agent_used"), launch_id=900),
+    "P05": Scenario(
+        "9 кластеров по одному: классы тестов ~300 строк, окно пилота", "wide",
+        ("/alla-launch 794",), (*FULL_RUN, "prepare_launch"), launch_id=794,
+        review=("Пик контекста и сжатия — в report.md стенда; если сжатие было — после него "
+                "агент продолжил по ответам next и соблюдал правила (trace, --api-log)",)),
 }
 
 
@@ -528,12 +539,13 @@ KNOWLEDGE_TARGETS: dict[str, tuple[str, ...]] = {
 def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str = "",
                   env_ready: bool = True, extensions: tuple[str, ...] = (),
                   sut_repo: bool = False,
-                  maven: tuple[tuple[str, tuple[str, ...]], ...] = ()) -> Path:
+                  maven: tuple[tuple[str, tuple[str, ...]], ...] = (),
+                  sources: dict[str, str] | None = None) -> Path:
     project = work / "project"
     java = project / "src" / "test" / "java" / "ru" / "company"
     write(java / "orders" / "OrderTest.java", ORDER_TEST_JAVA)
     write(java / "auth" / "LoginTest.java", LOGIN_TEST_JAVA)
-    for path, text in STAND_SOURCES.items():
+    for path, text in {**STAND_SOURCES, **(sources or {})}.items():
         write(java / path, text)
     # .venv проекта — симлинк на кэш: «.venv/» с ним не совпадает, и он ушёл бы в коммит.
     # .qwen/tmp пишет сам Qwen Code (аргументы slash-вызова скилла) — это не правка агента.
@@ -648,6 +660,23 @@ def model_settings(model: str | None) -> tuple[dict[str, Any], dict[str, str]]:
             }
             return settings, {env_key: value}
     raise SystemExit(f"Модель {name} не найдена в ~/.qwen/settings.json (modelProviders)")
+
+
+# Окно модели пилота: 260 тыс. токенов, сжатие истории с 70 % (в Qwen Code 0.26 —
+# context.autoCompactThreshold). У стендовой модели в настройках окно 1 млн, и без этого
+# стенд не доходил до сжатия.
+PILOT_CONTEXT_WINDOW = 260_000
+PILOT_COMPACT_THRESHOLD = 0.7
+
+
+def with_window(settings: dict[str, Any], window: int, threshold: float) -> dict[str, Any]:
+    """Настройки с окном модели ``window`` и порогом сжатия ``threshold`` (доля окна)."""
+    result = copy.deepcopy(settings)
+    for entries in result.get("modelProviders", {}).values():
+        for entry in entries:
+            entry.setdefault("generationConfig", {})["contextWindowSize"] = window
+    result.setdefault("context", {})["autoCompactThreshold"] = threshold
+    return result
 
 
 def build_home(work: Path, settings: dict[str, Any]) -> Path:
@@ -1733,7 +1762,9 @@ CHECKS = {name[len("check_"):]: func for name, func in globals().items()
 # --- сценарий -----------------------------------------------------------------------------
 
 def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
-             sandbox: bool, attempt: int, api_log: bool = False) -> dict[str, Any]:
+             sandbox: bool, attempt: int, api_log: bool = False,
+             window: int = PILOT_CONTEXT_WINDOW,
+             compact: float = PILOT_COMPACT_THRESHOLD) -> dict[str, Any]:
     scenario = SCENARIOS[case_id]
     case_dir = output / (case_id if attempt == 1 else f"{case_id}-{attempt}")
     case_dir.mkdir(parents=True)
@@ -1742,6 +1773,7 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
     (CACHE_DIR / "work").mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=f"{case_id}-", dir=CACHE_DIR / "work")).resolve()
     settings, secret_env = model_settings(model)
+    settings = with_window(settings, window, compact)
     venv = ensure_venv() if scenario.setup_ready else None
     log = case_dir / "testops-requests.jsonl"
     started = time.monotonic()
@@ -1750,7 +1782,7 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
     with FakeTestOpsServer(build_fixture(scenario.fixture), log_path=log) as server:
         project = build_project(work, server.endpoint, venv, scenario.knowledge,
                                 scenario.env_ready, scenario.extensions, scenario.sut_repo,
-                                scenario.maven)
+                                scenario.maven, FIXTURE_SOURCES.get(scenario.fixture))
         home = build_home(work, settings)
         session: str | None = None
         for number, prompt in enumerate(scenario.turns, start=1):
@@ -1775,6 +1807,7 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
         "exit_codes": exit_codes,
         "duration_s": round(time.monotonic() - started, 1),
         "sandbox": sandbox,
+        "window": {"context_window": window, "compact_threshold": compact},
         "dir": str(case_dir),
         "project": str(project),
         "home": str(work / "home"),
@@ -1808,10 +1841,17 @@ def evaluate(case: dict[str, Any]) -> dict[str, Any]:
         "tool_calls": len(trace.calls),
         "subagent_calls": sum(call.subagent for call in trace.calls),
         "usage": [r.get("usage") for r in trace.results],
+        "context": vars(journal_context(project, home)),
         "model": trace.init.get("model"),
         "qwen_version": trace.init.get("qwen_code_version"),
     })
     return case
+
+
+def journal_context(project: Path, home: Path) -> session_log.ContextUse:
+    """Пик контекста и сжатия по журналам Qwen сценария (отдельный HOME — только его сеансы)."""
+    qwen_dir = session_log.qwen_project_dirs(project, {}, {session_log.QWEN_HOME_ENV: str(home / ".qwen")})
+    return session_log.project_context(qwen_dir[-1])
 
 
 def save_artifacts(case_dir: Path, project: Path, trace: Trace) -> None:
@@ -1839,15 +1879,20 @@ def write_report(output: Path, report: dict[str, Any]) -> None:
                                         encoding="utf-8")
     lines = [f"# Стенд Qwen: {report['started_at']}", "",
              f"Модель: {report['model']}; Qwen Code {report['qwen_version']}; "
-             f"скилл {report['skill']['sha256'][:12]} ({report['skill']['git_revision']}).", "",
-             "| Сценарий | Статус | Проверки не прошли | Ждёт оценки | Время, с | Вызовов |",
-             "|---|---|---|---|---|---|"]
+             f"скилл {report['skill']['sha256'][:12]} ({report['skill']['git_revision']}).", ""]
+    windows = {(case["window"]["context_window"], case["window"]["compact_threshold"])
+               for case in report["cases"] if case.get("window")}
+    lines += [f"Окно модели: {window} токенов, сжатие истории с {threshold:.0%}." for window, threshold
+              in sorted(windows)] + ([""] if windows else [])
+    lines += ["| Сценарий | Статус | Проверки не прошли | Ждёт оценки | Время, с | Вызовов "
+             "| Пик контекста: агент / субагенты | Сжатий |",
+             "|---|---|---|---|---|---|---|---|"]
     for case in report["cases"]:
         name = case["id"] if case["attempt"] == 1 else f"{case['id']} #{case['attempt']}"
         lines.append(f"| {name} {case['title']} | {case['status']} | "
                      f"{', '.join(case['failed_checks']) or '—'} | "
                      f"{len(case['pending_review']) or '—'} | {case['duration_s']} | "
-                     f"{case['tool_calls']} |")
+                     f"{case['tool_calls']} | {_context_cell(case['context'])} |")
     for case in report["cases"]:
         lines += ["", f"## {case['id']} — {case['title']}", ""]
         for name, result in case["checks"].items():
@@ -1855,6 +1900,11 @@ def write_report(output: Path, report: dict[str, Any]) -> None:
         for item in case["pending_review"]:
             lines.append(f"- оценить: {item}")
     (output / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _context_cell(context: dict[str, int]) -> str:
+    return (f"{context['peak']} / {context['subagent_peak'] or '—'} | "
+            f"{context['compressions'] + context['subagent_compressions']}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1873,6 +1923,11 @@ def main(argv: list[str] | None = None) -> int:
     runner.add_argument("--no-sandbox", action="store_true")
     runner.add_argument("--api-log", action="store_true",
                         help="сохранять запросы к модели (много мегабайт на длинный сценарий)")
+    runner.add_argument("--context-window", type=int, default=PILOT_CONTEXT_WINDOW,
+                        help=f"окно модели в токенах (по умолчанию {PILOT_CONTEXT_WINDOW}, как у пилота)")
+    runner.add_argument("--compact-threshold", type=float, default=PILOT_COMPACT_THRESHOLD,
+                        help="доля окна, с которой Qwen сжимает историю "
+                             f"(по умолчанию {PILOT_COMPACT_THRESHOLD})")
     args = parser.parse_args(argv)
     if args.mode == "list":
         for case_id, scenario in SCENARIOS.items():
@@ -1900,7 +1955,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{case_id} #{attempt}…", file=sys.stderr, flush=True)
             case = run_case(case_id, output, model=args.model, max_wall=args.max_wall_time,
                             sandbox=not args.no_sandbox, attempt=attempt,
-                            api_log=args.api_log)
+                            api_log=args.api_log, window=args.context_window,
+                            compact=args.compact_threshold)
             report["cases"].append(case)
             report["model"] = case["model"]
             report["qwen_version"] = case["qwen_version"]

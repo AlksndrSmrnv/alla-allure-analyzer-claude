@@ -140,6 +140,221 @@ def many_launch(count: int, launch_id: int = 900) -> LaunchFixture:
     )
 
 
+# --- P05: девять кластеров с классами тестов размера пилота -------------------------------
+
+@dataclass(frozen=True)
+class WideCase:
+    """Падение прогона ``wide_launch``: свой класс тестов ~300 строк и лог приложения."""
+
+    domain: str          # пакет ru.company.<domain> и префикс класса
+    method: str
+    body: tuple[str, ...]  # тело упавшего теста; последняя строка — та, что в кадре стека
+    message: str
+    trace_head: str      # исключение и кадры до кадра теста
+    step: str
+    log: str
+
+    @property
+    def cls(self) -> str:
+        return f"{self.domain.title()}FlowTest"
+
+
+def _log(*lines: str) -> str:
+    return "".join(f"2026-09-01 10:0{index // 10}:{index % 10}0 {line}\n" for index, line in enumerate(lines))
+
+
+_ASSERT_FRAMES = ("\tat org.junit.jupiter.api.AssertionUtils.fail(AssertionUtils.java:55)\n"
+                  "\tat org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:150)\n")
+
+WIDE_CASES: tuple[WideCase, ...] = (
+    # приложение: ошибка в логе сервиса
+    WideCase("inventory", "reserveLastItem",
+             ('Map<String, Object> item = data.inventoryRequest("SKU-77", 1);',
+              "Response reserved = api.create(item);",
+              "assertEquals(200, reserved.statusCode());"),
+             "expected: <200> but was: <500>",
+             "org.opentest4j.AssertionFailedError: expected: <200> but was: <500>\n" + _ASSERT_FRAMES,
+             "Зарезервировать последний товар",
+             _log("[INFO] StockController: POST /inventory/reserve sku=SKU-77 qty=1",
+                  "[ERROR] StockService: reserve failed",
+                  "java.lang.NullPointerException: warehouse is null",
+                  "\tat ru.company.StockService.reserve(StockService.java:42)",
+                  "[INFO] StockController: responded 500")),
+    WideCase("invoices", "splitInvoice",
+             ('Map<String, Object> invoice = data.invoicesRequest("INV-2026-118", 3);',
+              'Response split = api.post("/invoices/split", invoice);',
+              'assertEquals(201, split.statusCode(), "Status code is not 201 (POST /invoices/split)");'),
+             "Status code is not 201 (POST /invoices/split) ==> expected: <201> but was: <500>",
+             "org.opentest4j.AssertionFailedError: Status code is not 201 (POST /invoices/split) "
+             "==> expected: <201> but was: <500>\n" + _ASSERT_FRAMES,
+             "Разделить счёт на части",
+             _log("[INFO] InvoiceController: POST /invoices/split number=INV-2026-118 parts=3",
+                  "[ERROR] InvoiceService: split failed",
+                  "java.lang.ArithmeticException: / by zero",
+                  "\tat ru.company.InvoiceService.split(InvoiceService.java:77)",
+                  "[INFO] InvoiceController: responded 500")),
+    WideCase("loyalty", "pointsForOrder",
+             ('Response points = api.get("/loyalty/points", Map.of("order", data.order(1250)));',
+              'assertEquals("1250", points.body());'),
+             'expected: <1250> but was: <{"error":"Internal Server Error"}>',
+             'org.opentest4j.AssertionFailedError: expected: <1250> but was: '
+             '<{"error":"Internal Server Error"}>\n' + _ASSERT_FRAMES,
+             "Начислить баллы за заказ",
+             _log("[INFO] LoyaltyController: GET /loyalty/points order=1250",
+                  "[ERROR] PointsCalculator: cannot apply tier bonus",
+                  "java.lang.ClassCastException: class java.lang.String cannot be cast to class "
+                  "java.lang.Integer",
+                  "\tat ru.company.PointsCalculator.apply(PointsCalculator.java:31)",
+                  "[INFO] LoyaltyController: responded 500")),
+    # окружение: сервис или сеть недоступны
+    WideCase("delivery", "scheduleCourier",
+             ('Map<String, Object> slot = data.deliveryRequest("2026-09-02T10:00", 2);',
+              'Response scheduled = api.post("/delivery/slots", slot);'),
+             "java.net.ConnectException: Connection refused: delivery-gateway:8443",
+             "java.net.ConnectException: Connection refused: delivery-gateway:8443\n"
+             "\tat java.base/sun.nio.ch.Net.connect0(Native Method)\n"
+             "\tat io.restassured.internal.RequestSpecificationImpl.post(RequestSpecificationImpl.groovy:178)\n",
+             "Назначить курьера",
+             _log("[INFO] http-client: POST https://delivery-gateway:8443/delivery/slots",
+                  "[WARN] http-client: connect to delivery-gateway:8443 refused, retry 1/3",
+                  "[WARN] http-client: connect to delivery-gateway:8443 refused, retry 2/3",
+                  "[ERROR] http-client: connect to delivery-gateway:8443 refused, giving up")),
+    WideCase("notifications", "sendOrderEmail",
+             ('Map<String, Object> mail = data.notificationsRequest("order-shipped", 5512);',
+              'Response sent = api.post("/notifications/email", mail);'),
+             "java.net.SocketTimeoutException: Read timed out (smtp-relay:2525, 30000 ms)",
+             "java.net.SocketTimeoutException: Read timed out (smtp-relay:2525, 30000 ms)\n"
+             "\tat java.base/sun.nio.ch.NioSocketImpl.timedRead(NioSocketImpl.java:288)\n"
+             "\tat io.restassured.internal.RequestSpecificationImpl.post(RequestSpecificationImpl.groovy:178)\n",
+             "Отправить письмо об отгрузке",
+             _log("[INFO] NotificationController: POST /notifications/email template=order-shipped",
+                  "[INFO] MailSender: connecting smtp-relay:2525",
+                  "[WARN] MailSender: smtp-relay:2525 no response in 30000 ms")),
+    WideCase("profile", "uploadAvatar",
+             ('Response uploaded = api.upload("/profile/avatar", data.image("avatar.png"));',
+              "assertEquals(200, uploaded.statusCode());"),
+             "expected: <200> but was: <503>",
+             "org.opentest4j.AssertionFailedError: expected: <200> but was: <503>\n" + _ASSERT_FRAMES,
+             "Загрузить аватар",
+             _log("[INFO] gateway: PUT /profile/avatar -> avatar-storage:9000",
+                  "[ERROR] gateway: upstream connect error or disconnect/reset before headers. "
+                  "reset reason: connection failure, transport failure reason: delayed connect "
+                  "error: 111 (avatar-storage:9000)",
+                  "[INFO] gateway: responded 503")),
+    # тест: ошибка видна в коде самого теста, приложение отработало верно
+    WideCase("reviews", "rateProduct",
+             ('Response saved = api.create(data.reviewsRequest("SKU-12", 4));',
+              'assertEquals(5, saved.jsonPath().getInt("rating"));'),
+             "expected: <5> but was: <4>",
+             "org.opentest4j.AssertionFailedError: expected: <5> but was: <4>\n" + _ASSERT_FRAMES,
+             "Оценить товар",
+             _log("[INFO] ReviewController: POST /reviews sku=SKU-12 rating=4",
+                  "[INFO] ReviewService: review 8841 saved rating=4",
+                  "[INFO] ReviewController: responded 200")),
+    WideCase("wishlist", "addTwoItems",
+             ('api.post("/wishlist/items", Map.of("sku", "SKU-1"));',
+              'api.post("/wishlist/items", Map.of("sku", "SKU-2"));',
+              'List<String> items = api.get("/wishlist/items").jsonPath().getList("sku");',
+              "assertEquals(3, items.size());"),
+             "expected: <3> but was: <2>",
+             "org.opentest4j.AssertionFailedError: expected: <3> but was: <2>\n" + _ASSERT_FRAMES,
+             "Добавить два товара в избранное",
+             _log("[INFO] WishlistController: POST /wishlist/items sku=SKU-1",
+                  "[INFO] WishlistController: POST /wishlist/items sku=SKU-2",
+                  "[INFO] WishlistController: GET /wishlist/items -> 2 items")),
+    WideCase("returns", "returnRecentOrder",
+             ('Response created = api.post("/returns", Map.of("order", data.order(LocalDate.parse("2025-01-15"))));',
+              "assertEquals(200, created.statusCode());"),
+             "expected: <200> but was: <422>",
+             "org.opentest4j.AssertionFailedError: expected: <200> but was: <422>\n" + _ASSERT_FRAMES,
+             "Оформить возврат недавнего заказа",
+             _log("[INFO] ReturnController: POST /returns order date=2025-01-15",
+                  "[WARN] ReturnPolicy: return period expired: order date 2025-01-15, limit 30 days",
+                  "[INFO] ReturnController: responded 422")),
+)
+
+_WIDE_FILLERS = ("createRecord", "updateRecord", "deleteRecord", "searchByName", "searchByDate",
+                 "pagination", "sortByDate", "exportCsv", "importCsv", "accessDenied",
+                 "auditTrail", "bulkUpdate", "restoreRecord", "archiveRecord")
+
+
+def wide_test_class(case: WideCase) -> tuple[str, int]:
+    """Класс тестов ~300 строк (как у пилота) и номер строки, на которой падает тест."""
+    domain, client = case.domain, f"{case.domain.title()}Client"
+    lines = [f"package ru.company.{domain};", "",
+             "import static org.junit.jupiter.api.Assertions.assertEquals;",
+             "import static org.junit.jupiter.api.Assertions.assertFalse;",
+             "import static org.junit.jupiter.api.Assertions.assertTrue;", "",
+             "import io.qameta.allure.Description;", "import io.qameta.allure.Feature;",
+             "import io.qameta.allure.Step;", "import io.restassured.response.Response;",
+             "import java.time.LocalDate;", "import java.util.List;", "import java.util.Map;",
+             "import org.junit.jupiter.api.BeforeEach;", "import org.junit.jupiter.api.Test;",
+             "import ru.company.common.TestData;", "",
+             "/**", f" * Сквозные проверки раздела {domain}: создание, изменение, поиск, права и аудит.",
+             " */", f'@Feature("{domain}")', f"public class {case.cls} {{", "",
+             f"    private final {client} api = new {client}();",
+             "    private final TestData data = new TestData();", "",
+             "    @BeforeEach", "    void setUp() {", '        api.login(data.user("qa-robot"));',
+             "        api.reset();", "    }"]
+    line = 0
+    for index, name in enumerate(_WIDE_FILLERS):
+        if index == len(_WIDE_FILLERS) // 2:
+            lines += ["", "    @Test", f'    @Description("{case.step}")', f"    void {case.method}() {{"]
+            lines += [f"        {part}" for part in case.body]
+            line = len(lines)
+            lines.append("    }")
+        lines += ["", "    /**", f"     * {name}: ответ 200, запись видна в списке и в журнале аудита.",
+                  "     */", "    @Test", f"    void {name}() {{", "        // given",
+                  f'        Map<String, Object> request = data.{domain}Request("{name}", {index + 1});',
+                  "        // when", "        Response created = api.create(request);",
+                  f'        Response listed = api.list(Map.of("query", "{name}", "page", 1));',
+                  "        // then", "        assertEquals(200, created.statusCode());",
+                  "        assertEquals(200, listed.statusCode());",
+                  f'        assertTrue(listed.body().contains("{name}"));',
+                  '        assertFalse(listed.body().contains("deleted"));', "    }"]
+    for helper in ("create", "list", "remove"):
+        lines += ["", f'    @Step("{helper} в разделе {domain}")',
+                  f"    private Response {helper}AndCheck(Map<String, Object> request) {{",
+                  f"        Response response = api.{helper}(request);",
+                  "        assertEquals(200, response.statusCode());",
+                  "        return response;", "    }"]
+    return "\n".join([*lines, "}"]) + "\n", line
+
+
+def wide_sources() -> dict[str, str]:
+    """Исходники для ``src/test/java/ru/company/``: путь от этой папки → текст класса."""
+    return {f"{case.domain}/{case.cls}.java": wide_test_class(case)[0] for case in WIDE_CASES}
+
+
+def wide_launch(launch_id: int = 794) -> LaunchFixture:
+    """Девять разных падений, у каждого свой класс тестов ~300 строк и лог (сценарий P05)."""
+    results: list[dict[str, Any]] = []
+    executions: dict[int, list[dict[str, Any]]] = {}
+    attachments: dict[int, list[dict[str, Any]]] = {}
+    contents: dict[int, bytes] = {}
+    for index, case in enumerate(WIDE_CASES):
+        result_id, attachment_id = 600 + index, 9600 + index
+        line = wide_test_class(case)[1]
+        frame = f"\tat ru.company.{case.domain}.{case.cls}.{case.method}({case.cls}.java:{line})\n"
+        status = "failed" if case.trace_head.startswith("org.opentest4j") else "broken"
+        results.append({
+            "id": result_id, "name": case.method,
+            "fullName": f"ru.company.{case.domain}.{case.cls}.{case.method}", "status": status,
+            "statusDetails": {"message": case.message, "trace": case.trace_head + frame},
+        })
+        executions[result_id] = [{"name": case.step, "status": status,
+                                  "statusDetails": {"message": case.message}}]
+        attachments[result_id] = [{"id": attachment_id, "name": f"{case.domain}.log", "type": "text/plain"}]
+        contents[attachment_id] = case.log.encode("utf-8")
+    return LaunchFixture(
+        launch={"id": launch_id, "name": "Regression wide", "projectId": 5, "createdDate": LAUNCH_CREATED_MS},
+        results=[*results, {"id": 699, "name": "healthCheck", "status": "passed"}],
+        executions=executions,
+        attachments=attachments,
+        contents=contents,
+    )
+
+
 def flaky_launch(launch_id: int = 793) -> LaunchFixture:
     """Прогон по умолчанию, где у createOrder повтор упал иначе, а у updateOrder — прошёл."""
     launch = default_launch(launch_id)

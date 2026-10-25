@@ -17,6 +17,7 @@ import skill_fixtures  # noqa: F401 — добавляет scripts/ в sys.path
 from fake_testops_server import FakeTestOpsServer, build_fixture
 from qwen_stand import (
     CHECKS,
+    FIXTURE_SOURCES,
     KNOWLEDGE,
     KNOWLEDGE_TARGETS,
     SCENARIOS,
@@ -25,8 +26,18 @@ from qwen_stand import (
     build_project,
     parse_traces,
 )
+from alla_skill_lib.cli import PARALLEL_MIN_PENDING
 from alla_skill_lib.workspace import RUN_SCHEMA
-from skill_fake_testops import INJECTED_INSTRUCTION, TOKEN
+from skill_fake_testops import (
+    INJECTED_INSTRUCTION,
+    TOKEN,
+    WIDE_CASES,
+    FakeTestOps,
+    wide_launch,
+    wide_test_class,
+)
+from skill_fixtures import project_fixture, without_libmagic  # noqa: F401
+from test_skill_flow import _prepare
 
 
 def test_server_serves_fixture_and_logs_requests(tmp_path: Path) -> None:
@@ -58,6 +69,31 @@ def test_scenarios_reference_existing_checks_and_fixtures() -> None:
     for scenario in SCENARIOS.values():
         assert set(scenario.checks) <= CHECKS.keys()
         build_fixture(scenario.fixture)
+
+
+def test_wide_scenario_is_nine_clusters_with_their_test_classes(
+    project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P05: девять кластеров — ниже порога пакетов, разбор по одному; задание каждого называет
+    свой класс тестов ~300 строк и строку падения из стека."""
+    java = project / "src" / "test" / "java" / "ru" / "company"
+    for path, text in FIXTURE_SOURCES["wide"].items():
+        (java / path).parent.mkdir(parents=True, exist_ok=True)
+        (java / path).write_text(text, encoding="utf-8")
+    FakeTestOps(wide_launch()).install(monkeypatch)
+
+    run_dir, run, out = _prepare(project, capsys, launch_id=794)
+
+    clusters = [entry for entry in run["clusters"] if not entry["auto"]]
+    assert len(clusters) == len(WIDE_CASES) == PARALLEL_MIN_PENDING - 1
+    assert out.startswith("STATUS: analyze\n"), out
+    tasks = "\n".join((run_dir / "clusters" / f"{entry['file_id']}.md").read_text(encoding="utf-8")
+                      for entry in clusters)
+    for case in WIDE_CASES:
+        path = f"src/test/java/ru/company/{case.domain}/{case.cls}.java"
+        assert re.search(rf"^- {re.escape(path)}:\d+ — код теста", tasks, re.MULTILINE), path
+        assert f"({case.cls}.java:{wide_test_class(case)[1]})" in tasks  # кадр стека — строка падения
+        assert 280 <= FIXTURE_SOURCES["wide"][f"{case.domain}/{case.cls}.java"].count("\n") <= 320
 
 
 def test_build_project_is_committed_and_hides_env(tmp_path: Path) -> None:
@@ -374,6 +410,44 @@ def test_run_case_keeps_project_outside_results(tmp_path: Path,
     assert project.is_dir() and not project.is_relative_to(output)
     assert (output / "A04" / "trace-1.jsonl").is_file()
     assert case["status"] == "pass", case["checks"]
+    # окно модели — как у пилота; журналов Qwen у подменённого запуска нет
+    settings = json.loads((Path(case["home"]) / ".qwen" / "settings.json").read_text(encoding="utf-8"))
+    assert settings["context"] == {"autoCompactThreshold": qwen_stand.PILOT_COMPACT_THRESHOLD}
+    assert case["window"] == {"context_window": 260_000, "compact_threshold": 0.7}
+    assert case["context"] == {"peak": 0, "compressions": 0, "subagent_peak": 0,
+                               "subagent_compressions": 0}
+
+
+def test_with_window_overrides_the_model_window_only() -> None:
+    import qwen_stand
+
+    entry = {"id": "m", "generationConfig": {"contextWindowSize": 1_000_000, "timeout": 5}}
+    settings = {"modelProviders": {"openai": [entry]}, "model": {"name": "m"}}
+
+    result = qwen_stand.with_window(settings, 260_000, 0.7)
+
+    assert result["modelProviders"]["openai"][0]["generationConfig"] == {
+        "contextWindowSize": 260_000, "timeout": 5}
+    assert result["context"] == {"autoCompactThreshold": 0.7}
+    assert entry["generationConfig"]["contextWindowSize"] == 1_000_000  # исходные не тронуты
+
+
+def test_report_shows_context_peak_and_compressions(tmp_path: Path) -> None:
+    import qwen_stand
+
+    case = {"id": "P05", "attempt": 1, "title": "9 кластеров", "status": "pass",
+            "failed_checks": [], "pending_review": [], "duration_s": 1.0, "tool_calls": 3,
+            "checks": {}, "window": {"context_window": 260_000, "compact_threshold": 0.7},
+            "context": {"peak": 150_000, "compressions": 1, "subagent_peak": 0,
+                        "subagent_compressions": 0}}
+    report = {"started_at": "t", "model": "m", "qwen_version": "0.26.0",
+              "skill": {"sha256": "0" * 64, "git_revision": "abc"}, "cases": [case]}
+
+    qwen_stand.write_report(tmp_path, report)
+
+    text = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "Окно модели: 260000 токенов, сжатие истории с 70%." in text
+    assert "| 3 | 150000 / — | 1 |" in text
 
 
 

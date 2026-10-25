@@ -36,6 +36,7 @@ from skill_fake_testops import (  # noqa: E402
     scant_launch,
     screenshot_launch,
     test_bug_launch,
+    wide_launch,
 )
 
 FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
@@ -51,6 +52,7 @@ FIXTURES: dict[str, Callable[[], LaunchFixture]] = {
     "unique": lambda: _unique_launch(),
     "shared": lambda: _shared_launch(),
     "test_bug": test_bug_launch,
+    "wide": wide_launch,
     "flaky": flaky_launch,
     "no_logs": no_logs_launch,
     "screenshot": lambda: screenshot_launch(
@@ -110,7 +112,7 @@ def _shared_launch() -> LaunchFixture:
 def build_fixture(spec: str) -> LaunchFixture:
     """``default`` | ``green`` | ``info_only`` | ``injection`` | ``scant`` | ``mixed`` |
     ``retries`` | ``known`` | ``split`` | ``unique`` | ``shared`` | ``test_bug`` | ``screenshot`` |
-    ``no_logs`` |
+    ``no_logs`` | ``wide`` |
     ``many:<число>``."""
     name, _, arg = spec.partition(":")
     if name == "many":
