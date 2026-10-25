@@ -892,3 +892,60 @@ def test_module_logs_never_share_a_file(tmp_path: Path) -> None:
 
     assert files.maven_log(1, "a/b") != files.maven_log(1, "a_b")
     assert files.maven_log(1, "").name.startswith("attempt-1-root-")
+
+
+# ---------------------------------------------------------------------------
+# проверка правки после apply
+# ---------------------------------------------------------------------------
+
+
+def _applied(root: Path, capsys: pytest.CaptureFixture[str], source: str) -> tuple[Path, str, str]:
+    from test_skill_flow import PROPOSAL, TEST_ANALYSIS
+
+    plain = "src/test/java/ru/company/orders/OrderTest.java"
+    run_dir, run, _ = _prepare(root, capsys)
+    order, login = f"{int(_problem_of(run, 101)):02d}", f"{int(_problem_of(run, 103)):02d}"
+    (run_dir / "analyses" / f"{order}.md").write_text(TEST_ANALYSIS.replace(plain, source),
+                                                      encoding="utf-8")
+    assert _run(["next", str(run_dir)], capsys)[1].startswith("STATUS: propose")
+    (run_dir / "proposals" / f"{order}.md").write_text(PROPOSAL.replace(plain, source),
+                                                       encoding="utf-8")
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    diff = _run(["apply", order, "--run", str(run_dir)], capsys)[1]
+    out = _run(["apply", order, "--run", str(run_dir), "--yes", "--diff",
+                diff.split("--yes --diff ")[1].split()[0]], capsys)[1]
+    assert out.startswith("STATUS: applied"), out
+    return run_dir, order, out
+
+
+def test_applied_fix_offers_to_rerun_the_problem_tests_with_one_yes(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    skill_fake_maven.install(nested_project / "autotests", {
+        f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": [FAILED_500]})
+    run_dir, order, out = _applied(nested_project, capsys,
+                                   "autotests/src/test/java/ru/company/orders/OrderTest.java")
+
+    offer = out.splitlines()[-1]
+    assert offer.startswith(f"Проверить правку: 2 теста проблемы {int(order)} ({ORDER}.createOrder; "
+                            f"{ORDER}.updateOrder) можно перезапустить на этой машине")
+    assert "«Да» на правку сюда не относится" in offer and "Тесты сам не запускай." in offer
+    command = offer.split("выполни: ", 1)[1].split(" — дальше", 1)[0]
+    assert f"rerun {int(order)} --run {run_dir} --yes --plan " in command
+
+    done = _run(["rerun", *command.split(" rerun ", 1)[1].split()], capsys)[1]
+    done = _wait_done(run_dir, capsys) if done.startswith("STATUS: running") else done
+
+    assert ("Прошли на изменённом коде теста — проверка правки, не нестабильность (1):\n"
+            f"- Проблема {int(order)}: {ORDER}.createOrder — прошёл на запуске 1 из 3; правка "
+            "агента применена") in done
+    assert f"{ORDER}.updateOrder — упал 3 из 3" in done
+    assert "--remember" not in done  # проверка правки в базу знаний не идёт
+
+
+def test_applied_fix_without_maven_asks_the_user_to_run_the_test(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    _, _, out = _applied(project, capsys, "src/test/java/ru/company/orders/OrderTest.java")
+
+    assert out.splitlines()[-1] == "Тесты не запускай: предложи пользователю запустить исправленный тест."

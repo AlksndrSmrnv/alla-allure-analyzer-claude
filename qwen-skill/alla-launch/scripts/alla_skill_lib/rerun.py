@@ -907,18 +907,38 @@ def render_result(view: RerunView, logs: Path, report: Path | None = None) -> st
 def render_offer(plan: Plan, command: str) -> str:
     """Пункт «После отчёта»: предложить перезапуск кандидатов скилла одним вопросом."""
     numbers = ", ".join(dict.fromkeys(str(int(test.file_id)) for test in plan.tests))
-    names = [test.full_name for test in plan.tests[:MAX_OFFER_NAMES]]
-    if len(plan.tests) > len(names):
-        names.append(f"и ещё {len(plan.tests) - len(names)}")
     return (
         f"- Похожи на нестабильные (флаки): {_tests(len(plan.tests))} в проблемах {numbers} "
-        f"({'; '.join(names)}). Их можно перезапустить на этой машине (Maven, с настройками "
-        f"проекта; каждый до {plan.attempts} раз, до ~{plan.estimate_minutes()} мин). После "
+        f"({_names(plan)}). Их можно перезапустить {_where(plan)}. После "
         "ответов о правках спроси пользователя отдельным вопросом, перезапустить ли их: назови "
         "число тестов, проблемы, время и что тесты пойдут на этой машине. Если в этом сеансе он "
         "уже ответил на этот вопрос или сам попросил перезапустить тесты, не спрашивай. Только "
         f"после явного «да» на этот вопрос выполни: {command} — дальше по SKILL.md, раздел 8."
     )
+
+
+def render_fix_offer(plan: Plan, command: str, number: int) -> str:
+    """Строка ответа ``applied``: проверить правку перезапуском тестов проблемы, одним вопросом."""
+    return (
+        f"Проверить правку: {_tests(len(plan.tests))} проблемы {number} ({_names(plan)}) можно "
+        f"перезапустить {_where(plan)}. После сообщения о правке (и блока «Расширения:», если "
+        "он есть) спроси пользователя отдельным вопросом, перезапустить ли их: назови число "
+        "тестов, время и что тесты пойдут на этой машине. «Да» на правку сюда не относится. "
+        f"Только после явного «да» на этот вопрос выполни: {command} — дальше по SKILL.md, "
+        "раздел 8. Тесты сам не запускай."
+    )
+
+
+def _names(plan: Plan) -> str:
+    names = [test.full_name for test in plan.tests[:MAX_OFFER_NAMES]]
+    if len(plan.tests) > len(names):
+        names.append(f"и ещё {len(plan.tests) - len(names)}")
+    return "; ".join(names)
+
+
+def _where(plan: Plan) -> str:
+    return (f"на этой машине (Maven, с настройками проекта; каждый до {plan.attempts} раз, до "
+            f"~{plan.estimate_minutes()} мин)")
 
 
 def describe(signals: Iterable[str]) -> str:

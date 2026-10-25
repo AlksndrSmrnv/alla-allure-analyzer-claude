@@ -1569,12 +1569,7 @@ def _rerun(
                       "Покажи это пользователю.")
     numbers = [str(int(entry["file_id"])) for entry in entries if entry is not None]
     if numbers:
-        picks = [(entry, test) for entry in entries if entry is not None
-                 for test in rerun.failed_tests_of(run, entry)]
-        marks = flaky.marks_for_run(run)
-        signals = {int(test["test_result_id"]): flaky.signals_of(
-                       test, None, marked=int(test["test_result_id"]) in marks)
-                   for _, test in picks}
+        picks, signals = _problem_picks(run, [entry for entry in entries if entry is not None])
     else:
         offered = _offered_picks(run, rerun.read_offer(files))
         if not offered:
@@ -1605,6 +1600,18 @@ def _rerun(
         return status, "Новый перезапуск не начат: в этом разборе он уже идёт.\n" + body
     state = rerun.wait_job(files, rerun.WAIT_BUDGET - (time.monotonic() - started))
     return _rerun_state(paths, run, state)
+
+
+def _problem_picks(
+    run: dict[str, Any], entries: list[dict[str, Any]],
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], dict[int, list[str]]]:
+    """Тесты названных проблем и их признаки (без категории: разборы команда не читает)."""
+    picks = [(entry, test) for entry in entries for test in rerun.failed_tests_of(run, entry)]
+    marks = flaky.marks_for_run(run)
+    signals = {int(test["test_result_id"]): flaky.signals_of(
+                   test, None, marked=int(test["test_result_id"]) in marks)
+               for _, test in picks}
+    return picks, signals
 
 
 def _rerun_settings() -> Settings | str:
@@ -1666,6 +1673,27 @@ def _rerun_offer(
                               for entry, test, codes in found])
     command = ws.skill_command("rerun", "--run", str(paths.root), "--yes", "--plan", plan.digest)
     return rerun.render_offer(plan, command)
+
+
+def _rerun_after_apply(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> str | None:
+    """После ``apply``: проверить правку перезапуском тестов проблемы — та же команда ``rerun N``.
+
+    ``None`` — перезапуск выключен, уже идёт или запускать нечего (не Maven, нет Maven): тогда
+    ответ, как раньше, просит пользователя запустить тест самому.
+    """
+    settings = _rerun_settings()
+    if (isinstance(settings, str) or settings.rerun_max_tests == 0
+            or rerun.job_state(rerun.job_files(paths)).state == "running"):
+        return None
+    picks, signals = _problem_picks(run, [entry])
+    plan = rerun.build_plan(paths, run, picks, attempts=settings.rerun_attempts,
+                            max_tests=settings.rerun_max_tests, signals=signals)
+    if plan.note or not plan.tests:
+        return None
+    number = int(entry["file_id"])
+    command = ws.skill_command("rerun", str(number), "--run", str(paths.root), "--yes",
+                               "--plan", plan.digest)
+    return rerun.render_fix_offer(plan, command, number)
 
 
 def _rerun_state(
@@ -1909,7 +1937,8 @@ def _apply(
             result.text,
             "Откатить: " + ws.skill_command("revert", file_id, "--run", str(paths.root)),
             *([hooks] if hooks else []),
-            "Тесты не запускай: предложи пользователю запустить исправленный тест.",
+            _rerun_after_apply(paths, run, entry)
+            or "Тесты не запускай: предложи пользователю запустить исправленный тест.",
         ])
     return result.status, result.text
 
