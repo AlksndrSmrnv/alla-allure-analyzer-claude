@@ -250,6 +250,24 @@ class AllureTestOpsClient:
         )
         return all_results
 
+    # --- Запись (единственная): статус результата после перезапуска ---
+
+    async def resolve_test_result(
+        self, test_result_id: int, status: str, message: str,
+    ) -> dict[str, Any]:
+        """Сменить статус одного результата теста (ручное «Resolve» TestOps).
+
+        ``POST /api/testresult/{id}/resolve`` с ``ResolveRequestV2Dto`` (OpenAPI 26.1.1),
+        ответ ``202`` — строка результата (``TestResultRowDto``: ``id``, ``status``…). Запрос
+        на один id, а не ``bulk/resolve``: выборка дерева при ошибке задела бы лишние
+        результаты. Не повторяется (``_may_retry`` — только GET); пустой ответ — ``{}``.
+        """
+        data = await self._request(
+            "POST", f"{self.TESTRESULT_ENDPOINT}/{test_result_id}/resolve",
+            json={"status": status, "message": message}, expect_json=False,
+        )
+        return data if isinstance(data, dict) else {}
+
     # --- Аттачменты (протокол AttachmentProvider) ---
 
     async def get_attachments_for_test_result(

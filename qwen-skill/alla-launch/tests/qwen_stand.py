@@ -216,6 +216,8 @@ class Scenario:
     # Задержка каждого ответа фейкового TestOps, с: выгрузка дольше jobs.WAIT_BUDGET, и prepare
     # отвечает STATUS: running (большой прогон).
     testops_delay: float = 0.0
+    # Результаты, которым после «да» ставится статус passed в TestOps (rerun --remember).
+    resolved: tuple[int, ...] = ()
 
 
 STAND_ORDER_TEST = "src/test/java/ru/company/orders/OrderTest.java"
@@ -455,25 +457,28 @@ SCENARIOS: dict[str, Scenario] = {
                 "голый 500 — «неизвестно»; отсутствие лога не повторяется в каждом разборе",)),
     "F01": Scenario(
         "Флаки: после отчёта — перезапуск, «да» → Maven в фоне → итог → «да» → отметка в базе "
-        "знаний", "flaky",
-        ("/alla-launch 793", "Да, перезапусти.", "Да, отметь их в базе знаний."),
+        "знаний и статус passed в TestOps", "flaky",
+        ("/alla-launch 793", "Да, перезапусти.", "Да, сохрани."),
         (*[name for name in FULL_RUN if name != "report_verbatim"], "prepare_launch",
-         "rerun_started", "rerun_result_shown", "flaky_saved"),
-        launch_id=793, edits=("alla-kb/",),
+         "rerun_started", "rerun_result_shown", "flaky_saved", "testops_resolved"),
+        launch_id=793, edits=("alla-kb/",), resolved=(101,),
         maven=((f"{STAND_ORDER}#createOrder", (FAILED_500, "passed")),
                (f"{STAND_ORDER}#updateOrder", (FAILED_500,))),
         review=("Вопрос о перезапуске задан один раз, после краткого разбора: число тестов, "
                 "проблемы, время и что тесты пойдут на этой машине; итог выведен дословно; "
-                "вопрос о базе знаний — отдельно, после итога",)),
+                "вопрос о сохранении — отдельно, после итога, один: база знаний и TestOps",)),
     "F02": Scenario(
-        "Проверка правки: «да» на правку → вопрос о перезапуске тестов проблемы → «да» → итог",
-        "test_bug", ("/alla-launch 782", "Да, применяй правку.", "Да, перезапусти тесты."),
+        "Проверка правки: «да» на правку → вопрос о перезапуске тестов проблемы → «да» → итог "
+        "→ «да» → статус passed в TestOps",
+        "test_bug", ("/alla-launch 782", "Да, применяй правку.", "Да, перезапусти тесты.",
+                     "Да, отметь в TestOps."),
         (*[name for name in FULL_RUN if name != "report_verbatim"], "prepare_launch",
-         "fix_applied", "rerun_started", "fix_checked"),
-        launch_id=782, edits=(STAND_ORDER_TEST,),
+         "fix_applied", "rerun_started", "fix_checked", "testops_resolved"),
+        launch_id=782, edits=(STAND_ORDER_TEST,), resolved=(201,),
         maven=((f"{STAND_ORDER}#createOrder", ("passed",)),),
         review=("После apply вопрос о перезапуске задан отдельно от «да» на правку, с числом "
-                "тестов и что они пойдут на этой машине; итог выведен дословно",)),
+                "тестов и что они пойдут на этой машине; итог выведен дословно; вопрос об "
+                "отметке в TestOps говорит, что в CI правки ещё нет",)),
     "P04": Scenario(
         "40 кластеров: пакеты субагентов", "many:40", ("/alla-launch 900",),
         (*FULL_RUN, "prepare_launch", "subagents_used", "batch_agent_used"), launch_id=900),
@@ -1697,11 +1702,32 @@ def check_asks_for_env(ctx: Context) -> dict[str, Any]:
     return ok() if named else bad(f"ответ не просит вписать адрес и токен в .env: {final[:200]!r}")
 
 
+RESOLVE_PATH_RE = re.compile(r"/api/testresult/\d+/resolve")
+
+
 def check_testops_read_only(ctx: Context) -> dict[str, Any]:
+    """TestOps только читается; запись — лишь статус passed командой rerun --remember."""
+    resolve_allowed = bool(_rerun_calls(ctx, "--remember", "--result"))
     for entry in ctx.requests:
-        if entry["method"] != "GET" and entry["path"] != "/api/uaa/oauth/token":
-            return bad(f"{entry['method']} {entry['path']}")
+        if entry["method"] == "GET" or entry["path"] == "/api/uaa/oauth/token":
+            continue
+        if resolve_allowed and entry["method"] == "POST" \
+                and RESOLVE_PATH_RE.fullmatch(entry["path"]):
+            continue
+        return bad(f"{entry['method']} {entry['path']}")
     return ok(f"запросов: {len(ctx.requests)}")
+
+
+def check_testops_resolved(ctx: Context) -> dict[str, Any]:
+    """После «да» статус passed в TestOps поставлен командой rerun --remember, ровно нужным."""
+    if not _rerun_calls(ctx, "--remember", "--result"):
+        return bad("rerun --remember --result не выполнялся")
+    resolved = sorted(int(entry["path"].split("/")[-2]) for entry in ctx.requests
+                      if entry["method"] == "POST" and RESOLVE_PATH_RE.fullmatch(entry["path"])
+                      and entry.get("status") == 202)
+    expected = sorted(ctx.scenario.resolved)
+    shown = ", ".join(map(str, resolved))
+    return ok(shown) if resolved == expected else bad(f"passed в TestOps: [{shown}], ждём {expected}")
 
 
 

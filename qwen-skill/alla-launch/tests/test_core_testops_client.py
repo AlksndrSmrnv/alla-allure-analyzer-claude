@@ -486,6 +486,29 @@ async def test_request_does_not_retry_internal_error_or_post(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_resolve_posts_one_result_and_is_not_retried(monkeypatch, tmp_path) -> None:
+    """Статус меняется запросом на один результат; 202 без тела — не ошибка, 502 — без повтора."""
+    client = await _retrying_client(monkeypatch, tmp_path)
+    client._http = _ScriptedHttp([
+        _make_response(202, body=b'{"id": 9, "status": "passed"}'),
+        _make_response(202),
+        _make_response(502, text="bad gateway"),
+    ])
+
+    assert await client.resolve_test_result(9, "passed", "alla: прошёл") == {"id": 9, "status": "passed"}
+    assert await client.resolve_test_result(9, "passed", "alla: прошёл") == {}
+    with pytest.raises(AllureApiError) as exc_info:
+        await client.resolve_test_result(9, "passed", "alla: прошёл")
+
+    assert exc_info.value.status_code == 502
+    first = client._http.calls[0]
+    assert (first["method"], first["url"], first["json"]) == (
+        "POST", "https://allure.test/api/testresult/9/resolve",
+        {"status": "passed", "message": "alla: прошёл"})
+    assert len(client._http.calls) == 3 and client._sleep.delays == []
+
+
+@pytest.mark.asyncio
 async def test_request_raw_retries_gateway_and_network_errors(monkeypatch, tmp_path) -> None:
     client = await _retrying_client(monkeypatch, tmp_path)
     client._http = _ScriptedHttp([

@@ -381,6 +381,26 @@ def test_testops_writes_fail(tmp_path: Path) -> None:
     assert CHECKS["testops_read_only"](ctx)["status"] == "fail"
 
 
+def test_testops_resolve_is_allowed_only_after_the_skill_command(tmp_path: Path) -> None:
+    """Статус passed — единственная запись, и только командой rerun --remember."""
+    resolve = {"method": "POST", "path": "/api/testresult/101/resolve", "status": 202}
+    bare = context(tmp_path, events(), case="F01")
+    bare.requests = [resolve]
+    assert CHECKS["testops_read_only"](bare)["status"] == "fail"
+    assert CHECKS["testops_resolved"](bare)["status"] == "fail"
+
+    remember = f"python3 {SKILL} rerun --run {tmp_path}/p/alla-reports/793-run --remember --result j1"
+    ctx = context(tmp_path, events(("run_shell_command", {"command": remember}, "STATUS: saved")),
+                  case="F01")
+    ctx.requests = [resolve]
+    assert CHECKS["testops_read_only"](ctx)["status"] == "pass"
+    assert CHECKS["testops_resolved"](ctx)["status"] == "pass"
+    ctx.requests = [resolve, {**resolve, "path": "/api/testresult/102/resolve"}]
+    assert CHECKS["testops_resolved"](ctx)["status"] == "fail"  # updateOrder воспроизвёлся
+    ctx.requests = [resolve, {"method": "PATCH", "path": "/api/testresult/101"}]
+    assert CHECKS["testops_read_only"](ctx)["status"] == "fail"
+
+
 def test_cd_to_project_root_is_noted_but_cd_elsewhere_fails(tmp_path: Path) -> None:
     root = tmp_path / "p"
     ok_ctx = context(tmp_path, events(

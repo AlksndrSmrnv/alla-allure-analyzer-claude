@@ -52,7 +52,7 @@ from alla_core.exceptions import AllaError, ConfigurationError
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib import extensions as ext
-from alla_skill_lib import flaky, jobs, rerun
+from alla_skill_lib import flaky, jobs, rerun, resolve
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.agent_rules import (
     ANALYSIS_FORMAT_REF,
@@ -515,8 +515,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     mode_rerun.add_argument(
         "--remember", action="store_true",
-        help="отметить нестабильные тесты в базе знаний (только после согласия пользователя); "
-             "нужен --result",
+        help="сохранить итог: отметки в базе знаний и статус passed в TestOps (только после "
+             "согласия пользователя); нужен --result",
     )
     again_tests.add_argument(
         "--plan", dest="plan_hash",
@@ -1857,39 +1857,98 @@ def _rerun_state(
         "заново не выводи:",
         rerun.render_result(view, files.logs, paths.report if refreshed else None),
     ]
-    assert state.result is not None and state.plan is not None
-    keep = flaky.remember_plan(state.result, state.plan, flaky.marks_for_run(run))
-    if keep:
+    assert state.result is not None
+    keep, marks = _save_items(run, state)
+    if keep or marks:
         what = []
         if keep.mark:
             names = "; ".join(str(item["full_name"]) for item in keep.mark)
-            what.append(f"отметить нестабильными {rerun.tests_phrase(len(keep.mark))} ({names})")
+            what.append(f"отметить в базе знаний нестабильными {rerun.tests_phrase(len(keep.mark))} "
+                        f"({names})")
         if keep.unmark:
             names = "; ".join(str(item["full_name"]) for item in keep.unmark)
-            what.append(f"снять отметку «нестабильный» ({names}): "
+            what.append(f"снять в базе знаний отметку «нестабильный» ({names}): "
                         + ("тест воспроизводится" if len(keep.unmark) == 1
                            else "тесты воспроизводятся") + " каждый раз")
+        if marks:
+            text = (f"отметить успешными в TestOps (статус passed в прогоне {run['launch_id']}) "
+                    f"{rerun.tests_phrase(len(marks))} ({resolve.names(marks)})")
+            changed = [mark for mark in marks if mark.changed]
+            if changed and len(changed) == len(marks):
+                text += (" — " + ("прошёл" if len(marks) == 1 else "прошли")
+                         + " на изменённом коде теста, в CI этого изменения ещё нет")
+            elif changed:
+                text += (f", из них на изменённом коде теста — {resolve.names(changed)}: в CI "
+                         "этого изменения ещё нет")
+            what.append(text)
         command = ws.skill_command("rerun", "--run", str(paths.root), "--remember", "--result",
                                    str(state.result["job"]))
+        several = len(keep.mark) + len(keep.unmark) + len(marks) > 1
         lines.append(
-            "После итога спроси пользователя, сохранить ли это в базу знаний: "
-            + "; ".join(what) + ". Тогда следующие разборы сразу покажут, какие тесты "
-            f"нестабильны. Только после явного «да» на этот вопрос выполни: {command}"
+            "После итога задай пользователю один вопрос — сохранить ли итог: " + "; ".join(what)
+            + "." + (" Тогда следующие разборы сразу покажут, какие тесты нестабильны."
+                     if keep.mark else "")
+            + " На «нет» ничего не выполняй."
+            + (" Согласие только с частью («в базу знаний да, TestOps не трогай», «только первый "
+               "тест») — не «да»: ничего не выполняй и скажи, что команда сохраняет всё сразу."
+               if several else "")
+            + (" Отметку в TestOps пользователь может выключить сам — ALLURE_RERUN_RESOLVE=false "
+               "в .env скилла (.env и переменные окружения сам не меняй); когда он скажет, что "
+               "выключил, выполни ту же команду без нового вопроса: она сохранит остальное."
+               if keep and marks else "")
+            + " Прежние «да» (на перезапуск, на правку) сюда не относятся. Только после явного "
+            f"«да» на этот вопрос выполни: {command}"
         )
     return "rerun_done", "\n".join(lines)
+
+
+def _save_items(run: dict[str, Any], state: rerun.JobState) -> tuple[flaky.RememberPlan, list[resolve.Mark]]:
+    """Что сохранить по итогу: отметки базы знаний и результаты для статуса passed в TestOps."""
+    assert state.result is not None and state.plan is not None
+    marks = flaky.marks_for_run(run)
+    keep = flaky.remember_plan(state.result, state.plan, marks)
+    # Уже отмечен по этому прогону — сохранён прежним «да»: вопрос не повторяется.
+    keep = flaky.RememberPlan([item for item in keep.mark if marks.get(
+        int(item["test_result_id"]), {}).get("launch_id") != run["launch_id"]], keep.unmark)
+    settings = _rerun_settings()
+    if isinstance(settings, str) or not settings.rerun_resolve:
+        return keep, []
+    return keep, resolve.plan_marks(state.result, state.plan, state.resolved)
 
 
 def _rerun_remember(
     paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, job_id: str | None,
 ) -> tuple[str, str]:
-    """Отметить нестабильные тесты в базе знаний (``alla-kb/flaky/``) по итогу перезапуска."""
+    """Сохранить итог перезапуска: отметки в базе знаний (``alla-kb/flaky/``) и статус passed
+    прошедших тестов в TestOps (``resolve.py``)."""
     if state.state != "done" or state.result is None or state.plan is None \
             or state.result.get("job") != job_id:
         return "error", (f"Итога перезапуска «{job_id}» в разборе {paths.root} нет — сохранять "
                          "нечего. Команду не повторяй; id итога — из ответа rerun_done.")
-    keep = flaky.remember_plan(state.result, state.plan, flaky.marks_for_run(run))
-    if not keep:
-        return "ok", "Сохранять в базу знаний нечего. Покажи это пользователю."
+    keep, resolve_marks = _save_items(run, state)
+    if not keep and not resolve_marks:
+        return "ok", "Сохранять нечего. Покажи это пользователю."
+    lines, folders = _remember_flaky(run, state, keep) if keep else ([], set())
+    testops, resolved = _resolve_in_testops(paths, run, state, resolve_marks) \
+        if resolve_marks else ([], False)
+    lines += testops
+    # Отметки показывает отчёт: после записи он пересобирается (хуки не повторяются).
+    if (folders or resolved) and _refresh_report(paths):
+        lines.append(f"Полный разбор обновлён: {paths.report}")
+    if folders:
+        shown = ", ".join(sorted(folders))
+        lines.append(f"Скажи это пользователю и напомни закоммитить папку базы знаний {shown} "
+                     f"(отметки — в {shown}/{flaky.FLAKY_DIRNAME}/). `next` не выполняй.")
+    else:
+        lines.append("Скажи это пользователю. `next` не выполняй.")
+    return ("saved" if folders or resolved else "ok"), "\n".join(lines)
+
+
+def _remember_flaky(
+    run: dict[str, Any], state: rerun.JobState, keep: flaky.RememberPlan,
+) -> tuple[list[str], set[str]]:
+    """Отметки «нестабильный» в базе знаний; строки ответа и папки базы знаний."""
+    assert state.result is not None
     keys = flaky.keys_of_tests(run)
     entries = {entry["file_id"]: entry for entry in run["clusters"]}
     project_root = Path(run["project_root"])
@@ -1911,18 +1970,50 @@ def _rerun_remember(
         elif store.unmark(key):
             unmarked.append(str(item["full_name"]))
         folders.add(kb_label(project_root, Path(entry["kb_dir"])))
+    if not folders:
+        return [], folders  # тестов разбора не нашлось — в базу знаний ничего не записано
     lines = ["Сохранено в базу знаний."]
     if marked:
         lines.append("Отмечены нестабильными: " + "; ".join(marked) + ".")
     if unmarked:
         lines.append("Сняты отметки (тест воспроизводится): " + "; ".join(unmarked) + ".")
-    # Отметки показывает отчёт: после записи он пересобирается (хуки не повторяются).
-    if _refresh_report(paths):
-        lines.append(f"Полный разбор обновлён: {paths.report}")
-    shown = ", ".join(sorted(folders))
-    lines.append(f"Скажи это пользователю и напомни закоммитить папку базы знаний {shown} "
-                 f"(отметки — в {shown}/{flaky.FLAKY_DIRNAME}/).")
-    return "saved", "\n".join(lines)
+    return lines, folders
+
+
+def _resolve_in_testops(
+    paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, marks: list[resolve.Mark],
+) -> tuple[list[str], bool]:
+    """Статус passed прошедшим тестам в TestOps; строки ответа и отмечен ли хоть один результат."""
+    assert state.result is not None
+    env_file = ws.SKILL_DIR / ".env"
+    try:
+        settings = Settings.load(env_file=env_file)
+    except ConfigurationError as exc:
+        return [f"В TestOps не отмечены ({resolve.names(marks)}): настройки TestOps в {env_file} "
+                f"неверны: {exc}. {USER_ACTION_NOTE}"], False
+    # id результатов — этого TestOps: адрес в .env сменился — запрос задел бы чужие результаты.
+    if not str(run.get("launch_url") or "").startswith(settings.endpoint.rstrip("/") + "/launch/"):
+        return [f"В TestOps не отмечены ({resolve.names(marks)}): прогон разбирался на другом "
+                f"TestOps, чем ALLURE_ENDPOINT сейчас ({settings.endpoint}). Отметить можно, "
+                "вернув прежний адрес."], False
+    outcome = asyncio.run(resolve.send(settings, marks, env_file, date.today().isoformat()))
+    files = rerun.job_files(paths)
+    if outcome.done:
+        rerun.write_resolved(files, str(state.result["job"]), {**state.resolved, **outcome.done})
+    lines = []
+    done = outcome.done_marks(marks)
+    if done:
+        lines.append(f"Отмечены успешными в TestOps (статус passed в прогоне {run['launch_id']}): "
+                     f"{resolve.names(done)}.")
+    if outcome.failed:
+        command = ws.skill_command("rerun", "--run", str(paths.root), "--remember", "--result",
+                                   str(state.result["job"]))
+        lines.append("Не отмечены в TestOps: "
+                     + "; ".join(f"{mark.full_name} — {reason}" for mark, reason in outcome.failed)
+                     + f". Сам команду не повторяй: когда пользователь устранит причину, повторить "
+                     f"можно той же командой ({command}) — уже отмеченные она не тронет. "
+                     + USER_ACTION_NOTE)
+    return lines, bool(outcome.done)
 
 
 def _refresh_report(paths: ws.RunPaths) -> bool:

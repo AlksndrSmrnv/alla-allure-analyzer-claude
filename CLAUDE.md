@@ -6,7 +6,8 @@
 ссылке на запуск он получает результаты, извлекает ошибки и логи, кластеризует активные
 failed/broken падения; анализ пишет модель Qwen Code по заданиям скилла, Python готовит
 данные. Результат — краткий разбор в терминале, `report.md` и предложения правок
-автотестов. Скилл только читает TestOps. База знаний — проектная (`alla-kb/` в репозитории
+автотестов. Скилл читает TestOps; пишет туда только статус passed тестов, прошедших при
+локальном перезапуске, и только после «да» пользователя (`resolve.py`). База знаний — проектная (`alla-kb/` в репозитории
 автотестов), наполняется обратной связью пользователя.
 
 ## Состояние репозитория
@@ -27,7 +28,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | `commands/alla/` | слэш-команды Qwen `/alla:run`, `/alla:apply`…; `setup` и `prepare` ставят их в `.qwen/commands/alla/` проекта |
 | `extensions/` | расширения скилла: `README.md` (контракт для авторов), встроенные `git-publish/` (выгрузка правки в новую ветку git) и `sut-code/` (`/alla:code N` — разбор проблемы по коду тестируемого приложения, подтверждённый вывод — в отчёт и базу знаний); свои расширения проекта — `<проект>/alla-extensions/` |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` проекта автотестов |
-| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files` |
+| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files` |
 | `scripts/alla_core/` | ядро: клиент TestOps, триаж, логи, кластеризация, блок «Данные» |
 | `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
 | `tests/eval/` | эталон точности: кассеты прогонов (`record.py` пишет у команды), размеченный корпус dev/holdout, метрики склеек, дробления, скрытых групп и потери доказательств (`run_eval.py`), см. `README.md` там же |
@@ -124,7 +125,7 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 | `skill-memory.md` | база знаний, сигнатура, модули, обратная связь, история | `kb.py`, `signature.py`, `modules.py`, `feedback.py`, `history.py` |
 | `skill-proposals.md` | предложения правок, `apply`/`revert`, состояние применения | `proposals.py` |
 | `skill-extensions.md` | расширения: манифест, события (`on_request`), хуки, действия, команды, `config.toml`, git-publish, sut-code | `extensions.py`, `extensions/` |
-| `skill-rerun.md` | перезапуск тестов локально (`rerun`): кандидаты-флаки, предложение после отчёта, план, Maven фоновым заданием, отчёты surefire, итоги | `rerun.py`, `rerun_worker.py`, `flaky.py`, `commands/alla/rerun.md` |
+| `skill-rerun.md` | перезапуск тестов локально (`rerun`): кандидаты-флаки, предложение после отчёта, план, Maven фоновым заданием, отчёты surefire, итоги, статус passed в TestOps | `rerun.py`, `rerun_worker.py`, `flaky.py`, `resolve.py`, `commands/alla/rerun.md` |
 | `core.md` | ядро: сбор данных, отбор логов, кластеризация, клиент TestOps, настройки `ALLURE_*` | `alla_core/`, `pipeline.py` |
 
 ## Инструменты Claude Code

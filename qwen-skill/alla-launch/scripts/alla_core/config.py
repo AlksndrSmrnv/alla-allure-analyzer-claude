@@ -60,6 +60,8 @@ class Settings:
     rerun_max_tests: int = 20
     rerun_timeout: int = 1800
     rerun_maven_args: str = ""
+    # Прошедшим при перезапуске — статус passed в прогоне TestOps (после «да» пользователя).
+    rerun_resolve: bool = True
 
     @classmethod
     def load(

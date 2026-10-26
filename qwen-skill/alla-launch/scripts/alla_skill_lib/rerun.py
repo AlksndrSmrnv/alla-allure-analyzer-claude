@@ -83,6 +83,8 @@ class PlannedTest:
     source_sha: str = ""  # исходник на момент плана (``source_digest``)
     # Ошибки CI других вариантов (параметров) этого метода в той же проблеме.
     other_messages: list[str] = field(default_factory=list)
+    # Результаты TestOps других вариантов: метод прошёл — passed нужен и им (``resolve.py``).
+    other_ids: list[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -183,6 +185,7 @@ def build_plan(
         key = (file_id, jvm.class_name, jvm.method)
         if key in seen:
             merged = seen[key]
+            merged.other_ids.append(int(test["test_result_id"]))
             message = str(test.get("status_message") or "")[:MESSAGE_KEEP_CHARS]
             if message.strip() and not any(same_error(message, known)
                                            for known in ci_messages(merged)):
@@ -517,6 +520,11 @@ class JobFiles:
         return self.root / "offer.json"
 
     @property
+    def resolved(self) -> Path:
+        """Результаты, отмеченные passed в TestOps по итогу этого задания (``resolve.py``)."""
+        return self.root / "resolved.json"
+
+    @property
     def worker_log(self) -> Path:
         return self.root / "worker.log"
 
@@ -532,7 +540,7 @@ class JobFiles:
 
     def clear(self) -> None:
         for path in (self.plan, self.progress, self.result, self.failed, self.pid, self.waits,
-                     self.worker_log):
+                     self.resolved, self.worker_log):
             path.unlink(missing_ok=True)
         shutil.rmtree(self.logs, ignore_errors=True)
 
@@ -548,6 +556,8 @@ class JobState:
     progress: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
     reason: str = ""
+    # id результата → когда отмечен passed в TestOps (``resolved.json`` этого задания).
+    resolved: dict[int, str] = field(default_factory=dict)
 
 
 def job_state(files: JobFiles) -> JobState:
@@ -556,7 +566,8 @@ def job_state(files: JobFiles) -> JobState:
         return JobState("none")
     result = _read(files.result)
     if result is not None and result.get("job") == plan.get("job"):
-        return JobState("done", plan, _read(files.progress), result)
+        return JobState("done", plan, _read(files.progress), result,
+                        resolved=read_resolved(files, str(plan.get("job"))))
     if files.failed.is_file():
         reason = files.failed.read_text(encoding="utf-8", errors="replace").strip()
         return JobState("failed", plan, _read(files.progress), reason=reason)
@@ -564,6 +575,20 @@ def job_state(files: JobFiles) -> JobState:
         return JobState("running", plan, _read(files.progress))
     return JobState("failed", plan, _read(files.progress),
                     reason="фоновый процесс перезапуска прервался")
+
+
+def read_resolved(files: JobFiles, job: str) -> dict[int, str]:
+    """Отметки passed в TestOps по итогу задания ``job``; чужое задание — пусто."""
+    data = _read(files.resolved) or {}
+    if data.get("job") != job:
+        return {}
+    marks = data.get("tests") or {}
+    return {int(key): str(value) for key, value in marks.items() if str(key).isdigit()}
+
+
+def write_resolved(files: JobFiles, job: str, marks: Mapping[int, str]) -> None:
+    ws.write_json(files.resolved, {"job": job, "tests": {str(key): value
+                                                         for key, value in sorted(marks.items())}})
 
 
 def start_job(paths: ws.RunPaths, plan: Plan, timeout: int, extra: list[str]) -> str | None:
@@ -820,6 +845,7 @@ class RerunView:
     attempts: int
     tests: list[dict[str, Any]]
     build_errors: dict[str, list[str]]
+    resolved: dict[int, str] = field(default_factory=dict)  # отмечены passed в TestOps
 
     @classmethod
     def of(cls, state: JobState) -> RerunView | None:
@@ -827,7 +853,7 @@ class RerunView:
             return None
         result = state.result
         return cls(int(result.get("attempts") or 0), list(result.get("tests") or []),
-                   dict(result.get("build_errors") or {}))
+                   dict(result.get("build_errors") or {}), dict(state.resolved))
 
     @staticmethod
     def group(item: dict[str, Any]) -> str:
@@ -874,7 +900,9 @@ class RerunView:
             text = f"прошёл на запуске {item.get('attempt')} из {self.attempts}"
             if item.get("surefire_flaky"):
                 text += " (surefire повторял его сам)"
-            return text + (f"; {item['changed']}" if item.get("changed") else "")
+            text += f"; {item['changed']}" if item.get("changed") else ""
+            return text + ("; в TestOps — passed" if int(item.get("test_result_id") or 0)
+                           in self.resolved else "")
         if outcome == "reproduced":
             text = f"упал {item.get('runs')} из {item.get('runs')}"
             return text + (f" (дальше не проверен: {item['cut']})" if item.get("cut") else "")

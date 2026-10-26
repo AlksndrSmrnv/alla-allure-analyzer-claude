@@ -590,12 +590,19 @@ def injection_launch(launch_id: int = 780) -> LaunchFixture:
 
 
 class FakeTestOps:
-    """Обработчик запросов TestOps с журналом (метод, путь)."""
+    """Обработчик запросов TestOps с журналом (метод, путь).
 
-    def __init__(self, fixture: LaunchFixture, *, auth_status: int = 200) -> None:
+    ``resolved`` — тела ``POST /api/testresult/{id}/resolve`` по id; ``resolve_status`` —
+    код ответа на них (202 — принят, иначе ошибка без смены статуса).
+    """
+
+    def __init__(self, fixture: LaunchFixture, *, auth_status: int = 200,
+                 resolve_status: int = 202) -> None:
         self.fixture = fixture
         self.auth_status = auth_status
+        self.resolve_status = resolve_status
         self.requests: list[tuple[str, str]] = []
+        self.resolved: dict[int, dict[str, Any]] = {}
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = self
@@ -625,6 +632,9 @@ class FakeTestOps:
         if path.startswith("/api/testresult/attachment/") and path.endswith("/content"):
             attachment_id = int(path.split("/")[-2])
             return httpx.Response(200, content=fixture.contents[attachment_id])
+        if request.method == "POST" and path.startswith("/api/testresult/") \
+                and path.endswith("/resolve"):
+            return self._resolve(int(path.split("/")[-2]), json.loads(request.content))
         if path.startswith("/api/testresult/") and path.endswith("/execution"):
             test_id = int(path.split("/")[-2])
             return httpx.Response(200, json=fixture.executions.get(test_id, []))
@@ -632,6 +642,13 @@ class FakeTestOps:
             test_id = int(path.split("/")[-1])
             return httpx.Response(200, json=fixture.details.get(test_id, {"id": test_id}))
         return httpx.Response(404, text=json.dumps({"path": path}))
+
+    def _resolve(self, test_id: int, body: dict[str, Any]) -> httpx.Response:
+        if self.resolve_status != 202:
+            return httpx.Response(self.resolve_status, json={"message": "Access denied"})
+        self.resolved[test_id] = body
+        return httpx.Response(202, json={"id": test_id, "name": f"test {test_id}",
+                                         "status": body.get("status")})
 
     def _page(self, request: httpx.Request) -> httpx.Response:
         page = int(request.url.params["page"])
