@@ -44,6 +44,7 @@ from alla_skill_lib.kb import (
     record_matches,
     record_rejected,
 )
+from alla_skill_lib.signature import log_error_lines
 from alla_skill_lib.sources import IMAGE_KIND, Registry, check_entry_analysis, example_blocks
 
 
@@ -300,15 +301,16 @@ def auto_resolution(
     records: Iterable[KBRecord],
     cluster: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],
-    examples: list[dict[str, Any]],
     sources: Registry,
 ) -> dict[str, Any] | None:
     """Разобрать ли проблему по записи базы знаний без модели: ``{"id", "quote"}`` или ``None``.
 
     Только точное узнавание (сигнатуру подтвердил инженер) и ровно одна такая запись; у
-    записи есть причина и рецепт. Каждый пример задания — тоже точное узнавание этой записью:
-    иначе в группе может быть другая ошибка, и однородность проверяет модель. Цитата — строка
-    куска данных с признаком записи, иначе первая строка сообщения или трейса; текст разбора
+    записи есть причина и рецепт. Каждый тест группы — тоже точное узнавание этой записью, с
+    теми же строками-ошибками своего лога, что у представителя: иначе в группе может быть
+    другая ошибка, и однородность проверяет модель. Все тесты, а не только примеры задания:
+    примеров до трёх, и тест другой проблемы в них может не попасть. Цитата — строка куска
+    данных с признаком записи, иначе первая строка сообщения или трейса; текст разбора
     проходит обычную проверку. Не вышло — ``None``: разбирает модель с подсказкой.
     """
     exact = [match["id"] for match in kb_matches if match.get("origin") == "exact"]
@@ -317,9 +319,8 @@ def auto_resolution(
     record = next((item for item in records if item.id == exact[0]), None)
     if record is None or not _record_steps(record):
         return None
-    for example in examples:
-        test_id = example.get("test_result_id")
-        if test_id != cluster.representative_test_id and not _example_recognized(
+    for test_id in cluster.member_test_ids:
+        if test_id != cluster.representative_test_id and not _member_recognized(
                 record, cluster, tests_by_id, test_id):
             return None
     quote = _quote(record, sources)
@@ -328,21 +329,29 @@ def auto_resolution(
     return {"id": record.id, "quote": list(quote)}
 
 
-def _example_recognized(
+def _member_recognized(
     record: KBRecord,
     cluster: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],
-    test_id: Any,
+    test_id: int,
 ) -> bool:
-    """Пример узнаётся записью точно, как если бы он был представителем кластера."""
-    test = tests_by_id.get(test_id) if isinstance(test_id, int) else None
+    """Тест группы узнаётся записью точно, как если бы он был представителем кластера."""
+    test = tests_by_id.get(test_id)
     if test is None:
         return False
     alone = cluster.model_copy(update={"representative_test_id": test_id})
     evidence = "\n".join(part for part in cluster_evidence(alone, tests_by_id) if part)
     key = key_of_test(test.full_name, test.test_case_id)
-    return record_matches(record, cluster_signature(alone, tests_by_id), normalize_fp(evidence),
-                          [key] if key else []) == "exact"
+    if record_matches(record, cluster_signature(alone, tests_by_id), normalize_fp(evidence),
+                      [key] if key else []) != "exact":
+        return False
+    # Сигнатура ошибки, которая сама называет причину, лог не берёт: разные ошибки сервиса в
+    # логах тестов (пул БД у одного, NPE у другого) она не различает — это видно только по
+    # логам, и однородность группы проверяет модель. Фон или причина — по паре не отличить.
+    representative = tests_by_id.get(cluster.representative_test_id or -1)
+    own = log_error_lines(test)
+    shown = log_error_lines(representative) if representative is not None else frozenset()
+    return not (own and shown and own != shown)
 
 
 def _quote(record: KBRecord, sources: Registry) -> tuple[str, str] | None:

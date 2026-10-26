@@ -91,7 +91,7 @@ from alla_skill_lib.cluster_task import (
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
 from alla_skill_lib.confirmed import load_confirmed
 from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
-from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, reject
+from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, remember_many, reject
 from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
 from alla_skill_lib.images import place_images
 from alla_skill_lib.known_issues import (
@@ -341,6 +341,9 @@ def _dispatch(argv: list[str] | None) -> int:
     if args.command == "clean":
         return cmd_clean(reports_dir, args.older_than_days, dry_run=args.dry_run)
     if args.command == "remember":
+        if len(args.clusters) > 1:
+            return _remember_many(args, reports_dir)
+        args.cluster = args.clusters[0]
         return _cluster_command(args, reports_dir, lambda paths, run, entry: remember(
             paths, run, entry, args.entry, date.today(), from_analysis=args.from_analysis,
             from_extension=args.from_extension,
@@ -460,11 +463,15 @@ def _build_parser() -> argparse.ArgumentParser:
     run_option.add_argument(
         "--run", required=True, help="папка разбора, к отчёту которого относится команда"
     )
-    run_option.add_argument("cluster", help="номер проблемы из отчёта: 3 или 03")
     keep = commands.add_parser(
         "remember", parents=[common, run_option],
         help="сохранить причину и рецепт из обратной связи в базу знаний проекта",
     )
+    keep.add_argument(
+        "clusters", nargs="+", metavar="cluster",
+        help="номер проблемы из отчёта: 3 или 03; несколько — только с --from-analysis",
+    )
+    run_option.add_argument("cluster", help="номер проблемы из отчёта: 3 или 03")
     keep.add_argument("--entry", help="id существующей записи, которую нужно обновить")
     source = keep.add_mutually_exclusive_group()
     source.add_argument(
@@ -884,7 +891,7 @@ def _write_run(
                                 for source_id, image in task.images.items()},
             )
             known_auto = auto_resolution(kb_matches, load_kb(cluster_kb_dir), cluster,
-                                         tests_by_id, task.examples, sources)
+                                         tests_by_id, sources)
             if known_auto is not None:
                 # Разбор пишет скрипт (next). Задание — запасной путь, если инженер отвергнет
                 # запись: тогда оно не должно называть её точным совпадением. Куски данных те же.
@@ -1266,7 +1273,9 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     # Уже применённую или неоднозначную правку повторно не предлагаем.
     offered = {file_id: p for file_id, p in fixes.items() if states[file_id] == "not_applied"}
     offer = _rerun_offer(paths, run, analyses, flagged, set(confirmed), states)
-    return "done", _done_body(console, paths, offered, feedback=True, rerun_offer=offer)
+    kb_offer = _kb_offer(paths, run, analyses, flagged, known, set(confirmed), related)
+    return "done", _done_body(console, paths, offered, feedback=True, rerun_offer=offer,
+                              kb_offer=kb_offer)
 
 
 REJECTED_NOT_PROPOSED = (
@@ -1658,12 +1667,93 @@ def _summary_body(paths: ws.RunPaths, total: int) -> str:
     ])
 
 
+def _kb_question(paths: ws.RunPaths, single: list[str], groups: list[list[str]]) -> list[str]:
+    """Пункт «После отчёта»: один вопрос, какие разборы верны, и как сохранить ответ.
+
+    Первым из вопросов после отчёта: за цепочкой «правка → проверка перезапуском» он терялся
+    (ревью исполнителя). Готовая команда — с местом для номеров, а не со всеми: «бери команды
+    как есть» иначе сохранило бы и разбор, который пользователь назвал неверным.
+    """
+    if not single and not groups:
+        return []
+    run = str(paths.root)
+    numbers = [str(int(file_id)) for file_id in single]
+    merged = ["«Проблема " + " и ".join(str(int(file_id)) for file_id in group) + "»"
+              for group in groups]
+    listed = ", ".join(numbers) + (" и " if numbers and merged else "") + ", ".join(merged)
+    lines = [
+        "- Сохранить разборы в базу знаний: сразу после краткого разбора, до вопросов о правках "
+        "и перезапуске, задай пользователю отдельно один вопрос, например: «Какие разборы верны? "
+        "Сохраню их в базу знаний — в следующих прогонах эти ошибки разберутся сразу, без "
+        f"агента. Проблемы: {listed}. Если где-то причина другая — назовите её». О номерах, о "
+        "которых уже спрашивал в этом сеансе, повторно не спрашивай.",
+    ]
+    if numbers:
+        lines.append(
+            "  Верны все или названные номера — одна команда: "
+            + ws.skill_command("remember", "N1", "N2", "--run", run, "--from-analysis")
+            + ", где N1 N2 … — только номера, которые пользователь назвал верными, сколько их "
+            "ни есть (номер, который он исключил или назвал неверным, не пиши); «верны все» — "
+            f"{' '.join(numbers)}."
+        )
+    if merged:
+        lines.append(
+            f"  Верен пункт {merged[0]} (объединил агент) — не --from-analysis: каждому его номеру "
+            "свой файл обратной связи с общей причиной и шагом «Что делать» этого пункта, затем "
+            "remember N (references/feedback.md, «Порядок»)."
+        )
+    lines.append(
+        "  Причина другая у проблемы N — файл обратной связи с его слов и remember N (ниже); "
+        "назвал номер неверным без причины — спроси причину. «Не сохраняй», «потом» — ничего не "
+        "выполняй."
+    )
+    return lines
+
+
+def _kb_offer(
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    analyses: dict[str, ClusterAnalysis],
+    flagged: set[str],
+    known: KnownIssues,
+    confirmed: set[str],
+    related: Related,
+) -> tuple[list[str], list[list[str]]]:
+    """Разборы для вопроса после отчёта «какие верны — сохраню в базу знаний».
+
+    Принятые разборы агента с категорией, которые ни одна запись ещё не узнаёт точно (уже
+    сохранённые второй раз не спрашиваем); без неоднородной группы (одна причина на смешанные
+    тесты), разбора по отвергнутой записи или с другой категорией, чем у его записи, и без
+    подтверждённого вывода расширения. Возвращает отдельные номера и группы «одна причина»
+    (объединил агент): их пользователь видел общей причиной, сохраняются они по ``feedback.md``.
+    """
+    current = current_kb_matches(run, paths)
+    eligible: list[str] = []
+    for entry in run["clusters"]:
+        file_id = entry["file_id"]
+        analysis = analyses.get(file_id)
+        if (analysis is None or file_id in flagged or entry["auto"] or file_id in known.auto
+                or analysis.category in (None, "неизвестно")
+                or analysis.consistency_kind == "different"
+                or file_id in known.rejected or file_id in known.mismatched
+                or file_id in confirmed
+                or any(match["origin"] == "exact" for match in current.get(file_id, []))):
+            continue
+        eligible.append(file_id)
+    groups = [[file_id for file_id in group.file_ids if file_id in eligible]
+              for group in related.groups]
+    groups = [group for group in groups if len(group) > 1]
+    grouped = {file_id for group in groups for file_id in group}
+    return [file_id for file_id in eligible if file_id not in grouped], groups
+
+
 def _done_body(
     console: str,
     paths: ws.RunPaths,
     fixes: dict[str, Proposal],
     feedback: bool = False,
     rerun_offer: str | None = None,
+    kb_offer: tuple[list[str], list[list[str]]] = ([], []),
 ) -> str:
     lines = [
         f"Отчёт сохранён: {paths.report}",
@@ -1679,6 +1769,8 @@ def _done_body(
     ]
     if fixes or feedback or rerun_offer:
         lines.append("После отчёта:")
+    if feedback:
+        lines += _kb_question(paths, *kb_offer)
     for file_id in fixes:
         show = ws.skill_command("apply", file_id, "--run", str(paths.root))
         lines.append(
@@ -1695,7 +1787,8 @@ def _done_body(
             *(f"    {line}" for line in FEEDBACK_FORMAT.splitlines()),
             reference_line(FEEDBACK_FORMAT_REF, "  Правила и пример"),
             "  Команды для ЭТОГО разбора (всегда с этим --run):",
-            f"  файл обратной связи: {paths.root / 'feedback'}/NN.md",
+            f"  файл обратной связи: {paths.root / 'feedback'}/NN.md (NN — номер, как в именах "
+            "clusters/NN.md, с ведущими нулями)",
             f"  {ws.skill_command('remember', 'N', '--run', run)}",
             f"  разбор подтверждён как есть: {ws.skill_command('remember', 'N', '--run', run, '--from-analysis')}",
             "  вывод расширения подтверждён (ответ субагента расширения по проблеме N просил "
@@ -2212,6 +2305,35 @@ def cmd_verify(run_dir: str | None, clusters: list[str], reports_dir: Path) -> i
 # ---------------------------------------------------------------------------
 # remember / reject / apply
 # ---------------------------------------------------------------------------
+
+
+def _remember_many(args: argparse.Namespace, reports_dir: Path) -> int:
+    """``remember N N… --from-analysis``: пользователь подтвердил разборы нескольких проблем."""
+    if not args.from_analysis or args.entry:
+        print("STATUS: error")
+        print("Несколько номеров — только с --from-analysis и без --entry: подтверждённые "
+              "пользователем разборы. Обратную связь своими словами сохраняй по одной проблеме: "
+              "remember N --run <папка разбора>.")
+        return 1
+    try:
+        paths = ws.resolve_run(args.run, reports_dir)
+    except ws.RunNotFoundError as exc:
+        print("STATUS: error")
+        print(exc)
+        return 1
+    run = ws.read_json(paths.run_json)
+    entries = [find_entry(run, number) for number in dict.fromkeys(args.clusters)]
+    missing = [number for number, entry in zip(dict.fromkeys(args.clusters), entries, strict=True)
+               if entry is None]
+    if missing:
+        print("STATUS: error")
+        print(f"В разборе {paths.root} нет проблем №{', '.join(missing)}.")
+        return 1
+    status, body = remember_many(paths, run, [entry for entry in entries if entry is not None],
+                                 date.today())
+    print(f"STATUS: {status}")
+    print(body)
+    return _exit_code(status)
 
 
 def _cluster_command(args: argparse.Namespace, reports_dir: Path, action: Any) -> int:

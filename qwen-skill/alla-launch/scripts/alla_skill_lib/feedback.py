@@ -20,6 +20,7 @@ from alla_skill_lib.analysis_format import parse_analysis
 from alla_skill_lib.confirmed import drop_confirmed, find_finding, load_finding, save_confirmed
 from alla_skill_lib.kb import (
     CATEGORY_TO_KB,
+    KB_TO_CATEGORY,
     MAX_FINGERPRINT_LINES,
     KBRecord,
     ProjectKB,
@@ -72,6 +73,19 @@ class _Input:
     fingerprint: str  # ПРИЗНАК из обратной связи; пусто — признак кластера
 
 
+@dataclass
+class _Saved:
+    """Что сохранил ``remember``: для ответа по одной проблеме и по нескольким."""
+
+    file_id: str
+    action: str  # новая запись | запись обновлена | запись подтверждена
+    record: KBRecord
+    kb: ProjectKB
+    changed: list[Path]
+    refresh: list[str]
+    note: str  # какой источник взят вместо найденного файла обратной связи; пусто — нет
+
+
 def remember(
     paths: ws.RunPaths,
     run: dict[str, Any],
@@ -91,6 +105,90 @@ def remember(
     расширения по проблеме (``confirmed.py``): пользователь подтвердил его, и он
     попадает ещё и в отчёт (``confirmed/NN.json``).
     """
+    outcome = _remember(paths, run, entry, entry_id, today, from_analysis=from_analysis,
+                        from_extension=from_extension)
+    if isinstance(outcome, tuple):
+        return outcome
+    return "saved", "\n".join([
+        f"Запомнено в базе знаний ({outcome.action}): {outcome.record.id} — "
+        f"«{outcome.record.title}»",
+        *([outcome.note] if outcome.note else []),
+        "Изменены файлы:",
+        *(f"- {path}" for path in outcome.changed),
+        "Скажи пользователю, что рецепт сохранён, и напомни закоммитить папку "
+        f"{outcome.kb.label}/, чтобы им пользовалась вся команда.",
+        *outcome.refresh,
+    ])
+
+
+def remember_many(
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    entries: list[dict[str, Any]],
+    today: date,
+) -> tuple[str, str]:
+    """Сохранить подтверждённые пользователем разборы нескольких проблем (``--from-analysis``).
+
+    Ответ после отчёта «верны 1, 2 и 7» — одна команда, а не по команде на номер. Каждая
+    проблема сохраняется как своим ``remember``; отказ по одной не мешает остальным, а
+    ``next`` просится один раз в конце. Не сохранилось ничего — ответ как у одной проблемы.
+    """
+    saved: list[_Saved] = []
+    refused: list[tuple[str, str, str]] = []  # номер, статус, текст отказа
+    for entry in entries:
+        outcome = _remember(paths, run, entry, None, today, from_analysis=True)
+        if isinstance(outcome, tuple):
+            refused.append((entry["file_id"], *outcome))
+        else:
+            saved.append(outcome)
+    if not saved and len(refused) == 1:
+        return refused[0][1], refused[0][2]
+    numbers = ", ".join(str(int(file_id)) for file_id, _, _ in refused)
+    # Замечания — без команд из отказа по одной проблеме: их «Затем выполни» модель выполнила
+    # бы все подряд или написала бы файл обратной связи из своего разбора (ревью исполнителя).
+    not_saved = [
+        f"Не сохранены проблемы {numbers}. Покажи пользователю замечания как есть; сохранить "
+        "такую проблему можно только со слов пользователя — файл обратной связи и remember N "
+        "по одной (без --from-analysis), когда он назовёт причину и рецепт. Сам команд по ним "
+        "не выполняй.",
+        *(f"- Проблема {int(file_id)}: {_refusal_reason(text)}" for file_id, _, text in refused),
+    ]
+    if not saved:
+        return "error", "\n".join(not_saved)
+    labels = list(dict.fromkeys(outcome.kb.label for outcome in saved))
+    lines = [
+        f"Запомнено в базе знаний проблем: {len(saved)} из {len(entries)}.",
+        *(f"- Проблема {int(outcome.file_id)} ({outcome.action}): {outcome.record.id} — "
+          f"«{outcome.record.title}»" for outcome in saved),
+        *[outcome.note for outcome in saved if outcome.note],
+        "Изменены файлы:",
+        *(f"- {path}" for path in dict.fromkeys(path for outcome in saved for path in outcome.changed)),
+        "Скажи пользователю, что разборы сохранены, и напомни закоммитить "
+        + ("папку " if len(labels) == 1 else "папки ") + ", ".join(f"{label}/" for label in labels)
+        + ", чтобы ими пользовалась вся команда.",
+    ]
+    if refused:
+        lines += not_saved
+    if any(outcome.refresh for outcome in saved):
+        lines.append(
+            f"Отчёт изменился. Выполни {paths.next_command()} и дальше как обычно: попросит "
+            "сводку — напиши её заново, ответит done — выведи пользователю новый краткий разбор "
+            "дословно."
+        )
+    return "saved", "\n".join(lines)
+
+
+def _remember(
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    entry: dict[str, Any],
+    entry_id: str | None,
+    today: date,
+    *,
+    from_analysis: bool = False,
+    from_extension: str | None = None,
+) -> tuple[str, str] | _Saved:
+    """Общий путь ``remember``: отказ (статус, текст) или что сохранено."""
     file_id = entry["file_id"]
     blocked = _blocked(paths, entry)
     if blocked:
@@ -99,6 +197,7 @@ def remember(
     feedback_path = paths.feedback(file_id)
     has_feedback = feedback_path.is_file() and bool(feedback_path.read_text(encoding="utf-8").strip())
     finding: dict[str, Any] | None = None
+    confirm_ref: str | None = None  # пользователь подтвердил разбор со ссылкой на запись R
     if from_extension:
         finding_path = find_finding(paths, from_extension, file_id)
         if finding_path is None:
@@ -153,11 +252,28 @@ def remember(
             steps=[_step_text(line) for line in parsed.fix.splitlines() if _step_text(line)],
             fingerprint=parsed.fingerprint,
         )
+        if not from_feedback and parsed.kb_ref and entry_id in (None, parsed.kb_ref):
+            # Разбор назвал известную проблему, пользователь его подтвердил: подтверждается
+            # эта запись, а не создаётся её дубль из слов разбора.
+            confirm_ref = parsed.kb_ref
     ignored_feedback = has_feedback and (from_analysis or bool(from_extension))
     source_args = (["--from-extension", from_extension] if from_extension
                    else ["--from-analysis"] if from_analysis else [])
 
     kb = project_kb(run, entry)
+    confirmed: KBRecord | None = None
+    if confirm_ref is not None:
+        try:
+            confirmed = kb.get(confirm_ref)
+        except ValueError as exc:
+            return "error", str(exc)
+        # Записи уже нет — сохраняется сам разбор, как без ссылки.
+        if confirmed is not None and KB_TO_CATEGORY.get(confirmed.category) != given.category:
+            return _refused(paths, file_id, [
+                f"разбор ссылается на известную проблему «{confirmed.id}» с категорией "
+                f"«{KB_TO_CATEGORY.get(confirmed.category)}», а сам называет «{given.category}» — "
+                "спроси пользователя, какая причина верна, и запиши её в файл обратной связи"
+            ], entry_id)
     record: KBRecord | None = None
     if entry_id:
         try:
@@ -168,33 +284,37 @@ def remember(
             return "error", f"В {kb.directory} нет записи «{entry_id}»."
 
     errors: list[str] = []
-    if given.category is None or given.category == "неизвестно":
-        errors.append(
-            "в «ПРИЧИНА:» первым словом нужна категория тест / приложение / окружение / "
-            "данные («неизвестно» запоминать нельзя)"
-        )
-    steps = given.steps
-    if not steps:
-        errors.append("нет «КАК ИСПРАВИТЬ:» — рецепт обязателен")
-    if record is None or given.fingerprint:
-        # Признак проверяется, только когда он сохраняется: у обновляемой
-        # записи без нового ПРИЗНАКА эту ошибку узнает подтверждённая сигнатура.
-        fingerprint = given.fingerprint or str(entry.get("fingerprint") or "")
-        errors.extend(_fingerprint_errors(fingerprint, paths.evidence(file_id)))
-    else:
-        fingerprint = record.error_example
-    title = given.title
-    description = given.description
-    # alla-kb/ коммитится: секретов не должно быть ни в одном сохраняемом поле.
-    for field_name, text in (
-        ("НАЗВАНИЕ", title),
-        ("ПРИЧИНА", description),
-        ("КАК ИСПРАВИТЬ", "\n".join(steps)),
-    ):
-        for line in secret_lines(text):
+    fingerprint = title = description = ""
+    steps: list[str] = []
+    # Подтверждается известная запись как есть: её текст не меняется, проверять нечего.
+    if confirmed is None:
+        if given.category is None or given.category == "неизвестно":
             errors.append(
-                f"в «{field_name}:» строка похожа на секрет, её нельзя коммитить: «{line[:60]}»"
+                "в «ПРИЧИНА:» первым словом нужна категория тест / приложение / окружение / "
+                "данные («неизвестно» запоминать нельзя)"
             )
+        steps = given.steps
+        if not steps:
+            errors.append("нет «КАК ИСПРАВИТЬ:» — рецепт обязателен")
+        if record is None or given.fingerprint:
+            # Признак проверяется, только когда он сохраняется: у обновляемой
+            # записи без нового ПРИЗНАКА эту ошибку узнает подтверждённая сигнатура.
+            fingerprint = given.fingerprint or str(entry.get("fingerprint") or "")
+            errors.extend(_fingerprint_errors(fingerprint, paths.evidence(file_id)))
+        else:
+            fingerprint = record.error_example
+        title = given.title
+        description = given.description
+        # alla-kb/ коммитится: секретов не должно быть ни в одном сохраняемом поле.
+        for field_name, text in (
+            ("НАЗВАНИЕ", title),
+            ("ПРИЧИНА", description),
+            ("КАК ИСПРАВИТЬ", "\n".join(steps)),
+        ):
+            for line in secret_lines(text):
+                errors.append(
+                    f"в «{field_name}:» строка похожа на секрет, её нельзя коммитить: «{line[:60]}»"
+                )
     if errors and from_extension:
         # Вывод расширения модель не перепишет: отказ — сразу пользователю. Признак у этого
         # пути не дописать (feedback/NN.md не читается) — говорим об этом прямо.
@@ -220,12 +340,26 @@ def remember(
         return record_matches(candidate, signature, haystack, tests) == "exact"
 
     records, _warnings = kb.load()
-    if record is None:
+    if confirmed is not None:
+        record = confirmed
+        action = "запись подтверждена"
+    elif record is None:
         owner = next((r for r in records if confirmed_here(r)), None)
         if owner is not None:
+            # Своя причина пользователя — не уточнение записи: обновление переписало бы её и
+            # для других проблем, которые она узнаёт (ревью исполнителя). У вывода расширения
+            # путь прежний — SKILL.md велит обновить запись готовой командой.
+            other_cause = "" if from_extension else (
+                "\nОбновляй, только если пользователь уточняет рецепт этой же записи. Говорит, что "
+                "причина другая, — сначала "
+                + ws.skill_command("reject", file_id, owner.id, "--run", str(paths.root))
+                + ", затем повтори remember без --entry: обновление переписало бы запись и для "
+                "других проблем, которые она узнаёт."
+            )
             return "error", (
                 f"Эту ошибку уже подтверждали в записи «{owner.id}» ({owner.title}). "
                 f"Чтобы обновить её: {_update_command(paths, file_id, owner.id, source_args)}"
+                + other_cause
             )
         new_id = make_entry_id(title, fingerprint)
         if kb.path_for(new_id).exists():
@@ -289,15 +423,24 @@ def remember(
         f"Источник — вывод расширения {from_extension}" if from_extension
         else "Источник — разбор модели (--from-analysis)"
     )
-    return "saved", "\n".join([
-        f"Запомнено в базе знаний ({action}): {record.id} — «{record.title}»",
-        *([f"{source_note}; файл {feedback_path} не использован."] if ignored_feedback else []),
-        "Изменены файлы:",
-        *(f"- {path}" for path in changed),
-        "Скажи пользователю, что рецепт сохранён, и напомни закоммитить папку "
-        f"{kb.label}/, чтобы им пользовалась вся команда.",
-        *refresh,
-    ])
+    return _Saved(
+        file_id=file_id,
+        action=action,
+        record=record,
+        kb=kb,
+        changed=changed,
+        refresh=refresh,
+        note=f"{source_note}; файл {feedback_path} не использован." if ignored_feedback else "",
+    )
+
+
+def _refusal_reason(text: str) -> str:
+    """Суть отказа одной строкой: его замечания («- …») или первая фраза."""
+    reasons = [line[2:].strip() for line in text.splitlines() if line.startswith("- ")]
+    if reasons:
+        return "; ".join(reasons)
+    first = text.splitlines()[0] if text.strip() else ""
+    return first.removeprefix("Попытка ").split(". ", 1)[-1] if first.startswith("Попытка ") else first
 
 
 def _update_command(paths: ws.RunPaths, file_id: str, entry_id: str, source_args: list[str]) -> str:
@@ -377,8 +520,9 @@ def _report_refresh(
     noun = "проблемы" if len(numbers) == 1 else "проблем"
     return [(
         f"Запись указана в разборах {noun} {', '.join(numbers)} — известные проблемы в отчёте "
-        f"изменятся. Выполни {paths.next_command()} и выведи пользователю новый краткий разбор, "
-        "как обычно."
+        f"изменятся. Выполни {paths.next_command()} и дальше как обычно: попросит разобрать "
+        "проблему (её разбирали по этой записи) — разбери, как в цикле; ответит done — выведи "
+        "пользователю новый краткий разбор."
     )]
 
 

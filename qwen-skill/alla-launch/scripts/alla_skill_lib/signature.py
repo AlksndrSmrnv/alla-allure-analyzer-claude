@@ -147,6 +147,22 @@ def _log_evidence(summary: FailedTestSummary) -> str:
     return snippet.strip()
 
 
+def log_error_lines(summary: FailedTestSummary) -> frozenset[str]:
+    """Строки-ошибки собственного лога теста в виде якоря сигнатуры; пусто — своего лога или
+    ошибок в нём нет.
+
+    Сигнатура ошибки, которая сама называет причину, лог не берёт: две проблемы за одним
+    исключением клиента и с разными ошибками сервиса в логе получают одну сигнатуру. Примеры
+    кластера с разными строками-ошибками своего лога сравнивает модель, а не запись базы
+    знаний (``known_issues.auto_resolution``).
+    """
+    log = _log_evidence(summary)
+    if not log:
+        return frozenset()
+    anchor = _log_anchor(log)
+    return frozenset([*anchor.causes, *anchor.errors])
+
+
 def _cluster_logs(
     cluster: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],

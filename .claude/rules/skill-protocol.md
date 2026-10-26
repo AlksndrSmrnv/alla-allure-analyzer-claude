@@ -73,7 +73,8 @@ paths:
 `verify N [N…] --run DIR`, `skip N --run DIR`, `check`, `clean`,
 `review [run_dir | --run DIR] [--no-model]`,
 `apply N --run DIR [--yes --diff ХЭШ] [--repeat]`, `revert N --run DIR`,
-`remember N --run DIR [--entry ID] [--from-analysis | --from-extension ИМЯ]`, `reject N <id> --run DIR`,
+`remember N [N…] --run DIR [--entry ID] [--from-analysis | --from-extension ИМЯ]` (несколько
+номеров — только с `--from-analysis`, `skill-memory.md`), `reject N <id> --run DIR`,
 `extensions [list|enable|disable|run|action]` (`skill-extensions.md`),
 `rerun [N…] --run DIR [--yes --plan ХЭШ | --wait]` (`skill-rerun.md`).
 

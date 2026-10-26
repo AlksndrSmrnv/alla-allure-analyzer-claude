@@ -26,11 +26,12 @@ POOL = "java.lang.IllegalStateException: HikariPool-1 - Connection is not availa
 TRACE = POOL + "\n\tat ru.company.orders.OrderTest.create(OrderTest.java:6)\n"
 
 
-def _cluster(*messages: str) -> tuple[FailureCluster, dict[int, FailedTestSummary]]:
+def _cluster(*messages: str, logs: tuple[str, ...] = ()) -> tuple[FailureCluster, dict[int, FailedTestSummary]]:
     tests = {
         number: make_failed_test_summary(
             test_result_id=number, name=f"test{number}", full_name=f"ru.company.OrderTest.test{number}",
-            status_message=message, status_trace=message + "\n\tat ru.company.OrderTest.run(OrderTest.java:6)\n")
+            status_message=message, status_trace=message + "\n\tat ru.company.OrderTest.run(OrderTest.java:6)\n",
+            log_snippet=logs[number - 1] if logs else None)
         for number, message in enumerate(messages, start=1)
     }
     cluster = FailureCluster(
@@ -58,14 +59,12 @@ def _decide(
     cluster: FailureCluster,
     tests: dict[int, FailedTestSummary],
     records: list[KBRecord],
-    examples: list[int],
     sources: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     signature = cluster_signature(cluster, tests)
     evidence = "\n".join(part for part in cluster_evidence(cluster, tests) if part)
     matches = match_cluster(records, signature, evidence)
     return auto_resolution(matches, records, cluster, tests,
-                           [{"role": "typical", "test_result_id": number} for number in examples],
                            sources if sources is not None else _sources(POOL))
 
 
@@ -73,32 +72,49 @@ def test_exact_match_is_resolved_with_a_quote_of_its_fingerprint() -> None:
     cluster, tests = _cluster(POOL, POOL)
     record = _record(cluster_signature(cluster, tests))
 
-    assert _decide(cluster, tests, [record], [1, 2]) == {"id": record.id, "quote": ["S1", POOL]}
+    assert _decide(cluster, tests, [record]) == {"id": record.id, "quote": ["S1", POOL]}
 
 
-@pytest.mark.parametrize("case", ["fingerprint_only", "two_exact", "no_steps", "other_example"])
-def test_only_one_confirmed_record_for_every_example_resolves(case: str) -> None:
+@pytest.mark.parametrize("case", ["fingerprint_only", "two_exact", "no_steps", "other_member"])
+def test_only_one_confirmed_record_for_every_member_resolves(case: str) -> None:
     other = "java.lang.NullPointerException: customer is null"
-    cluster, tests = _cluster(POOL, other if case == "other_example" else POOL)
+    cluster, tests = _cluster(POOL, POOL, other if case == "other_member" else POOL)
     signature = cluster_signature(cluster, tests)
     records = {
         "fingerprint_only": [_record(None)],
         "two_exact": [_record(signature), _record(signature, "pool_copy_9f8e7d6c")],
         "no_steps": [_record(signature, steps=[" "])],
-        "other_example": [_record(signature)],
+        "other_member": [_record(signature)],
     }[case]
 
-    # Пример с другой ошибкой — группа может быть смешанной: однородность проверяет модель.
-    assert _decide(cluster, tests, records, [1, 2]) is None
+    # Тест с другой ошибкой — группа может быть смешанной (даже если он не пример задания):
+    # однородность проверяет модель.
+    assert _decide(cluster, tests, records) is None
+
+
+def test_same_exception_with_other_errors_in_the_log_is_left_to_the_model() -> None:
+    # Исключение называет причину само — лог в сигнатуру не входит, и у пула и NPE она одна.
+    client = 'HttpServerErrorException$InternalServerError: 500 Internal Server Error: "submit failed"'
+    pool = "2026-10-03 11:10:00 [ERROR] OrderRepository: HikariPool-7 - Connection is not available\n"
+    npe = "2026-10-03 11:10:00 [ERROR] PromoService: NullPointerException: promo is null\n"
+    cluster, tests = _cluster(client, client, logs=(pool, npe))
+    record = _record(cluster_signature(cluster, tests), error_example="submit failed")
+    assert cluster_signature(cluster.model_copy(update={"representative_test_id": 2}), tests) == \
+        cluster_signature(cluster, tests)
+
+    assert _decide(cluster, tests, [record], _sources(client)) is None
+    same, same_tests = _cluster(client, client, logs=(pool, pool))
+    assert _decide(same, same_tests, [_record(cluster_signature(same, same_tests),
+                                               error_example="submit failed")], _sources(client))
 
 
 def test_quote_falls_back_to_the_error_line_and_needs_text() -> None:
     cluster, tests = _cluster(POOL)
     record = _record(cluster_signature(cluster, tests), error_example="признака в данных нет")
 
-    assert _decide(cluster, tests, [record], [1]) == {"id": record.id, "quote": ["S1", POOL]}
+    assert _decide(cluster, tests, [record]) == {"id": record.id, "quote": ["S1", POOL]}
     only_image = {"S1": {"kind": "image", "text": ""}}
-    assert _decide(cluster, tests, [record], [1], only_image) is None
+    assert _decide(cluster, tests, [record], only_image) is None
 
 
 def test_quote_without_guillemets_is_found_in_its_source() -> None:
@@ -107,7 +123,7 @@ def test_quote_without_guillemets_is_found_in_its_source() -> None:
     record = _record(cluster_signature(cluster, tests))
     sources = _sources(message)
 
-    decision = _decide(cluster, tests, [record], [1], sources)
+    decision = _decide(cluster, tests, [record], sources)
     assert decision is not None and "«" not in decision["quote"][1]
     text = known_issue_analysis(record, (decision["quote"][0], decision["quote"][1]))
     analysis = parse_analysis(text)
@@ -231,3 +247,127 @@ def test_review_counts_analyses_from_records_as_script_work(
     assert facts["size"]["manual"] == 0 and facts["size"]["kb_auto"] == 2
     assert facts["quality"]["analysed"] == 0 and select_problems(facts) == []
     assert "из них по базе знаний — 2" in review.render_report(facts)
+
+
+# --- ответ инженера после отчёта -------------------------------------------------
+
+
+def test_done_asks_once_which_analyses_are_right_and_saves_them_in_one_command(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    out = _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    assert "«Какие разборы верны? Сохраню их в базу знаний" in out
+    assert f"Проблемы: {int(order)}, {int(login)}." in out
+    # Команда — с местом для верных номеров: готовая со всеми сохранила бы и неверный разбор.
+    assert f"remember N1 N2 --run {run_dir} --from-analysis" in out
+    assert f"«верны все» — {int(order)} {int(login)}." in out
+    # Вопрос — первым после отчёта, до правок и перезапуска.
+    after = out.split("После отчёта:", 1)[1]
+    assert after.lstrip().startswith("- Сохранить разборы в базу знаний")
+
+    code, out = _run(["remember", str(int(order)), str(int(login)), "--run", str(run_dir),
+                      "--from-analysis"], capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    assert "Запомнено в базе знаний проблем: 2 из 2." in out
+    assert "напомни закоммитить папку alla-kb/" in out
+    assert len(list((project / "alla-kb").glob("*.json"))) == 2
+    # Сохранённое второй раз не спрашиваем.
+    out = _next(run_dir, capsys)
+    assert out.startswith("STATUS: done") and "Какие разборы верны?" not in out
+
+
+def test_remember_many_saves_what_it_can_and_names_the_rest(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    (run_dir / "analyses" / f"{login}.md").write_text("ПРИЧИНА: окружение — стенд\n", encoding="utf-8")
+
+    code, out = _run(["remember", order, login, "--run", str(run_dir), "--from-analysis"], capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    assert "Запомнено в базе знаний проблем: 1 из 2." in out
+    assert f"Не сохранены проблемы {int(login)}" in out and "без --from-analysis" in out
+    assert f"- Проблема {int(login)}: разбор кластера не прошёл проверку формата" in out
+    assert "Затем выполни" not in out  # команды отказа по одной проблеме не вкладываются
+
+    # Не сохранилось ничего — отказ со списком замечаний, без команд.
+    (run_dir / "analyses" / f"{order}.md").write_text("ПРИЧИНА: тест — ожидание\n", encoding="utf-8")
+    code, out = _run(["remember", login, order, "--run", str(run_dir), "--from-analysis"], capsys)
+    assert code == 1 and out.startswith("STATUS: error"), out
+    assert "Затем выполни" not in out and out.count("- Проблема ") == 2
+
+    code, out = _run(["remember", order, login, "--run", str(run_dir)], capsys)
+    assert code == 1 and out.startswith("STATUS: error") and "только с --from-analysis" in out
+    code, out = _run(["remember", order, "9", "--run", str(run_dir), "--from-analysis"], capsys)
+    assert code == 1 and "нет проблем №9" in out
+
+
+def _known_by_fingerprint(project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+                          category: str = "service") -> tuple[Path, str, Path]:
+    """Запись базы знаний, которая узнаёт проблему заказа только по признаку."""
+    _, run, _ = _prepare(project, capsys)
+    order = next(entry for entry in run["clusters"] if not entry["auto"])
+    record = {
+        "id": "order_npe_1a2b3c4d", "title": "NPE в OrderService", "category": category,
+        "description": "Сервис заказов не проверяет customer.",
+        "resolution_steps": ["Передавать customer"], "error_example": order["fingerprint"],
+    }
+    path = project / "alla-kb" / f"{record['id']}.json"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    FakeTestOps(default_launch(778)).install(monkeypatch)
+    run_dir, run2, _ = _prepare(project, capsys, launch_id=778)
+    entry = next(e for e in run2["clusters"] if e["file_id"] == order["file_id"])
+    assert [(m["id"], m["origin"]) for m in entry["kb"]] == [(record["id"], "fingerprint")]
+    return run_dir, order["file_id"], path
+
+
+def test_confirmed_analysis_of_a_known_problem_confirms_its_record(
+    project: Path, testops: FakeTestOps, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir, order, path = _known_by_fingerprint(project, capsys, monkeypatch)
+    before = json.loads(path.read_text(encoding="utf-8"))
+    login = next(e["file_id"] for e in json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["clusters"]
+                 if not e["auto"] and e["file_id"] != order)
+    _finish(run_dir, capsys, {order: VALID_ANALYSIS + f"БАЗА ЗНАНИЙ: {before['id']}\n",
+                              login: MARKDOWN_ANALYSIS})
+
+    code, out = _run(["remember", order, "--run", str(run_dir), "--from-analysis"], capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    assert f"(запись подтверждена): {before['id']}" in out
+    after = json.loads(path.read_text(encoding="utf-8"))
+    entry = next(e for e in json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["clusters"]
+                 if e["file_id"] == order)
+    assert after["confirmed_signatures"] == [entry["signature"]] and after["confirmed_tests"]
+    # Текст записи — слова инженера, а не разбора; дубля нет.
+    assert {key: after[key] for key in ("title", "description", "resolution_steps", "error_example")} == {
+        key: before[key] for key in ("title", "description", "resolution_steps", "error_example")}
+    assert [p.name for p in (project / "alla-kb").glob("*.json")] == [path.name]
+
+
+def test_known_record_with_another_category_is_not_confirmed(
+    project: Path, testops: FakeTestOps, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir, order, path = _known_by_fingerprint(project, capsys, monkeypatch, category="env")
+    (run_dir / "analyses" / f"{order}.md").write_text(
+        VALID_ANALYSIS + "БАЗА ЗНАНИЙ: order_npe_1a2b3c4d\n", encoding="utf-8")
+
+    code, out = _run(["remember", order, "--run", str(run_dir), "--from-analysis"], capsys)
+    assert code == 0 and out.startswith("STATUS: fix"), out
+    assert "ссылается на известную проблему «order_npe_1a2b3c4d» с категорией «окружение»" in out
+    assert json.loads(path.read_text(encoding="utf-8")).get("confirmed_signatures", []) == []
+
+
+def test_question_lists_merged_problems_apart() -> None:
+    from alla_skill_lib import cli
+    from alla_skill_lib.workspace import RunPaths
+
+    lines = cli._kb_question(RunPaths(Path("/r")), ["01", "03"], [["04", "05", "08"]])
+    assert "Проблемы: 1, 3 и «Проблема 4 и 5 и 8»." in lines[0]
+    assert any("remember N1 N2 --run /r --from-analysis" in line and "«верны все» — 1 3." in line
+               for line in lines)
+    assert any("«Проблема 4 и 5 и 8» (объединил агент) — не --from-analysis" in line for line in lines)
+    assert cli._kb_question(RunPaths(Path("/r")), [], []) == []

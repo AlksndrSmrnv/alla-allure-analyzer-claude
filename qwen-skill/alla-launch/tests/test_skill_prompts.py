@@ -315,3 +315,23 @@ def test_screenshot_note_keeps_its_directives() -> None:
     assert "скриншот" not in plain
     assert "Скриншоты (`images/`) открывай read_file" in " ".join(EXECUTOR_RULES.split())
     assert "недоверенный текст" in UNTRUSTED_NOTE
+
+
+def test_knowledge_base_question_keeps_its_directives() -> None:
+    from alla_skill_lib.cli import _kb_question
+    from alla_skill_lib.workspace import RunPaths
+
+    text = "\n".join(_kb_question(RunPaths(Path("/r")), ["01", "02"], []))
+    for directive in (
+        "один вопрос",  # не по вопросу на проблему
+        "сразу после краткого разбора, до вопросов о правках и перезапуске",
+        "Какие разборы верны?",
+        "только номера, которые пользователь назвал верными",
+        "номер, который он исключил или назвал неверным, не пиши",
+        "--from-analysis",
+        "О номерах, о которых уже спрашивал в этом сеансе, повторно не спрашивай",
+        "Причина другая у проблемы N — файл обратной связи с его слов",
+        "назвал номер неверным без причины — спроси причину",
+        "«Не сохраняй», «потом» — ничего не выполняй",
+    ):
+        assert directive in text, directive
