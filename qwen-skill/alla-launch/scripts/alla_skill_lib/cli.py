@@ -101,6 +101,7 @@ from alla_skill_lib.known_issues import (
     KnownRecord,
     auto_resolution,
     current_kb_matches,
+    known_auto_valid,
     known_issues,
     sync_known_auto,
 )
@@ -894,11 +895,18 @@ def _write_run(
                 attachment_ids={source_id: image.attachment_id
                                 for source_id, image in task.images.items()},
             )
+            write_registry(paths.sources(file_id), sources)
+            # Чьи данные видела модель; при нескольких блоках нужна «СОГЛАСОВАННОСТЬ». Куски
+            # данных и примеры от записей базы знаний в задании не зависят.
+            entry["examples"] = task.examples
+            entry["example_blocks"] = task.blocks
+            entry["log_not_found"] = task.log_not_found
             known_auto = auto_resolution(kb_matches, load_kb(cluster_kb_dir), cluster,
                                          tests_by_id, sources, entry["log_digest"])
-            if known_auto is not None:
+            if known_auto is not None and known_auto_valid(load_kb(cluster_kb_dir), known_auto,
+                                                           entry, project_root, paths):
                 # Разбор пишет скрипт (next). Задание — запасной путь, если инженер отвергнет
-                # запись: тогда оно не должно называть её точным совпадением. Куски данных те же.
+                # запись: тогда оно не должно называть её точным совпадением.
                 entry["kb_auto"] = known_auto
                 task = build_cluster_task_with_sources(
                     **task_args,
@@ -911,7 +919,6 @@ def _write_run(
             if placed and not shown_paths:
                 shutil.rmtree(paths.images(file_id), ignore_errors=True)
             ws.write_text(paths.cluster_task(file_id), task.text)
-            write_registry(paths.sources(file_id), sources)
             if task.images:
                 entry["images"] = [{
                     "source_id": source_id,
@@ -920,10 +927,6 @@ def _write_run(
                     "name": image.name,
                     "step": image.step,
                 } for source_id, image in task.images.items()]
-            # Чьи данные видела модель; при нескольких блоках нужна «СОГЛАСОВАННОСТЬ».
-            entry["examples"] = task.examples
-            entry["example_blocks"] = task.blocks
-            entry["log_not_found"] = task.log_not_found
         except Exception as exc:  # один битый кластер не должен ронять весь prepare
             logger.exception("Не удалось подготовить кластер %s", file_id)
             local_warnings.append(

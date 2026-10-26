@@ -304,7 +304,7 @@ def auto_resolution(
     sources: Registry,
     log_digest: str,
 ) -> dict[str, Any] | None:
-    """Разобрать ли проблему по записи базы знаний без модели: ``{"id", "quote", "signatures"}``
+    """Разобрать ли проблему по записи базы знаний без модели: ``{"id", "quote", "members"}``
     или ``None``.
 
     Только точное узнавание (сигнатуру подтвердил инженер) и ровно одна такая запись; у
@@ -316,7 +316,8 @@ def auto_resolution(
     ревью Codex), с теми же строками-ошибками своего лога, что у лога кластера: иначе в группе
     может быть другая ошибка, и однородность проверяет модель. Все тесты, а не только примеры
     задания: примеров до трёх, и тест другой проблемы в них может не попасть. Сигнатуры тестов
-    (``signatures``) ``next`` сверяет с текущей записью: отказ по любой снимает разбор. Цитата
+    с их ключами (``members``) ``next`` сверяет с текущей записью — каждую со своим тестом:
+    отказ или переназначение любого снимает разбор. Цитата
     — строка куска данных с признаком записи, иначе первая строка сообщения или трейса; текст
     разбора проходит обычную проверку. Не вышло — ``None``: разбирает модель с подсказкой.
     """
@@ -327,16 +328,17 @@ def auto_resolution(
     if record is None or not _record_steps(record) or log_digest not in record.confirmed_logs:
         return None
     shown = cluster_log_errors(cluster, tests_by_id)
-    signatures: set[str] = set()
+    members: set[tuple[str, str]] = set()
     for test_id in cluster.member_test_ids:
-        signature = _member_signature(record, cluster, tests_by_id, test_id, shown)
-        if signature is None:
+        member = _member_signature(record, cluster, tests_by_id, test_id, shown)
+        if member is None:
             return None
-        signatures.add(signature)
+        members.add(member)
     quote = _quote(record, sources)
     if quote is None:
         return None
-    return {"id": record.id, "quote": list(quote), "signatures": sorted(signatures)}
+    return {"id": record.id, "quote": list(quote),
+            "members": [list(member) for member in sorted(members)]}
 
 
 def _member_signature(
@@ -345,10 +347,10 @@ def _member_signature(
     tests_by_id: dict[int, FailedTestSummary],
     test_id: int,
     shown: frozenset[str],
-) -> str | None:
-    """Сигнатура теста группы, если запись узнаёт его точно, как если бы он был представителем
-    кластера, и строки-ошибки его лога — те же, что у лога кластера (``shown``), если свой лог
-    у него есть; иначе ``None``."""
+) -> tuple[str, str] | None:
+    """Сигнатура и ключ теста группы, если запись узнаёт его точно, как если бы он был
+    представителем кластера, и строки-ошибки его лога — те же, что у лога кластера (``shown``),
+    если свой лог у него есть; иначе ``None``."""
     test = tests_by_id.get(test_id)
     if test is None:
         return None
@@ -364,7 +366,7 @@ def _member_signature(
     # логам, и однородность группы проверяет модель. Фон или причина — по паре не отличить.
     # Тест без своего лога ничего не опровергает.
     own = log_error_lines(test)
-    return signature if not own or own == shown else None
+    return (signature, key or "") if not own or own == shown else None
 
 
 def _quote(record: KBRecord, sources: Registry) -> tuple[str, str] | None:
@@ -408,8 +410,13 @@ def _record_steps(record: KBRecord) -> list[str]:
     return [" ".join(step.split()) for step in record.resolution_steps if step.strip()]
 
 
-def known_issue_analysis(record: KBRecord, quote: tuple[str, str], *, examples: int = 1) -> str:
-    """Разбор проблемы по записи базы знаний — в обычном формате, его проверяет ``next``."""
+def known_issue_analysis(record: KBRecord, quote: tuple[str, str], *, examples: int = 1,
+                         log_not_found: bool = False) -> str:
+    """Разбор проблемы по записи базы знаний — в обычном формате, его проверяет ``next``.
+
+    ``log_not_found`` — в общем логе нет записей операции теста: «НЕ ХВАТАЕТ» называет лог,
+    как требует проверка.
+    """
     title = " ".join(record.title.split()) or record.id
     cause = " ".join(record.description.split()) or title
     source_id, line = quote
@@ -423,7 +430,8 @@ def known_issue_analysis(record: KBRecord, quote: tuple[str, str], *, examples: 
         "НАБЛЮДЕНИЯ:",
         f"- [{source_id}] «{line}»",
         "",
-        "НЕ ХВАТАЕТ: нет",
+        "НЕ ХВАТАЕТ: " + ("лога операции этого теста — в общем логе сервиса нет её записей; "
+                          "причину подтвердил инженер" if log_not_found else "нет"),
         "",
         *(["СОГЛАСОВАННОСТЬ: одна причина — каждый пример узнан записью базы знаний точно", ""]
           if examples > 1 else []),
@@ -461,9 +469,7 @@ def sync_known_auto(
         if current.strip() and _digest(current) != written.get(file_id):
             continue  # разбор после отката пишет модель
         record = _exact_now(run, entry, paths, str(auto["id"]))
-        text = (known_issue_analysis(record, (str(auto["quote"][0]), str(auto["quote"][1])),
-                                     examples=example_blocks(entry))
-                if record is not None else None)
+        text = _text_of(record, auto, entry) if record is not None else None
         if text is not None and check_entry_analysis(text, entry, project_root, paths)[1]:
             notes.append(KB_AUTO_INVALID_NOTE.format(number=int(file_id), entry_id=auto["id"]))
             text = None
@@ -480,6 +486,27 @@ def sync_known_auto(
     else:
         state.pop(KB_AUTO_STATE, None)
     return active, notes
+
+
+def _text_of(record: KBRecord, auto: dict[str, Any], entry: dict[str, Any]) -> str:
+    return known_issue_analysis(record, (str(auto["quote"][0]), str(auto["quote"][1])),
+                                examples=example_blocks(entry),
+                                log_not_found=bool(entry.get("log_not_found")))
+
+
+def known_auto_valid(
+    records: Iterable[KBRecord],
+    auto: dict[str, Any],
+    entry: dict[str, Any],
+    project_root: Path,
+    paths: ws.RunPaths,
+) -> bool:
+    """Разбор по записи проходит обычную проверку (``prepare``, до того как задание теряет
+    запись): иначе ``next`` снял бы его, и модель разбирала бы без подсказки."""
+    record = next((item for item in records if item.id == auto["id"]), None)
+    if record is None:
+        return False
+    return not check_entry_analysis(_text_of(record, auto, entry), entry, project_root, paths)[1]
 
 
 def _exact_now(
@@ -500,13 +527,14 @@ def _exact_now(
         return None
     if entry.get("log_digest") not in record.confirmed_logs:
         return None
-    # Сигнатуры всех тестов группы (prepare): отказ по сигнатуре любого из них — после разбора
-    # другой проблемы — снимает разбор всей группы (ревью Codex).
+    # Каждый тест группы — своей сигнатурой и своим тестом (prepare): отказ или переназначение
+    # любого из них после разбора другой проблемы снимает разбор всей группы (ревью Codex).
     haystack = normalize_fp(_evidence(entry, paths))
-    tests = entry_tests(run, entry)
-    signatures = (entry.get("kb_auto") or {}).get("signatures") or [entry.get("signature")]
-    exact = all(record_matches(record, signature, haystack, tests) == "exact"
-                for signature in {entry.get("signature"), *signatures})
+    members = (entry.get("kb_auto") or {}).get("members") or []
+    if not members:
+        return None
+    exact = all(record_matches(record, str(signature), haystack, [key] if key else []) == "exact"
+                for signature, key in members)
     return record if exact else None
 
 

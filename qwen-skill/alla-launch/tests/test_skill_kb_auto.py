@@ -76,7 +76,7 @@ def _decide(
                                sources if sources is not None else _sources(POOL),
                                log_errors_digest(cluster_log_errors(cluster, tests)))
     if decision is not None:  # сигнатуры тестов группы — для next; здесь сверяем id и цитату
-        assert decision.pop("signatures")
+        assert decision.pop("members")
     return decision
 
 
@@ -473,7 +473,8 @@ def test_next_drops_the_resolution_when_a_member_signature_is_rejected(tmp_path:
     paths.evidence("01").write_text(POOL, encoding="utf-8")
     entry = {"file_id": "01", "cluster_id": "c1", "kb_dir": str(kb.directory), "signature": "v11:rep",
              "log_digest": "none",
-             "kb_auto": {"id": record.id, "quote": ["S1", POOL], "signatures": ["v11:other", "v11:rep"]}}
+             "kb_auto": {"id": record.id, "quote": ["S1", POOL],
+                         "members": [["v11:other", "ru.T.other"], ["v11:rep", "ru.T.rep"]]}}
     run = {"project_root": str(tmp_path), "clusters": [entry], "clustering": {"clusters": []},
            "triage": {"failed_tests": []}}
     assert _exact_now(run, entry, paths, record.id) is not None
@@ -482,3 +483,40 @@ def test_next_drops_the_resolution_when_a_member_signature_is_rejected(tmp_path:
     record.reject("v11:other")
     kb.save(record)
     assert _exact_now(run, entry, paths, record.id) is None
+
+
+def test_next_checks_each_member_by_its_own_test_after_a_version_change(tmp_path: Path) -> None:
+    from alla_skill_lib.kb import ProjectKB
+    from alla_skill_lib.known_issues import _exact_now
+    from alla_skill_lib.workspace import RunPaths
+
+    # Хэши записи — прежней версии: точное узнавание держится на тестах участников.
+    old = f"v{SIGNATURE_VERSION - 1}:{'0' * 64}"
+    kb = ProjectKB(tmp_path / "alla-kb")
+    record = _record(None, confirmed_signatures=[old], confirmed_tests=["ru.T.first", "ru.T.second"])
+    kb.save(record)
+    paths = RunPaths(tmp_path / "run")
+    paths.evidence("01").parent.mkdir(parents=True)
+    paths.evidence("01").write_text(POOL, encoding="utf-8")
+    entry = {"file_id": "01", "cluster_id": "c1", "kb_dir": str(kb.directory), "signature": "v11:a",
+             "log_digest": "none",
+             "kb_auto": {"id": record.id, "quote": ["S1", POOL],
+                         "members": [["v11:a", "ru.T.first"], ["v11:a", "ru.T.second"]]}}
+    run = {"project_root": str(tmp_path), "clusters": [entry], "clustering": {"clusters": []},
+           "triage": {"failed_tests": []}}
+    assert _exact_now(run, entry, paths, record.id) is not None
+
+    # Один тест переназначили другой записи (remember --entry в другом разборе): тест второго
+    # участника не подтверждает первого (ревью Codex).
+    record.confirmed_tests = ["ru.T.second"]
+    kb.save(record)
+    assert _exact_now(run, entry, paths, record.id) is None
+
+
+def test_analysis_from_a_record_names_the_missing_operation_log() -> None:
+    cluster, tests = _cluster(POOL)
+    record = _record(cluster_signature(cluster, tests))
+    analysis = parse_analysis(known_issue_analysis(record, ("S1", POOL), log_not_found=True))
+    assert validate_analysis(analysis, Path("."), frozenset({record.id}), observed=True,
+                             sources=_sources(POOL), log_not_found=True,
+                             exact_kb={record.id: "приложение"}) == []
