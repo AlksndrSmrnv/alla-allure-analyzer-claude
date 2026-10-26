@@ -596,7 +596,8 @@ class FakeTestOps:
     """Обработчик запросов TestOps с журналом (метод, путь).
 
     ``resolved`` — тела ``POST /api/testresult/{id}/resolve`` по id; ``resolve_status`` —
-    код ответа на них (202 — принят, иначе ошибка без смены статуса).
+    код ответа на них (202 — принят, иначе ошибка без смены статуса), ``resolve_status_of`` —
+    свой код для отдельных id.
     """
 
     def __init__(self, fixture: LaunchFixture, *, auth_status: int = 200,
@@ -606,6 +607,7 @@ class FakeTestOps:
         self.resolve_status = resolve_status
         self.requests: list[tuple[str, str]] = []
         self.resolved: dict[int, dict[str, Any]] = {}
+        self.resolve_status_of: dict[int, int] = {}
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = self
@@ -647,8 +649,9 @@ class FakeTestOps:
         return httpx.Response(404, text=json.dumps({"path": path}))
 
     def _resolve(self, test_id: int, body: dict[str, Any]) -> httpx.Response:
-        if self.resolve_status != 202:
-            return httpx.Response(self.resolve_status, json={"message": "Access denied"})
+        status = self.resolve_status_of.get(test_id, self.resolve_status)
+        if status != 202:
+            return httpx.Response(status, json={"message": "Access denied"})
         self.resolved[test_id] = body
         return httpx.Response(202, json={"id": test_id, "name": f"test {test_id}",
                                          "status": body.get("status")})

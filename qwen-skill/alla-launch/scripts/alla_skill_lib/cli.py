@@ -1913,7 +1913,9 @@ def _save_items(run: dict[str, Any], state: rerun.JobState) -> tuple[flaky.Remem
     settings = _rerun_settings()
     if isinstance(settings, str) or not settings.rerun_resolve:
         return keep, []
-    return keep, resolve.plan_marks(state.result, state.plan, state.resolved)
+    messages = {int(test["test_result_id"]): str(test.get("status_message") or "")
+                for test in (run.get("triage") or {}).get("failed_tests", [])}
+    return keep, resolve.plan_marks(state.result, state.plan, state.resolved, messages)
 
 
 def _rerun_remember(
@@ -2023,12 +2025,18 @@ def _resolve_in_testops(
     if done:
         lines.append(f"Отмечены успешными в TestOps (статус passed в прогоне {run['launch_id']}): "
                      f"{resolve.names(done)}.")
+    partly = outcome.partly(marks)
+    if partly:
+        lines.append("Отмечены в TestOps частично (у метода с параметрами — не все варианты): "
+                     + "; ".join(f"{mark.full_name} — passed у {count} из {len(mark.ids)}"
+                                 for mark, count in partly) + ".")
     if outcome.failed:
         lines.append("Не отмечены в TestOps: "
                      + "; ".join(f"{mark.full_name} — {reason}" for mark, reason in outcome.failed)
-                     + f". Сам команду не повторяй: когда пользователь устранит причину, повторить "
-                     f"можно той же командой ({command}) — уже отмеченные она не тронет. "
-                     + USER_ACTION_NOTE)
+                     + "." + ("" if outcome.left else
+                              " Сам команду не повторяй: когда пользователь устранит причину, "
+                              f"повторить можно той же командой ({command}) — уже отмеченные она "
+                              f"не тронет. {USER_ACTION_NOTE}"))
     repeat = ""
     if outcome.left:
         repeat = (f"Не успели уйти в TestOps за один ответ: {resolve.names(outcome.left)}. "

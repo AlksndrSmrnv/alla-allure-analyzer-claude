@@ -13,6 +13,7 @@ passed. Запрос идёт на каждый результат отдель�
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -25,6 +26,12 @@ from alla_skill_lib.errors import fetch_error_hint
 from alla_skill_lib.rerun import first_line, safe_text
 
 STATUS = "passed"
+# Потолок одного запроса (с обменом токена и его повторами) после срока ответа: Qwen
+# обрывает команду через 120 с, срок — ``rerun.WAIT_BUDGET`` (75 с) от её начала.
+HARD_MARGIN_S = 30.0
+NO_ANSWER = ("TestOps не ответил за время одного ответа команды — изменился ли статус, "
+             "неизвестно; повтор той же команды отправит запрос снова (повторная отметка "
+             "безвредна)")
 # Ошибки, которые повторятся на каждом результате: дальше запросы не шлём.
 _SHARED_STATUSES = frozenset({0, 401, 403})
 
@@ -44,13 +51,17 @@ class Mark:
     full_name: str
     file_id: str
     changed: str  # прошёл на изменённом коде теста — «проверка правки»
-    note: str  # ``message`` для TestOps
+    notes: dict[int, str]  # ``message`` для TestOps по id: у каждого варианта своя ошибка CI
 
 
 def plan_marks(
     result: Mapping[str, Any], plan: Mapping[str, Any], resolved: Mapping[int, str],
+    messages: Mapping[int, str] | None = None,
 ) -> list[Mark]:
-    """Прошедшие тесты итога, у которых в TestOps ещё есть не отмеченные результаты."""
+    """Прошедшие тесты итога, у которых в TestOps ещё есть не отмеченные результаты.
+
+    ``messages`` — ошибка CI каждого результата (``run.json``); нет — ошибка теста плана.
+    """
     planned = {int(test["test_result_id"]): test for test in plan.get("tests") or []}
     attempts = int(result.get("attempts") or 0)
     marks: list[Mark] = []
@@ -62,9 +73,12 @@ def plan_marks(
         ids = [value for value in [test_id, *(int(other) for other in test.get("other_ids") or [])]
                if value not in resolved]
         if ids:
+            own = str(test.get("message") or "")
+            notes = {value: note(item, attempts, (messages or {}).get(value) or own)
+                     for value in ids}
             marks.append(Mark(ids, str(item.get("full_name") or test_id),
                               str(item.get("file_id") or ""), str(item.get("changed") or ""),
-                              note(item, attempts, str(test.get("message") or ""))))
+                              notes))
     return marks
 
 
@@ -97,6 +111,11 @@ class Outcome:
         """Тесты, у которых отмечены все результаты."""
         return [mark for mark in marks if all(value in self.done for value in mark.ids)]
 
+    def partly(self, marks: Iterable[Mark]) -> list[tuple[Mark, int]]:
+        """Тесты с вариантами, у которых отмечена только часть результатов, и сколько."""
+        counts = [(mark, sum(1 for value in mark.ids if value in self.done)) for mark in marks]
+        return [(mark, done) for mark, done in counts if 0 < done < len(mark.ids)]
+
 
 async def send(
     settings: Settings, marks: list[Mark], env_file: Path, today: str, *,
@@ -105,8 +124,9 @@ async def send(
     """Отметить результаты по одному; ошибка доступа или сети останавливает остальные.
 
     Qwen обрывает команду через 120 с: после ``deadline`` (``time.monotonic``) новые запросы
-    не начинаются, кроме первого — повтор команды всегда продвигается. ``on_done`` получает
-    каждый принятый id сразу: оборванная команда не теряет уже отмеченное.
+    не начинаются, кроме первого — повтор команды всегда продвигается; каждый запрос вместе с
+    обменом токена ограничен ``deadline + HARD_MARGIN_S``. ``on_done`` получает каждый
+    принятый id сразу: оборванная команда не теряет уже отмеченное.
     """
     from alla_core.clients.auth import AllureAuthManager
     from alla_core.clients.testops_client import AllureTestOpsClient
@@ -132,8 +152,13 @@ async def send(
                     unsent = True
                     break
                 sent = True
+                limit = max(deadline + HARD_MARGIN_S - time.monotonic(), 1.0)
                 try:
-                    row = await client.resolve_test_result(test_id, STATUS, mark.note)
+                    row = await asyncio.wait_for(
+                        client.resolve_test_result(test_id, STATUS, mark.notes[test_id]), limit)
+                except TimeoutError:
+                    reason = shared = reason or NO_ANSWER
+                    continue
                 except AllaError as exc:
                     reason = reason or failure(exc, settings, env_file)
                     if _shared(exc):

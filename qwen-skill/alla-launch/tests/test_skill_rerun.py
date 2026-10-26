@@ -6,6 +6,7 @@ Maven — фейковый ``mvnw`` проекта (``skill_fake_maven``): он 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import time
@@ -25,6 +26,8 @@ from skill_fixtures import (  # noqa: F401
 )
 from test_skill_flow import MARKDOWN_ANALYSIS, _finish, _prepare, _run
 
+from alla_core.clients.testops_client import AllureTestOpsClient
+from alla_core.config import Settings
 from alla_skill_lib import flaky, rerun, resolve
 from alla_skill_lib.rerun import (
     JobFiles,
@@ -763,6 +766,38 @@ def test_marks_beyond_the_answer_budget_are_sent_by_the_repeat(
     assert sorted(testops.resolved) == [101, 102] and "Не успели" not in second
 
 
+def test_send_reports_part_of_the_variants_and_stops_on_a_silent_testops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeTestOps(default_launch(777))
+    fake.resolve_status_of = {102: 404}
+    fake.install(monkeypatch)
+    settings = Settings(endpoint="https://testops.example", token="t")
+    mark = resolve.Mark([101, 102], f"{ORDER}.createOrder", "01", "", {101: "n1", 102: "n2"})
+    done: list[int] = []
+
+    outcome = asyncio.run(resolve.send(settings, [mark], Path(".env"), "d",
+                                       deadline=time.monotonic() + 75, on_done=done.append))
+
+    assert done == [101] and fake.resolved[101]["message"] == "n1"
+    assert outcome.partly([mark]) == [(mark, 1)] and outcome.done_marks([mark]) == []
+    assert "не знает запрос resolve" in outcome.failed[0][1]
+
+    # TestOps молчит: запрос с обменом токена ограничен сроком ответа, остальные не идут.
+    async def silent(*_args: object) -> dict[str, Any]:
+        await asyncio.sleep(30)
+        return {}
+
+    monkeypatch.setattr(AllureTestOpsClient, "resolve_test_result", silent)
+    other = resolve.Mark([103], f"{ORDER}.login", "02", "", {103: "n3"})
+    outcome = asyncio.run(resolve.send(settings, [mark, other], Path(".env"), "d",
+                                       deadline=time.monotonic() - resolve.HARD_MARGIN_S,
+                                       on_done=done.append))
+    assert [(item.full_name, reason) for item, reason in outcome.failed] == [
+        (mark.full_name, resolve.NO_ANSWER), (other.full_name, resolve.NO_ANSWER)]
+    assert outcome.done == {} and outcome.left == []
+
+
 def test_report_marks_a_method_passed_only_when_every_variant_is(tmp_path: Path) -> None:
     plan = {"job": "j", "tests": [{"test_result_id": 101, "other_ids": [102]}]}
     item = {"test_result_id": 101, "outcome": "passed", "attempt": 1, "file_id": "01",
@@ -1030,6 +1065,8 @@ def test_variants_of_a_method_keep_every_ci_error_and_each_problem_its_own_test(
                                         "full_name": f"{ORDER}.createOrder", "file_id": order}]}
     planned = {"tests": [asdict(test) for test in plan.tests]}
     assert [mark.ids for mark in resolve.plan_marks(result, planned, {})] == [[101, 102]]
+    notes = resolve.plan_marks(result, planned, {}, {101: "boom 1", 102: "boom 2"})[0].notes
+    assert notes[101].endswith("Ошибка в CI: boom 1") and notes[102].endswith("Ошибка в CI: boom 2")
     assert [mark.ids for mark in resolve.plan_marks(result, planned, {101: "d"})] == [[102]]
     assert resolve.plan_marks(result, planned, {101: "d", 102: "d"}) == []
     signals = {int(t["test_result_id"]): codes for t, codes in ((tests[101], []),
