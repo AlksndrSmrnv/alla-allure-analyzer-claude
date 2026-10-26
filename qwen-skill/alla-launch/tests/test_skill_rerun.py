@@ -798,6 +798,23 @@ def test_send_reports_part_of_the_variants_and_stops_on_a_silent_testops(
     assert outcome.done == {} and outcome.left == []
 
 
+def test_refusal_turns_the_automatic_repeat_off(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Отказ съел срок ответа: повтор тратил бы его на тот же отказ и не дошёл бы до остальных."""
+    run_dir, out = _testops_only(nested_project, capsys)
+    testops.resolve_status_of = {101: 404}
+    monkeypatch.setattr(rerun, "WAIT_BUDGET", 0.0)
+
+    answer = _run(["rerun", *_remember_command(out)], capsys)[1]
+
+    assert answer.startswith(f"STATUS: ok\nНе успели уйти в TestOps за один ответ: "
+                             f"{ORDER}.updateOrder.\nНе отмечены в TestOps: {ORDER}.createOrder")
+    assert "Сам команду не повторяй" in answer and "в том же ходе" not in answer
+    assert list(testops.resolved) == []
+
+
 def test_report_marks_a_method_passed_only_when_every_variant_is(tmp_path: Path) -> None:
     plan = {"job": "j", "tests": [{"test_result_id": 101, "other_ids": [102]}]}
     item = {"test_result_id": 101, "outcome": "passed", "attempt": 1, "file_id": "01",

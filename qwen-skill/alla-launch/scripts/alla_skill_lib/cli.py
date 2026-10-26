@@ -2030,15 +2030,18 @@ def _resolve_in_testops(
         lines.append("Отмечены в TestOps частично (у метода с параметрами — не все варианты): "
                      + "; ".join(f"{mark.full_name} — passed у {count} из {len(mark.ids)}"
                                  for mark, count in partly) + ".")
+    # Автоматический повтор — только без отказов: тогда каждый круг отмечает хоть один
+    # результат и повторы конечны; отказы съели бы срок каждого круга заново (ревью Codex).
+    if outcome.left and outcome.failed:
+        lines.append(f"Не успели уйти в TestOps за один ответ: {resolve.names(outcome.left)}.")
     if outcome.failed:
         lines.append("Не отмечены в TestOps: "
                      + "; ".join(f"{mark.full_name} — {reason}" for mark, reason in outcome.failed)
-                     + "." + ("" if outcome.left else
-                              " Сам команду не повторяй: когда пользователь устранит причину, "
-                              f"повторить можно той же командой ({command}) — уже отмеченные она "
-                              f"не тронет. {USER_ACTION_NOTE}"))
+                     + ". Сам команду не повторяй: когда пользователь устранит причину, повторить "
+                     f"можно той же командой ({command}) — она отправит неотмеченное, уже "
+                     f"отмеченные не тронет. {USER_ACTION_NOTE}")
     repeat = ""
-    if outcome.left:
+    if outcome.left and not outcome.failed:
         repeat = (f"Не успели уйти в TestOps за один ответ: {resolve.names(outcome.left)}. "
                   "Согласие пользователя на них уже есть: скажи ему, что отправка продолжается, и "
                   "сразу, в том же ходе, выполни ту же команду ещё раз — она отправит только "
