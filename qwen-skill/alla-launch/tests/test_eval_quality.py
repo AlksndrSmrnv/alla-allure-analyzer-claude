@@ -64,11 +64,11 @@ def test_quality_is_not_worse_than_baseline(
                     worse.append(f"{where}: {key} {expected[key]} → {result[key]}")
             for key in ("hidden_groups", "evidence_lost", "retry_links_wrong",
                         "passed_after_retry_wrong", "kb_offers_wrong", "kb_exact_wrong_after",
-                        "signature_shared_wrong"):
+                        "kb_auto_wrong", "signature_shared_wrong"):
                 if result.get(key, 0) > expected.get(key, 0):
                     worse.append(f"{where}: {key} {expected.get(key, 0)} → {result[key]}")
             for key in ("retry_links_found", "retry_same_found", "passed_after_retry_found",
-                        "kb_offers_found", "kb_exact_kept"):
+                        "kb_offers_found", "kb_exact_kept", "kb_auto"):
                 if result.get(key, 0) < expected.get(key, 0):
                     worse.append(f"{where}: {key} {expected[key]} → {result.get(key, 0)}")
     assert not worse, "Эталон ухудшился:\n" + "\n".join(worse) + "\n" + UPDATE_HINT

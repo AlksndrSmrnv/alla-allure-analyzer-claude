@@ -51,6 +51,7 @@ from eval.metrics import (  # noqa: E402
     coverage,
     evaluate,
     evaluate_gate_pairs,
+    evaluate_kb_auto,
     evaluate_kb_offers,
     evaluate_kb_version_change,
     evaluate_near_pairs,
@@ -79,6 +80,10 @@ class PreparedRun:
     gates: ClusteringGateStats
     signature_log: dict[str, int]
     near_pairs: list[tuple[str, str, str]]
+    # Модели ядра после prepare (кластеры по номеру, тесты с логами): по ним решается, что
+    # next разобрал бы по записи без модели (``kb_auto``).
+    cluster_models: dict[str, Any]
+    tests_by_id: dict[int, Any]
 
     @property
     def max_task_chars(self) -> int:
@@ -165,7 +170,9 @@ def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
     file_ids = {entry["cluster_id"]: entry["file_id"] for entry in run["clusters"]}
     near = [(file_ids[pair.cluster_a], file_ids[pair.cluster_b], pair.reason)
             for pair in (data.clustering.near_pairs if data.clustering else [])]
-    return PreparedRun(run_dir, views, seconds, run["triage"], gates, stability, near)
+    models = {entry["file_id"]: by_id[entry["cluster_id"]] for entry in run["clusters"]}
+    return PreparedRun(run_dir, views, seconds, run["triage"], gates, stability, near, models,
+                       tests_by_id)
 
 
 def signature_log_stability(cluster: Any, tests_by_id: dict[int, Any]) -> tuple[int, int]:
@@ -216,6 +223,7 @@ def evaluate_fixture(fixture: LaunchFixture, labels: dict[str, Any] | None) -> d
                 labels, kb_offers(prepared, records, exact_only=True, as_remember=True),
                 kb_offers(prepared, records, exact_only=True, previous_version=True,
                           as_remember=True)))
+            result.update(evaluate_kb_auto(labels, kb_auto(prepared, records)))
     result["max_task_chars"] = prepared.max_task_chars
     result["seconds"] = round(prepared.seconds, 2)
     return result
@@ -228,6 +236,7 @@ def kb_offers(
     exact_only: bool = False,
     previous_version: bool = False,
     as_remember: bool = False,
+    auto: bool = False,
 ) -> list[tuple[str, tuple[int, ...], set[str]]]:
     """Какие записи из ``records`` подходят каждому кластеру — по правилу ``prepare``.
 
@@ -238,7 +247,8 @@ def kb_offers(
     подтверждённые сигнатуры записей прежней версии (обновление скилла сменило версию).
     ``as_remember`` — признак записи, как его принял бы ``remember``: строка разметки, если
     она есть в данных подтверждённого кластера, иначе признак кластера из ``prepare``
-    (строки, которой нет в данных, ``remember`` не сохранит).
+    (строки, которой нет в данных, ``remember`` не сохранит). ``auto`` — вместо подходящих
+    записей причина той, по которой ``next`` разобрал бы кластер без модели (:func:`kb_auto`).
     """
     import re
 
@@ -252,7 +262,9 @@ def kb_offers(
         match_cluster,
         store_fingerprint,
     )
+    from alla_skill_lib.known_issues import auto_resolution
     from alla_skill_lib.signature import SIGNATURE_VERSION
+    from alla_skill_lib.sources import load_registry
 
     paths = workspace.RunPaths(prepared.run_dir)
     run = workspace.read_json(paths.run_json)
@@ -283,7 +295,7 @@ def kb_offers(
         kb_records.append(KBRecord(
             id=entry_id, title=record["cause"],
             category=CATEGORY_TO_KB.get(str(record["category"]), "service"),
-            description="", resolution_steps=["-"],
+            description=record["cause"], resolution_steps=["-"],
             error_example=store_fingerprint(error_example),
             confirmed_signatures=sorted(confirmed),
             confirmed_tests=sorted(key for key in keys if key),
@@ -293,10 +305,27 @@ def kb_offers(
         evidence = paths.evidence(entry["file_id"])
         text = evidence.read_text(encoding="utf-8") if evidence.is_file() else ""
         matches = match_cluster(kb_records, entry.get("signature"), text, entry_tests(run, entry))
+        if auto:
+            decision = None if entry.get("auto") else auto_resolution(
+                matches, kb_records, prepared.cluster_models[entry["file_id"]],
+                prepared.tests_by_id, load_registry(paths.sources(entry["file_id"])) or {})
+            offers.append((entry["file_id"], members[entry["file_id"]],
+                           {cause_of[decision["id"]]} if decision else set()))
+            continue
         offers.append((entry["file_id"], members[entry["file_id"]],
                        {cause_of[match["id"]] for match in matches
                         if not exact_only or match["origin"] == "exact"}))
     return offers
+
+
+def kb_auto(
+    prepared: PreparedRun,
+    records: list[dict[str, Any]],
+) -> list[tuple[str, tuple[int, ...], set[str]]]:
+    """Причина записи, по которой ``next`` разобрал бы кластер без модели (пусто — разбирает
+    модель): то же решение ``auto_resolution``, что в ``prepare``, на записях как после
+    ``remember`` (:func:`kb_offers`, ``as_remember``)."""
+    return kb_offers(prepared, records, as_remember=True, auto=True)
 
 
 def evaluate_cases(
@@ -384,7 +413,8 @@ def print_table(results: dict[str, dict[str, dict[str, Any]]]) -> None:
                       f"{result['kb_offers_found']}/{result['kb_offers']}, чужой "
                       f"{result['kb_offers_wrong']}; точно {result['kb_exact']}, после смены "
                       f"версии сигнатуры точно {result['kb_exact_kept']}, чужой "
-                      f"{result['kb_exact_wrong_after']}")
+                      f"{result['kb_exact_wrong_after']}; без модели {result['kb_auto']}, из них "
+                      f"с другой проблемой в группе {result['kb_auto_wrong']}")
         for case_name, result in cases.items():
             if result["signature_shared"] or result["signature_log_unstable"]:
                 print(f"сигнатуры {case_name}: одна на два кластера {result['signature_shared']} "
@@ -421,6 +451,7 @@ def print_details(results: dict[str, dict[str, dict[str, Any]]]) -> None:
             lines += [f"  база знаний: {problem}" for problem in result.get("kb_offer_problems", [])]
             lines += [f"  база знаний: {problem}"
                       for problem in result.get("kb_version_problems", [])]
+            lines += [f"  база знаний: {problem}" for problem in result.get("kb_auto_problems", [])]
             lines += [f"  сигнатура: {problem}" for problem in result.get("signature_problems", [])]
             lines += [f"  близкие: {problem}" for problem in result.get("near_problems", [])]
             decided = {key: value for key, value in result["gates"].items() if value}

@@ -316,7 +316,7 @@ def evaluate_near_pairs(
 
 
 KB_OFFER_KEYS = ("kb_offers", "kb_offers_found", "kb_offers_wrong",
-                 "kb_exact", "kb_exact_kept", "kb_exact_wrong_after")
+                 "kb_exact", "kb_exact_kept", "kb_exact_wrong_after", "kb_auto", "kb_auto_wrong")
 
 
 def kb_offer_records(labels: dict[str, Any]) -> list[dict[str, Any]]:
@@ -404,3 +404,33 @@ def evaluate_kb_version_change(
         problems += [f"кластер {file_id}: после смены версии точно предложена запись чужой "
                      f"причины {cause}" for cause in sorted(wrong)]
     return {**totals, "kb_version_problems": problems}
+
+
+def evaluate_kb_auto(
+    labels: dict[str, Any],
+    resolved: Iterable[tuple[str, tuple[int, ...], set[str]]],
+) -> dict[str, Any]:
+    """Какие проблемы ``next`` разобрал бы по записи без модели (``known_issues.auto_resolution``).
+
+    ``resolved`` — (кластер, его тесты, причина записи, по которой он разобран; пусто — его
+    разбирает модель):
+
+    * ``kb_auto`` — разобраны по записи своей причины, и в кластере нет тестов другой проблемы;
+    * ``kb_auto_wrong`` — разобраны по записи, но в кластере есть тест другой проблемы (своя
+      причина у группы без причины — тоже другая): разбор без модели назвал бы одну причину и
+      скрыл другую, однородность группы никто бы не проверил.
+    """
+    cause_of = {test: group.get("cause") or f"группа {number}"
+                for number, group in enumerate(labels["groups"], start=1) for test in group["tests"]}
+    totals = {"kb_auto": 0, "kb_auto_wrong": 0}
+    problems: list[str] = []
+    for file_id, members, causes in resolved:
+        for cause in causes:
+            others = sorted({str(cause_of[test]) for test in members if test in cause_of} - {cause})
+            if others:
+                totals["kb_auto_wrong"] += 1
+                problems.append(f"кластер {file_id}: разобран без модели по записи причины {cause}, "
+                                f"а в нём и {', '.join(others)}")
+            else:
+                totals["kb_auto"] += 1
+    return {**totals, "kb_auto_problems": problems}
