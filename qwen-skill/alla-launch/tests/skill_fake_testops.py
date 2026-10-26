@@ -597,12 +597,14 @@ class FakeTestOps:
 
     ``resolved`` — тела ``POST /api/testresult/{id}/resolve`` по id; ``resolve_status`` —
     код ответа на них (202 — принят, иначе ошибка без смены статуса), ``resolve_status_of`` —
-    свой код для отдельных id.
+    свой код для отдельных id. ``also_launches`` — другие номера прогона с теми же падениями
+    («следующий прогон» в одном сеансе стенда).
     """
 
     def __init__(self, fixture: LaunchFixture, *, auth_status: int = 200,
-                 resolve_status: int = 202) -> None:
+                 resolve_status: int = 202, also_launches: tuple[int, ...] = ()) -> None:
         self.fixture = fixture
+        self.also_launches = also_launches
         self.auth_status = auth_status
         self.resolve_status = resolve_status
         self.requests: list[tuple[str, str]] = []
@@ -629,6 +631,9 @@ class FakeTestOps:
             return httpx.Response(200, json={"access_token": "jwt-1", "expires_in": 3600})
         if path == f"/api/launch/{fixture.launch['id']}":
             return httpx.Response(200, json=fixture.launch)
+        for launch_id in self.also_launches:
+            if path == f"/api/launch/{launch_id}":
+                return httpx.Response(200, json={**fixture.launch, "id": launch_id})
         if path == "/api/testresult":
             return self._page(request)
         if path == "/api/testresult/attachment":

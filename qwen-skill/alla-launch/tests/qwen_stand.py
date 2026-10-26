@@ -218,6 +218,8 @@ class Scenario:
     testops_delay: float = 0.0
     # Результаты, которым после «да» ставится статус passed в TestOps (rerun --remember).
     resolved: tuple[int, ...] = ()
+    # Другие номера прогона с теми же падениями: «следующий прогон» в том же сеансе.
+    also_launches: tuple[int, ...] = ()
 
 
 STAND_ORDER_TEST = "src/test/java/ru/company/orders/OrderTest.java"
@@ -399,6 +401,15 @@ SCENARIOS: dict[str, Scenario] = {
         review=("Evidence: оценки проверяющей модели в review/report.md правдоподобны для "
                 "разборов A01; pilot-summary.md без данных прогона",),
         note="review запускает вложенный qwen (оценка диагнозов) — ещё один запрос к модели"),
+    "K01": Scenario(
+        "Инженер подтвердил разборы после отчёта, следующий прогон разобран по базе знаний",
+        "default",
+        ("/alla-launch 777", "Все разборы верны, сохрани их в базу знаний.", "/alla-launch 778"),
+        (*FULL_RUN, "prepare_launch", "kb_question_asked", "kb_saved", "kb_auto_resolved"),
+        launch_id=777, edits=("alla-kb/",), also_launches=(778,),
+        review=(("Evidence: вопрос «какие разборы верны» задан один раз, сразу после краткого "
+                 "разбора; ответ сохранён одной командой; во втором прогоне отчёт выведен "
+                 "дословно и разборы по базе знаний не переписаны"),)),
     "C01": Scenario(
         "Слэш-команда /alla:run, полный разбор", "default", ("/alla:run 777",),
         (*FULL_RUN, "commands_visible", "prepare_launch"), launch_id=777),
@@ -1352,6 +1363,79 @@ def _known_record(ctx: Context) -> dict[str, Any] | None:
     return records[0] if records else None
 
 
+def check_kb_question_asked(ctx: Context) -> dict[str, Any]:
+    """После первого отчёта модель сама спросила, какие разборы верны (пункт «Сохранить разборы
+    в базу знаний» ответа ``done``)."""
+    if not ctx.trace.results:
+        return bad("нет ответов модели")
+    first = str(ctx.trace.results[0].get("result") or "")
+    # После краткого разбора: вопрос, какие разборы (номера) верны, и про базу знаний —
+    # формулировку модель может пересказать.
+    tail = first[first.rfind("Полный разбор"):] if "Полный разбор" in first else first
+    if re.search(r"верн", tail, re.IGNORECASE) and re.search(r"баз\w* знаний|alla-kb", tail):
+        return ok("вопрос задан в ответе на первую реплику")
+    return bad(f"в ответе на первую реплику нет вопроса: …{first[-300:]}")
+
+
+def check_kb_saved(ctx: Context) -> dict[str, Any]:
+    """«Всё верно» сохранено одной командой ``remember N1 N2 … --from-analysis`` со всеми
+    номерами вопроса, и записи базы знаний получили подтверждённые сигнатуры."""
+    asked: set[str] = set()
+    for call in ctx.trace.skill_commands():
+        found = re.search(r"«верны все» — ([\d ]+)\.", call.result or "")
+        if found:
+            asked = set(found.group(1).split())
+    if not asked:
+        return bad("в ответах скрипта нет вопроса о базе знаний")
+    saves = [command_of(call) for call in ctx.trace.skill_commands()
+             if re.search(r"\bremember\b", command_of(call)) and "--from-analysis" in command_of(call)]
+    if len(saves) != 1:
+        return bad(f"команд remember --from-analysis: {len(saves)}, ожидалась одна")
+    head = saves[0].split("remember", 1)[1].split("--", 1)[0]
+    numbers = {str(int(token)) for token in head.split() if token.isdigit()}
+    if numbers != asked:
+        return bad(f"сохранены номера {sorted(numbers)}, в вопросе — {sorted(asked)}")
+    records = [json.loads(path.read_text(encoding="utf-8"))
+               for path in (ctx.project / "alla-kb").glob("*.json")]
+    confirmed = [record["id"] for record in records if record.get("confirmed_signatures")]
+    if len(confirmed) < len(asked):
+        return bad(f"записей с подтверждённой сигнатурой {len(confirmed)} из {len(asked)}")
+    return ok(f"сохранены {', '.join(sorted(numbers))} одной командой: {', '.join(confirmed)}")
+
+
+def check_kb_auto_resolved(ctx: Context) -> dict[str, Any]:
+    """Следующий прогон: сохранённые проблемы разобрал скрипт по базе знаний — модель их
+    разборов не писала и не переписывала, отчёт их так и называет."""
+    from alla_skill_lib.known_issues import kb_auto_written
+
+    wanted = {str(launch_id) for launch_id in ctx.scenario.also_launches}
+    project = canonical(ctx.project)
+    written = {target for call in ctx.trace.calls if call.name in WRITE_TOOLS
+               for target in ctx.tool_targets(project, path_of(call))}
+    for run_dir in ctx.run_dirs():
+        run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        if str(run["launch_id"]) not in wanted:
+            continue
+        state_path = run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
+        auto = [entry["file_id"] for entry in run["clusters"] if entry.get("kb_auto")]
+        if not auto:
+            return bad(f"{run_dir.name}: ни одна проблема не разобрана по базе знаний")
+        for file_id in auto:
+            path = run_dir / "analyses" / f"{file_id}.md"
+            if canonical(path) in written:
+                return bad(f"{run_dir.name}: модель писала {path.name}, разобранный по базе знаний")
+            text = path.read_text(encoding="utf-8") if path.is_file() else ""
+            if not kb_auto_written(state, file_id, text):
+                return bad(f"{run_dir.name}: {path.name} — не разбор скрипта по базе знаний")
+        report = run_dir / "report.md"
+        if "Разобрано по базе знаний" not in (report.read_text(encoding="utf-8")
+                                             if report.is_file() else ""):
+            return bad(f"{run_dir.name}: в report.md нет «Разобрано по базе знаний»")
+        return ok(f"{run_dir.name}: по базе знаний — {', '.join(auto)}")
+    return bad(f"нет папки разбора прогона {', '.join(sorted(wanted))}")
+
+
 def check_known_issue_grouped(ctx: Context) -> dict[str, Any]:
     """Модель приняла запись базы знаний ровно в проблемах её причины по эталону сценария
     (``KNOWLEDGE_TARGETS``), посторонняя — без неё, и в report.md есть блок известных проблем."""
@@ -1838,7 +1922,8 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
     exit_codes: list[int] = []
     traces: list[Path] = []
     with FakeTestOpsServer(build_fixture(scenario.fixture), log_path=log,
-                           delay=scenario.testops_delay) as server:
+                           delay=scenario.testops_delay,
+                           also_launches=scenario.also_launches) as server:
         project = build_project(work, server.endpoint, venv, scenario.knowledge,
                                 scenario.env_ready, scenario.extensions, scenario.sut_repo,
                                 scenario.maven, FIXTURE_SOURCES.get(scenario.fixture))

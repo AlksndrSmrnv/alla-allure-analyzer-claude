@@ -129,8 +129,9 @@ class FakeTestOpsServer:
     """HTTP-обёртка над ``FakeTestOps`` в фоновом потоке."""
 
     def __init__(self, fixture: LaunchFixture, *, port: int = 0,
-                 log_path: Path | None = None, delay: float = 0.0) -> None:
-        self.fake = FakeTestOps(fixture)
+                 log_path: Path | None = None, delay: float = 0.0,
+                 also_launches: tuple[int, ...] = ()) -> None:
+        self.fake = FakeTestOps(fixture, also_launches=also_launches)
         self.log_path = log_path
         self.delay = delay
         self._lock = threading.Lock()
