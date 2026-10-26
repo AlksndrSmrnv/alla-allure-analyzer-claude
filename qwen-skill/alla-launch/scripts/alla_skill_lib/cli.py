@@ -1688,7 +1688,7 @@ def _rerun(
     files = rerun.job_files(paths)
     state = rerun.job_state(files)
     if args.remember:
-        return _rerun_remember(paths, run, state, args.result_id)
+        return _rerun_remember(paths, run, state, args.result_id, started)
     if args.wait or (not args.clusters and not args.yes and state.state != "none"):
         # Без номеров после перезапуска — его ход или итог: «итог покажет /alla:rerun».
         if state.state == "none":
@@ -1918,6 +1918,7 @@ def _save_items(run: dict[str, Any], state: rerun.JobState) -> tuple[flaky.Remem
 
 def _rerun_remember(
     paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, job_id: str | None,
+    started: float,
 ) -> tuple[str, str]:
     """Сохранить итог перезапуска: отметки в базе знаний (``alla-kb/flaky/``) и статус passed
     прошедших тестов в TestOps (``resolve.py``)."""
@@ -1929,8 +1930,8 @@ def _rerun_remember(
     if not keep and not resolve_marks:
         return "ok", "Сохранять нечего. Покажи это пользователю."
     lines, folders = _remember_flaky(run, state, keep) if keep else ([], set())
-    testops, resolved = _resolve_in_testops(paths, run, state, resolve_marks) \
-        if resolve_marks else ([], False)
+    testops, resolved, repeat = _resolve_in_testops(paths, run, state, resolve_marks, started) \
+        if resolve_marks else ([], False, "")
     lines += testops
     # Отметки показывает отчёт: после записи он пересобирается (хуки не повторяются).
     if (folders or resolved) and _refresh_report(paths):
@@ -1941,6 +1942,8 @@ def _rerun_remember(
                      f"(отметки — в {shown}/{flaky.FLAKY_DIRNAME}/). `next` не выполняй.")
     else:
         lines.append("Скажи это пользователю. `next` не выполняй.")
+    if repeat:
+        lines.append(repeat)
     return ("saved" if folders or resolved else "ok"), "\n".join(lines)
 
 
@@ -1982,38 +1985,57 @@ def _remember_flaky(
 
 def _resolve_in_testops(
     paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, marks: list[resolve.Mark],
-) -> tuple[list[str], bool]:
-    """Статус passed прошедшим тестам в TestOps; строки ответа и отмечен ли хоть один результат."""
+    started: float,
+) -> tuple[list[str], bool, str]:
+    """Статус passed прошедшим тестам в TestOps.
+
+    Возвращает строки ответа, отмечен ли хоть один результат, и строку повтора — если не всё
+    успело уйти за один ответ (Qwen обрывает команду через 120 с): повтор той же команды
+    отправит только остальное.
+    """
     assert state.result is not None
     env_file = ws.SKILL_DIR / ".env"
     try:
         settings = Settings.load(env_file=env_file)
     except ConfigurationError as exc:
         return [f"В TestOps не отмечены ({resolve.names(marks)}): настройки TestOps в {env_file} "
-                f"неверны: {exc}. {USER_ACTION_NOTE}"], False
+                f"неверны: {exc}. {USER_ACTION_NOTE}"], False, ""
     # id результатов — этого TestOps: адрес в .env сменился — запрос задел бы чужие результаты.
     if not str(run.get("launch_url") or "").startswith(settings.endpoint.rstrip("/") + "/launch/"):
         return [f"В TestOps не отмечены ({resolve.names(marks)}): прогон разбирался на другом "
                 f"TestOps, чем ALLURE_ENDPOINT сейчас ({settings.endpoint}). Отметить можно, "
-                "вернув прежний адрес."], False
-    outcome = asyncio.run(resolve.send(settings, marks, env_file, date.today().isoformat()))
+                "вернув прежний адрес."], False, ""
     files = rerun.job_files(paths)
-    if outcome.done:
-        rerun.write_resolved(files, str(state.result["job"]), {**state.resolved, **outcome.done})
+    job = str(state.result["job"])
+    today = date.today().isoformat()
+    marked = dict(state.resolved)
+
+    def keep(test_id: int) -> None:  # сразу: оборванная команда не теряет отмеченное
+        marked[test_id] = today
+        rerun.write_resolved(files, job, marked)
+
+    outcome = asyncio.run(resolve.send(
+        settings, marks, env_file, today,
+        deadline=started + rerun.WAIT_BUDGET, on_done=keep))
+    command = ws.skill_command("rerun", "--run", str(paths.root), "--remember", "--result", job)
     lines = []
     done = outcome.done_marks(marks)
     if done:
         lines.append(f"Отмечены успешными в TestOps (статус passed в прогоне {run['launch_id']}): "
                      f"{resolve.names(done)}.")
     if outcome.failed:
-        command = ws.skill_command("rerun", "--run", str(paths.root), "--remember", "--result",
-                                   str(state.result["job"]))
         lines.append("Не отмечены в TestOps: "
                      + "; ".join(f"{mark.full_name} — {reason}" for mark, reason in outcome.failed)
                      + f". Сам команду не повторяй: когда пользователь устранит причину, повторить "
                      f"можно той же командой ({command}) — уже отмеченные она не тронет. "
                      + USER_ACTION_NOTE)
-    return lines, bool(outcome.done)
+    repeat = ""
+    if outcome.left:
+        repeat = (f"Не успели уйти в TestOps за один ответ: {resolve.names(outcome.left)}. "
+                  "Согласие пользователя на них уже есть: скажи ему, что отправка продолжается, и "
+                  "сразу, в том же ходе, выполни ту же команду ещё раз — она отправит только "
+                  f"остальное: {command}")
+    return lines, bool(outcome.done), repeat
 
 
 def _refresh_report(paths: ws.RunPaths) -> bool:

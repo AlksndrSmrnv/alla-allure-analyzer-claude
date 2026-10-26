@@ -711,6 +711,73 @@ def test_passed_test_without_a_ci_signal_is_marked_only_in_testops(
     assert "--remember" not in _rerun(run_dir, capsys, "--wait")  # всё отмечено — не спрашивает
 
 
+def _testops_only(project: Path, capsys: pytest.CaptureFixture[str]) -> tuple[Path, str]:
+    """Оба теста проблемы прошли без признака в CI: сохранять — только статус в TestOps."""
+    skill_fake_maven.install(project / "autotests", {
+        f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
+    run_dir, run, _ = _prepare(project, capsys)
+    out = _start(run_dir, capsys, _problem_of(run, 101))
+    out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
+    return run_dir, out
+
+
+def test_redirect_is_not_taken_for_a_changed_status(
+    nested_project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake = FakeTestOps(default_launch(777), resolve_status=302)
+    fake.install(monkeypatch)
+    run_dir, out = _testops_only(nested_project, capsys)
+
+    saved = _run(["rerun", *_remember_command(out)], capsys)[1]
+
+    assert saved.startswith("STATUS: ok\nНе отмечены в TestOps: ")
+    assert "TestOps ответил перенаправлением (HTTP 302)" in saved
+    assert len([path for _, path in fake.requests if path.endswith("/resolve")]) == 1
+    assert not (run_dir / "rerun" / "resolved.json").exists()
+
+
+def test_marks_beyond_the_answer_budget_are_sent_by_the_repeat(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, out = _testops_only(nested_project, capsys)
+    args = _remember_command(out)
+    monkeypatch.setattr(rerun, "WAIT_BUDGET", 0.0)  # время ответа вышло после первого запроса
+
+    first = _run(["rerun", *args], capsys)[1]
+
+    assert first.startswith("STATUS: saved\nОтмечены успешными в TestOps (статус passed в "
+                            f"прогоне 777): {ORDER}.createOrder.\n")
+    assert list(testops.resolved) == [101]
+    marks = json.loads((run_dir / "rerun" / "resolved.json").read_text(encoding="utf-8"))
+    assert list(marks["tests"]) == ["101"]  # записано сразу, а не в конце команды
+    repeat = first.rstrip().splitlines()[-1]
+    assert repeat.startswith(f"Не успели уйти в TestOps за один ответ: {ORDER}.updateOrder. ")
+    assert "сразу, в том же ходе, выполни ту же команду ещё раз" in repeat
+    assert repeat.endswith(" ".join(["--run", str(run_dir), "--remember", "--result", args[-1]]))
+
+    monkeypatch.setattr(rerun, "WAIT_BUDGET", 75.0)
+    second = _run(["rerun", *args], capsys)[1]
+    assert second.startswith(f"STATUS: saved\nОтмечены успешными в TestOps (статус passed в "
+                             f"прогоне 777): {ORDER}.updateOrder.")
+    assert sorted(testops.resolved) == [101, 102] and "Не успели" not in second
+
+
+def test_report_marks_a_method_passed_only_when_every_variant_is(tmp_path: Path) -> None:
+    plan = {"job": "j", "tests": [{"test_result_id": 101, "other_ids": [102]}]}
+    item = {"test_result_id": 101, "outcome": "passed", "attempt": 1, "file_id": "01",
+            "full_name": f"{ORDER}.createOrder"}
+    state = rerun.JobState("done", plan, result={"job": "j", "attempts": 3, "tests": [item]})
+
+    assert "TestOps" not in "\n".join(rerun.RerunView.of(state).lines())  # type: ignore[union-attr]
+    state.resolved = {101: "d"}
+    assert "в TestOps — passed у 1 из 2 вариантов" in "\n".join(
+        rerun.RerunView.of(state).lines())  # type: ignore[union-attr]
+    state.resolved = {101: "d", 102: "d"}
+    assert f"{ORDER}.createOrder — прошёл на запуске 1 из 3; в TestOps — passed" in "\n".join(
+        rerun.RerunView.of(state).lines())  # type: ignore[union-attr]
+
+
 def test_testops_refusal_keeps_the_knowledge_base_and_the_command_can_be_repeated(
     nested_project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:

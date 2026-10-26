@@ -13,8 +13,9 @@ passed. Запрос идёт на каждый результат отдель�
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+import time
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,13 @@ from alla_skill_lib.rerun import first_line, safe_text
 STATUS = "passed"
 # Ошибки, которые повторятся на каждом результате: дальше запросы не шлём.
 _SHARED_STATUSES = frozenset({0, 401, 403})
+
+
+def _shared(exc: BaseException) -> bool:
+    if isinstance(exc, AuthenticationError):
+        return True
+    return isinstance(exc, AllureApiError) and (
+        exc.status_code in _SHARED_STATUSES or 300 <= exc.status_code < 400)
 
 
 @dataclass(frozen=True)
@@ -76,18 +84,30 @@ def names(marks: Iterable[Mark]) -> str:
 
 @dataclass
 class Outcome:
-    """Итог отметки: отмеченные результаты и не отмеченные тесты с причиной."""
+    """Итог отметки: отмеченные результаты, не отмеченные тесты с причиной и неотправленные.
+
+    ``left`` — не успели за один ответ команды (``deadline``): их отправит повтор команды.
+    """
 
     done: dict[int, str]
     failed: list[tuple[Mark, str]]
+    left: list[Mark] = field(default_factory=list)
 
     def done_marks(self, marks: Iterable[Mark]) -> list[Mark]:
         """Тесты, у которых отмечены все результаты."""
         return [mark for mark in marks if all(value in self.done for value in mark.ids)]
 
 
-async def send(settings: Settings, marks: list[Mark], env_file: Path, today: str) -> Outcome:
-    """Отметить результаты по одному; ошибка доступа или сети останавливает остальные."""
+async def send(
+    settings: Settings, marks: list[Mark], env_file: Path, today: str, *,
+    deadline: float, on_done: Callable[[int], None],
+) -> Outcome:
+    """Отметить результаты по одному; ошибка доступа или сети останавливает остальные.
+
+    Qwen обрывает команду через 120 с: после ``deadline`` (``time.monotonic``) новые запросы
+    не начинаются, кроме первого — повтор команды всегда продвигается. ``on_done`` получает
+    каждый принятый id сразу: оборванная команда не теряет уже отмеченное.
+    """
     from alla_core.clients.auth import AllureAuthManager
     from alla_core.clients.testops_client import AllureTestOpsClient
 
@@ -100,30 +120,36 @@ async def send(settings: Settings, marks: list[Mark], env_file: Path, today: str
     )
     outcome = Outcome({}, [])
     shared = ""
+    sent = False
     async with AllureTestOpsClient(settings, auth) as client:
         for mark in marks:
             reason = shared
+            unsent = False
             for test_id in mark.ids:
                 if shared:
                     break
+                if sent and time.monotonic() >= deadline:
+                    unsent = True
+                    break
+                sent = True
                 try:
                     row = await client.resolve_test_result(test_id, STATUS, mark.note)
                 except AllaError as exc:
-                    if isinstance(exc, AllureApiError) and 200 <= exc.status_code < 300:
-                        outcome.done[test_id] = today  # принят, но тело не JSON — сверить нечем
-                        continue
                     reason = reason or failure(exc, settings, env_file)
-                    if isinstance(exc, AuthenticationError) or (
-                            isinstance(exc, AllureApiError) and exc.status_code in _SHARED_STATUSES):
+                    if _shared(exc):
                         shared = reason
                     continue
+                # Ответ 2xx без статуса (пустое тело) — принят: сверить нечем.
                 status = str(row.get("status") or STATUS).lower()
                 if status != STATUS:
                     reason = reason or f"TestOps оставил статус {safe_text(status, 40)}"
                     continue
                 outcome.done[test_id] = today
+                on_done(test_id)
             if reason:
                 outcome.failed.append((mark, reason))
+            elif unsent:
+                outcome.left.append(mark)
     return outcome
 
 
@@ -133,6 +159,10 @@ def failure(exc: BaseException, settings: Settings, env_file: Path) -> str:
         return ("у токена нет права менять результаты тестов в проекте TestOps: нужен токен "
                 "пользователя с правом записи (или выключите отметку: ALLURE_RERUN_RESOLVE=false "
                 f"в {env_file})")
+    if isinstance(exc, AllureApiError) and 300 <= exc.status_code < 400:
+        return (f"TestOps ответил перенаправлением (HTTP {exc.status_code}): запрос перехватил "
+                "прокси или страница входа, статус не изменён — проверьте ALLURE_ENDPOINT "
+                f"в {env_file}")
     if isinstance(exc, AllureApiError) and exc.status_code == 404:
         return ("TestOps не нашёл результат теста или не знает запрос resolve (сверьте версию "
                 "TestOps)")

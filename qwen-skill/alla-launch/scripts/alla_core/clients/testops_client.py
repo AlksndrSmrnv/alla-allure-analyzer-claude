@@ -260,12 +260,22 @@ class AllureTestOpsClient:
         ``POST /api/testresult/{id}/resolve`` с ``ResolveRequestV2Dto`` (OpenAPI 26.1.1),
         ответ ``202`` — строка результата (``TestResultRowDto``: ``id``, ``status``…). Запрос
         на один id, а не ``bulk/resolve``: выборка дерева при ошибке задела бы лишние
-        результаты. Не повторяется (``_may_retry`` — только GET); пустой ответ — ``{}``.
+        результаты. Не повторяется (``_may_retry`` — только GET). Успех — только 2xx:
+        перенаправление (прокси, страница входа) статус не меняло, хотя и не ошибка HTTP.
+        Тело пустое или не JSON — ``{}``.
         """
-        data = await self._request(
-            "POST", f"{self.TESTRESULT_ENDPOINT}/{test_result_id}/resolve",
-            json={"status": status, "message": message}, expect_json=False,
+        path = f"{self.TESTRESULT_ENDPOINT}/{test_result_id}/resolve"
+        resp = await self._send_with_auth_retry(
+            "POST", path, json={"status": status, "message": message},
         )
+        if 300 <= resp.status_code < 400:
+            raise AllureApiError(resp.status_code, "перенаправление: запрос не дошёл до TestOps", path)
+        if not 200 <= resp.status_code < 300:
+            raise AllureApiError(resp.status_code, resp.text[:500], path)
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError:
+            return {}
         return data if isinstance(data, dict) else {}
 
     # --- Аттачменты (протокол AttachmentProvider) ---

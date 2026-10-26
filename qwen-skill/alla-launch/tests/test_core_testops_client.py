@@ -509,6 +509,18 @@ async def test_resolve_posts_one_result_and_is_not_retried(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_resolve_counts_only_2xx_as_done(monkeypatch, tmp_path) -> None:
+    """Перенаправление прокси или входа — не успех, хотя и не ошибка HTTP; 2xx не JSON — {}."""
+    client = await _retrying_client(monkeypatch, tmp_path)
+    client._http = _ScriptedHttp([_make_response(302), _make_response(202, body=b"<html>ok</html>")])
+
+    with pytest.raises(AllureApiError) as exc_info:
+        await client.resolve_test_result(9, "passed", "alla")
+    assert exc_info.value.status_code == 302
+    assert await client.resolve_test_result(9, "passed", "alla") == {}
+
+
+@pytest.mark.asyncio
 async def test_request_raw_retries_gateway_and_network_errors(monkeypatch, tmp_path) -> None:
     client = await _retrying_client(monkeypatch, tmp_path)
     client._http = _ScriptedHttp([

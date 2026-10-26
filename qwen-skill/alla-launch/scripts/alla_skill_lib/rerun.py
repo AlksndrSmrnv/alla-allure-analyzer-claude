@@ -846,14 +846,19 @@ class RerunView:
     tests: list[dict[str, Any]]
     build_errors: dict[str, list[str]]
     resolved: dict[int, str] = field(default_factory=dict)  # отмечены passed в TestOps
+    # Результаты TestOps теста плана: его и других вариантов метода (``other_ids``).
+    variants: dict[int, list[int]] = field(default_factory=dict)
 
     @classmethod
     def of(cls, state: JobState) -> RerunView | None:
         if state.state != "done" or state.result is None:
             return None
         result = state.result
+        variants = {int(test["test_result_id"]): [int(test["test_result_id"]),
+                                                  *(int(other) for other in test.get("other_ids") or [])]
+                    for test in (state.plan or {}).get("tests") or []}
         return cls(int(result.get("attempts") or 0), list(result.get("tests") or []),
-                   dict(result.get("build_errors") or {}), dict(state.resolved))
+                   dict(result.get("build_errors") or {}), dict(state.resolved), variants)
 
     @staticmethod
     def group(item: dict[str, Any]) -> str:
@@ -901,8 +906,7 @@ class RerunView:
             if item.get("surefire_flaky"):
                 text += " (surefire повторял его сам)"
             text += f"; {item['changed']}" if item.get("changed") else ""
-            return text + ("; в TestOps — passed" if int(item.get("test_result_id") or 0)
-                           in self.resolved else "")
+            return text + self._testops(int(item.get("test_result_id") or 0))
         if outcome == "reproduced":
             text = f"упал {item.get('runs')} из {item.get('runs')}"
             return text + (f" (дальше не проверен: {item['cut']})" if item.get("cut") else "")
@@ -913,6 +917,17 @@ class RerunView:
         if errors and reason == "сборка не прошла":
             reason += f": {errors[0]}"
         return reason
+
+
+    def _testops(self, test_id: int) -> str:
+        """Отметка passed в TestOps: у метода с вариантами — только если отмечены все."""
+        ids = self.variants.get(test_id, [test_id])
+        done = sum(1 for value in ids if value in self.resolved)
+        if not done:
+            return ""
+        if done == len(ids):
+            return "; в TestOps — passed"
+        return f"; в TestOps — passed у {done} из {len(ids)} вариантов"
 
 
 def render_result(view: RerunView, logs: Path, report: Path | None = None) -> str:
