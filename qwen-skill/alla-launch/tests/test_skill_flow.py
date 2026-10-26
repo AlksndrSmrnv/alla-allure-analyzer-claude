@@ -129,6 +129,23 @@ def test_prepare_is_read_only_and_hides_token(project: Path, testops: FakeTestOp
             assert TOKEN not in path.read_text(encoding="utf-8"), path
 
 
+def test_log_without_errors_stays_out_of_the_task(project: Path, testops: FakeTestOps, capsys) -> None:
+    # Стенд F02/X01 (test_bug): app.log скачивается, но в нём только INFO, а «responded 201
+    # Created» — не HTTP-сигнал (только 4xx/5xx), и отбор от ошибок его не берёт (core.md).
+    # Причину «тест» модель выводит из кода теста; станет лог доходить — обнови skill-quality.md.
+    from skill_fake_testops import test_bug_launch  # на уровне модуля pytest собрал бы его тестом
+
+    testops.fixture = test_bug_launch()
+    run_dir, _, out = _prepare(project, capsys, launch_id=782)
+    assert out.startswith("STATUS: analyze"), out
+    assert ("GET", "/api/testresult/attachment/9101/content") in testops.requests
+
+    task = (run_dir / "clusters" / "01.md").read_text(encoding="utf-8")
+    assert "--- [S1 · сообщение об ошибке] ---\nexpected: <200> but was: <201>" in task
+    assert "app.log" not in task and "201 Created" not in task and "[S3 " not in task
+    assert "был ли лог и что в нём — неизвестно" in " ".join(task.split())
+
+
 def test_full_flow_until_done(project: Path, testops: FakeTestOps, capsys) -> None:
     run_dir, run, _ = _prepare(project, capsys)
     pending = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]

@@ -376,7 +376,10 @@ def flaky_launch(launch_id: int = 793) -> LaunchFixture:
 
 
 def test_bug_launch(launch_id: int = 782) -> LaunchFixture:
-    """Дефект автотеста: API по контракту отвечает 201 Created, а тест ждёт 200 (стенд X01)."""
+    """Дефект автотеста: API по контракту отвечает 201 Created, а тест ждёт 200 (стенды X01, F02).
+
+    ``app.log`` без ошибок в задание не попадает: причину модель выводит из кода теста.
+    """
     trace = ORDER_TRACE.replace("<500>", "<201>").format(method="createOrder", line=6)
     log = (
         "2026-09-01 10:00:00 [INFO] OrderService: request received POST /orders\n"
