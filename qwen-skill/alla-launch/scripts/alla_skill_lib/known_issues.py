@@ -10,28 +10,41 @@
 записей в ``prepare`` (``kb.record_matches``). Поэтому после ``reject`` проблема
 выходит из группы при следующей сборке отчёта. Всё вычисляется заново при каждой
 сборке и нигде не хранится.
+
+Точно узнанную проблему (сигнатуру подтвердил инженер) скрипт разбирает сам, без модели:
+``prepare`` выбирает запись (``auto_resolution``), а ``next`` пишет разбор из её текущего
+текста или снимает его, когда запись перестала подходить (``sync_known_auto``).
 """
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from alla_core.models.clustering import FailureCluster
+from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib import workspace as ws
-from alla_skill_lib.analysis_format import ClusterAnalysis
+from alla_skill_lib.analysis_format import MIN_QUOTE_CHARS, ClusterAnalysis
 from alla_skill_lib.kb import (
     KB_TO_CATEGORY,
     KBRecord,
     ProjectKB,
+    cluster_evidence,
+    cluster_signature,
     entry_tests,
     fingerprint_hits,
+    fingerprint_lines,
     kb_label,
+    key_of_test,
     match_cluster,
     normalize_fp,
     record_matches,
     record_rejected,
 )
+from alla_skill_lib.sources import IMAGE_KIND, Registry, check_entry_analysis, example_blocks
 
 
 @dataclass(frozen=True)
@@ -47,6 +60,7 @@ class KnownRecord:
     module: str = ""
     # False — папку базы знаний не найти: ссылка взята из разбора и снимка prepare как есть.
     verified: bool = True
+    created: str = ""  # дата записи (``created.date``)
 
     @property
     def key(self) -> tuple[str, str]:
@@ -76,6 +90,8 @@ class KnownIssues:
     notes: list[str] = field(default_factory=list)
     # В прогоне записи из нескольких папок базы знаний (модулей): модуль надо называть.
     several_modules: bool = False
+    # Разобраны скриптом по точной записи, без модели (``sync_known_auto``).
+    auto: set[str] = field(default_factory=set)
 
     def group_of(self, file_id: str) -> KnownIssue | None:
         return next((group for group in self.groups if file_id in group.file_ids), None)
@@ -86,12 +102,14 @@ def known_issues(
     analyses: dict[str, ClusterAnalysis],
     flagged: set[str],
     paths: ws.RunPaths,
+    auto: Iterable[str] = (),
 ) -> KnownIssues:
     """Подтвердить ссылки разборов на записи базы знаний и собрать группы.
 
     Проблема входит в группу записи, если разбор принят, ссылается на запись,
     запись подходит кластеру сейчас, категория разбора совпадает с категорией
     записи и примеры не названы «разными проблемами». Группа — от двух проблем.
+    ``auto`` — проблемы, которые скрипт разобрал по записи (``sync_known_auto``).
     """
     result = KnownIssues()
     cache: dict[tuple[str, str], KBRecord | None] = {}
@@ -133,6 +151,7 @@ def known_issues(
         )
     result.several_modules = len({ref.kb_dir for ref in (*result.refs.values(), *result.mismatched.values())}) > 1
     result.groups = _groups(run, analyses, result.refs)
+    result.auto = {file_id for file_id in auto if file_id in result.refs}
     return result
 
 
@@ -235,6 +254,7 @@ def _from_record(kb_dir: str, record: KBRecord, entry: dict[str, Any]) -> KnownR
         description=" ".join(record.description.split()),
         first_step=next((step.strip() for step in record.resolution_steps if step.strip()), ""),
         module=str(entry.get("module") or ""),
+        created=str(record.created.get("date") or ""),
     )
 
 
@@ -256,3 +276,215 @@ def _from_snapshot(
         module=str(entry.get("module") or ""),
         verified=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# Разбор точно узнанной проблемы без модели
+# ---------------------------------------------------------------------------
+
+# Ключ ``state.json``: file_id → хэш разбора, который записал скрипт. По нему ``next`` отличает
+# свой текст от разбора модели, написанного после того, как запись перестала подходить.
+KB_AUTO_STATE = "kb_auto"
+KB_AUTO_QUOTE_CHARS = 300
+KB_AUTO_NOT_PROPOSED = (
+    "известная проблема из базы знаний — её разбор взят из записи, что делать — в её рецепте"
+)
+KB_AUTO_INVALID_NOTE = (
+    "Проблема {number}: разбор по записи базы знаний «{entry_id}» не прошёл проверку — её "
+    "разбирает агент."
+)
+
+
+def auto_resolution(
+    kb_matches: list[dict[str, Any]],
+    records: Iterable[KBRecord],
+    cluster: FailureCluster,
+    tests_by_id: dict[int, FailedTestSummary],
+    examples: list[dict[str, Any]],
+    sources: Registry,
+) -> dict[str, Any] | None:
+    """Разобрать ли проблему по записи базы знаний без модели: ``{"id", "quote"}`` или ``None``.
+
+    Только точное узнавание (сигнатуру подтвердил инженер) и ровно одна такая запись; у
+    записи есть причина и рецепт. Каждый пример задания — тоже точное узнавание этой записью:
+    иначе в группе может быть другая ошибка, и однородность проверяет модель. Цитата — строка
+    куска данных с признаком записи, иначе первая строка сообщения или трейса; текст разбора
+    проходит обычную проверку. Не вышло — ``None``: разбирает модель с подсказкой.
+    """
+    exact = [match["id"] for match in kb_matches if match.get("origin") == "exact"]
+    if len(exact) != 1:
+        return None
+    record = next((item for item in records if item.id == exact[0]), None)
+    if record is None or not _record_steps(record):
+        return None
+    for example in examples:
+        test_id = example.get("test_result_id")
+        if test_id != cluster.representative_test_id and not _example_recognized(
+                record, cluster, tests_by_id, test_id):
+            return None
+    quote = _quote(record, sources)
+    if quote is None:
+        return None
+    return {"id": record.id, "quote": list(quote)}
+
+
+def _example_recognized(
+    record: KBRecord,
+    cluster: FailureCluster,
+    tests_by_id: dict[int, FailedTestSummary],
+    test_id: Any,
+) -> bool:
+    """Пример узнаётся записью точно, как если бы он был представителем кластера."""
+    test = tests_by_id.get(test_id) if isinstance(test_id, int) else None
+    if test is None:
+        return False
+    alone = cluster.model_copy(update={"representative_test_id": test_id})
+    evidence = "\n".join(part for part in cluster_evidence(alone, tests_by_id) if part)
+    key = key_of_test(test.full_name, test.test_case_id)
+    return record_matches(record, cluster_signature(alone, tests_by_id), normalize_fp(evidence),
+                          [key] if key else []) == "exact"
+
+
+def _quote(record: KBRecord, sources: Registry) -> tuple[str, str] | None:
+    """Строка данных для «НАБЛЮДЕНИЯ»: с признаком записи, иначе первая строка ошибки."""
+    ordered = sorted(
+        ((source_id, source) for source_id, source in sources.items()
+         if source.get("kind") != IMAGE_KIND),
+        key=lambda item: int(item[0][1:]) if item[0][1:].isdigit() else 0)
+    for wanted in (normalize_fp(line) for line in fingerprint_lines(record.error_example)):
+        for source_id, source in ordered:
+            for line in str(source.get("text") or "").splitlines():
+                if wanted and wanted in normalize_fp(line) and _significant(line):
+                    return source_id, _quote_text(line)
+    for source_id, source in ordered:
+        if source.get("kind") in ("message", "trace"):
+            line = next((line for line in str(source.get("text") or "").splitlines()
+                         if _significant(line)), "")
+            if line:
+                return source_id, _quote_text(line)
+    return None
+
+
+def _significant(line: str) -> bool:
+    return sum(char.isalnum() for char in line) >= MIN_QUOTE_CHARS
+
+
+def _quote_text(line: str) -> str:
+    """Цитата одной строкой: без «ёлочек» (они закрыли бы её раньше) и не длиннее лимита.
+
+    Сверка цитаты не различает вид кавычек, а начало строки — её часть: обрезанная по границе
+    слова цитата находится в куске так же.
+    """
+    text = " ".join(line.replace("«", '"').replace("»", '"').split())
+    if len(text) <= KB_AUTO_QUOTE_CHARS:
+        return text
+    cut = text[:KB_AUTO_QUOTE_CHARS]
+    return cut[: cut.rfind(" ")].rstrip() if " " in cut else cut
+
+
+def _record_steps(record: KBRecord) -> list[str]:
+    return [" ".join(step.split()) for step in record.resolution_steps if step.strip()]
+
+
+def known_issue_analysis(record: KBRecord, quote: tuple[str, str], *, examples: int = 1) -> str:
+    """Разбор проблемы по записи базы знаний — в обычном формате, его проверяет ``next``."""
+    title = " ".join(record.title.split()) or record.id
+    cause = " ".join(record.description.split()) or title
+    source_id, line = quote
+    return "\n".join([
+        f"ЧТО СЛОМАЛОСЬ: Та же ошибка, что у известной проблемы «{title}» из базы знаний: её "
+        "уже разобрал и подтвердил инженер, поэтому разбор взят из записи.",
+        "",
+        f"ПРИЧИНА: {KB_TO_CATEGORY[record.category]} — {cause}",
+        "",
+        "НАБЛЮДЕНИЯ:",
+        f"- [{source_id}] «{line}»",
+        "",
+        "НЕ ХВАТАЕТ: нет",
+        "",
+        *(["СОГЛАСОВАННОСТЬ: одна причина — каждый пример узнан записью базы знаний точно", ""]
+          if examples > 1 else []),
+        "КАК ИСПРАВИТЬ:",
+        *(f"{number}. {step}" for number, step in enumerate(_record_steps(record), start=1)),
+        "",
+        f"БАЗА ЗНАНИЙ: {record.id}",
+    ]) + "\n"
+
+
+def sync_known_auto(
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    state: dict[str, Any],
+) -> tuple[set[str], list[str]]:
+    """Разборы известных проблем по текущим файлам базы знаний: записать, обновить или снять.
+
+    Запись подходит кластеру точно — разбор пишется из её текущего текста (после
+    ``remember --entry`` рецепт обновится). Перестала подходить (``reject``, запись удалена
+    или ошибку переназначили другой) — свой разбор удаляется, и проблему разбирает модель.
+    Разбор, который написал не скрипт (хэш другой), не трогается. Возвращает номера проблем,
+    разобранных по базе знаний, и замечания для отчёта; ``state`` меняется на месте.
+    """
+    written: dict[str, str] = dict(state.get(KB_AUTO_STATE) or {})
+    project_root = Path(str(run.get("project_root") or "."))
+    active: set[str] = set()
+    notes: list[str] = []
+    for entry in run["clusters"]:
+        auto = entry.get("kb_auto")
+        if not auto:
+            continue
+        file_id = entry["file_id"]
+        path = paths.analysis(file_id)
+        current = ws.read_text(path) if path.is_file() else ""
+        if current.strip() and _digest(current) != written.get(file_id):
+            continue  # разбор после отката пишет модель
+        record = _exact_now(run, entry, paths, str(auto["id"]))
+        text = (known_issue_analysis(record, (str(auto["quote"][0]), str(auto["quote"][1])),
+                                     examples=example_blocks(entry))
+                if record is not None else None)
+        if text is not None and check_entry_analysis(text, entry, project_root, paths)[1]:
+            notes.append(KB_AUTO_INVALID_NOTE.format(number=int(file_id), entry_id=auto["id"]))
+            text = None
+        if text is None:
+            path.unlink(missing_ok=True)
+            written.pop(file_id, None)
+            continue
+        if current != text:
+            ws.write_text(path, text)
+        written[file_id] = _digest(text)
+        active.add(file_id)
+    if written:
+        state[KB_AUTO_STATE] = written
+    else:
+        state.pop(KB_AUTO_STATE, None)
+    return active, notes
+
+
+def _exact_now(
+    run: dict[str, Any],
+    entry: dict[str, Any],
+    paths: ws.RunPaths,
+    entry_id: str,
+) -> KBRecord | None:
+    """Запись по текущему файлу, если она узнаёт ошибку кластера точно."""
+    kb_dir = str(entry.get("kb_dir") or "")
+    if not kb_dir or not Path(kb_dir).is_dir():
+        return None
+    try:
+        record = ProjectKB(Path(kb_dir)).get(entry_id)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if record is None or not _record_steps(record):
+        return None
+    exact = record_matches(record, entry.get("signature"), normalize_fp(_evidence(entry, paths)),
+                           entry_tests(run, entry)) == "exact"
+    return record if exact else None
+
+
+def kb_auto_written(state: Mapping[str, Any], file_id: str, text: str) -> bool:
+    """Разбор проблемы — тот, что записал скрипт по базе знаний (``sync_known_auto``)."""
+    written = state.get(KB_AUTO_STATE)
+    return bool(text.strip()) and isinstance(written, dict) and written.get(file_id) == _digest(text)
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()

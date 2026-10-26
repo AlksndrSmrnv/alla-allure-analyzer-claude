@@ -197,6 +197,8 @@ class _Problem:
     rerun_summary: str = ""
     # Тесты проблемы, отмеченные нестабильными в базе знаний: «имя (с даты)».
     flaky_marked: list[str] = field(default_factory=list)
+    # Разбор написал скрипт по точной записи базы знаний, без модели (``KnownIssues.auto``).
+    kb_auto: bool = False
 
     @property
     def applied(self) -> bool:
@@ -296,6 +298,7 @@ def build_summary_data(
                 entry["file_id"] in flagged,
                 entry["file_id"] in detailed,
             ) + (f"\n({REJECTED_SUMMARY_NOTE})" if entry["file_id"] in rejected else "")
+            + (f"\n({KB_AUTO_SUMMARY_NOTE})" if known and entry["file_id"] in known.auto else "")
             + _confirmed_summary((confirmed or {}).get(entry["file_id"])),
         )
         for entry in listed
@@ -358,6 +361,46 @@ def build_summary_task(
         "",
         reference_line(SUMMARY_FORMAT_REF, "Формат итога с примером"),
     ]) + "\n"
+
+
+def known_summary(run: dict[str, Any], known: KnownIssues) -> str:
+    """Общий анализ прогона, где все проблемы с данными разобраны по базе знаний.
+
+    Модель тут нечего сравнивать и обобщать: причины назвал инженер, поэтому сводку пишет
+    скрипт — по записям, от самой большой известной проблемы.
+    """
+    sizes = {entry["file_id"]: int(entry["member_count"]) for entry in run["clusters"]}
+    by_record: dict[tuple[str, str], list[str]] = {}
+    for file_id in sorted(known.auto, key=int):
+        by_record.setdefault(known.refs[file_id].key, []).append(file_id)
+    records = sorted(by_record.values(),
+                     key=lambda ids: (-sum(sizes[file_id] for file_id in ids), int(ids[0])))
+    count = len(known.auto)
+    no_data = sum(1 for entry in run["clusters"] if entry.get("auto"))
+    scope = " с данными об ошибке" if no_data else ""
+    first = (f"Все проблемы прогона{scope} уже известны: их причины подтвердил инженер, поэтому "
+             f"разбор взят из записей базы знаний ({count} "
+             f"{_plural(count, 'проблема', 'проблемы', 'проблем')}).")
+    if no_data:
+        first += (f" Ещё у {no_data} {_plural(no_data, 'проблемы', 'проблем', 'проблем')} нет "
+                  "данных об ошибке — их причину определить не по чему.")
+    paragraphs = [first]
+    for file_ids in records[:MAX_SUMMARY_GROUPS]:
+        record = known.refs[file_ids[0]]
+        size = sum(sizes[file_id] for file_id in file_ids)
+        text = (f"«{_one_line(record.title)}» — {_numbers_phrase(file_ids, MAX_SUMMARY_GROUP_NUMBERS)}, "
+                f"{size} {_plural(size, 'тест', 'теста', 'тестов')}")
+        if record.description:
+            text += f": {_one_line(record.description).rstrip('.')}"
+        text += "."
+        if record.first_step:
+            text += f" Что делать: {_one_line(record.first_step).rstrip('.')}."
+        paragraphs.append(text)
+    rest = records[MAX_SUMMARY_GROUPS:]
+    if rest:
+        kinds = _plural(len(rest), "известная проблема", "известные проблемы", "известных проблем")
+        paragraphs.append(f"Ещё {len(rest)} {kinds} поменьше — в отчёте.")
+    return "\n\n".join(paragraphs) + "\n"
 
 
 def _summary_rest(
@@ -582,6 +625,9 @@ def render_report(
     groups = [(bucket, title, units) for bucket, title, units in groups if units]
     count = sum(len(units) for _, _, units in groups)
     brief = _brief_header(run, groups, count, rerun)
+    kb_auto = sum(1 for problem in problems if problem.kb_auto)
+    if kb_auto:
+        brief.insert(brief.index(f"TestOps: {run['launch_url']}"), _kb_auto_header(kb_auto))
     summary = _plain_text(summary)
     brief += ["", "### Коротко", summary, "", "---"]
     for bucket, title, group in groups:
@@ -591,6 +637,8 @@ def render_report(
     brief += ["", "---", "", FEEDBACK_INVITATION, "", link]
 
     full = _header(run, count, rerun)
+    if kb_auto:
+        full.insert(4, _kb_auto_header(kb_auto) + ".")  # после строки «В разборе: …»
     full += ["", "### Коротко", summary]
     if known and known.groups:
         full += ["", *_known_section(known, problems)]
@@ -670,6 +718,7 @@ def _problem(
             group=known.group_of(file_id),
             rejected=known.rejected.get(file_id),
             confirmed=confirmed,
+            kb_auto=file_id in known.auto,
         )
     # Без проверки по базе знаний (вызов без known): ссылка разбора как есть.
     ref = None if is_flagged or not analysis.kb_ref else KnownRecord(
@@ -863,6 +912,7 @@ def _item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> lis
         if what:
             lines.append(f"- Что случилось: {what}")
         lines.append(f"- {_opinion_label(problem)} {_opinion(problem, _reason(problem))}")
+        lines += _kb_auto_lines(problem)
         lines += _consistency_lines(analysis, "- ")
         lines += _evidence_lines(analysis, "- Наблюдения:", "- Не хватает: ")
     lines += _confirmed_lines(problem)
@@ -1070,7 +1120,9 @@ def _brief_known(unit: list[_Problem], tests: _Tests) -> list[str]:
     numbers = _merged_title([p.entry["file_id"] for p in unit], MAX_BRIEF_GROUP_NUMBERS)
     lines = [
         (f"**{numbers}** · {size} {_plural(size, 'тест', 'теста', 'тестов')} "
-         f"· [известная проблема: {record.id}]" + "".join(f" · [{tag}]" for tag in _flaky_tags(unit))),
+         f"· [известная проблема: {record.id}]"
+         + "".join(f" · [{tag}]" for tag in [*([KB_AUTO_TAG] if all(p.kb_auto for p in unit) else []),
+                                              *_flaky_tags(unit)])),
         _truncate(f"Одна известная проблема: «{_plain_line(_one_line(record.title))}»", BRIEF_TEXT_CHARS),
     ]
     reason = record.description or _one_line(_reason(first))
@@ -1230,8 +1282,34 @@ def _reason(problem: _Problem) -> str:
 
 
 def _opinion_label(problem: _Problem) -> str:
-    """Подпись мнения агента: о разборе по отвергнутой записи — в прошедшем времени."""
+    """Подпись мнения агента: о разборе по отвергнутой записи — в прошедшем времени, у
+    разбора по записи базы знаний — не агент, а запись."""
+    if problem.kb_auto:
+        return "База знаний:"
     return "Агент считал:" if problem.rejected is not None else "Агент считает:"
+
+
+KB_AUTO_TAG = "разобрано по базе знаний"
+KB_AUTO_SUMMARY_NOTE = (
+    "разобрано по записи базы знаний без агента: эту ошибку уже подтвердил инженер"
+)
+
+
+def _kb_auto_header(count: int) -> str:
+    return (f"По базе знаний без агента: {count} "
+            f"{_plural(count, 'известная проблема', 'известные проблемы', 'известных проблем')}")
+
+
+def _kb_auto_lines(problem: _Problem) -> list[str]:
+    """Разбор по записи базы знаний в report.md: чей он и что делать, если причина другая."""
+    if not problem.kb_auto or problem.known is None:
+        return []
+    when = f", {problem.known.created}" if problem.known.created else ""
+    return [(
+        f"- **Разобрано по базе знаний**: эту ошибку уже подтвердил инженер (запись "
+        f"`{problem.known.id}`{when}), агент её не разбирал. Причина другая — скажите агенту: "
+        "он отвергнет запись для этой проблемы и разберёт её заново."
+    )]
 
 
 def _opinion(problem: _Problem, reason: str) -> str:
@@ -1301,6 +1379,8 @@ def _brief_tags(
         tags += _history_tags(problem)
     if problem.known is not None:
         tags.append(f"известная проблема: {problem.known.id}")
+    if problem.kb_auto:
+        tags.append(KB_AUTO_TAG)
     if problem.mismatch is not None:
         tags.append(f"расходится с базой знаний: {problem.mismatch.id}")
     if problem.rejected is not None:

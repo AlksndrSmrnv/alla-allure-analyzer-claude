@@ -95,10 +95,14 @@ from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, rejec
 from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
 from alla_skill_lib.images import place_images
 from alla_skill_lib.known_issues import (
+    KB_AUTO_NOT_PROPOSED,
+    KB_AUTO_STATE,
     KnownIssues,
     KnownRecord,
+    auto_resolution,
     current_kb_matches,
     known_issues,
+    sync_known_auto,
 )
 from alla_skill_lib.kb import (
     KBRecord,
@@ -149,6 +153,7 @@ from alla_skill_lib.session_log import note_session
 from alla_skill_lib.report import (
     build_summary_data,
     build_summary_task,
+    known_summary,
     render_green_report,
     render_report,
 )
@@ -844,29 +849,50 @@ def _write_run(
             staged = {test_id: data.images[test_id] for test_id in cluster.member_test_ids
                       if test_id in data.images}
             placed = place_images(staged, paths.images(file_id))
-            task = build_cluster_task_with_sources(
-                cluster=cluster,
-                position=position,
-                total=len(clusters),
-                launch_id=triage.launch_id,
-                answer_path=str(paths.analysis(file_id)),
-                next_command=paths.next_command(),
-                tests_by_id=tests_by_id,
-                log_snippet=log_snippet,
-                full_trace=full_trace,
-                frames=frames,
-                hints=hints_for_cluster(index, [name for name in full_names if name], frames),
-                settings=settings,
-                kb_matches=kb_matches,
-                recurrence=entry["history"],
-                images={test_id: TaskImage(
-                    test_result_id=test_id,
-                    path=placed[test_id],
-                    name=image.name,
-                    step=image.step,
-                    attachment_id=image.attachment_id,
-                ) for test_id, image in staged.items() if test_id in placed},
+            hints = hints_for_cluster(index, [name for name in full_names if name], frames)
+            task_images = {test_id: TaskImage(
+                test_result_id=test_id,
+                path=placed[test_id],
+                name=image.name,
+                step=image.step,
+                attachment_id=image.attachment_id,
+            ) for test_id, image in staged.items() if test_id in placed}
+
+            task_args: dict[str, Any] = {
+                "cluster": cluster,
+                "position": position,
+                "total": len(clusters),
+                "launch_id": triage.launch_id,
+                "answer_path": str(paths.analysis(file_id)),
+                "next_command": paths.next_command(),
+                "tests_by_id": tests_by_id,
+                "log_snippet": log_snippet,
+                "full_trace": full_trace,
+                "frames": frames,
+                "hints": hints,
+                "settings": settings,
+                "recurrence": entry["history"],
+                "images": task_images,
+            }
+            task = build_cluster_task_with_sources(**task_args, kb_matches=kb_matches)
+            sources = registry(
+                task.sources, tests_by_id,
+                files={source_id: image.path.relative_to(paths.root).as_posix()
+                       for source_id, image in task.images.items()},
+                steps={source_id: image.step for source_id, image in task.images.items()},
+                attachment_ids={source_id: image.attachment_id
+                                for source_id, image in task.images.items()},
             )
+            known_auto = auto_resolution(kb_matches, load_kb(cluster_kb_dir), cluster,
+                                         tests_by_id, task.examples, sources)
+            if known_auto is not None:
+                # Разбор пишет скрипт (next). Задание — запасной путь, если инженер отвергнет
+                # запись: тогда оно не должно называть её точным совпадением. Куски данных те же.
+                entry["kb_auto"] = known_auto
+                task = build_cluster_task_with_sources(
+                    **task_args,
+                    kb_matches=[match for match in kb_matches if match["id"] != known_auto["id"]],
+                )
             shown_paths = {image.path for image in task.images.values()}
             for path in placed.values():  # скачанный, но не показанный — не нужен
                 if path not in shown_paths:
@@ -874,14 +900,7 @@ def _write_run(
             if placed and not shown_paths:
                 shutil.rmtree(paths.images(file_id), ignore_errors=True)
             ws.write_text(paths.cluster_task(file_id), task.text)
-            write_registry(paths.sources(file_id), registry(
-                task.sources, tests_by_id,
-                files={source_id: image.path.relative_to(paths.root).as_posix()
-                       for source_id, image in task.images.items()},
-                steps={source_id: image.step for source_id, image in task.images.items()},
-                attachment_ids={source_id: image.attachment_id
-                                for source_id, image in task.images.items()},
-            ))
+            write_registry(paths.sources(file_id), sources)
             if task.images:
                 entry["images"] = [{
                     "source_id": source_id,
@@ -903,6 +922,7 @@ def _write_run(
             entry.update(
                 auto=True, signature=None, fingerprint="", kb=[], history=None
             )
+            entry.pop("kb_auto", None)
             paths.evidence(file_id).unlink(missing_ok=True)
             paths.sources(file_id).unlink(missing_ok=True)
             paths.cluster_task(file_id).unlink(missing_ok=True)
@@ -1087,7 +1107,14 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     state = _read_state(paths)
     entries = run["clusters"]
     total = len(entries)
-    manual_total = sum(1 for item in entries if not item["auto"])
+    # Точно узнанные проблемы разбирает скрипт по текущим записям базы знаний — до подсчёта
+    # неразобранных: после reject такая проблема становится обычной и ждёт разбора модели.
+    before = state.get(KB_AUTO_STATE)
+    known_auto, auto_notes = sync_known_auto(paths, run, state)
+    if state.get(KB_AUTO_STATE) != before:
+        ws.write_json(paths.state_json, state)
+    manual_total = sum(1 for item in entries
+                       if not item["auto"] and item["file_id"] not in known_auto)
     pending = [
         item["file_id"] for item in entries
         if not item["auto"] and not _has_text(paths.analysis(item["file_id"]))
@@ -1106,7 +1133,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     flagged: set[str] = set()
     proposals: dict[str, Proposal] = {}
     not_proposed: dict[str, str] = {}
-    notes: list[str] = []
+    notes: list[str] = list(auto_notes)
     candidates = 0
 
     for position, entry in enumerate(entries, start=1):
@@ -1116,9 +1143,11 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
         if not text.strip():
             done = sum(
                 1 for item in entries
-                if not item["auto"] and _has_text(paths.analysis(item["file_id"]))
+                if not item["auto"] and item["file_id"] not in known_auto
+                and _has_text(paths.analysis(item["file_id"]))
             )
-            return "analyze", _analyze_body(paths, entry, position, total, done, manual_total)
+            return "analyze", _analyze_body(paths, entry, position, total, done, manual_total,
+                                            len(known_auto))
 
         analysis, errors = _check_analysis(text, entry, project_root, paths)
         if errors:
@@ -1130,6 +1159,11 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
             flagged.add(file_id)
         analyses[file_id] = analysis
 
+        if file_id in known_auto:
+            if analysis.category == "тест":
+                # Рецепт известной проблемы уже в записи: правку моделью не просим.
+                not_proposed[file_id] = KB_AUTO_NOT_PROPOSED
+            continue
         if (
             file_id not in flagged
             and not entry["auto"]
@@ -1177,7 +1211,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
             + "."
         )
 
-    known = known_issues(run, analyses, flagged, paths)
+    known = known_issues(run, analyses, flagged, paths, known_auto)
     notes += known.notes
     confirmed = load_confirmed(paths, run)
     related_outcome = _related_step(paths, state, run, analyses, flagged, known, project_root,
@@ -1201,6 +1235,14 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     if previous_hash != summary_hash:  # сводка не к этим данным (или без отметки) — заново
         paths.summary.unlink(missing_ok=True)
         summary = ""
+    if not summary.strip() and known.auto and all(
+            entry["auto"] or entry["file_id"] in known.auto for entry in entries):
+        # Все проблемы с данными — известные: причины назвал инженер, сводку пишет скрипт.
+        summary = known_summary(run, known)
+        ws.write_text(paths.summary, summary)
+        paths.summary_task.unlink(missing_ok=True)
+        state["summary_data_hash"] = summary_hash
+        ws.write_json(paths.state_json, state)
     if not summary.strip():
         ws.write_text(
             paths.summary_task,
@@ -1503,11 +1545,16 @@ def _analyze_body(
     total: int,
     done: int,
     manual_total: int,
+    known_auto: int = 0,
 ) -> str:
-    automatic = total - manual_total
+    no_data = total - manual_total - known_auto
     progress = f"Готово разборов: {done} из {manual_total}"
+    automatic = [
+        *([f"{no_data} без данных об ошибке"] if no_data else []),
+        *([f"{known_auto} по базе знаний"] if known_auto else []),
+    ]
     if automatic:
-        progress += f" (ещё {automatic} без данных об ошибке разобраны автоматически)"
+        progress += f" (ещё {' и '.join(automatic)} разобраны автоматически)"
     return "\n".join([
         f"{_cluster_caption(entry, position, total)}. {progress}.",
         f"1. Прочитай задание: {paths.cluster_task(entry['file_id'])}",

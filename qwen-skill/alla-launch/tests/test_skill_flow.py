@@ -502,53 +502,66 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     assert "hunter2" not in kb_file.read_text(encoding="utf-8")
     feedback.write_text(FEEDBACK, encoding="utf-8")
 
-    # Следующий прогон с теми же падениями: ошибка узнаётся точно и видна как повтор.
+    # Следующий прогон с теми же падениями: ошибка узнаётся точно и видна как повтор, а
+    # разбор пишет скрипт по записи — модель разбирает только новое.
     FakeTestOps(default_launch(778)).install(monkeypatch)
-    run_dir2, run2, _ = _prepare(project, capsys, launch_id=778)
+    run_dir2, run2, out = _prepare(project, capsys, launch_id=778)
     order2 = next(e for e in run2["clusters"] if e["file_id"] == order)
     assert order2["kb"][0]["id"] == entry_id and order2["kb"][0]["origin"] == "exact"
+    assert order2["kb_auto"]["id"] == entry_id
     assert order2["history"]["launches"] == 1
+    assert out.startswith("STATUS: analyze") and f"clusters/{login}.md" in out
+    assert "1 по базе знаний разобраны автоматически" in out
+    analysis = (run_dir2 / "analyses" / f"{order}.md").read_text(encoding="utf-8")
+    assert analysis.startswith("ЧТО СЛОМАЛОСЬ: Та же ошибка, что у известной проблемы")
+    assert "ПРИЧИНА: приложение — " in analysis and f"БАЗА ЗНАНИЙ: {entry_id}" in analysis
+    assert "1. Передавать customer в запросе создания заказа" in analysis
+    # Задание — запасной путь после reject: запись в нём не называется точным совпадением.
     task = (run_dir2 / "clusters" / f"{order}.md").read_text(encoding="utf-8")
-    assert "ТОЧНОЕ" in task and entry_id in task and "БАЗА ЗНАНИЙ:" in task
+    assert "ТОЧНОЕ" not in task and entry_id not in task
 
-    (run_dir2 / "analyses" / f"{order}.md").write_text(
-        VALID_ANALYSIS + "БАЗА ЗНАНИЙ: unknown_entry\n", encoding="utf-8"
-    )
-    assert "не предлагалась" in _next(run_dir2, capsys)
-    out = _finish(run_dir2, capsys, {
-        order: VALID_ANALYSIS + f"БАЗА ЗНАНИЙ: {entry_id}\n", login: MARKDOWN_ANALYSIS,
-    })
-    assert f"известная проблема: {entry_id}" in out
+    out = _finish(run_dir2, capsys, {login: MARKDOWN_ANALYSIS})
+    assert f"[известная проблема: {entry_id}]" in out and "[разобрано по базе знаний]" in out
+    assert "База знаний:" in out and "По базе знаний без агента: 1 известная проблема" in out
     assert "[повторяется: уже была в 1 другом прогоне]" in out
     report2 = _full_report(run_dir2)
     assert f"- Известная проблема: {entry_id}" in report2
+    assert f"**Разобрано по базе знаний**: эту ошибку уже подтвердил инженер (запись `{entry_id}`" in report2
     assert "- Повторяется: уже была в 1 другом прогоне, впервые" in report2
 
-    # Пользователь сказал, что запись здесь ни при чём — в следующий раз её нет.
+    # Пользователь сказал, что запись здесь ни при чём: разбор по ней снят, проблему разбирает
+    # модель по заданию без этой записи, в следующий раз запись не предлагается.
     code, out = _run(["reject", "1", entry_id, "--run", str(run_dir2)], capsys)
     assert code == 0 and out.startswith("STATUS: saved")
     assert f"Запись указана в разборах проблемы {int(order)}" in out
     assert f"next {run_dir2}" in out
     rejected = json.loads(kb_file.read_text(encoding="utf-8"))
     assert rejected["rejected_tests"] == order_tests and rejected["confirmed_tests"] == []
-    # Отчёт пересобирается по текущей базе знаний: отвергнутая запись — уже не известная проблема.
-    # Разбор опирался на отвергнутую запись — данные сводки изменились, она пишется заново.
+    out = _next(run_dir2, capsys)
+    assert out.startswith("STATUS: analyze") and f"clusters/{order}.md" in out, out
+    assert not (run_dir2 / "analyses" / f"{order}.md").exists()
+    (run_dir2 / "analyses" / f"{order}.md").write_text(
+        VALID_ANALYSIS + "БАЗА ЗНАНИЙ: unknown_entry\n", encoding="utf-8"
+    )
+    assert "не предлагалась" in _next(run_dir2, capsys)
+    (run_dir2 / "analyses" / f"{order}.md").write_text(VALID_ANALYSIS, encoding="utf-8")
     out = _next(run_dir2, capsys)
     assert out.startswith("STATUS: summary"), out
-    assert "которую пользователь потом отверг" in (run_dir2 / "summary_task.md").read_text(encoding="utf-8")
     (run_dir2 / "summary.md").write_text("Итог после reject.", encoding="utf-8")
     out = _next(run_dir2, capsys)
     assert out.startswith("STATUS: done"), out
-    assert f"[известная проблема: {entry_id}]" not in out
-    assert "[разбор опирался на отвергнутую запись базы знаний]" in out
+    assert f"[известная проблема: {entry_id}]" not in out and "[разобрано по базе знаний]" not in out
     report = _full_report(run_dir2)
-    assert "Известная проблема" not in report and f"Разбор опирался на запись базы знаний {entry_id}" in report
+    assert "Известная проблема" not in report and "Разобрано по базе знаний" not in report
+    # Разбор модели после отката скрипт не трогает.
+    assert (run_dir2 / "analyses" / f"{order}.md").read_text(encoding="utf-8") == VALID_ANALYSIS
     history = (project / "alla-reports" / "history.jsonl").read_text(encoding="utf-8").splitlines()
     latest = [json.loads(line) for line in history if json.loads(line)["launch_id"] == 778]
     assert next(r for r in reversed(latest) if r["file_id"] == order)["kb_entry"] is None
     FakeTestOps(default_launch(779)).install(monkeypatch)
     _, run3, _ = _prepare(project, capsys, launch_id=779)
-    assert next(e for e in run3["clusters"] if e["file_id"] == order)["kb"] == []
+    order3 = next(e for e in run3["clusters"] if e["file_id"] == order)
+    assert order3["kb"] == [] and "kb_auto" not in order3
 
 
 def _age_signatures(kb_file: Path, key: str) -> None:
@@ -577,11 +590,10 @@ def test_record_survives_a_signature_version_change_by_its_tests(
     order2 = next(e for e in run2["clusters"] if e["file_id"] == order)
     assert order2["signature"] not in json.loads(kb_file.read_text(encoding="utf-8"))["confirmed_signatures"]
     assert [(m["id"], m["origin"]) for m in order2["kb"]] == [(entry_id, "exact")]
-    assert "ТОЧНОЕ" in (run_dir2 / "clusters" / f"{order}.md").read_text(encoding="utf-8")
-    out = _finish(run_dir2, capsys, {
-        order: VALID_ANALYSIS + f"БАЗА ЗНАНИЙ: {entry_id}\n", login: MARKDOWN_ANALYSIS,
-    })
-    assert f"известная проблема: {entry_id}" in out
+    # Точное узнавание по тесту — тоже разбор по записи, без модели.
+    assert order2["kb_auto"]["id"] == entry_id
+    out = _finish(run_dir2, capsys, {login: MARKDOWN_ANALYSIS})
+    assert f"известная проблема: {entry_id}" in out and "[разобрано по базе знаний]" in out
 
     # Отказ, сохранённый на прежней версии, тоже держится: запись больше не предлагается.
     assert _run(["reject", "1", entry_id, "--run", str(run_dir2)], capsys)[1].startswith("STATUS: saved")

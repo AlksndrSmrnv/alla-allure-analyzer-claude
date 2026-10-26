@@ -24,6 +24,7 @@ from typing import Any
 from alla_core.models.clustering import NEAR_REASONS
 
 from alla_skill_lib import workspace as ws
+from alla_skill_lib.known_issues import kb_auto_written
 from alla_skill_lib.related import EDGE_KINDS
 from alla_skill_lib.proposals import parse_proposal
 from alla_skill_lib.session_log import (
@@ -107,8 +108,9 @@ def collect_facts(
             "tests_total": run.get("counts", {}).get("total", 0),
             "active_failures": run.get("counts", {}).get("active_failures", 0),
             "clusters": len(run["clusters"]),
-            "manual": sum(1 for entry in run["clusters"] if not entry["auto"]),
-            "auto": sum(1 for entry in run["clusters"] if entry["auto"]),
+            "manual": sum(1 for item in clusters if not item["auto"]),
+            "auto": sum(1 for item in clusters if item["auto"]),
+            "kb_auto": sum(1 for item in clusters if item["kb_auto"]),
         },
         "process": _process_facts(paths, state, clusters),
         "journal": _journal_facts(log, project_root, paths),
@@ -172,6 +174,10 @@ def _cluster_facts(
         analysis_path = paths.analysis(file_id)
         text = ws.read_text(analysis_path) if analysis_path.is_file() else ""
         item["analysed"] = bool(text.strip())
+        # Разбор известной проблемы по записи базы знаний пишет скрипт — как у auto, модель его
+        # не писала, и оценивать его нечего.
+        item["kb_auto"] = bool(entry.get("kb_auto")) and kb_auto_written(state, file_id, text)
+        item["auto"] = item["auto"] or item["kb_auto"]
         if item["analysed"]:
             analysis, errors = check_entry_analysis(text, entry, project_root, paths)
             log_quotes = sum(
@@ -443,7 +449,8 @@ def render_report(facts: Mapping[str, Any]) -> str:
 
     out += ["## Ход разбора", "",
             f"- Тестов {size['tests_total']}, активных падений {size['active_failures']}, "
-            f"проблем {size['clusters']} (разбирала модель — {size['manual']}, скрипт — {size['auto']}).",
+            f"проблем {size['clusters']} (разбирала модель — {size['manual']}, скрипт — {size['auto']}"
+            + (f", из них по базе знаний — {size['kb_auto']}" if size["kb_auto"] else "") + ").",
             f"- Отчёт: {'есть' if process['report_written'] else 'нет'}; общая сводка: "
             f"{'есть' if process['summary_written'] else 'нет'}.",
             f"- Разборов исправляли после проверки: {process['fixed_analyses']} "
@@ -482,7 +489,10 @@ def render_report(facts: Mapping[str, Any]) -> str:
             "| № | Тестов | Категория | Цитат (из лога) | Замечания |", "|---|---|---|---|---|"]
     for item in facts["clusters"]:
         notes = _cluster_notes(item)
-        if item["auto"]:
+        if item["kb_auto"]:
+            out.append(f"| {item['number']} | {item['tests']} | {item['category']} | — | "
+                       "разобрал скрипт по базе знаний |")
+        elif item["auto"]:
             out.append(f"| {item['number']} | {item['tests']} | — | — | разобрал скрипт |")
         elif not item["analysed"]:
             out.append(f"| {item['number']} | {item['tests']} | — | — | нет разбора |")
@@ -590,7 +600,8 @@ def render_pilot_summary(facts: Mapping[str, Any]) -> str:
     out += [f"- {code} ×{count}" for code, count in sorted(codes.items())] or ["- нет"]
     out += ["", "## Размер", "",
             f"- тестов: {size['tests_total']}, активных падений: {size['active_failures']}",
-            f"- проблем: {size['clusters']} (модель: {size['manual']}, скрипт: {size['auto']})", "",
+            f"- проблем: {size['clusters']} (модель: {size['manual']}, скрипт: {size['auto']}"
+            + (f", из них по базе знаний: {size['kb_auto']}" if size["kb_auto"] else "") + ")", "",
             "## Ход", "",
             f"- отчёт: {_yes(process['report_written'])}, сводка: {_yes(process['summary_written'])}",
             f"- без разбора: {len(process['missing_analyses'])}, пропущено: {len(process['skipped'])}",
