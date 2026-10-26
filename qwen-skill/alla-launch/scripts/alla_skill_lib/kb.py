@@ -87,7 +87,8 @@ _TRANSLIT = dict(zip(
 
 _KNOWN_FIELDS = frozenset({
     "id", "title", "category", "description", "resolution_steps", "error_example",
-    "confirmed_signatures", "rejected_signatures", "confirmed_tests", "rejected_tests", "created",
+    "confirmed_signatures", "rejected_signatures", "confirmed_tests", "rejected_tests",
+    "confirmed_logs", "created",
 })
 
 README = """\
@@ -103,7 +104,9 @@ README = """\
 руками: `title`, `description`, `resolution_steps`, `error_example`
 (1–3 строки из текста ошибки или лога), `confirmed_tests` и `rejected_tests`
 (тесты, на которых запись подтвердили или отвергли: по ним запись узнаётся и после
-обновления скилла). Поле `id` не меняйте.
+обновления скилла). `confirmed_logs` — отпечатки строк-ошибок логов, на которых запись
+подтвердили: проблему с той же ошибкой и тем же логом скилл разбирает по записи сам, без
+агента. Поле `id` не меняйте.
 
 Папка `flaky/` — тесты, которые перезапуск подтвердил нестабильными (команда
 `rerun --remember`): одна отметка — один файл, следующие разборы показывают такие
@@ -226,6 +229,9 @@ class KBRecord:
     # сигнатуры не зависит: по нему запись узнаётся, когда хэши старой версии не совпадают.
     confirmed_tests: list[str] = field(default_factory=list)
     rejected_tests: list[str] = field(default_factory=list)
+    # Отпечатки строк-ошибок лога (``signature.log_errors_digest``), с которыми запись
+    # подтверждали: без совпадения проблему по записи без модели не разбирают.
+    confirmed_logs: list[str] = field(default_factory=list)
     created: dict[str, Any] = field(default_factory=dict)
     # Поля, добавленные руками (jira, owner, tags…): при перезаписи не теряются.
     extra: dict[str, Any] = field(default_factory=dict)
@@ -239,7 +245,7 @@ class KBRecord:
             if key not in data:
                 raise ValueError(f"нет поля {key!r}")
         for key in ("resolution_steps", "confirmed_signatures", "rejected_signatures",
-                    "confirmed_tests", "rejected_tests"):
+                    "confirmed_tests", "rejected_tests", "confirmed_logs"):
             if not isinstance(data.get(key, []), list):
                 raise ValueError(f"поле {key!r} должно быть списком")
         if not isinstance(data.get("created", {}), dict):
@@ -260,6 +266,7 @@ class KBRecord:
             rejected_signatures=sorted({str(s) for s in data.get("rejected_signatures", [])}),
             confirmed_tests=sorted({str(t) for t in data.get("confirmed_tests", [])}),
             rejected_tests=sorted({str(t) for t in data.get("rejected_tests", [])}),
+            confirmed_logs=sorted({str(d) for d in data.get("confirmed_logs", [])}),
             created=dict(data.get("created", {})),
             extra={key: value for key, value in data.items() if key not in _KNOWN_FIELDS},
         )
@@ -277,16 +284,18 @@ class KBRecord:
             "rejected_signatures": sorted(set(self.rejected_signatures)),
             "confirmed_tests": sorted(set(self.confirmed_tests)),
             "rejected_tests": sorted(set(self.rejected_tests)),
+            "confirmed_logs": sorted(set(self.confirmed_logs)),
             "created": self.created,
         }
 
-    def confirm(self, signature: str, tests: Iterable[str] = ()) -> None:
-        """Запись подходит ошибке с этой сигнатурой и этим тестам."""
+    def confirm(self, signature: str, tests: Iterable[str] = (), logs: Iterable[str] = ()) -> None:
+        """Запись подходит ошибке с этой сигнатурой, этим тестам и логам (отпечаткам)."""
         tests = set(tests)
         self.confirmed_signatures = sorted(set(self.confirmed_signatures) | {signature})
         self.rejected_signatures = sorted(set(self.rejected_signatures) - {signature})
         self.confirmed_tests = _merge_tests(self.confirmed_tests, tests)
         self.rejected_tests = sorted(set(self.rejected_tests) - tests)
+        self.confirmed_logs = _merge_tests(self.confirmed_logs, set(logs))
 
     def reject(self, signature: str, tests: Iterable[str] = ()) -> None:
         """Запись не подходит ошибке с этой сигнатурой и этим тестам."""
@@ -298,7 +307,8 @@ class KBRecord:
 
 
 def _merge_tests(old: Iterable[str], new: set[str]) -> list[str]:
-    """Старые и новые тесты, не больше ``MAX_RECORD_TESTS``: новые важнее старых."""
+    """Старые и новые тесты (или отпечатки логов), не больше ``MAX_RECORD_TESTS``: новые
+    важнее старых."""
     fresh = sorted(new)[:MAX_RECORD_TESTS]
     rest = [test for test in sorted(set(old)) if test not in new]
     return sorted([*fresh, *rest][:MAX_RECORD_TESTS])

@@ -21,6 +21,7 @@ from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib.analysis_format import parse_analysis, validate_analysis
 from alla_skill_lib.kb import KBRecord, cluster_evidence, cluster_signature, match_cluster
 from alla_skill_lib.known_issues import KB_AUTO_STATE, auto_resolution, known_issue_analysis
+from alla_skill_lib.signature import NO_LOG_ERRORS, cluster_log_errors, log_errors_digest
 
 POOL = "java.lang.IllegalStateException: HikariPool-1 - Connection is not available"
 TRACE = POOL + "\n\tat ru.company.orders.OrderTest.create(OrderTest.java:6)\n"
@@ -42,6 +43,7 @@ def _cluster(*messages: str, logs: tuple[str, ...] = ()) -> tuple[FailureCluster
 
 
 def _record(signature: str | None, entry_id: str = "pool_1a2b3c4d", **kwargs: Any) -> KBRecord:
+    kwargs.setdefault("confirmed_logs", [NO_LOG_ERRORS])  # подтверждали на падении без лога
     return KBRecord(
         id=entry_id, title=kwargs.pop("title", "Пул соединений БД исчерпан"), category="service",
         description=kwargs.pop("description", "Сервис заказов не получает соединение из пула."),
@@ -65,7 +67,8 @@ def _decide(
     evidence = "\n".join(part for part in cluster_evidence(cluster, tests) if part)
     matches = match_cluster(records, signature, evidence)
     return auto_resolution(matches, records, cluster, tests,
-                           sources if sources is not None else _sources(POOL))
+                           sources if sources is not None else _sources(POOL),
+                           log_errors_digest(cluster_log_errors(cluster, tests)))
 
 
 def test_exact_match_is_resolved_with_a_quote_of_its_fingerprint() -> None:
@@ -98,14 +101,28 @@ def test_same_exception_with_other_errors_in_the_log_is_left_to_the_model() -> N
     pool = "2026-10-03 11:10:00 [ERROR] OrderRepository: HikariPool-7 - Connection is not available\n"
     npe = "2026-10-03 11:10:00 [ERROR] PromoService: NullPointerException: promo is null\n"
     cluster, tests = _cluster(client, client, logs=(pool, npe))
-    record = _record(cluster_signature(cluster, tests), error_example="submit failed")
+    pool_log = log_errors_digest(cluster_log_errors(cluster, tests))
+    record = _record(cluster_signature(cluster, tests), error_example="submit failed",
+                     confirmed_logs=[pool_log])
     assert cluster_signature(cluster.model_copy(update={"representative_test_id": 2}), tests) == \
         cluster_signature(cluster, tests)
 
+    # В группе пул и NPE: модель.
     assert _decide(cluster, tests, [record], _sources(client)) is None
     same, same_tests = _cluster(client, client, logs=(pool, pool))
-    assert _decide(same, same_tests, [_record(cluster_signature(same, same_tests),
-                                               error_example="submit failed")], _sources(client))
+    assert _decide(same, same_tests, [record], _sources(client))
+    # Следующий прогон: только NPE за тем же исключением — сигнатура та же, лог другой (ревью
+    # Codex): запись подтверждали на логе пула, разбирает модель.
+    npe_only, npe_tests = _cluster(client, client, logs=(npe, npe))
+    assert cluster_signature(npe_only, npe_tests) == cluster_signature(same, same_tests)
+    assert _decide(npe_only, npe_tests, [record], _sources(client)) is None
+    # Тест без своего лога ничего не опровергает: лог кластера — у другого теста.
+    partial, partial_tests = _cluster(client, client, logs=("", pool))
+    assert log_errors_digest(cluster_log_errors(partial, partial_tests)) == pool_log
+    assert _decide(partial, partial_tests, [_record(cluster_signature(partial, partial_tests),
+                                                    error_example="submit failed",
+                                                    confirmed_logs=[pool_log])],
+                   _sources(client))
 
 
 def test_quote_falls_back_to_the_error_line_and_needs_text() -> None:
@@ -272,7 +289,11 @@ def test_done_asks_once_which_analyses_are_right_and_saves_them_in_one_command(
     assert code == 0 and out.startswith("STATUS: saved"), out
     assert "Запомнено в базе знаний проблем: 2 из 2." in out
     assert "напомни закоммитить папку alla-kb/" in out
-    assert len(list((project / "alla-kb").glob("*.json"))) == 2
+    records = [json.loads(path.read_text(encoding="utf-8")) for path in (project / "alla-kb").glob("*.json")]
+    assert len(records) == 2
+    # Какой лог видел инженер, подтверждая: без того же лога разбора без модели не будет.
+    digests = {entry["log_digest"] for entry in run["clusters"] if not entry["auto"]}
+    assert {log for record in records for log in record["confirmed_logs"]} == digests
     # Сохранённое второй раз не спрашиваем.
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: done") and "Какие разборы верны?" not in out
@@ -371,3 +392,42 @@ def test_question_lists_merged_problems_apart() -> None:
                for line in lines)
     assert any("«Проблема 4 и 5 и 8» (объединил агент) — не --from-analysis" in line for line in lines)
     assert cli._kb_question(RunPaths(Path("/r")), [], []) == []
+
+
+def test_remember_many_names_a_problem_without_analysis(
+    project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    (run_dir / "analyses" / f"{order}.md").write_text(VALID_ANALYSIS, encoding="utf-8")
+
+    code, out = _run(["remember", order, login, "--run", str(run_dir), "--from-analysis"], capsys)
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    assert "Запомнено в базе знаний проблем: 1 из 2." in out
+    assert f"- Проблема {int(login)}: У проблемы №{int(login)} ещё нет разбора агента" in out
+
+
+def test_known_problem_with_an_unseen_log_is_asked_and_learns_it(
+    project: Path, testops: FakeTestOps, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    _, order, _ = _remember_both(project, capsys)
+    path = next(path for path in (project / "alla-kb").glob("*.json")
+                if "customer" in path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    # Запись подтверждали до отпечатков лога (или на другом логе): точно, но не без модели.
+    path.write_text(json.dumps({**data, "confirmed_logs": []}, ensure_ascii=False), encoding="utf-8")
+
+    FakeTestOps(default_launch(778)).install(monkeypatch)
+    run_dir, run, out = _prepare(project, capsys, launch_id=778)
+    entry = next(e for e in run["clusters"] if e["file_id"] == order)
+    assert entry["kb"][0]["origin"] == "exact" and "kb_auto" not in entry
+    assert out.startswith("STATUS: analyze") and f"clusters/{order}.md" in out
+    out = _finish(run_dir, capsys, {order: VALID_ANALYSIS + f"БАЗА ЗНАНИЙ: {data['id']}\n"})
+    assert f"Проблемы: {int(order)}." in out  # спрашиваем: подтверждение добавит этот лог
+
+    code, out = _run(["remember", order, "--run", str(run_dir), "--from-analysis"], capsys)
+    assert code == 0 and "(запись подтверждена)" in out, out
+    assert json.loads(path.read_text(encoding="utf-8"))["confirmed_logs"] == [entry["log_digest"]]
+    FakeTestOps(default_launch(779)).install(monkeypatch)
+    _, run3, out = _prepare(project, capsys, launch_id=779)
+    assert next(e for e in run3["clusters"] if e["file_id"] == order)["kb_auto"]["id"] == data["id"]

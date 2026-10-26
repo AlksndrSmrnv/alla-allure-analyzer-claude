@@ -469,6 +469,39 @@ def _log_anchor(log: str) -> _LogAnchor:
                       _unique(plain, _soft_log))
 
 
+NO_LOG_ERRORS = "none"
+
+
+def cluster_log_errors(
+    cluster: FailureCluster,
+    tests_by_id: dict[int, FailedTestSummary],
+) -> frozenset[str]:
+    """Строки-ошибки лога, который берёт сигнатура кластера: представителя, без его лога —
+    самый содержательный у участников (как ``_log_part``)."""
+    representative = (tests_by_id.get(cluster.representative_test_id)
+                      if cluster.representative_test_id is not None else None)
+    log = _log_evidence(representative) if representative else ""
+    if log:
+        anchor = _log_anchor(log)
+    else:
+        anchors = [anchor for anchor in map(_log_anchor, _cluster_logs(cluster, tests_by_id))
+                   if anchor.lines(with_plain=True)]
+        if not anchors:
+            return frozenset()
+        anchor = min(anchors, key=_LogAnchor.rank)
+    return frozenset([*anchor.causes, *anchor.errors])
+
+
+def log_errors_digest(lines: frozenset[str]) -> str:
+    """Отпечаток строк-ошибок лога (``none`` — их нет): какой лог видел инженер, подтверждая
+    запись базы знаний. Сигнатура ошибки, которая сама называет причину, лог не берёт, и NPE
+    за тем же исключением клиента, что у подтверждённого пула БД, узнавалась бы «точно»
+    (ревью Codex); разбор без модели требует ещё и тот же лог (``known_issues``)."""
+    if not lines:
+        return NO_LOG_ERRORS
+    return "log:" + hashlib.sha256("\n".join(sorted(lines)).encode("utf-8")).hexdigest()[:16]
+
+
 def _log_part(
     cluster: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],

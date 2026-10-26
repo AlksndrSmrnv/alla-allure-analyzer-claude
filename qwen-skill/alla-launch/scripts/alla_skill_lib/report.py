@@ -383,13 +383,16 @@ def known_summary(run: dict[str, Any], known: KnownIssues) -> str:
              f"{_plural(count, 'проблема', 'проблемы', 'проблем')}).")
     if no_data:
         first += (f" Ещё у {no_data} {_plural(no_data, 'проблемы', 'проблем', 'проблем')} нет "
-                  "данных об ошибке — их причину определить не по чему.")
+                  f"данных об ошибке — {'её' if no_data == 1 else 'их'} причину определить не по "
+                  "чему.")
     paragraphs = [first]
     for file_ids in records[:MAX_SUMMARY_GROUPS]:
         record = known.refs[file_ids[0]]
         size = sum(sizes[file_id] for file_id in file_ids)
-        text = (f"«{_one_line(record.title)}» — {_numbers_phrase(file_ids, MAX_SUMMARY_GROUP_NUMBERS)}, "
-                f"{size} {_plural(size, 'тест', 'теста', 'тестов')}")
+        where = (f"проблема {int(file_ids[0])}" if len(file_ids) == 1
+                 else _numbers_phrase(file_ids, MAX_SUMMARY_GROUP_NUMBERS))
+        text = (f"«{_one_line(record.title)}» ({where}; {size} "
+                f"{_plural(size, 'тест', 'теста', 'тестов')})")
         if record.description:
             text += f": {_one_line(record.description).rstrip('.')}"
         text += "."

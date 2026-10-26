@@ -279,6 +279,8 @@ def kb_offers(
         cause_of[entry_id] = record["cause"]
         confirmed = {str(signature) for signature in
                      {signature_of.get(test) for test in record["confirmed_tests"]} - {None}}
+        logs = {str(entry["log_digest"]) for entry in run["clusters"] if entry.get("log_digest")
+                and set(members[entry["file_id"]]) & set(record["confirmed_tests"])}
         if previous_version:
             confirmed = {f"v{SIGNATURE_VERSION - 1}:{signature.split(':', 1)[1]}"
                          for signature in confirmed}
@@ -299,6 +301,7 @@ def kb_offers(
             error_example=store_fingerprint(error_example),
             confirmed_signatures=sorted(confirmed),
             confirmed_tests=sorted(key for key in keys if key),
+            confirmed_logs=sorted(logs),
         ))
     offers: list[tuple[str, tuple[int, ...], set[str]]] = []
     for entry in run["clusters"]:
@@ -308,7 +311,8 @@ def kb_offers(
         if auto:
             decision = None if entry.get("auto") else auto_resolution(
                 matches, kb_records, prepared.cluster_models[entry["file_id"]],
-                prepared.tests_by_id, load_registry(paths.sources(entry["file_id"])) or {})
+                prepared.tests_by_id, load_registry(paths.sources(entry["file_id"])) or {},
+                str(entry.get("log_digest")))
             offers.append((entry["file_id"], members[entry["file_id"]],
                            {cause_of[decision["id"]]} if decision else set()))
             continue

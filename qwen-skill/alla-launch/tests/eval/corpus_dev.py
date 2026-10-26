@@ -987,6 +987,47 @@ def same_exception_two_log_causes() -> Case:
     return builder.build("same_exception_two_log_causes")
 
 
+def same_exception_split_log_causes() -> Case:
+    """Одно исключение клиента у двух причин, логи без общего фона: кластеры разные.
+
+    Gate по логу разводит пул БД и NPE промокода, а сигнатура у них одна: исключение называет
+    причину само, и лог в неё не входит (``signature_shared_wrong`` 1 — известная граница
+    сигнатуры). Запись о пуле, подтверждённая для его кластера, узнаёт кластер NPE «точно» —
+    разбирать его по записи без модели нельзя: лог не тот, что видел инженер (ревью Codex).
+    """
+    builder = LaunchBuilder(6141, "Checkout nightly")
+    test_class = "ru.shop.checkout.CheckoutApiTest"
+    direct = ("org.springframework.web.client.HttpServerErrorException$InternalServerError: "
+              '500 Internal Server Error: "order submit failed"')
+    groups = [
+        ("submit-pool", "checkout-db-pool", CHECKOUT_POOL_LOG,
+         "HikariPool-7 - Connection is not available", ("submitOrder", "submitGiftOrder")),
+        ("submit-promo", "checkout-promo-null", CHECKOUT_PROMO_LOG,
+         "because \"promo\" is null", ("submitPromoOrder", "submitPromoGiftOrder")),
+    ]
+    for group, cause, log, evidence, methods in groups:
+        for index, method in enumerate(methods):
+            builder.add_failure(
+                group, cause=cause, category="приложение", name=method,
+                full_name=f"{test_class}.{method}", message=direct,
+                trace=java_trace(direct, [
+                    "org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:915)",
+                    f"{test_class}.{method}(CheckoutApiTest.java:{40 + index * 9})"]),
+                step="Оформить заказ", log=log, log_name="checkout.log", evidence=[evidence],
+                status="broken",
+            )
+    status = "Checkout status expected 200 but was 500"
+    for index, method in enumerate(("payOrder", "payGiftOrder")):
+        builder.add_failure(
+            "pay-pool", cause="checkout-db-pool", category="приложение", name=method,
+            full_name=f"{test_class}.{method}", message=status,
+            trace=_assert_trace(status, test_class, method, 90 + index * 7),
+            step="Оплатить заказ", log=CHECKOUT_POOL_LOG, log_name="checkout.log",
+            evidence=["HikariPool-7 - Connection is not available"],
+        )
+    return builder.build("same_exception_split_log_causes")
+
+
 # ---------------------------------------------------------------------------
 # Хосты и локаторы в сообщении
 # ---------------------------------------------------------------------------
@@ -3313,6 +3354,7 @@ CASES: dict[str, Callable[[], Case]] = {
     "log_noise_one_problem": log_noise_one_problem,
     "background_log_errors": background_log_errors,
     "same_exception_two_log_causes": same_exception_two_log_causes,
+    "same_exception_split_log_causes": same_exception_split_log_causes,
     "resources_split": resources_split,
     "resources_one_problem": resources_one_problem,
     "same_conflict_two_causes": same_conflict_two_causes,

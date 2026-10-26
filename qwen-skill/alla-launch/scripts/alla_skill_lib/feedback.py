@@ -231,6 +231,10 @@ def _remember(
         # обсуждения и противоречить разбору, который пользователь только что подтвердил.
         from_feedback = has_feedback and not from_analysis
         source = feedback_path if from_feedback else paths.analysis(file_id)
+        if not source.is_file():
+            # Разбор ещё не написан: подтверждать нечего (и пакет remember не обрывается).
+            return "error", (f"У проблемы №{int(file_id)} ещё нет разбора агента — подтверждать "
+                             "нечего. Скажи это пользователю.")
         project_root = Path(run["project_root"])
         if from_feedback:
             # Обратная связь — слова пользователя: наблюдения и «НЕ ХВАТАЕТ» в ней необязательны.
@@ -394,7 +398,7 @@ def _remember(
             "launch_id": run["launch_id"],
         }
 
-    record.confirm(signature, tests)
+    record.confirm(signature, tests, [str(entry["log_digest"])] if entry.get("log_digest") else [])
     changed = [kb.save(record)]
     touched = [record.id]
     for other in records:

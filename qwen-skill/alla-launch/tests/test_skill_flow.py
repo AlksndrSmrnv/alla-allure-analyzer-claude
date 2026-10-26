@@ -513,7 +513,7 @@ def test_feedback_is_remembered_and_recognized_next_launch(
     assert out.startswith("STATUS: analyze") and f"clusters/{login}.md" in out
     assert "1 по базе знаний разобраны автоматически" in out
     analysis = (run_dir2 / "analyses" / f"{order}.md").read_text(encoding="utf-8")
-    assert analysis.startswith("ЧТО СЛОМАЛОСЬ: Та же ошибка, что у известной проблемы")
+    assert analysis.startswith("ЧТО СЛОМАЛОСЬ: Известная проблема из базы знаний: «")
     assert "ПРИЧИНА: приложение — " in analysis and f"БАЗА ЗНАНИЙ: {entry_id}" in analysis
     assert "1. Передавать customer в запросе создания заказа" in analysis
     # Задание — запасной путь после reject: запись в нём не называется точным совпадением.

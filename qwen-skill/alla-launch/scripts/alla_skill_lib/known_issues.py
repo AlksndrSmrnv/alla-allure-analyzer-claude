@@ -44,7 +44,7 @@ from alla_skill_lib.kb import (
     record_matches,
     record_rejected,
 )
-from alla_skill_lib.signature import log_error_lines
+from alla_skill_lib.signature import cluster_log_errors, log_error_lines
 from alla_skill_lib.sources import IMAGE_KIND, Registry, check_entry_analysis, example_blocks
 
 
@@ -302,11 +302,15 @@ def auto_resolution(
     cluster: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],
     sources: Registry,
+    log_digest: str,
 ) -> dict[str, Any] | None:
     """Разобрать ли проблему по записи базы знаний без модели: ``{"id", "quote"}`` или ``None``.
 
     Только точное узнавание (сигнатуру подтвердил инженер) и ровно одна такая запись; у
-    записи есть причина и рецепт. Каждый тест группы — тоже точное узнавание этой записью, с
+    записи есть причина и рецепт; инженер подтверждал её с тем же логом (``log_digest`` — в
+    ``confirmed_logs``): сигнатура ошибки, которая сама называет причину, лог не берёт, и NPE
+    за исключением клиента, подтверждённым для пула БД, иначе получила бы причину пула (ревью
+    Codex). Каждый тест группы — тоже точное узнавание этой записью, с
     теми же строками-ошибками своего лога, что у представителя: иначе в группе может быть
     другая ошибка, и однородность проверяет модель. Все тесты, а не только примеры задания:
     примеров до трёх, и тест другой проблемы в них может не попасть. Цитата — строка куска
@@ -317,11 +321,12 @@ def auto_resolution(
     if len(exact) != 1:
         return None
     record = next((item for item in records if item.id == exact[0]), None)
-    if record is None or not _record_steps(record):
+    if record is None or not _record_steps(record) or log_digest not in record.confirmed_logs:
         return None
+    shown = cluster_log_errors(cluster, tests_by_id)
     for test_id in cluster.member_test_ids:
         if test_id != cluster.representative_test_id and not _member_recognized(
-                record, cluster, tests_by_id, test_id):
+                record, cluster, tests_by_id, test_id, shown):
             return None
     quote = _quote(record, sources)
     if quote is None:
@@ -334,8 +339,10 @@ def _member_recognized(
     cluster: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],
     test_id: int,
+    shown: frozenset[str],
 ) -> bool:
-    """Тест группы узнаётся записью точно, как если бы он был представителем кластера."""
+    """Тест группы узнаётся записью точно, как если бы он был представителем кластера, и
+    строки-ошибки его лога — те же, что у лога кластера (``shown``), если свой лог у него есть."""
     test = tests_by_id.get(test_id)
     if test is None:
         return False
@@ -348,10 +355,9 @@ def _member_recognized(
     # Сигнатура ошибки, которая сама называет причину, лог не берёт: разные ошибки сервиса в
     # логах тестов (пул БД у одного, NPE у другого) она не различает — это видно только по
     # логам, и однородность группы проверяет модель. Фон или причина — по паре не отличить.
-    representative = tests_by_id.get(cluster.representative_test_id or -1)
+    # Тест без своего лога ничего не опровергает.
     own = log_error_lines(test)
-    shown = log_error_lines(representative) if representative is not None else frozenset()
-    return not (own and shown and own != shown)
+    return not own or own == shown
 
 
 def _quote(record: KBRecord, sources: Registry) -> tuple[str, str] | None:
@@ -401,8 +407,9 @@ def known_issue_analysis(record: KBRecord, quote: tuple[str, str], *, examples: 
     cause = " ".join(record.description.split()) or title
     source_id, line = quote
     return "\n".join([
-        f"ЧТО СЛОМАЛОСЬ: Та же ошибка, что у известной проблемы «{title}» из базы знаний: её "
-        "уже разобрал и подтвердил инженер, поэтому разбор взят из записи.",
+        # Первое предложение — в кратком разборе: короткое, без пояснения, откуда разбор.
+        f"ЧТО СЛОМАЛОСЬ: Известная проблема из базы знаний: «{title}». Эту ошибку уже разобрал "
+        "и подтвердил инженер, разбор взят из записи.",
         "",
         f"ПРИЧИНА: {KB_TO_CATEGORY[record.category]} — {cause}",
         "",
@@ -474,7 +481,7 @@ def _exact_now(
     paths: ws.RunPaths,
     entry_id: str,
 ) -> KBRecord | None:
-    """Запись по текущему файлу, если она узнаёт ошибку кластера точно."""
+    """Запись по текущему файлу, если она узнаёт ошибку кластера точно и с тем же логом."""
     kb_dir = str(entry.get("kb_dir") or "")
     if not kb_dir or not Path(kb_dir).is_dir():
         return None
@@ -483,6 +490,8 @@ def _exact_now(
     except (OSError, ValueError, KeyError, TypeError):
         return None
     if record is None or not _record_steps(record):
+        return None
+    if entry.get("log_digest") not in record.confirmed_logs:
         return None
     exact = record_matches(record, entry.get("signature"), normalize_fp(_evidence(entry, paths)),
                            entry_tests(run, entry)) == "exact"

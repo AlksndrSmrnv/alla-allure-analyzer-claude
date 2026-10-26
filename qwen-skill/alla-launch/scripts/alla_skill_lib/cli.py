@@ -118,6 +118,7 @@ from alla_skill_lib.kb import (
     match_cluster,
 )
 from alla_skill_lib.modules import ModuleResolver, resolve_run_modules
+from alla_skill_lib.signature import cluster_log_errors, log_errors_digest
 from alla_skill_lib.proposals import (
     ApplyResult,
     Proposal,
@@ -840,6 +841,9 @@ def _write_run(
                                        cluster_tests(cluster, tests_by_id))
             entry.update({
                 "signature": signature,
+                # Какой лог видел бы инженер: remember сохраняет отпечаток в запись, разбор без
+                # модели требует того же (known_issues.auto_resolution).
+                "log_digest": log_errors_digest(cluster_log_errors(cluster, tests_by_id)),
                 "fingerprint": default_fingerprint(message, trace, representative_log),
                 "kb": kb_matches,
                 "history": recurrence(
@@ -891,7 +895,7 @@ def _write_run(
                                 for source_id, image in task.images.items()},
             )
             known_auto = auto_resolution(kb_matches, load_kb(cluster_kb_dir), cluster,
-                                         tests_by_id, sources)
+                                         tests_by_id, sources, entry["log_digest"])
             if known_auto is not None:
                 # Разбор пишет скрипт (next). Задание — запасной путь, если инженер отвергнет
                 # запись: тогда оно не должно называть её точным совпадением. Куски данных те же.
@@ -930,6 +934,7 @@ def _write_run(
                 auto=True, signature=None, fingerprint="", kb=[], history=None
             )
             entry.pop("kb_auto", None)
+            entry.pop("log_digest", None)
             paths.evidence(file_id).unlink(missing_ok=True)
             paths.sources(file_id).unlink(missing_ok=True)
             paths.cluster_task(file_id).unlink(missing_ok=True)
@@ -1724,8 +1729,11 @@ def _kb_offer(
     Принятые разборы агента с категорией, которые ни одна запись ещё не узнаёт точно (уже
     сохранённые второй раз не спрашиваем); без неоднородной группы (одна причина на смешанные
     тесты), разбора по отвергнутой записи или с другой категорией, чем у его записи, и без
-    подтверждённого вывода расширения. Возвращает отдельные номера и группы «одна причина»
-    (объединил агент): их пользователь видел общей причиной, сохраняются они по ``feedback.md``.
+    подтверждённого вывода расширения. Узнанную точно, но с логом, которого запись не видела
+    (``confirmed_logs``), спрашиваем, если разбор назвал эту запись: подтверждение добавит
+    отпечаток, и в следующий раз проблема разберётся без модели. Возвращает отдельные номера и
+    группы «одна причина» (объединил агент): их пользователь видел общей причиной, сохраняются
+    они по ``feedback.md``.
     """
     current = current_kb_matches(run, paths)
     eligible: list[str] = []
@@ -1736,8 +1744,10 @@ def _kb_offer(
                 or analysis.category in (None, "неизвестно")
                 or analysis.consistency_kind == "different"
                 or file_id in known.rejected or file_id in known.mismatched
-                or file_id in confirmed
-                or any(match["origin"] == "exact" for match in current.get(file_id, []))):
+                or file_id in confirmed):
+            continue
+        exact = [match for match in current.get(file_id, []) if match["origin"] == "exact"]
+        if exact and not _new_log_of(exact, analysis, entry):
             continue
         eligible.append(file_id)
     groups = [[file_id for file_id in group.file_ids if file_id in eligible]
@@ -1745,6 +1755,18 @@ def _kb_offer(
     groups = [group for group in groups if len(group) > 1]
     grouped = {file_id for group in groups for file_id in group}
     return [file_id for file_id in eligible if file_id not in grouped], groups
+
+
+def _new_log_of(exact: list[dict[str, Any]], analysis: ClusterAnalysis, entry: dict[str, Any]) -> bool:
+    """Разбор назвал точную запись, а она этот лог проблемы (отпечаток) ещё не видела."""
+    match = next((match for match in exact if match["id"] == analysis.kb_ref), None)
+    if match is None:
+        return False
+    try:
+        record = ProjectKB(Path(match["kb_dir"])).get(match["id"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return record is not None and entry.get("log_digest") not in record.confirmed_logs
 
 
 def _done_body(
