@@ -773,14 +773,15 @@ def test_send_reports_part_of_the_variants_and_stops_on_a_silent_testops(
     fake.resolve_status_of = {102: 404}
     fake.install(monkeypatch)
     settings = Settings(endpoint="https://testops.example", token="t")
-    mark = resolve.Mark([101, 102], f"{ORDER}.createOrder", "01", "", {101: "n1", 102: "n2"})
+    mark = resolve.Mark([101, 102], [100, 101, 102], f"{ORDER}.createOrder", "01", "",
+                        {101: "n1", 102: "n2"})  # 100 отмечен прежней командой
     done: list[int] = []
 
     outcome = asyncio.run(resolve.send(settings, [mark], Path(".env"), "d",
                                        deadline=time.monotonic() + 75, on_done=done.append))
 
     assert done == [101] and fake.resolved[101]["message"] == "n1"
-    assert outcome.partly([mark]) == [(mark, 1)] and outcome.done_marks([mark]) == []
+    assert outcome.partly([mark]) == [(mark, 2)] and outcome.done_marks([mark]) == []
     assert "не знает запрос resolve" in outcome.failed[0][1]
 
     # TestOps молчит: запрос с обменом токена ограничен сроком ответа, остальные не идут.
@@ -789,7 +790,7 @@ def test_send_reports_part_of_the_variants_and_stops_on_a_silent_testops(
         return {}
 
     monkeypatch.setattr(AllureTestOpsClient, "resolve_test_result", silent)
-    other = resolve.Mark([103], f"{ORDER}.login", "02", "", {103: "n3"})
+    other = resolve.Mark([103], [103], f"{ORDER}.login", "02", "", {103: "n3"})
     outcome = asyncio.run(resolve.send(settings, [mark, other], Path(".env"), "d",
                                        deadline=time.monotonic() - resolve.HARD_MARGIN_S,
                                        on_done=done.append))

@@ -2028,7 +2028,7 @@ def _resolve_in_testops(
     partly = outcome.partly(marks)
     if partly:
         lines.append("Отмечены в TestOps частично (у метода с параметрами — не все варианты): "
-                     + "; ".join(f"{mark.full_name} — passed у {count} из {len(mark.ids)}"
+                     + "; ".join(f"{mark.full_name} — passed у {count} из {len(mark.variants)}"
                                  for mark, count in partly) + ".")
     # Автоматический повтор — только без отказов: тогда каждый круг отмечает хоть один
     # результат и повторы конечны; отказы съели бы срок каждого круга заново (ревью Codex).

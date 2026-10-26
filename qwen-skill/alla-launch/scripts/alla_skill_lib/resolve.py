@@ -48,6 +48,7 @@ class Mark:
     """Прошедший тест плана: какие результаты TestOps отметить и с какой пометкой."""
 
     ids: list[int]  # результат теста плана и других его вариантов, ещё не отмеченные
+    variants: list[int]  # все результаты метода, и отмеченные раньше: для «k из n»
     full_name: str
     file_id: str
     changed: str  # прошёл на изменённом коде теста — «проверка правки»
@@ -70,13 +71,13 @@ def plan_marks(
             continue
         test_id = int(item["test_result_id"])
         test = planned.get(test_id, {})
-        ids = [value for value in [test_id, *(int(other) for other in test.get("other_ids") or [])]
-               if value not in resolved]
+        variants = [test_id, *(int(other) for other in test.get("other_ids") or [])]
+        ids = [value for value in variants if value not in resolved]
         if ids:
             own = str(test.get("message") or "")
             notes = {value: note(item, attempts, (messages or {}).get(value) or own)
                      for value in ids}
-            marks.append(Mark(ids, str(item.get("full_name") or test_id),
+            marks.append(Mark(ids, variants, str(item.get("full_name") or test_id),
                               str(item.get("file_id") or ""), str(item.get("changed") or ""),
                               notes))
     return marks
@@ -112,9 +113,17 @@ class Outcome:
         return [mark for mark in marks if all(value in self.done for value in mark.ids)]
 
     def partly(self, marks: Iterable[Mark]) -> list[tuple[Mark, int]]:
-        """Тесты с вариантами, у которых отмечена только часть результатов, и сколько."""
-        counts = [(mark, sum(1 for value in mark.ids if value in self.done)) for mark in marks]
-        return [(mark, done) for mark, done in counts if 0 < done < len(mark.ids)]
+        """Тесты с вариантами, у которых сейчас отмечена только часть, и сколько всего отмечено.
+
+        Считаются все варианты метода, вместе с отмеченными прежней командой
+        (``Mark.variants`` минус ``Mark.ids``).
+        """
+        counts = []
+        for mark in marks:
+            new = sum(1 for value in mark.ids if value in self.done)
+            if new and new < len(mark.ids):
+                counts.append((mark, len(mark.variants) - len(mark.ids) + new))
+        return counts
 
 
 async def send(
