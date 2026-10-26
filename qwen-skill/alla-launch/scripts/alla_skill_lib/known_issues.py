@@ -304,18 +304,21 @@ def auto_resolution(
     sources: Registry,
     log_digest: str,
 ) -> dict[str, Any] | None:
-    """Разобрать ли проблему по записи базы знаний без модели: ``{"id", "quote"}`` или ``None``.
+    """Разобрать ли проблему по записи базы знаний без модели: ``{"id", "quote", "signatures"}``
+    или ``None``.
 
     Только точное узнавание (сигнатуру подтвердил инженер) и ровно одна такая запись; у
     записи есть причина и рецепт; инженер подтверждал её с тем же логом (``log_digest`` — в
     ``confirmed_logs``): сигнатура ошибки, которая сама называет причину, лог не берёт, и NPE
     за исключением клиента, подтверждённым для пула БД, иначе получила бы причину пула (ревью
-    Codex). Каждый тест группы — тоже точное узнавание этой записью, с
-    теми же строками-ошибками своего лога, что у представителя: иначе в группе может быть
-    другая ошибка, и однородность проверяет модель. Все тесты, а не только примеры задания:
-    примеров до трёх, и тест другой проблемы в них может не попасть. Цитата — строка куска
-    данных с признаком записи, иначе первая строка сообщения или трейса; текст разбора
-    проходит обычную проверку. Не вышло — ``None``: разбирает модель с подсказкой.
+    Codex). Каждый тест группы, и представитель тоже, — точное узнавание этой записью по
+    своему тесту (после смены версии сигнатуры кластер узнаётся и по тесту другого участника —
+    ревью Codex), с теми же строками-ошибками своего лога, что у лога кластера: иначе в группе
+    может быть другая ошибка, и однородность проверяет модель. Все тесты, а не только примеры
+    задания: примеров до трёх, и тест другой проблемы в них может не попасть. Сигнатуры тестов
+    (``signatures``) ``next`` сверяет с текущей записью: отказ по любой снимает разбор. Цитата
+    — строка куска данных с признаком записи, иначе первая строка сообщения или трейса; текст
+    разбора проходит обычную проверку. Не вышло — ``None``: разбирает модель с подсказкой.
     """
     exact = [match["id"] for match in kb_matches if match.get("origin") == "exact"]
     if len(exact) != 1:
@@ -324,40 +327,44 @@ def auto_resolution(
     if record is None or not _record_steps(record) or log_digest not in record.confirmed_logs:
         return None
     shown = cluster_log_errors(cluster, tests_by_id)
+    signatures: set[str] = set()
     for test_id in cluster.member_test_ids:
-        if test_id != cluster.representative_test_id and not _member_recognized(
-                record, cluster, tests_by_id, test_id, shown):
+        signature = _member_signature(record, cluster, tests_by_id, test_id, shown)
+        if signature is None:
             return None
+        signatures.add(signature)
     quote = _quote(record, sources)
     if quote is None:
         return None
-    return {"id": record.id, "quote": list(quote)}
+    return {"id": record.id, "quote": list(quote), "signatures": sorted(signatures)}
 
 
-def _member_recognized(
+def _member_signature(
     record: KBRecord,
     cluster: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],
     test_id: int,
     shown: frozenset[str],
-) -> bool:
-    """Тест группы узнаётся записью точно, как если бы он был представителем кластера, и
-    строки-ошибки его лога — те же, что у лога кластера (``shown``), если свой лог у него есть."""
+) -> str | None:
+    """Сигнатура теста группы, если запись узнаёт его точно, как если бы он был представителем
+    кластера, и строки-ошибки его лога — те же, что у лога кластера (``shown``), если свой лог
+    у него есть; иначе ``None``."""
     test = tests_by_id.get(test_id)
     if test is None:
-        return False
+        return None
     alone = cluster.model_copy(update={"representative_test_id": test_id})
     evidence = "\n".join(part for part in cluster_evidence(alone, tests_by_id) if part)
     key = key_of_test(test.full_name, test.test_case_id)
-    if record_matches(record, cluster_signature(alone, tests_by_id), normalize_fp(evidence),
-                      [key] if key else []) != "exact":
-        return False
+    signature = cluster_signature(alone, tests_by_id)
+    if signature is None or record_matches(record, signature, normalize_fp(evidence),
+                                           [key] if key else []) != "exact":
+        return None
     # Сигнатура ошибки, которая сама называет причину, лог не берёт: разные ошибки сервиса в
     # логах тестов (пул БД у одного, NPE у другого) она не различает — это видно только по
     # логам, и однородность группы проверяет модель. Фон или причина — по паре не отличить.
     # Тест без своего лога ничего не опровергает.
     own = log_error_lines(test)
-    return not own or own == shown
+    return signature if not own or own == shown else None
 
 
 def _quote(record: KBRecord, sources: Registry) -> tuple[str, str] | None:
@@ -493,8 +500,13 @@ def _exact_now(
         return None
     if entry.get("log_digest") not in record.confirmed_logs:
         return None
-    exact = record_matches(record, entry.get("signature"), normalize_fp(_evidence(entry, paths)),
-                           entry_tests(run, entry)) == "exact"
+    # Сигнатуры всех тестов группы (prepare): отказ по сигнатуре любого из них — после разбора
+    # другой проблемы — снимает разбор всей группы (ревью Codex).
+    haystack = normalize_fp(_evidence(entry, paths))
+    tests = entry_tests(run, entry)
+    signatures = (entry.get("kb_auto") or {}).get("signatures") or [entry.get("signature")]
+    exact = all(record_matches(record, signature, haystack, tests) == "exact"
+                for signature in {entry.get("signature"), *signatures})
     return record if exact else None
 
 

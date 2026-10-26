@@ -19,9 +19,14 @@ from test_skill_flow import FEEDBACK, MARKDOWN_ANALYSIS, VALID_ANALYSIS, _finish
 from alla_core.models.clustering import ClusterSignature, FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib.analysis_format import parse_analysis, validate_analysis
-from alla_skill_lib.kb import KBRecord, cluster_evidence, cluster_signature, match_cluster
+from alla_skill_lib.kb import KBRecord, cluster_evidence, cluster_signature, cluster_tests, match_cluster
 from alla_skill_lib.known_issues import KB_AUTO_STATE, auto_resolution, known_issue_analysis
-from alla_skill_lib.signature import NO_LOG_ERRORS, cluster_log_errors, log_errors_digest
+from alla_skill_lib.signature import (
+    NO_LOG_ERRORS,
+    SIGNATURE_VERSION,
+    cluster_log_errors,
+    log_errors_digest,
+)
 
 POOL = "java.lang.IllegalStateException: HikariPool-1 - Connection is not available"
 TRACE = POOL + "\n\tat ru.company.orders.OrderTest.create(OrderTest.java:6)\n"
@@ -49,7 +54,8 @@ def _record(signature: str | None, entry_id: str = "pool_1a2b3c4d", **kwargs: An
         description=kwargs.pop("description", "Сервис заказов не получает соединение из пула."),
         resolution_steps=kwargs.pop("steps", ["Увеличить пул", "Найти утечку соединений"]),
         error_example=kwargs.pop("error_example", "HikariPool-1 - Connection is not available"),
-        confirmed_signatures=[signature] if signature else [], **kwargs,
+        confirmed_signatures=kwargs.pop("confirmed_signatures", [signature] if signature else []),
+        **kwargs,
     )
 
 
@@ -65,10 +71,13 @@ def _decide(
 ) -> dict[str, Any] | None:
     signature = cluster_signature(cluster, tests)
     evidence = "\n".join(part for part in cluster_evidence(cluster, tests) if part)
-    matches = match_cluster(records, signature, evidence)
-    return auto_resolution(matches, records, cluster, tests,
-                           sources if sources is not None else _sources(POOL),
-                           log_errors_digest(cluster_log_errors(cluster, tests)))
+    matches = match_cluster(records, signature, evidence, cluster_tests(cluster, tests))
+    decision = auto_resolution(matches, records, cluster, tests,
+                               sources if sources is not None else _sources(POOL),
+                               log_errors_digest(cluster_log_errors(cluster, tests)))
+    if decision is not None:  # сигнатуры тестов группы — для next; здесь сверяем id и цитату
+        assert decision.pop("signatures")
+    return decision
 
 
 def test_exact_match_is_resolved_with_a_quote_of_its_fingerprint() -> None:
@@ -431,3 +440,45 @@ def test_known_problem_with_an_unseen_log_is_asked_and_learns_it(
     FakeTestOps(default_launch(779)).install(monkeypatch)
     _, run3, out = _prepare(project, capsys, launch_id=779)
     assert next(e for e in run3["clusters"] if e["file_id"] == order)["kb_auto"]["id"] == data["id"]
+
+
+def test_representative_is_checked_by_its_own_test_after_a_version_change() -> None:
+    # Хэш записи — прежней версии: точное узнавание держится на тесте. В записи тест второго
+    # участника, а не представителя — кластер узнаётся «точно», но представитель — нет.
+    cluster, tests = _cluster(POOL, POOL)
+    old = f"v{SIGNATURE_VERSION - 1}:{'0' * 64}"
+    other = _record(None, confirmed_signatures=[old], confirmed_tests=["ru.company.OrderTest.test2"])
+    both = _record(None, confirmed_signatures=[old],
+                   confirmed_tests=["ru.company.OrderTest.test1", "ru.company.OrderTest.test2"])
+
+    signature = cluster_signature(cluster, tests)
+    evidence = "\n".join(part for part in cluster_evidence(cluster, tests) if part)
+    assert [m["origin"] for m in match_cluster([other], signature, evidence,
+                                                cluster_tests(cluster, tests))] == ["exact"]
+    assert _decide(cluster, tests, [other]) is None
+    assert _decide(cluster, tests, [both]) is not None
+
+
+def test_next_drops_the_resolution_when_a_member_signature_is_rejected(tmp_path: Path) -> None:
+    from alla_skill_lib.kb import ProjectKB
+    from alla_skill_lib.known_issues import _exact_now
+    from alla_skill_lib.workspace import RunPaths
+
+    kb = ProjectKB(tmp_path / "alla-kb")
+    record = _record("v11:rep", confirmed_logs=["none"])
+    record.confirmed_signatures.append("v11:other")
+    kb.save(record)
+    paths = RunPaths(tmp_path / "run")
+    paths.evidence("01").parent.mkdir(parents=True)
+    paths.evidence("01").write_text(POOL, encoding="utf-8")
+    entry = {"file_id": "01", "cluster_id": "c1", "kb_dir": str(kb.directory), "signature": "v11:rep",
+             "log_digest": "none",
+             "kb_auto": {"id": record.id, "quote": ["S1", POOL], "signatures": ["v11:other", "v11:rep"]}}
+    run = {"project_root": str(tmp_path), "clusters": [entry], "clustering": {"clusters": []},
+           "triage": {"failed_tests": []}}
+    assert _exact_now(run, entry, paths, record.id) is not None
+
+    # Сигнатуру другого теста группы отвергли (разбор другой проблемы): разбор группы снимается.
+    record.reject("v11:other")
+    kb.save(record)
+    assert _exact_now(run, entry, paths, record.id) is None
