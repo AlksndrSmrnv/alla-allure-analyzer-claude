@@ -1858,7 +1858,28 @@ def _rerun_state(
         rerun.render_result(view, files.logs, paths.report if refreshed else None),
     ]
     assert state.result is not None
-    keep, marks = _save_items(run, state)
+    question = _save_question(paths, run, state, *_save_items(run, state))
+    if question:
+        lines.append(question)
+    return "rerun_done", "\n".join(lines)
+
+
+def _save_parts(keep: flaky.RememberPlan, marks: list[resolve.Mark]) -> dict[str, set[int]]:
+    """Операции сохранения: id тестов базы знаний и результатов TestOps по видам."""
+    return {"mark": {int(item["test_result_id"]) for item in keep.mark},
+            "unmark": {int(item["test_result_id"]) for item in keep.unmark},
+            "testops": {value for mark in marks for value in mark.ids}}
+
+
+def _save_question(
+    paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState,
+    keep: flaky.RememberPlan, marks: list[resolve.Mark],
+) -> str:
+    """Вопрос о сохранении итога с командой; показанный состав — в ``save-offer.json``."""
+    assert state.result is not None
+    files = rerun.job_files(paths)
+    job = str(state.result["job"])
+    rerun.write_save_offer(files, job, _save_parts(keep, marks))
     if keep or marks:
         what = []
         if keep.mark:
@@ -1884,7 +1905,7 @@ def _rerun_state(
         command = ws.skill_command("rerun", "--run", str(paths.root), "--remember", "--result",
                                    str(state.result["job"]))
         several = len(keep.mark) + len(keep.unmark) + len(marks) > 1
-        lines.append(
+        return (
             "После итога задай пользователю один вопрос — сохранить ли итог: " + "; ".join(what)
             + "." + (" Тогда следующие разборы сразу покажут, какие тесты нестабильны."
                      if keep.mark else "")
@@ -1899,7 +1920,7 @@ def _rerun_state(
             + " Прежние «да» (на перезапуск, на правку) сюда не относятся. Только после явного "
             f"«да» на этот вопрос выполни: {command}"
         )
-    return "rerun_done", "\n".join(lines)
+    return ""
 
 
 def _save_items(run: dict[str, Any], state: rerun.JobState) -> tuple[flaky.RememberPlan, list[resolve.Mark]]:
@@ -1931,6 +1952,14 @@ def _rerun_remember(
     keep, resolve_marks = _save_items(run, state)
     if not keep and not resolve_marks:
         return "ok", "Сохранять нечего. Покажи это пользователю."
+    # Согласие — на показанный вопрос: больше него (настройки или база знаний изменились после
+    # вопроса) команда не делает; меньше — можно (повтор для оставшегося).
+    offered = rerun.read_save_offer(rerun.job_files(paths), str(job_id))
+    current = _save_parts(keep, resolve_marks)
+    if any(not current[name] <= offered[name] for name in rerun.SAVE_PARTS):
+        return "ok", ("После вопроса изменилось, что сохранится (настройки скилла или база "
+                      "знаний) — ничего не сохранено. Задай пользователю вопрос заново. "
+                      + _save_question(paths, run, state, keep, resolve_marks))
     lines, folders = _remember_flaky(run, state, keep) if keep else ([], set())
     testops, resolved, repeat = _resolve_in_testops(paths, run, state, resolve_marks, started) \
         if resolve_marks else ([], False, "")
@@ -2010,11 +2039,9 @@ def _resolve_in_testops(
     files = rerun.job_files(paths)
     job = str(state.result["job"])
     today = date.today().isoformat()
-    marked = dict(state.resolved)
 
     def keep(test_id: int) -> None:  # сразу: оборванная команда не теряет отмеченное
-        marked[test_id] = today
-        rerun.write_resolved(files, job, marked)
+        rerun.add_resolved(files, job, {test_id: today})
 
     outcome = asyncio.run(resolve.send(
         settings, marks, env_file, today,

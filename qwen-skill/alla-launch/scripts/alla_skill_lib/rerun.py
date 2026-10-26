@@ -525,6 +525,12 @@ class JobFiles:
         return self.root / "resolved.json"
 
     @property
+    def save_offer(self) -> Path:
+        """Что предложил сохранить последний показанный вопрос ``rerun_done``: больше этого
+        ``rerun --remember`` не делает."""
+        return self.root / "save-offer.json"
+
+    @property
     def worker_log(self) -> Path:
         return self.root / "worker.log"
 
@@ -540,7 +546,7 @@ class JobFiles:
 
     def clear(self) -> None:
         for path in (self.plan, self.progress, self.result, self.failed, self.pid, self.waits,
-                     self.resolved, self.worker_log):
+                     self.resolved, self.save_offer, self.worker_log):
             path.unlink(missing_ok=True)
         shutil.rmtree(self.logs, ignore_errors=True)
 
@@ -586,9 +592,35 @@ def read_resolved(files: JobFiles, job: str) -> dict[int, str]:
     return {int(key): str(value) for key, value in marks.items() if str(key).isdigit()}
 
 
-def write_resolved(files: JobFiles, job: str, marks: Mapping[int, str]) -> None:
-    ws.write_json(files.resolved, {"job": job, "tests": {str(key): value
-                                                         for key, value in sorted(marks.items())}})
+def add_resolved(files: JobFiles, job: str, marks: Mapping[int, str]) -> None:
+    """Дописать отметки под блокировкой, перечитав файл: параллельный ``--remember`` иначе
+    затёр бы чужие (ревью Codex)."""
+    import fcntl
+
+    with open(files.root / "resolved.lock", "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            merged = {**read_resolved(files, job), **marks}
+            ws.write_json(files.resolved, {"job": job, "tests": {
+                str(key): value for key, value in sorted(merged.items())}})
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+SAVE_PARTS = ("mark", "unmark", "testops")  # отметить, снять отметку, статус passed в TestOps
+
+
+def write_save_offer(files: JobFiles, job: str, parts: Mapping[str, Iterable[int]]) -> None:
+    ws.write_json(files.save_offer, {"job": job, **{name: sorted(set(parts.get(name) or []))
+                                                    for name in SAVE_PARTS}})
+
+
+def read_save_offer(files: JobFiles, job: str) -> dict[str, set[int]]:
+    """Предложенное вопросом задания ``job``; вопроса не было — пусто."""
+    data = _read(files.save_offer) or {}
+    if data.get("job") != job:
+        return {name: set() for name in SAVE_PARTS}
+    return {name: {int(value) for value in data.get(name) or []} for name in SAVE_PARTS}
 
 
 def start_job(paths: ws.RunPaths, plan: Plan, timeout: int, extra: list[str]) -> str | None:

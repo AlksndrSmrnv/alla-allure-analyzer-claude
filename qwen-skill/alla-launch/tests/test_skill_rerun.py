@@ -695,6 +695,10 @@ def test_passed_test_without_a_ci_signal_is_marked_only_in_testops(
         "STATUS: ok\nСохранять нечего")
 
     monkeypatch.delenv("ALLURE_RERUN_RESOLVE")
+    # Отметку включили после вопроса без TestOps: та же команда TestOps не трогает, спрашивает.
+    stale = _rerun(run_dir, capsys, "--remember", "--result", job)
+    assert stale.startswith("STATUS: ok\nПосле вопроса изменилось, что сохранится")
+    assert "отметить успешными в TestOps" in stale and testops.resolved == {}
     out = _rerun(run_dir, capsys, "--wait")
     question = out.split(rerun.RESULT_END, 1)[1]
     assert "в базе знаний" not in question
@@ -822,6 +826,15 @@ def test_refusal_turns_the_automatic_repeat_off(
                              f"{ORDER}.updateOrder.\nНе отмечены в TestOps: {ORDER}.createOrder")
     assert "Сам команду не повторяй" in answer and "в том же ходе" not in answer
     assert list(testops.resolved) == []
+
+
+def test_resolved_marks_are_merged_not_overwritten(tmp_path: Path) -> None:
+    """Два --remember с прежним видом файла: второй дописывает, а не затирает первый."""
+    files = JobFiles(tmp_path)
+    rerun.add_resolved(files, "j", {101: "d"})
+    rerun.add_resolved(files, "j", {102: "d"})
+    assert rerun.read_resolved(files, "j") == {101: "d", 102: "d"}
+    assert rerun.read_resolved(files, "other") == {}
 
 
 def test_report_marks_a_method_passed_only_when_every_variant_is(tmp_path: Path) -> None:
