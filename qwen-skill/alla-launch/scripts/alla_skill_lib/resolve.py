@@ -166,12 +166,14 @@ async def send(
                     row = await asyncio.wait_for(
                         client.resolve_test_result(test_id, STATUS, mark.notes[test_id]), limit)
                 except TimeoutError:
-                    reason = shared = reason or NO_ANSWER
+                    reason = shared = NO_ANSWER  # причина остановки важнее частного отказа
                     continue
                 except AllaError as exc:
-                    reason = reason or failure(exc, settings, env_file)
+                    why = failure(exc, settings, env_file)
                     if _shared(exc):
-                        shared = reason
+                        reason = shared = why
+                    else:
+                        reason = reason or why
                     continue
                 # Ответ 2xx без статуса (пустое тело) — принят: сверить нечем.
                 status = str(row.get("status") or STATUS).lower()

@@ -784,6 +784,14 @@ def test_send_reports_part_of_the_variants_and_stops_on_a_silent_testops(
     assert outcome.partly([mark]) == [(mark, 2)] and outcome.done_marks([mark]) == []
     assert "не знает запрос resolve" in outcome.failed[0][1]
 
+    # 404 у одного варианта, затем 403: остановку объясняет 403, и у метода, и у остальных.
+    fake.resolve_status_of = {101: 404, 102: 403}
+    later = resolve.Mark([104], [104], f"{ORDER}.updateOrder", "01", "", {104: "n4"})
+    refused = asyncio.run(resolve.send(settings, [mark, later], Path(".env"), "d",
+                                       deadline=time.monotonic() + 75, on_done=done.append))
+    assert [reason.split(":")[0] for _, reason in refused.failed] == [
+        "у токена нет права менять результаты тестов в проекте TestOps"] * 2
+
     # TestOps молчит: запрос с обменом токена ограничен сроком ответа, остальные не идут.
     async def silent(*_args: object) -> dict[str, Any]:
         await asyncio.sleep(30)
