@@ -59,7 +59,7 @@ def _pool_log(time: str, thread: str, request: str, order: int) -> str:
 
 def test_signature_has_the_current_version() -> None:
     assert str(_signature(ASSERT_500, ASSERT_TRACE, "")).startswith(f"v{SIGNATURE_VERSION}:")
-    assert SIGNATURE_VERSION == 11
+    assert SIGNATURE_VERSION == 12
 
 
 @pytest.mark.parametrize("causes", [
@@ -484,6 +484,18 @@ SYMPTOMS = [
     ("", 'Traceback (most recent call last):\n  File "t.py", line 3, in test\n'
          "    resp.raise_for_status()\nrequests.exceptions.HTTPError: 503 Server Error: "
          "Service Unavailable for url: http://reports/api"),
+    # Ошибка статуса Spring — тот же симптом (v12, same_exception_split_log_causes).
+    ('500 Internal Server Error: "order submit failed"',
+     "org.springframework.web.client.HttpServerErrorException$InternalServerError: 500 Internal "
+     'Server Error: "order submit failed"\n'
+     "\tat org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:915)"),
+    ("404 Not Found: [no body]",
+     "org.springframework.web.client.HttpClientErrorException$NotFound: 404 Not Found: [no body]"
+     "\n\tat a.B.c(B.java:1)"),
+    ("503 Service Unavailable from POST http://billing/api",
+     "org.springframework.web.reactive.function.client.WebClientResponseException"
+     "$ServiceUnavailable: 503 Service Unavailable from POST http://billing/api\n"
+     "\tat a.B.c(B.java:1)"),
 ]
 
 
@@ -508,6 +520,29 @@ def test_symptom_exception_takes_the_log_errors(message: str, trace: str) -> Non
     assert _signature(message, trace, INFO_LOG) == _signature(message, trace, "")
     material = _material(message, trace, PAYMENT_POOL_LOG)
     assert material is not None and material.splitlines()[0].endswith("+log")
+
+
+def _soap(fault: str, request: str) -> str:
+    return (f"--- [HTTP: response.xml] ---\nКорреляция: rqUID={request}\nHTTP статус: 500\n"
+            f"faultstring: {fault}\n")
+
+
+def test_http_response_names_the_cause_of_a_symptom() -> None:
+    """Ответ сервиса у симптома — как лог: «счёт закрыт» и «не хватает средств» за одним
+    ``expected 200 but was 500`` дают разные сигнатуры (v12, ``same_assert_http_causes``).
+    Корреляция — id запроса, свой у каждого прогона, — не в счёт. Ошибка, которая называет
+    причину сама, ответ не берёт, как и лог."""
+    closed = _signature(ASSERT_500, ASSERT_TRACE, _soap("Счёт списания закрыт", "rq-1001"))
+    assert closed == _signature(ASSERT_500, ASSERT_TRACE, _soap("Счёт списания закрыт", "rq-2002"))
+    assert closed != _signature(ASSERT_500, ASSERT_TRACE, _soap("Недостаточно средств", "rq-1001"))
+    assert closed != _signature(ASSERT_500, ASSERT_TRACE, "")
+    material = _material(ASSERT_500, ASSERT_TRACE, _soap("Счёт списания закрыт", "rq-1001"))
+    assert material is not None and material.splitlines()[0].endswith("+http")
+    assert "rq-" not in material.lower()
+
+    message, trace = NAMES_THE_CAUSE[2]
+    assert (_signature(message, trace, _soap("Счёт списания закрыт", "rq-1001"))
+            == _signature(message, trace, ""))
 
 
 # Ветка Suppressed (try-with-resources): JVM печатает её с отступом таба, и её Caused by —

@@ -7,11 +7,13 @@ gates кластеризации по логу и по ресурсам:
   сообщение и якорь трейса, лог не входит;
 * трейс есть, а ошибка — симптом (:func:`log_names_cause`: общий ассерт
   :data:`GENERIC_ASSERTION_RE` без ``Caused by`` или корневое исключение из
-  :data:`SYMPTOM_EXCEPTION_RE` — таймаут, обрыв соединения) — к сообщению и трейсу
-  добавляются строки-ошибки лога: у ``expected: <200> but was: <500>`` и у голого
-  ``SocketTimeoutException`` причину называет только лог. Лог из одних обычных строк (INFO)
-  не добавляется — шум сделал бы сигнатуру разной от прогона к прогону;
-* трейса нет — сообщение и якорь лога (если ошибок нет — первые обычные строки);
+  :data:`SYMPTOM_EXCEPTION_RE` — таймаут, обрыв соединения, ошибка статуса HTTP-клиента) — к
+  сообщению и трейсу добавляются строки-ошибки лога и строки HTTP-ответа (без корреляции): у
+  ``expected: <200> but was: <500>`` и у голого ``SocketTimeoutException`` причину называет
+  только лог или ответ сервиса. Лог из одних обычных строк (INFO) не добавляется — шум сделал
+  бы сигнатуру разной от прогона к прогону;
+* трейса нет — сообщение, якорь лога (если ошибок нет — первые обычные строки) и строки
+  HTTP-ответа;
 * всегда — хосты и локаторы сообщения в виде gate по ресурсам (``message_resources``):
   порт в длинном сообщении и регистр локатора нормализация сообщения стирает.
 
@@ -52,7 +54,7 @@ from alla_core.utils.text_normalization import (
 )
 
 # Префикс версии не даёт старому хэшу совпасть с новым при смене материала.
-SIGNATURE_VERSION = 11
+SIGNATURE_VERSION = 12
 
 # Признаки общего ассерта: ошибка проверки, которая не называет причину. Проверяются по
 # строкам сообщения и трейса (без кадров и префикса pytest «E »); Hamcrest — через строку.
@@ -75,8 +77,11 @@ GENERIC_ASSERTION_RE = re.compile(
 # (Selenium ``TimeoutException``, «Timeout: 4 s.» Selenide) — не симптом: их различает
 # локатор. ``ConnectException`` называет хост — тоже не симптом. Голый ``TimeoutError`` —
 # Python; у Playwright JS то же имя, лог тогда тоже входит, локатор различает и так. Ошибка
-# статуса HTTP-клиента (``httpx.HTTPStatusError``, ``requests.exceptions.HTTPError``) — тот же
-# симптом, что ``expected 200 but was 500``: что сломалось в сервисе, говорит его лог.
+# статуса HTTP-клиента (``httpx.HTTPStatusError``, ``requests.exceptions.HTTPError``, у Spring —
+# ``HttpServerErrorException$InternalServerError`` и родня RestTemplate, ``WebClientResponseException``)
+# — тот же симптом, что ``expected 200 but was 500``: что сломалось в сервисе, говорит его лог
+# (v12: пул БД и NPE за одним ``500 … "order submit failed"`` давали одну сигнатуру, dev
+# ``same_exception_split_log_causes``).
 SYMPTOM_EXCEPTION_RE = re.compile(
     r"^(?:"
     r"java\.net\.(?:SocketTimeoutException|SocketException|http\.HttpTimeoutException)"
@@ -84,6 +89,11 @@ SYMPTOM_EXCEPTION_RE = re.compile(
     r"|(?:requests\.exceptions|httpx)\.(?:ReadTimeout|ConnectTimeout|Timeout)"
     r"|urllib3\.exceptions\.(?:ReadTimeoutError|ConnectTimeoutError)"
     r"|httpx\.HTTPStatusError|requests\.exceptions\.HTTPError"
+    r"|org\.springframework\.web\.client\.(?:HttpServerErrorException|HttpClientErrorException"
+    r"|HttpStatusCodeException|UnknownHttpStatusCodeException|RestClientResponseException)"
+    r"(?:\$\w+)?"
+    r"|org\.springframework\.web\.reactive\.function\.client\.WebClientResponseException"
+    r"(?:\$\w+)?"
     r"|socket\.timeout|TimeoutError|ConnectionResetError"
     r")(?![\w$.])",
 )
@@ -163,17 +173,23 @@ def log_error_lines(summary: FailedTestSummary) -> frozenset[str]:
 
 
 def _diagnostic_lines(log: str) -> frozenset[str]:
-    """Строки-ошибки лога в виде якоря сигнатуры и строки секций HTTP без корреляции.
+    """Строки-ошибки лога в виде якоря сигнатуры и строки секций HTTP (:func:`_http_lines`).
 
-    HTTP-ответ сигнатура не берёт (как и gate кластеризации), а причину он называет сам:
-    ``expected: <200> but was: <500>`` без лога с ответами «счёт закрыт» и «не хватает средств»
-    давал одну сигнатуру и отпечаток ``none`` — запись первого разбирала бы второй без модели
-    (ревью Codex).
+    Сигнатура ошибки, которая сама называет причину, ни лог, ни HTTP-ответ не берёт, а
+    причину они называют: у одного исключения клиента пул БД и NPE в логе сервиса (ревью
+    Codex); разбор без модели требует ещё и тех же строк (``known_issues``).
     """
     anchor = _log_anchor(log)
-    http = [line for label, body in parse_log_sections(log) if label.startswith("HTTP: ")
-            for line in body.splitlines() if not line.startswith(_HTTP_CORRELATION_PREFIX)]
-    return frozenset([*anchor.causes, *anchor.errors, *_unique(http, _soft_log)])
+    return frozenset([*anchor.causes, *anchor.errors, *_http_lines(log)])
+
+
+def _http_lines(log: str) -> list[str]:
+    """Строки секций HTTP (статус, поля ошибки и сообщения ответа) в мягком виде строки лога,
+    без корреляции: id запроса свой у каждого прогона."""
+    lines = [line for label, body in parse_log_sections(log) if label.startswith("HTTP: ")
+             for line in body.splitlines()
+             if line.strip() and not line.startswith(_HTTP_CORRELATION_PREFIX)]
+    return _unique(lines, _soft_log)
 
 
 def _cluster_logs(
@@ -489,21 +505,30 @@ def cluster_log_errors(
     cluster: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],
 ) -> frozenset[str]:
-    """Строки-ошибки лога, который берёт сигнатура кластера (:func:`_diagnostic_lines`):
-    представителя, без его лога — самый содержательный у участников (как ``_log_part``), а
-    без строк якоря — первый (лог признака, ``cluster_sources``)."""
+    """Строки-ошибки лога, который берёт сигнатура кластера (:func:`_signature_log`,
+    :func:`_diagnostic_lines`)."""
+    log = _signature_log(cluster, tests_by_id)
+    return _diagnostic_lines(log) if log else frozenset()
+
+
+def _signature_log(
+    cluster: FailureCluster,
+    tests_by_id: dict[int, FailedTestSummary],
+) -> str:
+    """Лог, который берёт сигнатура: представителя; без его лога — самый содержательный у
+    участников (по якорю), а без строк якоря у всех — первый (лог признака,
+    ``cluster_sources``)."""
     representative = (tests_by_id.get(cluster.representative_test_id)
                       if cluster.representative_test_id is not None else None)
     log = _log_evidence(representative) if representative else ""
-    if not log:
-        logs = _cluster_logs(cluster, tests_by_id)
-        ranked = [(anchor, log) for log in logs
-                  if (anchor := _log_anchor(log)).lines(with_plain=True)]
-        if ranked:
-            log = min(ranked, key=lambda item: item[0].rank())[1]
-        elif logs:
-            log = logs[0]
-    return _diagnostic_lines(log) if log else frozenset()
+    if log:
+        return log
+    logs = _cluster_logs(cluster, tests_by_id)
+    ranked = [(anchor, log) for log in logs
+              if (anchor := _log_anchor(log)).lines(with_plain=True)]
+    if ranked:
+        return min(ranked, key=lambda item: item[0].rank())[1]
+    return logs[0] if logs else ""
 
 
 def as_representatives(
@@ -558,23 +583,6 @@ def log_errors_digest(lines: frozenset[str]) -> str:
     return "log:" + hashlib.sha256("\n".join(sorted(lines)).encode("utf-8")).hexdigest()[:16]
 
 
-def _log_part(
-    cluster: FailureCluster,
-    tests_by_id: dict[int, FailedTestSummary],
-    *,
-    with_plain: bool,
-) -> list[str]:
-    """Якорь лога представителя; без его лога — самый содержательный у участников."""
-    representative = (tests_by_id.get(cluster.representative_test_id)
-                      if cluster.representative_test_id is not None else None)
-    representative_log = _log_evidence(representative) if representative else ""
-    if representative_log:
-        return _log_anchor(representative_log).lines(with_plain=with_plain)
-    anchors = [anchor for anchor in map(_log_anchor, _cluster_logs(cluster, tests_by_id))
-               if anchor.lines(with_plain=True)]
-    return min(anchors, key=_LogAnchor.rank).lines(with_plain=with_plain) if anchors else []
-
-
 # ---------------------------------------------------------------------------
 # Сигнатура
 # ---------------------------------------------------------------------------
@@ -595,13 +603,18 @@ def signature_material(
     resources = _resources_part(message)
     if resources:
         parts["resources"] = "\n".join(resources)
-    if trace_lines:
-        log_lines = (_log_part(cluster, tests_by_id, with_plain=False)
-                     if log_names_cause(message, trace) else [])
-    else:
-        log_lines = _log_part(cluster, tests_by_id, with_plain=True)
+    # Лог входит, когда причину называет он, а не ошибка: симптом или трейса нет.
+    from_log = not trace_lines or log_names_cause(message, trace)
+    log = _signature_log(cluster, tests_by_id) if from_log else ""
+    log_lines = _log_anchor(log).lines(with_plain=not trace_lines) if log else []
     if log_lines:
         parts["log"] = "\n".join(log_lines)
+    # HTTP-ответ у симптома — тоже: ответ SOAP «счёт закрыт» и «не хватает средств» за одним
+    # ``expected 200 but was 500`` без лога давали одну сигнатуру (v12, dev
+    # ``same_assert_http_causes``). Gate кластеризации его не берёт — кластеры разводит шаг.
+    http = _http_lines(log) if log else []
+    if http:
+        parts["http"] = "\n".join(http)
     if not parts:
         return None
     return "+".join(parts) + "\n" + "\n---\n".join(parts.values())

@@ -125,7 +125,7 @@ paths:
 
 ### Сигнатура
 
-- `alla_skill_lib/signature.py`, версия `v11` (`SIGNATURE_VERSION`). Golden-тест
+- `alla_skill_lib/signature.py`, версия `v12` (`SIGNATURE_VERSION`). Golden-тест
   (`test_signature_is_stable_across_runs_and_pinned`) фиксирует хэш: материал меняется только
   осознанно и с новой версией — префикс не даёт старому хэшу совпасть с новым. Чтения и учёта
   старых версий нет: хэши с другим префиксом не совпадают; запись с тестами узнаётся точно
@@ -138,7 +138,15 @@ paths:
   отбрасывали русскую строку ERROR (`Пул соединений базы данных исчерпан`), и две проблемы,
   разведённые gate по логу, получали одну сигнатуру — запись базы знаний одной точно
   предлагалась другой (ревью Codex). Версию подняли, а не оставили, как у `v9`: прежний хэш
-  такой пары — ложно общий и остался бы точным совпадением.
+  такой пары — ложно общий и остался бы точным совпадением. `v12` — у симптома в материал
+  входят и строки HTTP-ответа (`http`, см. ниже), а ошибки статуса Spring стали симптомами:
+  ответ SOAP «счёт закрыт» и «не хватает средств» за одним `expected 200 but was 500` и пул
+  БД с NPE за одним `HttpServerErrorException$InternalServerError` давали одну сигнатуру, и
+  запись одной проблемы подсказывалась другой как точная (dev `same_assert_http_causes`,
+  `same_exception_split_log_causes`, `spring_client_error_log_causes` — 404 клиента Spring:
+  `signature_shared_wrong` 3 → 0, `kb_offers_wrong` 3 → 0; `kb_offers_found`, `kb_exact_kept`,
+  `kb_auto` не упали, `signature_log_unstable` 22 → 23 — смешанный кластер
+  `same_exception_two_log_causes`).
 - Материал — то, что называет причину, и то, что различают gates кластеризации
   (`signature_material`: основа `message+trace+resources+log`… и нормализованные части):
   - трейс есть, ошибка называет причину (исключение не-ассерт или `Caused by`) — сообщение и
@@ -160,8 +168,14 @@ paths:
     любом регистре (`[alert]`, `[err]`, `level=crit`); «alert» в тексте INFO — не уровень.
     Лог из одних обычных строк (INFO) не добавляется. Иначе `expected: <200> but was: <500>`
     у пула БД и у NPE давал одну сигнатуру, и запись базы знаний предлагалась чужой проблеме
-    точно;
-  - трейса нет — сообщение и якорь лога (без ошибок — первые обычные строки);
+    точно. И строки секций HTTP того же лога (`_http_lines`: статус, поля ошибки и сообщения
+    ответа в мягком виде строки лога, без строки `Корреляция:` — id запроса свой у каждого
+    прогона): ответ SOAP (XML ядро как лог не читает, у теста только секция HTTP) один
+    называет причину (`v12`). Gate кластеризации HTTP не берёт — такие кластеры разводит шаг;
+  - трейса нет — сообщение, якорь лога (без ошибок — первые обычные строки) и строки HTTP;
+  - лог для обеих частей — один (`_signature_log`: представителя; без него — самый
+    содержательный у участников по якорю, без строк якоря у всех — первый); его же берут
+    отпечаток лога (`cluster_log_errors`) и проверка тестов группы (`as_representatives`);
   - всегда — **ресурсы** сообщения (`resources`: `host:…`, `locator:…` из
     `alla_core.utils.message_resources`) в том же виде, по которому режет gate по ресурсам
     (`core.md`): что разделяет он, разделяет и сигнатура. Без этой части длинное сообщение с
@@ -185,7 +199,12 @@ paths:
   `socket.timeout`, `TimeoutError`, `ConnectionResetError`; ошибка статуса HTTP-клиента
   `httpx.HTTPStatusError`, `requests.exceptions.HTTPError` (`v10`: 500 от `raise_for_status`
   — тот же симптом, что `expected 200 but was 500`; dev `same_symptom_log_causes` — три
-  проблемы за одним `HTTPStatusError` получали одну сигнатуру, `signature_shared_wrong` 3 → 0).
+  проблемы за одним `HTTPStatusError` получали одну сигнатуру, `signature_shared_wrong` 3 → 0);
+  у Spring (`v12`) — `org.springframework.web.client` `HttpServerErrorException`,
+  `HttpClientErrorException`, `HttpStatusCodeException`, `UnknownHttpStatusCodeException`,
+  `RestClientResponseException` (с вложенным классом статуса `$InternalServerError`,
+  `$NotFound`…) и `WebClientResponseException` реактивного клиента: текст ответа в сообщении
+  (`"order submit failed"`) у разных причин бывает один (dev `same_exception_split_log_causes`).
   Таймаут и обрыв причину не
   называют — её называет лог (`timeouts_two_causes`: nginx и медленный запрос за одним
   `Read timed out`); `ResourceAccessException … Caused by: SocketTimeoutException` — тоже

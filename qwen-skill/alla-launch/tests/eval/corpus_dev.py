@@ -997,10 +997,11 @@ def same_exception_two_log_causes() -> Case:
 def same_exception_split_log_causes() -> Case:
     """Одно исключение клиента у двух причин, логи без общего фона: кластеры разные.
 
-    Gate по логу разводит пул БД и NPE промокода, а сигнатура у них одна: исключение называет
-    причину само, и лог в неё не входит (``signature_shared_wrong`` 1 — известная граница
-    сигнатуры). Запись о пуле, подтверждённая для его кластера, узнаёт кластер NPE «точно» —
-    разбирать его по записи без модели нельзя: лог не тот, что видел инженер (ревью Codex).
+    Gate по логу разводит пул БД и NPE промокода. До v12 сигнатура у них была одна: ошибку
+    статуса Spring считали называющей причину, и лог в неё не входил (``signature_shared_wrong``
+    1), — запись о пуле, подтверждённая для его кластера, узнавала кластер NPE «точно», а
+    разбирать его по ней без модели нельзя: лог не тот, что видел инженер (ревью Codex). С v12
+    исключение — симптом, лог в сигнатуре, сигнатуры разные.
     """
     builder = LaunchBuilder(6141, "Checkout nightly")
     test_class = "ru.shop.checkout.CheckoutApiTest"
@@ -1052,12 +1053,13 @@ def _payment_response(code: str, text: str, request: str) -> tuple[str, str, str
 def same_assert_http_causes() -> Case:
     """Один ассерт кода ответа, причина — только в HTTP-ответе SOAP, лога сервиса нет.
 
-    Сигнатура HTTP-ответ не берёт (как и gate по логу), поэтому у «счёт закрыт» и «не хватает
-    средств» за ``expected 200 but was 500`` она одна, а разводит кластеры шаг: запись о
-    закрытом счёте подсказывается второму кластеру как точная (``signature_shared_wrong`` 1,
-    ``kb_offers_wrong`` 1 — граница сигнатуры, модель видит ответ сама). Разбирать его по ней
-    без модели нельзя: ответ не тот, что видел инженер (ревью Codex, ``kb_auto_wrong`` 1 → 0).
-    Корреляция у каждого запроса своя и отпечаток не меняет.
+    Gate по логу HTTP-ответ не берёт — кластеры «счёт закрыт» и «не хватает средств» за
+    ``expected 200 but was 500`` разводит шаг. До v12 его не брала и сигнатура: она была одна,
+    и запись о закрытом счёте подсказывалась второму кластеру как точная
+    (``signature_shared_wrong`` 1, ``kb_offers_wrong`` 1); разбирать его по ней без модели
+    нельзя — ответ не тот, что видел инженер (ревью Codex, отпечаток лога: ``kb_auto_wrong`` 1
+    → 0). С v12 строки ответа у симптома входят в сигнатуру — сигнатуры разные. Корреляция у
+    каждого запроса своя и не меняет ни сигнатуру, ни отпечаток.
     """
     builder = LaunchBuilder(6142, "Payments nightly")
     test_class = "ru.bank.payments.TransferApiTest"
@@ -1084,6 +1086,61 @@ def same_assert_http_causes() -> Case:
                 evidence=[text],
             )
     return builder.build("same_assert_http_causes")
+
+
+CATALOG_STALE_CACHE_LOG = (
+    "2026-10-04 09:20:00 [ERROR] [http-nio-8080-exec-2] CatalogController: lookup aborted\n"
+    "java.lang.IllegalStateException: Catalog cache generation 41 is stale, rebuild running\n"
+    "\tat ru.shop.catalog.CatalogCache.get(CatalogCache.java:41)\n"
+)
+CATALOG_ARCHIVED_LOG = (
+    "2026-10-04 09:20:00 [ERROR] [scheduling-1] ArchiveJob: purge finished with moved rows\n"
+    "ru.shop.catalog.ItemArchivedException: SKU moved to cold storage by nightly purge\n"
+    "\tat ru.shop.catalog.ArchiveJob.resolve(ArchiveJob.java:77)\n"
+)
+
+
+def spring_client_error_log_causes() -> Case:
+    """Ошибка 4xx клиента Spring у двух причин из лога сервиса (v12).
+
+    ``HttpClientErrorException$NotFound: 404 Not Found: [no body]`` причину не называет — её
+    называет лог: устаревший кэш каталога и товар, убранный ночной очисткой. Gate по логу
+    разводит кластеры; до v12 сигнатура у них была одна (исключение считалось называющим
+    причину), и запись одной подсказывалась другой как точная. У причины кэша вторая группа —
+    общий ассерт кода: по ней строится запись базы знаний.
+    """
+    builder = LaunchBuilder(6143, "Catalog nightly")
+    test_class = "ru.shop.catalog.CatalogApiTest"
+    error = ("org.springframework.web.client.HttpClientErrorException$NotFound: "
+             "404 Not Found: [no body]")
+    groups = [
+        ("item-cache", "catalog-stale-cache", "приложение", CATALOG_STALE_CACHE_LOG,
+         "is stale, rebuild running", ("getItem", "getItemCard")),
+        ("item-archived", "catalog-archived-sku", "данные", CATALOG_ARCHIVED_LOG,
+         "SKU moved to cold storage by nightly purge", ("getArchivedItem", "getLegacyItem")),
+    ]
+    for group, cause, category, log, evidence, methods in groups:
+        for index, method in enumerate(methods):
+            builder.add_failure(
+                group, cause=cause, category=category, name=method,
+                full_name=f"{test_class}.{method}", message=error,
+                trace=java_trace(error, [
+                    "org.springframework.web.client.DefaultResponseErrorHandler.handleError("
+                    "DefaultResponseErrorHandler.java:122)",
+                    f"{test_class}.{method}(CatalogApiTest.java:{30 + index * 8})"]),
+                step="Открыть карточку товара", log=log, log_name="catalog.log",
+                evidence=[evidence], status="broken",
+            )
+    status = "Catalog search status expected 200 but was 404"
+    for index, method in enumerate(("searchItem", "searchItemByCode")):
+        builder.add_failure(
+            "search-cache", cause="catalog-stale-cache", category="приложение", name=method,
+            full_name=f"{test_class}.{method}", message=status,
+            trace=_assert_trace(status, test_class, method, 60 + index * 7),
+            step="Найти товар", log=CATALOG_STALE_CACHE_LOG, log_name="catalog.log",
+            evidence=["is stale, rebuild running"],
+        )
+    return builder.build("spring_client_error_log_causes")
 
 
 # ---------------------------------------------------------------------------
@@ -5366,6 +5423,7 @@ CASES: dict[str, Callable[[], Case]] = {
     "same_exception_two_log_causes": same_exception_two_log_causes,
     "same_exception_split_log_causes": same_exception_split_log_causes,
     "same_assert_http_causes": same_assert_http_causes,
+    "spring_client_error_log_causes": spring_client_error_log_causes,
     "resources_split": resources_split,
     "resources_one_problem": resources_one_problem,
     "same_conflict_two_causes": same_conflict_two_causes,

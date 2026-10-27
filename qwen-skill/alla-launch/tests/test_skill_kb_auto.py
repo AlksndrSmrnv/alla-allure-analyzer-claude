@@ -593,24 +593,29 @@ def _http(error: str, request: str) -> str:
             f"errorMessage: {error}\n")
 
 
-def test_other_http_response_behind_the_same_assertion_is_left_to_the_model() -> None:
-    # Ассерт кода ответа без лога: причину называет только HTTP-ответ, а сигнатура его не берёт
-    # — у «счёт закрыт» и «не хватает средств» она одна (ревью Codex).
-    status = "java.lang.AssertionError: expected: <200> but was: <500>"
-    closed, closed_tests = _cluster(status, status, logs=(_http("account is closed", "rq-1001"),
-                                                          _http("account is closed", "rq-2002")))
-    record = _record(cluster_signature(closed, closed_tests), error_example=status,
+def test_other_http_response_behind_the_same_error_is_left_to_the_model() -> None:
+    # Ошибка называет причину сама — сигнатура не берёт ни лог, ни HTTP-ответ, и у «счёт
+    # закрыт» и «не хватает средств» она одна; отличает их отпечаток лога (ревью Codex).
+    error = "ru.bank.payments.TransferRejectedException: transfer rejected"
+    closed, closed_tests = _cluster(error, error, logs=(_http("account is closed", "rq-1001"),
+                                                        _http("account is closed", "rq-2002")))
+    record = _record(cluster_signature(closed, closed_tests), error_example=error,
                      confirmed_logs=[log_errors_digest(cluster_log_errors(closed, closed_tests))])
     # Корреляция у каждого запроса своя — она отпечаток не меняет.
-    assert _decide(closed, closed_tests, [record], _sources(status))
+    assert _decide(closed, closed_tests, [record], _sources(error))
 
-    funds, funds_tests = _cluster(status, status, logs=(_http("insufficient funds", "rq-3003"),
-                                                        _http("insufficient funds", "rq-4004")))
+    funds, funds_tests = _cluster(error, error, logs=(_http("insufficient funds", "rq-3003"),
+                                                      _http("insufficient funds", "rq-4004")))
     assert cluster_signature(funds, funds_tests) == cluster_signature(closed, closed_tests)
-    assert _decide(funds, funds_tests, [record], _sources(status)) is None
-    mixed, mixed_tests = _cluster(status, status, logs=(_http("account is closed", "rq-5005"),
-                                                        _http("insufficient funds", "rq-6006")))
-    assert _decide(mixed, mixed_tests, [record], _sources(status)) is None
+    assert _decide(funds, funds_tests, [record], _sources(error)) is None
+    mixed, mixed_tests = _cluster(error, error, logs=(_http("account is closed", "rq-5005"),
+                                                      _http("insufficient funds", "rq-6006")))
+    assert _decide(mixed, mixed_tests, [record], _sources(error)) is None
+
+    # Общий ассерт кода — симптом: с v12 ответ различает уже сигнатура.
+    status = "java.lang.AssertionError: expected: <200> but was: <500>"
+    assert (cluster_signature(*_cluster(status, logs=(_http("account is closed", "rq-1"),)))
+            != cluster_signature(*_cluster(status, logs=(_http("insufficient funds", "rq-1"),))))
 
 
 def test_each_member_is_checked_without_rereading_every_log(monkeypatch: pytest.MonkeyPatch) -> None:

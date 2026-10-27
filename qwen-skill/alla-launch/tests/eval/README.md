@@ -130,15 +130,16 @@ python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['clus
   `prepare`: `kb_auto` — кластеры, которые `next` разобрал бы по записи без модели, и в них нет
   тестов другой проблемы; `kb_auto_wrong` — разобранные так, но с тестом другой проблемы (или
   группы без причины) — разбор назвал бы одну причину и скрыл другую. Записи — с отпечатком
-  лога подтверждённых кластеров (`confirmed_logs`), как после `remember`. Dev (2026-10-27): 5, 0;
-  с бывшим holdout v3 — 6, 0.
-  Пул БД и NPE за одним исключением клиента (лог в его сигнатуру не входит): в одном кластере
+  лога подтверждённых кластеров (`confirmed_logs`), как после `remember`. Dev (2026-10-27,
+  v12, вместе с бывшим holdout v3): 7, 0. Пул БД и NPE за одним исключением клиента Spring:
+  в одном кластере
   (`same_exception_two_log_causes`) без сравнения строк-ошибок лога тестов `kb_auto_wrong` был
-  1; в разных кластерах с одной сигнатурой (`same_exception_split_log_causes`,
-  `signature_shared_wrong` 1 — известная граница сигнатуры) без отпечатка лога в записи — тоже
-  1. Причина только в ответе SOAP за общим ассертом кода (`same_assert_http_causes`: секцию
-  HTTP сигнатура не берёт, `signature_shared_wrong` 1, `kb_offers_wrong` 1) — 1 без строк
-  HTTP-ответа в отпечатке. Без модели не разбираются кластеры, где хоть один тест узнаётся не
+  1; в разных кластерах (`same_exception_split_log_causes`) до v12 сигнатура была одна (лог в
+  неё не входил, `signature_shared_wrong` 1), и без отпечатка лога в записи — тоже 1. Причина
+  только в ответе SOAP за общим ассертом кода (`same_assert_http_causes`; до v12 секцию HTTP
+  сигнатура не брала, `signature_shared_wrong` 1, `kb_offers_wrong` 1) — 1 без строк
+  HTTP-ответа в отпечатке. С v12 у обоих сценариев сигнатуры разные (`signature_shared_wrong`
+  и `kb_offers_wrong` 0), отпечаток остаётся второй защитой. Без модели не разбираются кластеры, где хоть один тест узнаётся не
   точно или с другими строками-ошибками своего лога: `background_log_errors` (разный фон),
   `one_problem_resources` (сбой DNS на разных хостах), `signatures_and_kb` (тег запроса в строке
   лога — своя сигнатура у каждого теста; такая и в следующем прогоне точно не узнается). Это
@@ -244,9 +245,14 @@ python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['clus
   `same_symptom_log_causes` было 3 у разных проблем до `v10` (`httpx.HTTPStatusError` считался
   называющим причину, лог в сигнатуру не входил). В v7 у `timeouts_two_causes` был 1, у
   разных проблем 1: голый `SocketTimeoutException`, причины только в логах. С v8 лог входит
-  и при исключении-симптоме. Меняются с логом участника `same_assertion_two_npes` 1 из 1,
-  `log_noise_one_problem` 2 из 2, `background_log_errors` 2 из 2 (общий ассерт: лог в
-  сигнатуре), `big_launch` 0 из 40.
+  и при исключении-симптоме. До v12 — по 1 у разных проблем в `same_exception_split_log_causes`
+  (`HttpServerErrorException` Spring считался называющим причину) и `same_assert_http_causes`
+  (секция HTTP — ответ SOAP — в сигнатуру не входила), у `spring_client_error_log_causes`
+  (`HttpClientErrorException$NotFound` за двумя причинами в логе) был бы 1; с v12 — 0. Меняются
+  с логом участника
+  `same_assertion_two_npes` 1 из 1, `log_noise_one_problem` 2 из 2, `background_log_errors` 2
+  из 2 (общий ассерт: лог в сигнатуре), `same_exception_two_log_causes` 1 (с v12: в кластере
+  две причины за исключением Spring), `big_launch` 0 из 40.
 
 ## Корпус: dev и holdout
 
