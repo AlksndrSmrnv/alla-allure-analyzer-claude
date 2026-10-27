@@ -404,6 +404,27 @@ def test_question_lists_merged_problems_apart() -> None:
     assert cli._kb_question(RunPaths(Path("/r")), [], []) == []
 
 
+def test_question_keeps_problems_with_a_fix_apart() -> None:
+    from alla_skill_lib import cli
+    from alla_skill_lib.known_issues import KnownIssues
+    from alla_skill_lib.related import Related, RelatedGroup
+    from alla_skill_lib.workspace import RunPaths
+
+    run = {"project_root": ".", "clusters": [{"file_id": f"0{n}", "auto": False} for n in (1, 2, 3)]}
+    analyses = {f"0{n}": parse_analysis(VALID_ANALYSIS) for n in (1, 2, 3)}
+    related = Related([RelatedGroup(["01", "02", "03"], "пул", 3)])
+    paths = RunPaths(Path("/r"))
+
+    def offer(separate: set[str]) -> tuple[list[str], list[list[str]]]:
+        return cli._kb_offer(paths, run, analyses, set(), KnownIssues(), set(), related, separate)
+
+    assert offer(set()) == ([], [["01", "02", "03"]])
+    # У проблем с правкой агента в отчёте свой пункт и своя команда apply — вопрос называет их
+    # так же, отдельно (ревью Codex).
+    assert offer({"02"}) == (["02"], [["01", "03"]])
+    assert offer({"01", "02"}) == (["01", "02", "03"], [])
+
+
 def test_remember_many_names_a_problem_without_analysis(
     project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
 ) -> None:

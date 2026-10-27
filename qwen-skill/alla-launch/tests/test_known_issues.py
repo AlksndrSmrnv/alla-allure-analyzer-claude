@@ -435,6 +435,20 @@ def test_reject_beyond_listed_problems_changes_the_summary(tmp_path: Path) -> No
     assert "у 1 из них разбор опирался на запись базы знаний, которую пользователь потом отверг" in data
 
 
+def test_resolution_by_a_record_beyond_listed_problems_changes_the_summary(tmp_path: Path) -> None:
+    count = MAX_SUMMARY_LISTED + 1
+    # 40 больших проблем без записи и одна маленькая, разобранная по записи без агента: после
+    # reject её разбирает модель с той же категорией — данные сводки должны измениться, иначе
+    # осталась бы сводка «все проблемы известны» (ревью Codex).
+    texts = [APP] * (count - 1) + [_kb(APP)]
+    run, analyses, paths = _setup(tmp_path, [10] * (count - 1) + [1], texts, records=[_record()])
+    by_record = known_issues(run, analyses, set(), paths, {str(count)})
+    assert by_record.auto == {str(count)}
+    data = build_summary_data(run, analyses, set(), by_record)
+    assert "1 из них разобраны по записи базы знаний без агента" in data
+    assert data != build_summary_data(run, analyses, set(), _known(run, analyses, paths))
+
+
 def test_rejected_record_marks_the_analysis_as_unconfirmed(tmp_path: Path) -> None:
     record = _record()
     run, analyses, paths = _setup(tmp_path, [3, 2, 1], [_kb(APP)] * 3, records=[record])

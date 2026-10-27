@@ -1244,7 +1244,10 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     # Проблемы с правкой агента в отчёте не объединяются: у каждой своя команда apply.
     separate = {file_id for file_id, state in states.items() if state != "unknown"}
     summary_data = build_summary_data(run, analyses, flagged, known, related, separate, confirmed)
-    summary_hash = hashlib.sha256(summary_data.encode("utf-8")).hexdigest()
+    # Разобранные по базе знаний — набором: в данных хвоста сводки они только числом, а сводку
+    # прогона, где все проблемы известны, пишет скрипт — по этому набору (ревью Codex).
+    summary_hash = hashlib.sha256(
+        "\n".join([summary_data, *sorted(known.auto)]).encode("utf-8")).hexdigest()
     previous_hash = state.get("summary_data_hash")
     summary = ws.read_text(paths.summary) if paths.summary.is_file() else ""
     if previous_hash != summary_hash:  # сводка не к этим данным (или без отметки) — заново
@@ -1281,7 +1284,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     # Уже применённую или неоднозначную правку повторно не предлагаем.
     offered = {file_id: p for file_id, p in fixes.items() if states[file_id] == "not_applied"}
     offer = _rerun_offer(paths, run, analyses, flagged, set(confirmed), states)
-    kb_offer = _kb_offer(paths, run, analyses, flagged, known, set(confirmed), related)
+    kb_offer = _kb_offer(paths, run, analyses, flagged, known, set(confirmed), related, separate)
     return "done", _done_body(console, paths, offered, feedback=True, rerun_offer=offer,
                               kb_offer=kb_offer)
 
@@ -1726,6 +1729,7 @@ def _kb_offer(
     known: KnownIssues,
     confirmed: set[str],
     related: Related,
+    separate: set[str],
 ) -> tuple[list[str], list[list[str]]]:
     """Разборы для вопроса после отчёта «какие верны — сохраню в базу знаний».
 
@@ -1736,7 +1740,8 @@ def _kb_offer(
     (``confirmed_logs``), спрашиваем, если разбор назвал эту запись: подтверждение добавит
     отпечаток, и в следующий раз проблема разберётся без модели. Возвращает отдельные номера и
     группы «одна причина» (объединил агент): их пользователь видел общей причиной, сохраняются
-    они по ``feedback.md``.
+    они по ``feedback.md``. Проблемы с правкой агента (``separate``) отчёт не объединяет — и
+    вопрос называет их отдельно (ревью Codex).
     """
     current = current_kb_matches(run, paths)
     eligible: list[str] = []
@@ -1753,7 +1758,8 @@ def _kb_offer(
         if exact and not _new_log_of(exact, analysis, entry):
             continue
         eligible.append(file_id)
-    groups = [[file_id for file_id in group.file_ids if file_id in eligible]
+    groups = [[file_id for file_id in group.file_ids
+               if file_id in eligible and file_id not in separate]
               for group in related.groups]
     groups = [group for group in groups if len(group) > 1]
     grouped = {file_id for group in groups for file_id in group}

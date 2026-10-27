@@ -321,7 +321,8 @@ def build_summary_data(
     rest = largest[MAX_SUMMARY_LISTED:]
     return "\n".join([
         prompt.user_prompt,
-        *(["", _summary_rest(rest, analyses, flagged, rejected)] if rest else []),
+        *(["", _summary_rest(rest, analyses, flagged, rejected, known.auto if known else set())]
+          if rest else []),
         *(["", *_summary_known(known)] if known and known.groups else []),
         *(["", *_summary_related(related, run, separate or set())] if related and related.groups else []),
     ])
@@ -411,11 +412,13 @@ def _summary_rest(
     analyses: dict[str, ClusterAnalysis],
     flagged: set[str],
     rejected: dict[str, KnownRecord],
+    auto: set[str],
 ) -> str:
     """Проблемы, не вошедшие в задание по одной, — одной строкой: сколько их и по каким причинам.
 
-    Разборы по отвергнутой записи считаются и здесь: иначе ``reject`` маленькой проблемы
-    не менял бы данные сводки, и она осталась бы прежней.
+    Разборы по отвергнутой записи и разобранные по базе знаний без агента (``auto``)
+    считаются и здесь: иначе ``reject`` маленькой проблемы не менял бы данные сводки, и она
+    осталась бы прежней.
     """
     problems: Counter[str] = Counter()
     tests: Counter[str] = Counter()
@@ -435,6 +438,9 @@ def _summary_rest(
         f"; у {unconfirmed} из них разбор опирался на запись базы знаний, которую пользователь "
         "потом отверг, — их причина не подтверждена" if unconfirmed else ""
     )
+    by_record = sum(1 for entry in rest if entry["file_id"] in auto)
+    note += (f"; {by_record} из них разобраны по записи базы знаний без агента: эти ошибки уже "
+             "подтвердил инженер" if by_record else "")
     return (
         f"--- Ещё {len(rest)} {_plural(len(rest), 'проблема', 'проблемы', 'проблем')} поменьше "
         f"({total} {_plural(total, 'тест', 'теста', 'тестов')}), по причинам: "
