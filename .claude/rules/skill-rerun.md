@@ -142,7 +142,9 @@ paths:
   причина `SKIPPED_BY_BUILD_REASON` («Maven пропустил тесты…», совет про
   `ALLURE_RERUN_MAVEN_ARGS`) вместо «нет в отчётах surefire» (`rerun_worker._missing_reason`).
   Фейковый `mvnw` читает ближайший `.mvn/maven.config` с тем же порядком, `pom_skip` — пропуск
-  из pom. Ненулевой код —
+  из pom. На настоящем Maven (ревью Codex, `-o`, surefire 3.2.5): `maven.config` с
+  `-DskipTests` и `-Dmaven.test.skip=true` — тест выполнен; `<skipTests>true` в pom — «Tests
+  are skipped.», код 0. Ненулевой код —
   сборка не прошла (`build_errors`: до 5 строк `[ERROR]` по 300 символов, без похожих на
   секрет). В логе «Could not find the selected project in the reactor» — повтор из папки
   модуля.
