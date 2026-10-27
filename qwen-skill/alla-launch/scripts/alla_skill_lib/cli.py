@@ -1253,14 +1253,18 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     if previous_hash != summary_hash:  # сводка не к этим данным (или без отметки) — заново
         paths.summary.unlink(missing_ok=True)
         summary = ""
-    if not summary.strip() and known.auto and all(
-            entry["auto"] or entry["file_id"] in known.auto for entry in entries):
-        # Все проблемы с данными — известные: причины назвал инженер, сводку пишет скрипт.
-        summary = known_summary(run, known)
-        ws.write_text(paths.summary, summary)
+    if known.auto and all(entry["auto"] or entry["file_id"] in known.auto for entry in entries):
+        # Все проблемы с данными — известные: причины назвал инженер, сводку пишет скрипт — из
+        # текущих записей и при каждом next: рецепт записи вне первых групп в данные сводки не
+        # входит, и правку его первого шага хэш бы не заметил (ревью Codex).
+        script = known_summary(run, known)
+        if summary != script:
+            ws.write_text(paths.summary, script)
+            summary = script
         paths.summary_task.unlink(missing_ok=True)
-        state["summary_data_hash"] = summary_hash
-        ws.write_json(paths.state_json, state)
+        if previous_hash != summary_hash:
+            state["summary_data_hash"] = summary_hash
+            ws.write_json(paths.state_json, state)
     if not summary.strip():
         ws.write_text(
             paths.summary_task,

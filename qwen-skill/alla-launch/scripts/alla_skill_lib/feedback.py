@@ -362,14 +362,14 @@ def _remember(
             )
             return "error", (
                 f"Эту ошибку уже подтверждали в записи «{owner.id}» ({owner.title}). "
-                f"Чтобы обновить её: {_update_command(paths, file_id, owner.id, source_args)}"
+                f"{_UPDATE_PREFIX}{_update_command(paths, file_id, owner.id, source_args)}"
                 + other_cause
             )
         new_id = make_entry_id(title, fingerprint)
         if kb.path_for(new_id).exists():
             return "error", (
-                f"Запись «{new_id}» уже есть. Чтобы обновить её: "
-                f"{_update_command(paths, file_id, new_id, source_args)}"
+                f"Запись «{new_id}» уже есть. "
+                f"{_UPDATE_PREFIX}{_update_command(paths, file_id, new_id, source_args)}"
             )
         record = KBRecord(
             id=new_id,
@@ -439,12 +439,19 @@ def _remember(
 
 
 def _refusal_reason(text: str) -> str:
-    """Суть отказа одной строкой: его замечания («- …») или первая фраза."""
+    """Суть отказа одной строкой: его замечания («- …») или первая строка без команды
+    обновления записи — её пакет не передаёт (ревью Codex): без строки «обновляй, только если
+    пользователь уточняет рецепт» модель выполнила бы её и переписала запись."""
     reasons = [line[2:].strip() for line in text.splitlines() if line.startswith("- ")]
     if reasons:
         return "; ".join(reasons)
     first = text.splitlines()[0] if text.strip() else ""
+    first = first.split(_UPDATE_PREFIX, 1)[0].rstrip()
     return first.removeprefix("Попытка ").split(". ", 1)[-1] if first.startswith("Попытка ") else first
+
+
+# Перед командой обновления существующей записи: отказ пакета remember её вырезает.
+_UPDATE_PREFIX = "Чтобы обновить её: "
 
 
 def _update_command(paths: ws.RunPaths, file_id: str, entry_id: str, source_args: list[str]) -> str:

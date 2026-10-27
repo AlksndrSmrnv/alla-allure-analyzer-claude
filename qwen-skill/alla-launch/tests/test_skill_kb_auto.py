@@ -208,6 +208,24 @@ def test_all_known_problems_finish_without_the_model(
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     assert len(state[KB_AUTO_STATE]) == 2
 
+    # Сводку пишет скрипт из текущих записей при каждом next, а не по хэшу данных сводки: рецепт
+    # записи вне первых групп в эти данные не входит, и правку его первого шага хэш бы не заметил
+    # (ревью Codex). Сводка не та при тех же данных — переписана.
+    (run_dir / "summary.md").write_text("Старая сводка.\n", encoding="utf-8")
+    assert _next(run_dir, capsys).startswith("STATUS: done")
+    assert (run_dir / "summary.md").read_text(encoding="utf-8") == summary
+    from alla_skill_lib.kb import ProjectKB
+
+    kb = ProjectKB(project / "alla-kb")
+    records, _ = kb.load()
+    record = next(r for r in records if "Передавать customer в запросе создания заказа" in r.resolution_steps)
+    record.resolution_steps = ["Заполнять customer в фикстуре заказа."]
+    kb.save(record)
+    assert _next(run_dir, capsys).startswith("STATUS: done")
+    summary = (run_dir / "summary.md").read_text(encoding="utf-8")
+    assert "Что делать: Заполнять customer в фикстуре заказа." in summary
+    assert not (run_dir / "summary_task.md").exists()
+
 
 def test_updated_record_rewrites_the_analysis_and_a_hand_edit_stays(
     project: Path, testops: FakeTestOps, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
@@ -323,6 +341,13 @@ def test_remember_many_saves_what_it_can_and_names_the_rest(
     assert f"Не сохранены проблемы {int(login)}" in out and "без --from-analysis" in out
     assert f"- Проблема {int(login)}: разбор кластера не прошёл проверку формата" in out
     assert "Затем выполни" not in out  # команды отказа по одной проблеме не вкладываются
+
+    # Разбор уже сохранён в записи, но на неё не ссылается: отказ «уже подтверждали» — без
+    # команды обновления записи (ревью Codex: без оговорки рядом модель выполнила бы её).
+    code, out = _run(["remember", order, login, "--run", str(run_dir), "--from-analysis"], capsys)
+    assert code == 1 and out.startswith("STATUS: error"), out
+    assert f"- Проблема {int(order)}: Эту ошибку уже подтверждали в записи «" in out
+    assert "--entry" not in out and "Чтобы обновить" not in out
 
     # Не сохранилось ничего — отказ со списком замечаний, без команд.
     (run_dir / "analyses" / f"{order}.md").write_text("ПРИЧИНА: тест — ожидание\n", encoding="utf-8")
