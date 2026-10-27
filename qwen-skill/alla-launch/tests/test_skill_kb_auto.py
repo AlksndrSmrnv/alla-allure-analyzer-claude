@@ -520,3 +520,64 @@ def test_analysis_from_a_record_names_the_missing_operation_log() -> None:
     assert validate_analysis(analysis, Path("."), frozenset({record.id}), observed=True,
                              sources=_sources(POOL), log_not_found=True,
                              exact_kb={record.id: "приложение"}) == []
+
+
+def _http(error: str, request: str) -> str:
+    return (f"--- [HTTP: response.json] ---\nКорреляция: rqUID={request}\nHTTP статус: 500\n"
+            f"errorMessage: {error}\n")
+
+
+def test_other_http_response_behind_the_same_assertion_is_left_to_the_model() -> None:
+    # Ассерт кода ответа без лога: причину называет только HTTP-ответ, а сигнатура его не берёт
+    # — у «счёт закрыт» и «не хватает средств» она одна (ревью Codex).
+    status = "java.lang.AssertionError: expected: <200> but was: <500>"
+    closed, closed_tests = _cluster(status, status, logs=(_http("account is closed", "rq-1001"),
+                                                          _http("account is closed", "rq-2002")))
+    record = _record(cluster_signature(closed, closed_tests), error_example=status,
+                     confirmed_logs=[log_errors_digest(cluster_log_errors(closed, closed_tests))])
+    # Корреляция у каждого запроса своя — она отпечаток не меняет.
+    assert _decide(closed, closed_tests, [record], _sources(status))
+
+    funds, funds_tests = _cluster(status, status, logs=(_http("insufficient funds", "rq-3003"),
+                                                        _http("insufficient funds", "rq-4004")))
+    assert cluster_signature(funds, funds_tests) == cluster_signature(closed, closed_tests)
+    assert _decide(funds, funds_tests, [record], _sources(status)) is None
+    mixed, mixed_tests = _cluster(status, status, logs=(_http("account is closed", "rq-5005"),
+                                                        _http("insufficient funds", "rq-6006")))
+    assert _decide(mixed, mixed_tests, [record], _sources(status)) is None
+
+
+def test_each_member_is_checked_without_rereading_every_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    from alla_skill_lib import signature as signature_module
+    from alla_skill_lib.signature import as_representatives
+
+    # Тест без своего лога во главе берёт лог у участников: лог признака — первый, лог
+    # сигнатуры — самый содержательный. Кластер из теста и этих участников даёт то же, что
+    # вся группа; тест со своим логом — только он сам.
+    status = "java.lang.AssertionError: expected: <200> but was: <500>"
+    plain = "2026-10-03 11:10:00 [INFO] OrderService: order accepted\n"
+    pool = "2026-10-03 11:10:00 [ERROR] OrderRepository: HikariPool-7 - Connection is not available\n"
+    cluster, tests = _cluster(status, status, status, status, logs=("", plain, pool, ""))
+    views = list(as_representatives(cluster, tests))
+    assert [view.member_test_ids for view in views] == [[1, 2, 3], [2], [3], [4, 2, 3]]
+    for alone in views:
+        whole = cluster.model_copy(update={"representative_test_id": alone.representative_test_id})
+        assert cluster_signature(alone, tests) == cluster_signature(whole, tests)
+        assert cluster_evidence(alone, tests) == cluster_evidence(whole, tests)
+
+    # Большая известная группа: логи очищаются линейно, а не для каждого теста — все (ревью
+    # Codex: 600 тестов — 3 с на кластер).
+    big, big_tests = _cluster(*[POOL] * 40, logs=(pool,) * 40)
+    record = _record(cluster_signature(big, big_tests),
+                     confirmed_logs=[log_errors_digest(cluster_log_errors(big, big_tests))])
+    calls = 0
+    evidence_of = signature_module._log_evidence
+
+    def counted(summary: FailedTestSummary) -> str:
+        nonlocal calls
+        calls += 1
+        return evidence_of(summary)
+
+    monkeypatch.setattr(signature_module, "_log_evidence", counted)
+    assert _decide(big, big_tests, [record])
+    assert calls < 20 * len(big_tests)

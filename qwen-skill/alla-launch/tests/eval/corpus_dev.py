@@ -1028,6 +1028,57 @@ def same_exception_split_log_causes() -> Case:
     return builder.build("same_exception_split_log_causes")
 
 
+def _payment_response(code: str, text: str, request: str) -> tuple[str, str, str]:
+    """Ответ SOAP-сервиса: XML ядро не читает как лог, поэтому у теста только секция HTTP
+    (ответ JSON был бы ещё и записью лога — её сигнатура берёт)."""
+    body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">\n'
+            f'  <soap:Header><rqUID>{request}</rqUID></soap:Header>\n'
+            '  <soap:Body><soap:Fault>\n'
+            f'    <faultcode>{code}</faultcode>\n'
+            f'    <faultstring>{text}</faultstring>\n'
+            '  </soap:Fault></soap:Body>\n'
+            '</soap:Envelope>\n')
+    return ("Response", body, "application/xml")
+
+
+def same_assert_http_causes() -> Case:
+    """Один ассерт кода ответа, причина — только в HTTP-ответе SOAP, лога сервиса нет.
+
+    Сигнатура HTTP-ответ не берёт (как и gate по логу), поэтому у «счёт закрыт» и «не хватает
+    средств» за ``expected 200 but was 500`` она одна, а разводит кластеры шаг: запись о
+    закрытом счёте подсказывается второму кластеру как точная (``signature_shared_wrong`` 1,
+    ``kb_offers_wrong`` 1 — граница сигнатуры, модель видит ответ сама). Разбирать его по ней
+    без модели нельзя: ответ не тот, что видел инженер (ревью Codex, ``kb_auto_wrong`` 1 → 0).
+    Корреляция у каждого запроса своя и отпечаток не меняет.
+    """
+    builder = LaunchBuilder(6142, "Payments nightly")
+    test_class = "ru.bank.payments.TransferApiTest"
+    status = "Transfer status expected:<200> but was:<500>"
+    closed = ("ACCOUNT_CLOSED", "Счёт списания закрыт")
+    groups = [
+        ("transfer-closed", "payments-account-closed", status, "Перевести со счёта клиента",
+         closed, ("transferFromSaving", "transferFromCard")),
+        ("transfer-funds", "payments-no-funds", status, "Оплатить услугу со счёта",
+         ("NO_FUNDS", "Недостаточно средств на счёте"), ("payMobile", "payInternet")),
+        ("deposit-closed", "payments-account-closed",
+         "Deposit close status expected:<200> but was:<500>", "Закрыть вклад клиента",
+         closed, ("closeDeposit", "closeSavingDeposit")),
+    ]
+    request = 0
+    for group, cause, message, step, (code, text), methods in groups:
+        for index, method in enumerate(methods):
+            request += 1
+            builder.add_failure(
+                group, cause=cause, category="данные", name=method,
+                full_name=f"{test_class}.{method}", message=message,
+                trace=_assert_trace(message, test_class, method, 30 + index * 11),
+                step=step, logs=[_payment_response(code, text, f"rq-{7300 + request}")],
+                evidence=[text],
+            )
+    return builder.build("same_assert_http_causes")
+
+
 # ---------------------------------------------------------------------------
 # Хосты и локаторы в сообщении
 # ---------------------------------------------------------------------------
@@ -3355,6 +3406,7 @@ CASES: dict[str, Callable[[], Case]] = {
     "background_log_errors": background_log_errors,
     "same_exception_two_log_causes": same_exception_two_log_causes,
     "same_exception_split_log_causes": same_exception_split_log_causes,
+    "same_assert_http_causes": same_assert_http_causes,
     "resources_split": resources_split,
     "resources_one_problem": resources_one_problem,
     "same_conflict_two_causes": same_conflict_two_causes,

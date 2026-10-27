@@ -27,7 +27,7 @@ import contextlib
 import hashlib
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 from alla_core.models.clustering import FailureCluster
@@ -129,6 +129,8 @@ _LOG_QUOTED_NUMBER_RE = re.compile(r"(?<![<\[])\b\d{4,}\b(?![>\]])")
 # :func:`_without_pid`). Скобки защитили бы его как
 # значение, а после перезапуска сервиса он другой (ревью Codex).
 _LOG_PID_RE = re.compile(r"^((?:[DIWEFAU], \[)?<TS>(?: #| (?P<zone>[A-Z]{3,4}) \[))\d+\]")
+# Строка корреляции секции HTTP (``_format_http_info`` ядра): id запроса свой у каждого прогона.
+_HTTP_CORRELATION_PREFIX = "Корреляция:"
 # Код поля ошибки ответа, который мягкий вид стирает: в нём есть число из 4+ цифр, как у
 # numeric_codes, — и целиком (``10001``), и частью составного (``10001.1``, ``ERR-10001``).
 _LONG_CODE_VALUE_RE = re.compile(r"\d{4,}")
@@ -148,8 +150,8 @@ def _log_evidence(summary: FailedTestSummary) -> str:
 
 
 def log_error_lines(summary: FailedTestSummary) -> frozenset[str]:
-    """Строки-ошибки собственного лога теста в виде якоря сигнатуры; пусто — своего лога или
-    ошибок в нём нет.
+    """Строки-ошибки собственного лога теста (:func:`_diagnostic_lines`); пусто — своего лога
+    или ошибок в нём нет.
 
     Сигнатура ошибки, которая сама называет причину, лог не берёт: две проблемы за одним
     исключением клиента и с разными ошибками сервиса в логе получают одну сигнатуру. Примеры
@@ -157,10 +159,21 @@ def log_error_lines(summary: FailedTestSummary) -> frozenset[str]:
     знаний (``known_issues.auto_resolution``).
     """
     log = _log_evidence(summary)
-    if not log:
-        return frozenset()
+    return _diagnostic_lines(log) if log else frozenset()
+
+
+def _diagnostic_lines(log: str) -> frozenset[str]:
+    """Строки-ошибки лога в виде якоря сигнатуры и строки секций HTTP без корреляции.
+
+    HTTP-ответ сигнатура не берёт (как и gate кластеризации), а причину он называет сам:
+    ``expected: <200> but was: <500>`` без лога с ответами «счёт закрыт» и «не хватает средств»
+    давал одну сигнатуру и отпечаток ``none`` — запись первого разбирала бы второй без модели
+    (ревью Codex).
+    """
     anchor = _log_anchor(log)
-    return frozenset([*anchor.causes, *anchor.errors])
+    http = [line for label, body in parse_log_sections(log) if label.startswith("HTTP: ")
+            for line in body.splitlines() if not line.startswith(_HTTP_CORRELATION_PREFIX)]
+    return frozenset([*anchor.causes, *anchor.errors, *_unique(http, _soft_log)])
 
 
 def _cluster_logs(
@@ -476,20 +489,63 @@ def cluster_log_errors(
     cluster: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],
 ) -> frozenset[str]:
-    """Строки-ошибки лога, который берёт сигнатура кластера: представителя, без его лога —
-    самый содержательный у участников (как ``_log_part``)."""
+    """Строки-ошибки лога, который берёт сигнатура кластера (:func:`_diagnostic_lines`):
+    представителя, без его лога — самый содержательный у участников (как ``_log_part``), а
+    без строк якоря — первый (лог признака, ``cluster_sources``)."""
     representative = (tests_by_id.get(cluster.representative_test_id)
                       if cluster.representative_test_id is not None else None)
     log = _log_evidence(representative) if representative else ""
-    if log:
-        anchor = _log_anchor(log)
-    else:
-        anchors = [anchor for anchor in map(_log_anchor, _cluster_logs(cluster, tests_by_id))
-                   if anchor.lines(with_plain=True)]
-        if not anchors:
-            return frozenset()
-        anchor = min(anchors, key=_LogAnchor.rank)
-    return frozenset([*anchor.causes, *anchor.errors])
+    if not log:
+        logs = _cluster_logs(cluster, tests_by_id)
+        ranked = [(anchor, log) for log in logs
+                  if (anchor := _log_anchor(log)).lines(with_plain=True)]
+        if ranked:
+            log = min(ranked, key=lambda item: item[0].rank())[1]
+        elif logs:
+            log = logs[0]
+    return _diagnostic_lines(log) if log else frozenset()
+
+
+def as_representatives(
+    cluster: FailureCluster,
+    tests_by_id: dict[int, FailedTestSummary],
+) -> Iterator[FailureCluster]:
+    """Кластер с каждым тестом группы во главе: те же признак, сигнатура и лог, что у всей
+    группы с ним во главе, но только с участниками, чьи логи они берут, — со своим логом теста,
+    а без него — с первым логом группы (``cluster_sources``) и самым содержательным
+    (``_log_part``).
+
+    Проверка каждого теста группы (``known_issues.auto_resolution``) так не очищает логи всех
+    участников для каждого (ревью Codex: 600 тестов — 3 с на кластер); логи группы для теста
+    без своего ищутся один раз и только если такой тест есть.
+    """
+    shared: list[int] | None = None
+    for test_id in dict.fromkeys(cluster.member_test_ids):
+        test = tests_by_id.get(test_id)
+        if test is not None and _log_evidence(test):
+            members = [test_id]
+        else:
+            if shared is None:
+                shared = _shared_log_ids(cluster, tests_by_id)
+            members = list(dict.fromkeys([test_id, *shared]))
+        yield cluster.model_copy(update={"representative_test_id": test_id,
+                                         "member_test_ids": members})
+
+
+def _shared_log_ids(
+    cluster: FailureCluster,
+    tests_by_id: dict[int, FailedTestSummary],
+) -> list[int]:
+    """Участники, чьи логи берёт тест без своего во главе группы: первый с логом и самый
+    содержательный, в порядке группы."""
+    logs = [(test_id, log) for test_id in dict.fromkeys(cluster.member_test_ids)
+            if (test := tests_by_id.get(test_id)) is not None and (log := _log_evidence(test))]
+    if not logs:
+        return []
+    ranked = [(anchor, test_id) for test_id, log in logs
+              if (anchor := _log_anchor(log)).lines(with_plain=True)]
+    richest = [min(ranked, key=lambda item: item[0].rank())[1]] if ranked else []
+    return list(dict.fromkeys([logs[0][0], *richest]))
 
 
 def log_errors_digest(lines: frozenset[str]) -> str:

@@ -44,7 +44,7 @@ from alla_skill_lib.kb import (
     record_matches,
     record_rejected,
 )
-from alla_skill_lib.signature import cluster_log_errors, log_error_lines
+from alla_skill_lib.signature import as_representatives, cluster_log_errors, log_error_lines
 from alla_skill_lib.sources import IMAGE_KIND, Registry, check_entry_analysis, example_blocks
 
 
@@ -329,8 +329,8 @@ def auto_resolution(
         return None
     shown = cluster_log_errors(cluster, tests_by_id)
     members: set[tuple[str, str]] = set()
-    for test_id in cluster.member_test_ids:
-        member = _member_signature(record, cluster, tests_by_id, test_id, shown)
+    for alone in as_representatives(cluster, tests_by_id):
+        member = _member_signature(record, alone, tests_by_id, shown)
         if member is None:
             return None
         members.add(member)
@@ -343,18 +343,17 @@ def auto_resolution(
 
 def _member_signature(
     record: KBRecord,
-    cluster: FailureCluster,
+    alone: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],
-    test_id: int,
     shown: frozenset[str],
 ) -> tuple[str, str] | None:
     """Сигнатура и ключ теста группы, если запись узнаёт его точно, как если бы он был
-    представителем кластера, и строки-ошибки его лога — те же, что у лога кластера (``shown``),
-    если свой лог у него есть; иначе ``None``."""
-    test = tests_by_id.get(test_id)
+    представителем кластера (``alone`` — :func:`as_representatives`), и строки-ошибки его лога
+    — те же, что у лога кластера (``shown``), если свой лог у него есть; иначе ``None``."""
+    test = (tests_by_id.get(alone.representative_test_id)
+            if alone.representative_test_id is not None else None)
     if test is None:
         return None
-    alone = cluster.model_copy(update={"representative_test_id": test_id})
     evidence = "\n".join(part for part in cluster_evidence(alone, tests_by_id) if part)
     key = key_of_test(test.full_name, test.test_case_id)
     signature = cluster_signature(alone, tests_by_id)
