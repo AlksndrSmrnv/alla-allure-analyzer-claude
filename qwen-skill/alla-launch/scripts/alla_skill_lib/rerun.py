@@ -50,6 +50,8 @@ STALE_MARGIN_S = 300  # задание дольше своего потолка 
 DROPPED_ENV_PREFIXES = ("ALLURE_", "QWEN_CODE_")
 DROPPED_ENV = frozenset({"PYTHONPATH"})
 NOT_IN_REACTOR = "Could not find the selected project in the reactor"
+# surefire: тесты выключены (skipTests, maven.test.skip) — отчётов не будет, код выхода 0.
+TESTS_SKIPPED = "Tests are skipped."
 
 OUTCOMES = ("passed", "reproduced", "other", "not_run")
 MAX_SHOWN_SKIPPED = 10
@@ -322,6 +324,9 @@ def maven_command(group: MavenGroup, tests: Iterable[PlannedTest], suffix: str,
         "-Dsurefire.failIfNoSpecifiedTests=false",
         "-DfailIfNoTests=false",
         "-Dmaven.test.failure.ignore=true",
+        # Пропуск из .mvn/maven.config: -D командной строки Maven применяет после него.
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
         f"-Dsurefire.reportNameSuffix={suffix}",
         *extra,
     ]

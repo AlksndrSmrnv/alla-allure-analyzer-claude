@@ -132,8 +132,17 @@ paths:
   `job` — done; `failed` — причина; живой `pid` (не старше потолка + `STALE_MARGIN_S`, зомби
   своей команды — `waitpid`) — running; иначе «прервался».
 - Команда Maven: `-B test -Dtest=A#m1+m2,B#m3 -Dsurefire.failIfNoSpecifiedTests=false
-  -DfailIfNoTests=false -Dmaven.test.failure.ignore=true -Dsurefire.reportNameSuffix=alla-<job>-<k>`
-  + `shlex.split(ALLURE_RERUN_MAVEN_ARGS)`. Без `-ntp` (Maven < 3.6.1). Ненулевой код —
+  -DfailIfNoTests=false -Dmaven.test.failure.ignore=true -DskipTests=false
+  -Dmaven.test.skip=false -Dsurefire.reportNameSuffix=alla-<job>-<k>`
+  + `shlex.split(ALLURE_RERUN_MAVEN_ARGS)`. Без `-ntp` (Maven < 3.6.1). `skipTests=false` и
+  `maven.test.skip=false` — против пропуска в `.mvn/maven.config` (2026-10-27, у пользователя
+  «Tests are skipped» и «не запустился»): `MavenCli.cliMerge` (3.8.x, 3.9.x) добавляет `-D`
+  командной строки после опций `maven.config`, они и действуют. Пропуск в pom (`<skipTests>`
+  в настройке surefire) так не отменить: отчётов нет, код 0, в логе `TESTS_SKIPPED` —
+  причина `SKIPPED_BY_BUILD_REASON` («Maven пропустил тесты…», совет про
+  `ALLURE_RERUN_MAVEN_ARGS`) вместо «нет в отчётах surefire» (`rerun_worker._missing_reason`).
+  Фейковый `mvnw` читает ближайший `.mvn/maven.config` с тем же порядком, `pom_skip` — пропуск
+  из pom. Ненулевой код —
   сборка не прошла (`build_errors`: до 5 строк `[ERROR]` по 300 символов, без похожих на
   секрет). В логе «Could not find the selected project in the reactor» — повтор из папки
   модуля.

@@ -312,9 +312,13 @@ Gradle/Maven) — в корне git-репозитория. В многомод�
   его исходником; Maven запускается из корня реактора (`-pl <модуль> -am`), а если модуля нет
   в `<modules>` — из папки модуля. Инструмент — `mvnw` проекта, иначе `mvn` из `PATH`.
 - Команда: `mvn -B test -Dtest=<Класс>#<метод>+<метод> -Dsurefire.failIfNoSpecifiedTests=false
-  -DfailIfNoTests=false -Dmaven.test.failure.ignore=true -Dsurefire.reportNameSuffix=…` плюс
+  -DfailIfNoTests=false -Dmaven.test.failure.ignore=true -DskipTests=false
+  -Dmaven.test.skip=false -Dsurefire.reportNameSuffix=…` плюс
   `ALLURE_RERUN_MAVEN_ARGS` (профиль стенда, свойства: `-Pstand -Denv=ift`). Итог читается из
   `target/surefire-reports/TEST-*.xml` этого запуска.
+- `-DskipTests` и `-Dmaven.test.skip` из `.mvn/maven.config` перезапуск отменяет. Пропуск,
+  зашитый в `pom.xml` или профиль, — нет: тест попадёт в «не запустились» с причиной «Maven
+  пропустил тесты»; нужное свойство или профиль передайте через `ALLURE_RERUN_MAVEN_ARGS`.
 - Тесты идут с настройками проекта на этой машине и обращаются к тем же сервисам, что при
   обычном локальном запуске. Переменные `ALLURE_*` (токен TestOps) в окружение Maven не
   передаются.

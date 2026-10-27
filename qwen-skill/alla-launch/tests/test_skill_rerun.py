@@ -103,6 +103,7 @@ def test_plan_names_the_tests_the_maven_command_and_the_confirmed_launch(
     assert f"Проблема {order}: {ORDER}.createOrder (модуль autotests)" in out
     assert f"Проблема {order}: {ORDER}.updateOrder" in out
     assert f"-Dtest={ORDER}#createOrder+updateOrder" in out
+    assert "-DskipTests=false -Dmaven.test.skip=false" in out
     assert "до 3 раз" in out and "Только после явного «да»" in out
     assert f"rerun {order} --run {run_dir} --yes --plan {_plan_hash(out)}" in out
     assert not (run_dir / "rerun").exists()  # без --yes ничего не запущено
@@ -910,6 +911,31 @@ def _job(tmp_path: Path, timeout: int, test: PlannedTest | None = None,
     return files, {"job": "j", "attempts": 3, "timeout": timeout, "maven_args": [],
                    "project_root": str(tmp_path), "tests": [vars(test or _planned("a"))],
                    "groups": [vars(group)]}
+
+
+@pytest.mark.parametrize("config", ["-DskipTests", "-Dmaven.test.skip=true -Pci"])
+def test_skip_from_maven_config_is_overridden(tmp_path: Path, config: str) -> None:
+    """``.mvn/maven.config`` проекта выключает тесты для обычной сборки — перезапуск их включает."""
+    (tmp_path / ".mvn").mkdir()
+    (tmp_path / ".mvn" / "maven.config").write_text(config + "\n", encoding="utf-8")
+    skill_fake_maven.install(tmp_path, {f"{ORDER}#a": ["passed"]})
+    files, plan = _job(tmp_path, timeout=60)
+
+    result = execute(files, plan)
+
+    assert [item["outcome"] for item in result["tests"]] == ["passed"]
+
+
+def test_tests_skipped_by_the_pom_are_explained(tmp_path: Path) -> None:
+    skill_fake_maven.install(tmp_path, {f"{ORDER}#a": ["passed"]}, pom_skip=True)
+    files, plan = _job(tmp_path, timeout=60)
+
+    result = execute(files, plan)
+
+    item = result["tests"][0]
+    assert (item["outcome"], item["reason"]) == ("not_run", rerun_worker.SKIPPED_BY_BUILD_REASON)
+    assert "Maven пропустил тесты (Tests are skipped)" in "\n".join(
+        rerun.RerunView(3, result["tests"], {}).lines())
 
 
 def test_timeout_after_a_reproduced_run_keeps_the_reproduction(tmp_path: Path) -> None:

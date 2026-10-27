@@ -23,6 +23,7 @@ from alla_skill_lib import workspace as ws
 from alla_skill_lib.rerun import (
     KILL_GRACE_S,
     NOT_IN_REACTOR,
+    TESTS_SKIPPED,
     JobFiles,
     MavenGroup,
     PlannedTest,
@@ -41,6 +42,9 @@ from alla_skill_lib.rerun import (
 TIMEOUT_REASON = "вышел потолок времени ALLURE_RERUN_TIMEOUT"
 BUILD_REASON = "сборка не прошла"
 EDITED_REASON = "код теста изменён во время перезапуска"
+SKIPPED_BY_BUILD_REASON = (
+    "Maven пропустил тесты (Tests are skipped): пропуск задан в pom.xml или профиле — "
+    "нужное свойство или профиль передайте через ALLURE_RERUN_MAVEN_ARGS")
 
 
 def main(argv: list[str]) -> int:
@@ -107,11 +111,11 @@ def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
             cases = read_reports(Path(group.fallback_cwd or group.cwd), suffix, before)
             for test in batch:
                 found = method_result(cases, test)
-                if found is None or found.status == "skipped":
-                    stop(test, TIMEOUT_REASON if killed and found is None
-                         else BUILD_REASON if found is None and code
-                         else "нет в отчётах surefire" if found is None
-                         else "пропущен (skipped)")
+                if found is None:
+                    stop(test, _missing_reason(killed, code, log))
+                    continue
+                if found.status == "skipped":
+                    stop(test, "пропущен (skipped)")
                     continue
                 runs[test.test_result_id] += 1
                 if found.status == "passed":
@@ -218,6 +222,17 @@ def _group_alive(process: subprocess.Popen[bytes]) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _missing_reason(killed: bool, code: int, log: Path) -> str:
+    """Почему теста нет в отчётах этого запуска."""
+    if killed:
+        return TIMEOUT_REASON
+    if code:
+        return BUILD_REASON
+    if _says(log, TESTS_SKIPPED):
+        return SKIPPED_BY_BUILD_REASON
+    return "нет в отчётах surefire"
 
 
 def _says(log: Path, text: str) -> bool:

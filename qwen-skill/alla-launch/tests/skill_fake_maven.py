@@ -4,7 +4,9 @@
 ``класс#метод`` — итоги запусков по порядку (``"failed:<сообщение>"``, ``"passed"``,
 ``"skipped"``, ``"flaky"``; последний повторяется). Скрипт разбирает ``-Dtest``, ``-pl`` и
 ``-Dsurefire.reportNameSuffix``, как настоящий surefire пишет ``TEST-<класс>-<суффикс>.xml``,
-и считает запуски в ``fake-maven-runs.json``. Сам по себе запускается как
+и считает запуски в ``fake-maven-runs.json``. ``-D`` из ``.mvn/maven.config`` (ближайшего над
+рабочей папкой) идут раньше аргументов, как у Maven 3.8+: ``skipTests``/``maven.test.skip``
+выключают тесты, а ``-DskipTests=false`` команды их включает обратно. Сам по себе запускается как
 ``python skill_fake_maven.py --spec <файл> <аргументы mvn>``.
 """
 
@@ -38,6 +40,7 @@ def install(
     sleep_from_call: int = 1,
     orphan: bool = False,
     not_in_reactor: bool = False,
+    pom_skip: bool = False,
     python: str = sys.executable,
     script: str = str(Path(__file__).resolve()),
 ) -> Path:
@@ -45,14 +48,15 @@ def install(
 
     ``sleep`` — пауза с ``sleep_from_call``-го запуска Maven; ``orphan`` — до паузы запустить
     дочерний процесс, который не реагирует на SIGTERM (как форк surefire), его pid — в
-    ``fake-maven-orphan.pid``.
+    ``fake-maven-orphan.pid``. ``pom_skip`` — тесты выключены в pom (``<skipTests>true``
+    в настройке surefire): ``-D`` это не отменяет.
     ``python`` и ``script`` — для shell: стенд Qwen передаёт пути от папки ``mvnw``
     (``$(dirname "$0")/…``), чтобы песочница не читала ничего вне проекта.
     """
     spec = folder / SPEC_NAME
     spec.write_text(json.dumps({
         "results": results, "exit": exit_code, "sleep": sleep, "sleep_from_call": sleep_from_call,
-        "orphan": orphan, "not_in_reactor": not_in_reactor,
+        "orphan": orphan, "not_in_reactor": not_in_reactor, "pom_skip": pom_skip,
     }), encoding="utf-8")
     wrapper = folder / "mvnw"
     wrapper.write_text(
@@ -93,10 +97,14 @@ def main(argv: list[str]) -> int:
         print("[ERROR] /src/test/java/ru/company/orders/OrderTest.java:[3,1] cannot find symbol")
         return int(spec["exit"])
     props: dict[str, str] = {}
-    for arg in args:
+    for arg in [*_maven_config(Path.cwd()), *args]:
         if arg.startswith("-D"):
-            key, _, value = arg[2:].partition("=")
-            props[key] = value
+            key, eq, value = arg[2:].partition("=")
+            props[key] = value if eq else "true"
+    if spec.get("pom_skip") or "true" in (props.get("skipTests"), props.get("maven.test.skip")):
+        print("[INFO] Tests are skipped.")
+        print("[INFO] BUILD SUCCESS")
+        return 0
     suffix = props.get("surefire.reportNameSuffix", "")
     reports = module_dir / "target" / "surefire-reports"
     reports.mkdir(parents=True, exist_ok=True)
@@ -123,6 +131,15 @@ def main(argv: list[str]) -> int:
     (spec_path.parent / RUNS_NAME).write_text(json.dumps(counts), encoding="utf-8")
     print("[INFO] BUILD SUCCESS")
     return 0
+
+
+def _maven_config(folder: Path) -> list[str]:
+    """Аргументы ``.mvn/maven.config``: Maven ищет ``.mvn`` от рабочей папки вверх."""
+    for parent in (folder, *folder.parents):
+        if (parent / ".mvn").is_dir():
+            config = parent / ".mvn" / "maven.config"
+            return config.read_text(encoding="utf-8").split() if config.is_file() else []
+    return []
 
 
 def _case(cls: str, suffix: str, method: str, outcome: str) -> str:
