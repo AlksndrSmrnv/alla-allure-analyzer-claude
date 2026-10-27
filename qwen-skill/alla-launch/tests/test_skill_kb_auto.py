@@ -75,8 +75,9 @@ def _decide(
     decision = auto_resolution(matches, records, cluster, tests,
                                sources if sources is not None else _sources(POOL),
                                log_errors_digest(cluster_log_errors(cluster, tests)))
-    if decision is not None:  # сигнатуры тестов группы — для next; здесь сверяем id и цитату
+    if decision is not None:  # тесты группы и признак — для next; здесь сверяем id и цитату
         assert decision.pop("members")
+        assert decision.pop("fingerprint") == next(r for r in records if r.id == decision["id"]).error_example
     return decision
 
 
@@ -462,55 +463,74 @@ def test_representative_is_checked_by_its_own_test_after_a_version_change() -> N
 def test_next_drops_the_resolution_when_a_member_signature_is_rejected(tmp_path: Path) -> None:
     from alla_skill_lib.kb import ProjectKB
     from alla_skill_lib.known_issues import _exact_now
-    from alla_skill_lib.workspace import RunPaths
 
     kb = ProjectKB(tmp_path / "alla-kb")
     record = _record("v11:rep", confirmed_logs=["none"])
     record.confirmed_signatures.append("v11:other")
     kb.save(record)
-    paths = RunPaths(tmp_path / "run")
-    paths.evidence("01").parent.mkdir(parents=True)
-    paths.evidence("01").write_text(POOL, encoding="utf-8")
     entry = {"file_id": "01", "cluster_id": "c1", "kb_dir": str(kb.directory), "signature": "v11:rep",
              "log_digest": "none",
-             "kb_auto": {"id": record.id, "quote": ["S1", POOL],
-                         "members": [["v11:other", "ru.T.other"], ["v11:rep", "ru.T.rep"]]}}
-    run = {"project_root": str(tmp_path), "clusters": [entry], "clustering": {"clusters": []},
-           "triage": {"failed_tests": []}}
-    assert _exact_now(run, entry, paths, record.id) is not None
+             "kb_auto": {"id": record.id, "quote": ["S1", POOL], "fingerprint": record.error_example,
+                         "members": [["v11:other", "ru.T.other", False], ["v11:rep", "ru.T.rep", True]]}}
+    assert _exact_now(entry, record.id) is not None
+    # Признак правили руками: подтверждённым сигнатурам он не нужен — разбор остаётся.
+    record.error_example = "Connection is not available"
+    kb.save(record)
+    assert _exact_now(entry, record.id) is not None
 
     # Сигнатуру другого теста группы отвергли (разбор другой проблемы): разбор группы снимается.
     record.reject("v11:other")
     kb.save(record)
-    assert _exact_now(run, entry, paths, record.id) is None
+    assert _exact_now(entry, record.id) is None
 
 
 def test_next_checks_each_member_by_its_own_test_after_a_version_change(tmp_path: Path) -> None:
     from alla_skill_lib.kb import ProjectKB
     from alla_skill_lib.known_issues import _exact_now
-    from alla_skill_lib.workspace import RunPaths
 
     # Хэши записи — прежней версии: точное узнавание держится на тестах участников.
     old = f"v{SIGNATURE_VERSION - 1}:{'0' * 64}"
     kb = ProjectKB(tmp_path / "alla-kb")
     record = _record(None, confirmed_signatures=[old], confirmed_tests=["ru.T.first", "ru.T.second"])
     kb.save(record)
-    paths = RunPaths(tmp_path / "run")
-    paths.evidence("01").parent.mkdir(parents=True)
-    paths.evidence("01").write_text(POOL, encoding="utf-8")
     entry = {"file_id": "01", "cluster_id": "c1", "kb_dir": str(kb.directory), "signature": "v11:a",
              "log_digest": "none",
-             "kb_auto": {"id": record.id, "quote": ["S1", POOL],
-                         "members": [["v11:a", "ru.T.first"], ["v11:a", "ru.T.second"]]}}
-    run = {"project_root": str(tmp_path), "clusters": [entry], "clustering": {"clusters": []},
-           "triage": {"failed_tests": []}}
-    assert _exact_now(run, entry, paths, record.id) is not None
+             "kb_auto": {"id": record.id, "quote": ["S1", POOL], "fingerprint": record.error_example,
+                         "members": [["v11:a", "ru.T.first", True], ["v11:a", "ru.T.second", True]]}}
+    assert _exact_now(entry, record.id) is not None
 
     # Один тест переназначили другой записи (remember --entry в другом разборе): тест второго
     # участника не подтверждает первого (ревью Codex).
     record.confirmed_tests = ["ru.T.second"]
     kb.save(record)
-    assert _exact_now(run, entry, paths, record.id) is None
+    assert _exact_now(entry, record.id) is None
+
+
+def test_next_drops_a_resolution_by_tests_when_the_fingerprint_is_edited(tmp_path: Path) -> None:
+    from alla_skill_lib.kb import ProjectKB
+    from alla_skill_lib.known_issues import _exact_now
+
+    # Узнавание по тестам держится на признаке в данных каждого теста. Признак правили руками
+    # (например, кадр стека только первого теста): у next — данные одного представителя, сверить
+    # остальных не с чем — разбор снимается, его делает модель (ревью Codex).
+    old = f"v{SIGNATURE_VERSION - 1}:{'0' * 64}"
+    kb = ProjectKB(tmp_path / "alla-kb")
+    record = _record(None, confirmed_signatures=[old], confirmed_tests=["ru.T.first", "ru.T.second"])
+    kb.save(record)
+    entry = {"file_id": "01", "cluster_id": "c1", "kb_dir": str(kb.directory), "signature": "v11:a",
+             "log_digest": "none",
+             "kb_auto": {"id": record.id, "quote": ["S1", POOL], "fingerprint": record.error_example,
+                         "members": [["v11:a", "ru.T.first", True], ["v11:a", "ru.T.second", True]]}}
+    assert _exact_now(entry, record.id) is not None
+    record.error_example = "HikariPool-1 - Connection is not available\nat ru.T.first(T.java:6)"
+    kb.save(record)
+    assert _exact_now(entry, record.id) is None
+
+    # Признака не было в данных одного из тестов при prepare — по тесту он и не узнаётся.
+    record.error_example = str(entry["kb_auto"]["fingerprint"])
+    kb.save(record)
+    entry["kb_auto"]["members"][1][2] = False
+    assert _exact_now(entry, record.id) is None
 
 
 def test_analysis_from_a_record_names_the_missing_operation_log() -> None:

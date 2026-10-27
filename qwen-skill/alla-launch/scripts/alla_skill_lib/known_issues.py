@@ -40,7 +40,9 @@ from alla_skill_lib.kb import (
     kb_label,
     key_of_test,
     match_cluster,
+    matches_with_hits,
     normalize_fp,
+    record_hits,
     record_matches,
     record_rejected,
 )
@@ -328,7 +330,7 @@ def auto_resolution(
     if record is None or not _record_steps(record) or log_digest not in record.confirmed_logs:
         return None
     shown = cluster_log_errors(cluster, tests_by_id)
-    members: set[tuple[str, str]] = set()
+    members: set[tuple[str, str, bool]] = set()
     for alone in as_representatives(cluster, tests_by_id):
         member = _member_signature(record, alone, tests_by_id, shown)
         if member is None:
@@ -337,7 +339,7 @@ def auto_resolution(
     quote = _quote(record, sources)
     if quote is None:
         return None
-    return {"id": record.id, "quote": list(quote),
+    return {"id": record.id, "quote": list(quote), "fingerprint": record.error_example,
             "members": [list(member) for member in sorted(members)]}
 
 
@@ -346,10 +348,11 @@ def _member_signature(
     alone: FailureCluster,
     tests_by_id: dict[int, FailedTestSummary],
     shown: frozenset[str],
-) -> tuple[str, str] | None:
-    """Сигнатура и ключ теста группы, если запись узнаёт его точно, как если бы он был
-    представителем кластера (``alone`` — :func:`as_representatives`), и строки-ошибки его лога
-    — те же, что у лога кластера (``shown``), если свой лог у него есть; иначе ``None``."""
+) -> tuple[str, str, bool] | None:
+    """Сигнатура и ключ теста группы и есть ли признак записи в его данных, если запись узнаёт
+    его точно, как если бы он был представителем кластера (``alone`` —
+    :func:`as_representatives`), и строки-ошибки его лога — те же, что у лога кластера
+    (``shown``), если свой лог у него есть; иначе ``None``."""
     test = (tests_by_id.get(alone.representative_test_id)
             if alone.representative_test_id is not None else None)
     if test is None:
@@ -357,15 +360,16 @@ def _member_signature(
     evidence = "\n".join(part for part in cluster_evidence(alone, tests_by_id) if part)
     key = key_of_test(test.full_name, test.test_case_id)
     signature = cluster_signature(alone, tests_by_id)
-    if signature is None or record_matches(record, signature, normalize_fp(evidence),
-                                           [key] if key else []) != "exact":
+    hits = record_hits(record, normalize_fp(evidence))
+    if signature is None or matches_with_hits(record, signature, hits,
+                                              [key] if key else []) != "exact":
         return None
     # Сигнатура ошибки, которая сама называет причину, лог не берёт: разные ошибки сервиса в
     # логах тестов (пул БД у одного, NPE у другого) она не различает — это видно только по
     # логам, и однородность группы проверяет модель. Фон или причина — по паре не отличить.
     # Тест без своего лога ничего не опровергает.
     own = log_error_lines(test)
-    return (signature, key or "") if not own or own == shown else None
+    return (signature, key or "", hits) if not own or own == shown else None
 
 
 def _quote(record: KBRecord, sources: Registry) -> tuple[str, str] | None:
@@ -467,7 +471,7 @@ def sync_known_auto(
         current = ws.read_text(path) if path.is_file() else ""
         if current.strip() and _digest(current) != written.get(file_id):
             continue  # разбор после отката пишет модель
-        record = _exact_now(run, entry, paths, str(auto["id"]))
+        record = _exact_now(entry, str(auto["id"]))
         text = _text_of(record, auto, entry) if record is not None else None
         if text is not None and check_entry_analysis(text, entry, project_root, paths)[1]:
             notes.append(KB_AUTO_INVALID_NOTE.format(number=int(file_id), entry_id=auto["id"]))
@@ -508,12 +512,7 @@ def known_auto_valid(
     return not check_entry_analysis(_text_of(record, auto, entry), entry, project_root, paths)[1]
 
 
-def _exact_now(
-    run: dict[str, Any],
-    entry: dict[str, Any],
-    paths: ws.RunPaths,
-    entry_id: str,
-) -> KBRecord | None:
+def _exact_now(entry: dict[str, Any], entry_id: str) -> KBRecord | None:
     """Запись по текущему файлу, если она узнаёт ошибку кластера точно и с тем же логом."""
     kb_dir = str(entry.get("kb_dir") or "")
     if not kb_dir or not Path(kb_dir).is_dir():
@@ -526,15 +525,21 @@ def _exact_now(
         return None
     if entry.get("log_digest") not in record.confirmed_logs:
         return None
-    # Каждый тест группы — своей сигнатурой и своим тестом (prepare): отказ или переназначение
-    # любого из них после разбора другой проблемы снимает разбор всей группы (ревью Codex).
-    haystack = normalize_fp(_evidence(entry, paths))
-    members = (entry.get("kb_auto") or {}).get("members") or []
+    # Каждый тест группы — своей сигнатурой, своим тестом и тем, был ли признак записи в его
+    # данных (prepare): отказ или переназначение любого из них после разбора другой проблемы
+    # снимает разбор всей группы (ревью Codex). Признак записи с тех пор правили — в данных
+    # тестов его не сверить (у next — только данные представителя): узнавание по тесту после
+    # смены версии сигнатуры больше не в счёт, по подтверждённой сигнатуре — да (ревью Codex).
+    auto = entry.get("kb_auto") or {}
+    members = auto.get("members") or []
     if not members:
         return None
-    exact = all(record_matches(record, str(signature), haystack, [key] if key else []) == "exact"
-                for signature, key in members)
-    return record if exact else None
+    same = auto.get("fingerprint") == record.error_example
+    for signature, key, *hits in members:
+        found = same and bool(hits) and bool(hits[0])
+        if matches_with_hits(record, str(signature), found, [key] if key else []) != "exact":
+            return None
+    return record
 
 
 def kb_auto_written(state: Mapping[str, Any], file_id: str, text: str) -> bool:

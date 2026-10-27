@@ -495,9 +495,24 @@ def record_matches(
     хэши в записи не совпадают ни с чем, и подтверждение или отказ держатся на тесте и
     признаке. Без признака тест не решает ничего — тест падает и по другим причинам.
     """
-    tests = set(tests)
-    hits = bool(fingerprint_lines(record.error_example)) and not _missing_in(
+    return matches_with_hits(record, signature, record_hits(record, haystack), tests)
+
+
+def record_hits(record: KBRecord, haystack: str) -> bool:
+    """Признак записи есть в данных (``haystack`` — после ``normalize_fp``)."""
+    return bool(fingerprint_lines(record.error_example)) and not _missing_in(
         record.error_example, haystack)
+
+
+def matches_with_hits(
+    record: KBRecord,
+    signature: str | None,
+    hits: bool,
+    tests: Iterable[str] = (),
+) -> str | None:
+    """:func:`record_matches` по уже известному ответу «признак записи есть в данных»: ``next``
+    сверяет каждый тест группы без его данных (``known_issues._exact_now``)."""
+    tests = set(tests)
     if record_rejected(record, signature, tests, hits=hits):
         return None
     if signature and signature in record.confirmed_signatures:
