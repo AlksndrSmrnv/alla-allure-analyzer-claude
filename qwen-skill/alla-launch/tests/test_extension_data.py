@@ -155,14 +155,14 @@ def test_reconcile_after_clean_uses_actual_reports_without_context(project: Path
     code, output = ext_cli(project, capsys, "reconcile", "demo", "--reports-dir", str(reports),
                             "--request-id", request_id)
     assert code == 0 and request_id in output, output
-    assert len(list((directory / "contexts").glob("*.json"))) == 1
+    assert not list((directory / "contexts").glob("*.json"))
     code, output = ext_cli(project, capsys, "action", "demo", "reconcile", "--reports-dir",
                            str(reports), "--", "--request", request_id)
     assert code == 0 and request_id in output, output
-    assert len(list((directory / "contexts").glob("*.json"))) == 2
+    assert not list((directory / "contexts").glob("*.json"))
 
 
-def test_snapshot_feedback_is_unconfirmed_input_without_overriding_report(project: Path,
+def test_snapshot_accepts_feedback_only_after_successful_remember(project: Path,
         testops: FakeTestOps, capsys) -> None:
     run_dir, run, _ = _prepare(project, capsys)
     paths = ws.RunPaths(run_dir)
@@ -178,10 +178,18 @@ def test_snapshot_feedback_is_unconfirmed_input_without_overriding_report(projec
     code, output = _run(["remember", file_id, "--run", str(run_dir)], capsys)
     assert code == 0, output
     current = problem()
-    assert not current["valid"] and not current["confirmed"]
-    assert current["feedback_unconfirmed"]
-    assert current["category"] == "приложение"
-    assert current["cause"] != "Пул стенда исчерпан."
+    assert current["valid"] and current["confirmed"]
+    assert not current["feedback_unconfirmed"]
+    assert current["category"] == "окружение"
+    assert current["cause"] == "Пул стенда исчерпан."
+    with paths.feedback(file_id).open("a", encoding="utf-8") as handle:
+        handle.write("2. Перезапустить сервис.\n")
+    edited = problem()
+    assert not edited["valid"] and not edited["confirmed"] and edited["feedback_unconfirmed"]
+    assert _run(["remember", file_id, "--entry", json.loads(next(
+        Path(entry["kb_dir"]).glob("*.json")).read_text())["id"], "--run", str(run_dir)],
+        capsys)[0] == 0
+    assert problem()["confirmed"]
     record_path = next(Path(entry["kb_dir"]).glob("*.json"))
     record = json.loads(record_path.read_text())
     code, output = _run(["reject", file_id, record["id"], "--run", str(run_dir)], capsys)
@@ -256,13 +264,45 @@ def test_single_snapshot_channel_refreshes_before_every_action(project: Path,
     assert ext_cli(project, capsys, "run", "demo", "1", "--run", str(run_dir))[0] == 0
     context_file = next(paths.extension_dir("demo").glob("on_request_many-*.json"))
     assert len(seen) == 1
+    original_files = set(paths.extension_dir("demo").glob("*.json"))
     for cause in ("Первый проверенный диагноз", "Второй проверенный диагноз"):
         ws.write_json(paths.confirmed(first), {"category": "приложение", "cause": cause,
                                               "fix": ["Исправить"], "details": []})
         code, output = ext_cli(project, capsys, "action", "demo", "act",
                                "--context", str(context_file))
         assert code == 0 and cause in output, output
+        assert set(paths.extension_dir("demo").glob("*.json")) == original_files
     assert len(seen) == 3
+
+
+@pytest.mark.parametrize("status", ["error", "exception"])
+def test_action_context_and_snapshot_removed_on_failure(project: Path,
+        testops: FakeTestOps, capsys, monkeypatch: pytest.MonkeyPatch, status: str) -> None:
+    make_demo(project, extension_toml=MANIFEST.replace('api = 1', 'api = 1\nsnapshot = true').replace(
+        'event = "after_apply"', 'event = "on_request_many"'))
+    run_dir, _, _ = _prepare(project, capsys)
+    assert ext_cli(project, capsys, "enable", "demo")[0] == 0
+    assert ext_cli(project, capsys, "run", "demo", "1", "--run", str(run_dir))[0] == 0
+    directory = run_dir / "extensions" / "demo"
+    source = next(directory.glob("on_request_many-*.json"))
+    original_files = set(directory.glob("*.json"))
+    executed = []
+    def execute(extension, script, context, project, args, *, timeout):
+        content = ws.read_json(context)
+        assert context.is_file() and Path(content["snapshot_path"]).is_file()
+        executed.append(context)
+        if status == "exception":
+            raise OSError("synthetic execution failure")
+        return 1, "STATUS: error\nsynthetic script error"
+    monkeypatch.setattr(ext, "run_script", execute)
+    if status == "exception":
+        with pytest.raises(OSError, match="synthetic"):
+            ext.run_action(project, run_dir.parent, "demo", "act", str(source), [])
+    else:
+        result, _ = ext.run_action(project, run_dir.parent, "demo", "act", str(source), [])
+        assert result == "error"
+    assert len(executed) == 1
+    assert set(directory.glob("*.json")) == original_files
 
 
 def test_snapshot_work_consumes_action_budget(project: Path, testops: FakeTestOps,
@@ -276,11 +316,12 @@ def test_snapshot_work_consumes_action_budget(project: Path, testops: FakeTestOp
     context_file = next((run_dir / "extensions" / "demo").glob("on_request_many-*.json"))
     elapsed = [100.0]
     monkeypatch.setattr(ext, "time", SimpleNamespace(monotonic=lambda: elapsed[0]))
-    def build(context, paths):
+    def build(context, paths, destination=None):
         elapsed[0] += 30
     def execute(extension, script, path, project, args, *, timeout):
         context = ws.read_json(path)
-        assert context["deadline_monotonic"] == 205.0
+        assert context["budget_s"] == 75.0
+        assert "deadline_monotonic" not in context
         assert timeout == ext.ACTION_LIMIT_S - 30
         return 0, "STATUS: ok\nготово"
     monkeypatch.setattr(data, "refresh_snapshot", build)

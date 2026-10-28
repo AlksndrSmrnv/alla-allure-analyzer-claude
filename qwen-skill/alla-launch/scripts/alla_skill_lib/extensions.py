@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import contextlib
 import os
 import re
 import subprocess
@@ -704,9 +705,9 @@ def _fire_hook(
     from alla_skill_lib import extension_data
 
     extension_data.decorate(context, paths, context_file)
-    context["deadline_monotonic"] = min(deadline, time.monotonic() + extension.timeout)
     if extension.snapshot:
         extension_data.refresh_snapshot(context, paths)
+    context["budget_s"] = max(0, min(deadline - time.monotonic(), extension.timeout))
     ws.write_json(context_file, context)
     label = f"{extension.title} ({extension.name})"
     if hook.script is not None:
@@ -839,6 +840,8 @@ def run_action(
     action: str,
     context: str | None,
     args: list[str],
+    *,
+    run_dir: Path | None = None,
 ) -> tuple[str, str]:
     """Действие расширения (``extensions action``): статус и текст ответа."""
     deadline = time.monotonic() + ACTION_LIMIT_S
@@ -851,9 +854,20 @@ def run_action(
     from alla_skill_lib import extension_data
 
     reports = reports_dir.resolve()
+    paths: ws.RunPaths | None = None
+    temporary = context is None or extension.snapshot
+    if context is not None and run_dir is not None:
+        raise ExtensionError("Укажи только один из --context и --run")
     if context is None:
+        if run_dir is not None:
+            paths = ws.RunPaths(run_dir.resolve())
+            if paths.reports_dir != reports:
+                raise ExtensionError("Папка разбора не принадлежит этому каталогу отчётов")
+            run = ws.read_run(paths)
+            if Path(run["project_root"]).resolve() != project_root.resolve():
+                raise ExtensionError("Разбор не принадлежит этому проекту")
         content, context_file = extension_data.action_context(
-            name, action, reports, project_root, settings)
+            name, action, reports, project_root, settings, paths=paths)
     else:
         # Контекст пишет только скилл, в папку разбора: чужой файл подсунул бы чужие данные.
         source = Path(context).expanduser().resolve()
@@ -879,15 +893,26 @@ def run_action(
                         if extension.snapshot else source)
         content["settings"] = settings
         extension_data.decorate(content, paths, context_file)
-        if extension.snapshot:
-            extension_data.refresh_snapshot(content, paths)
-    content["deadline_monotonic"] = min(deadline - 5, time.monotonic() + extension.timeout)
-    ws.write_json(context_file, content)
-    remaining = deadline - time.monotonic()
-    if remaining < 1:
-        return "error", "Действие не запущено: время команды скилла на расширение вышло"
-    code, output = run_script(extension, script, context_file, project_root, args,
-                              timeout=remaining)
+    snapshot_file = context_file.with_suffix(".snapshot.json") if extension.snapshot and paths else None
+    try:
+        if snapshot_file is not None:
+            assert paths is not None
+            extension_data.refresh_snapshot(content, paths, snapshot_file)
+        content.pop("deadline_monotonic", None)
+        content["budget_s"] = max(0, min(deadline - 5 - time.monotonic(), extension.timeout))
+        ws.write_json(context_file, content)
+        remaining = deadline - time.monotonic()
+        if remaining < 1:
+            return "error", "Действие не запущено: время команды скилла на расширение вышло"
+        code, output = run_script(extension, script, context_file, project_root, args,
+                                  timeout=remaining)
+    finally:
+        if temporary:
+            with contextlib.suppress(OSError):
+                context_file.unlink(missing_ok=True)
+        if snapshot_file is not None:
+            with contextlib.suppress(OSError):
+                snapshot_file.unlink(missing_ok=True)
     first, _, rest = output.partition("\n")
     status = first.removeprefix("STATUS:").strip() if first.startswith("STATUS:") else ""
     if status not in ("ok", "error"):

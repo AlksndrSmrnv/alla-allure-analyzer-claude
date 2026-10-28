@@ -11,6 +11,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -629,9 +630,24 @@ def test_masked_credentials_do_not_block_real_ticket(case: Any, masked: str) -> 
     assert masked in record["version"]["ticket"]["description"]
 
 
+@pytest.mark.parametrize("message", [
+    "Field password: must not be blank", "password=null",
+    "password: size must be between 8 and 64", "password: required",
+    "password: missing", "password: undefined", "password: invalid",
+    "password: abc",
+])
+def test_validation_messages_do_not_block_ticket(case: Any, message: str) -> None:
+    ctx, snap, store = case
+    assert not t.contains_secret(message)
+    snap["problems"][0]["sources"][0]["text"] += "\n" + message
+    snap["problems"][0]["observations"].append({"source_id": "S1", "quote": message})
+    update_snapshot(ctx, snap)
+    record = make_request(ctx, store)
+    assert message in record["version"]["ticket"]["description"]
+
+
 @pytest.mark.parametrize("secret", [
     "password: actualpassword", "access_token=abcdef123456",
-    "password: abc",
     "Authorization: Bearer abc", "Authorization: Basic dXNlcjpwYXNz",
     "api_key: real-key-value", "api-key=real-secret",
     "password: <hidden>actualpassword", "api_key: [REDACTED]real-key-value",
@@ -649,7 +665,7 @@ def test_actual_credentials_still_block_ticket(case: Any, secret: str) -> None:
 
 
 @pytest.mark.parametrize("value,blocked", [("${API_KEY}", False), ("******", False),
-                                          ("actual-secret", True), ("abc", True)])
+                                          ("actual-secret", True), ("abc", False)])
 def test_final_adapter_payload_checks_credentials_in_json_fields(case: Any, value: str,
                                                                blocked: bool) -> None:
     ctx, snap, store = case
@@ -714,7 +730,7 @@ def test_slow_preflights_leave_ready_if_full_mutation_cannot_fit(case: Any) -> N
     operations = Path(ctx["project_root"]) / "operations.txt"
     control.write_bytes(t.canonical({"delays": {"prepare": 0.15, "search": 0.15},
                                     "operations": str(operations)}))
-    ctx["deadline_monotonic"] = time.monotonic() + 3.2
+    ctx["budget_s"] = 3.2
     before = time.monotonic()
     with pytest.raises(t.TicketError, match="Недостаточно времени"):
         t.submit(ctx, record, record["shown_hash"], store)
@@ -735,6 +751,18 @@ def test_adapter_uses_script_start_instead_of_resetting_budget(case: Any, monkey
     assert not operations.exists()
 
 
+def test_received_budget_is_converted_to_local_clock_only_once(case: Any,
+                                                               monkeypatch: Any) -> None:
+    ctx, _, _ = case
+    clock = [50_000.0]
+    monkeypatch.setattr(t, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(t, "SCRIPT_STARTED", 50_000.0)
+    ctx["budget_s"] = 12.0
+    assert t.action_deadline(ctx) == 50_012.0
+    clock[0] += 8
+    assert t.action_deadline(ctx) == 50_012.0
+
+
 def test_slow_mutation_timeout_records_unknown_before_returning(case: Any) -> None:
     ctx, snap, store = case
     ctx["settings"]["adapter_timeout"] = 1
@@ -742,7 +770,7 @@ def test_slow_mutation_timeout_records_unknown_before_returning(case: Any) -> No
     record = make_request(ctx, store)
     operations = Path(ctx["project_root"]) / "operations.txt"
     control.write_bytes(t.canonical({"delays": {"create": 2}, "operations": str(operations)}))
-    ctx["deadline_monotonic"] = time.monotonic() + 10
+    ctx["budget_s"] = 10
     before = time.monotonic()
     assert "итог неизвестен" in t.submit(ctx, record, record["shown_hash"], store)
     assert time.monotonic() - before < 3
@@ -766,7 +794,7 @@ def test_budget_lost_during_durable_sending_mark_restores_ready(case: Any, monke
             time.sleep(0.4)
 
     monkeypatch.setattr(store, "save", delayed_save)
-    ctx["deadline_monotonic"] = time.monotonic() + 3.3
+    ctx["budget_s"] = 3.3
     with pytest.raises(t.TicketError, match="Недостаточно времени"):
         t.submit(ctx, record, record["shown_hash"], store)
     assert operations.read_text().splitlines() == ["prepare", "search"]

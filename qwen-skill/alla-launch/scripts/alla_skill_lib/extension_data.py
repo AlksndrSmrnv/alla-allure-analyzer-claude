@@ -103,21 +103,33 @@ def snapshot(paths: ws.RunPaths, settings: dict[str, Any]) -> dict[str, Any]:
             "settings": settings}
 
 
-def refresh_snapshot(context: dict[str, Any], paths: ws.RunPaths) -> None:
+def refresh_snapshot(context: dict[str, Any], paths: ws.RunPaths,
+                     destination: Path | None = None) -> None:
     """Единственный канал: актуальные данные перед запуском процесса расширения."""
     data = snapshot(paths, context["settings"])
-    destination = paths.extension_dir(context["extension"]) / f"snapshot-{digest(data)}.json"
+    destination = destination or (
+        paths.extension_dir(context["extension"]) / f"snapshot-{digest(data)}.json")
     ws.write_json(destination, data)
     context["snapshot_path"] = str(destination)
 
 
 def action_context(name: str, action: str, reports: Path, project: Path,
-                   settings: dict[str, Any]) -> tuple[dict[str, Any], Path]:
-    """Контекст действия без разбора. Формат постоянных данных задаёт расширение."""
+                   settings: dict[str, Any], *,
+                   paths: ws.RunPaths | None = None) -> tuple[dict[str, Any], Path]:
+    """Временный контекст действия; формат постоянных данных задаёт расширение."""
     directory = state_dir(reports, name, project)
-    contexts = directory / "contexts"
+    contexts = paths.extension_dir(name) if paths else directory / "contexts"
     context_path = contexts / f"action-{uuid.uuid4()}.json"
-    return ({"api": 1, "event": "action", "action": action, "extension": name,
-             "project_root": str(project.resolve()), "state_dir": str(directory),
-             "out_dir": str(contexts), "reports_dir": str(reports.resolve()),
-             "context_path": str(context_path), "settings": settings}, context_path)
+    context = {"api": 1, "event": "action", "action": action, "extension": name,
+               "project_root": str(project.resolve()), "state_dir": str(directory),
+               "out_dir": str(contexts), "reports_dir": str(reports.resolve()),
+               "context_path": str(context_path), "settings": settings}
+    if paths:
+        run = ws.read_run(paths)
+        context.update({"run_dir": str(paths.root), "launch_id": run.get("launch_id"),
+                        "launch_name": run.get("launch_name"),
+                        "launch_created": run.get("launch_created"),
+                        "report_path": str(paths.report), "stem": context_path.stem,
+                        "params": {}, "text_params": {}, "selected_numbers": []})
+        decorate(context, paths, context_path)
+    return context, context_path

@@ -139,7 +139,7 @@ def test_ticket_text_input_path_is_known_before_a_context_exists(relative: str) 
     assert "--text-file question_N" in text and "--text-file check_N" in text
 
 
-def test_ticket_parent_submit_template_uses_the_shown_request_and_its_context() -> None:
+def test_ticket_parent_submit_template_needs_only_run_and_shown_request() -> None:
     import shlex
 
     from alla_skill_lib.cli import _build_parser
@@ -148,8 +148,8 @@ def test_ticket_parent_submit_template_uses_the_shown_request_and_its_context() 
     template = next(line.strip() for line in reference.splitlines()
                     if line.strip().startswith("python3 ") and "action tickets submit" in line)
     substitutions = {
-        "<context_path>": shlex.quote("/reports/path with spaces/extensions/tickets/request.json"),
-        "<reports_dir>": "/reports", "<request_id>": "request-id", "<hash>": "hash",
+        "<папка разбора>": shlex.quote("/reports/path with spaces/run"),
+        "<request_id>": "request-id", "<hash>": "hash",
     }
     for placeholder, value in substitutions.items():
         template = template.replace(placeholder, value)
@@ -157,8 +157,9 @@ def test_ticket_parent_submit_template_uses_the_shown_request_and_its_context() 
     arguments = command[2:command.index("--")]
     parsed = _build_parser().parse_args(arguments)
     assert parsed.name == "tickets" and parsed.action == "submit"
-    assert parsed.context == "/reports/path with spaces/extensions/tickets/request.json"
-    assert parsed.reports_dir == "/reports"
+    assert parsed.run == "/reports/path with spaces/run"
+    assert parsed.context is None and parsed.reports_dir is None
+    assert "<context_path>" not in reference and "<reports_dir>" not in reference
     assert command[command.index("--") + 1:] == ["--request", "request-id", "--shown", "hash"]
 
 

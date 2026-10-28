@@ -54,6 +54,7 @@ MASK = re.compile(
     r"\[?(?:redacted|masked|hidden|removed|filtered|censored)\]?|"
     r"\*+(?:redacted|masked|hidden|removed|filtered|censored)\*+)"
 )
+NON_SECRET_WORDS = {"null", "none", "undefined", "required", "missing", "empty", "invalid"}
 
 
 class TicketError(Exception):
@@ -66,9 +67,13 @@ class MutationDeferred(TicketError):
 
 def action_deadline(ctx: dict[str, Any]) -> float:
     deadline = SCRIPT_STARTED + COMMAND_LIMIT_S
-    supplied = ctx.get("deadline_monotonic")
+    supplied = ctx.get("budget_s")
     if isinstance(supplied, (int, float)) and not isinstance(supplied, bool):
-        deadline = min(deadline, supplied)
+        # Convert a duration to this process's clock once; repeated calls do not
+        # renew the allowance and no clock origin is shared across processes.
+        if "_deadline" not in ctx:
+            ctx["_deadline"] = time.monotonic() + max(0, supplied)
+        deadline = min(deadline, ctx["_deadline"])
     return deadline
 
 
@@ -90,7 +95,9 @@ def contains_secret(value: Any) -> bool:
         return True
     for match in SECRETS.finditer(value):
         token = match.group("auth") or match.group("value")
-        if not MASK.fullmatch(token):
+        if MASK.fullmatch(token):
+            continue
+        if match.group("auth") or (len(token) >= 6 and token.lower() not in NON_SECRET_WORDS):
             return True
     return False
 
@@ -156,6 +163,7 @@ def context() -> dict[str, Any]:
     value = read_json(Path(os.environ["ALLA_CONTEXT"]))
     if not isinstance(value, dict):
         raise TicketError("Контекст расширения повреждён.")
+    value.pop("_deadline", None)
     return value
 
 

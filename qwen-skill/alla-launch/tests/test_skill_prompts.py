@@ -376,3 +376,6 @@ def test_main_ticket_workflow_is_allowed_by_general_executor_rules() -> None:
     assert "отправка показанной версии `tickets`" in actions
     assert "сверка её неопределённого результата через `reconcile`" in actions
     assert "`references/tickets.md`" in actions
+    ticket_rule = " ".join(text.split("**Тикеты команде.", 1)[1].split("\n##", 1)[0].split())
+    assert "`submit --run <папка разбора>`" in ticket_rule
+    assert "UUID и хеш — из ответа `show`" in ticket_rule

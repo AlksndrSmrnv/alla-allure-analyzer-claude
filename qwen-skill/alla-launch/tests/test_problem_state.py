@@ -68,11 +68,25 @@ def test_report_and_snapshot_share_diagnosis_and_groups(
         assert item["category"] == diagnosis.category
         assert item["cause"] == diagnosis.cause
         assert diagnosis.cause in report
-    if mode in ("feedback", "remember"):
+    for item in snapshot["problems"]:
+        diagnosis = current.diagnoses[f"{item['number']:02d}"]
+        assert (item["confirmed"], item["feedback_unconfirmed"]) == (
+            diagnosis.confirmed, diagnosis.feedback_unconfirmed)
+    if mode == "feedback":
         assert current.diagnoses[first].feedback_unconfirmed
         assert not current.diagnoses[first].confirmed
         assert not current.diagnoses[first].accepted
         assert "На стенде исчерпан пул соединений" not in snapshot["problems"][0]["cause"]
+        assert "подтверждено инженером" not in report
+    elif mode == "remember":
+        # Сохранённое remember исправление — подтверждённая причина и в отчёте, и в снимке.
+        diagnosis = current.diagnoses[first]
+        assert diagnosis.confirmed and diagnosis.accepted and not diagnosis.feedback_unconfirmed
+        assert diagnosis.category == "окружение"
+        assert snapshot["problems"][0]["cause"] == "На стенде исчерпан пул соединений."
+        assert snapshot["problems"][0]["valid"]
+        assert "(исправление инженера, сохранено в базе знаний" in report
+        assert "проблема стенда или окружения — На стенде исчерпан пул соединений." in report
     elif mode == "confirmed":
         assert current.diagnoses[first].accepted and current.diagnoses[first].confirmed
     elif mode == "known":

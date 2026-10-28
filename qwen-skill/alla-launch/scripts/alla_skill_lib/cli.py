@@ -89,7 +89,6 @@ from alla_skill_lib.cluster_task import (
     select_log_and_trace,
 )
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
-from alla_skill_lib.confirmed import load_confirmed
 from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
 from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, remember_many, reject
 from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
@@ -132,7 +131,7 @@ from alla_skill_lib.proposals import (
     revert_proposal,
     validate_proposal,
 )
-from alla_skill_lib.problem_state import CurrentState, current_state
+from alla_skill_lib.problem_state import CurrentState, confirmations, current_state
 from alla_skill_lib.qwen_files import (
     install_batch_agent,
     install_commands,
@@ -571,6 +570,7 @@ def _build_parser() -> argparse.ArgumentParser:
     action.add_argument("name", help="имя расширения")
     action.add_argument("action", help="имя действия")
     action.add_argument("--context", help="файл задания; без него — постоянный контекст")
+    action.add_argument("--run", help="папка разбора: свежий контекст действия по ней")
     return parser
 
 
@@ -1151,9 +1151,10 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
         state["wave"] = wave
         ws.write_json(paths.state_json, state)
         return "analyze_batch", _batch_body(paths, run, batches, len(fresh), manual_total)
-    current = current_state(paths, run=run, state=state, known_auto=known_auto)
-    analyses = current.analyses
-    flagged = current.flagged
+    # Общее состояние (известные проблемы, связи) — только после проверки всех разборов:
+    # посреди разбора next его не собирает.
+    analyses: dict[str, ClusterAnalysis] = {}
+    flagged: set[str] = set()
     proposals: dict[str, Proposal] = {}
     not_proposed: dict[str, str] = {}
     notes: list[str] = list(auto_notes)
@@ -1172,7 +1173,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
             return "analyze", _analyze_body(paths, entry, position, total, done, manual_total,
                                             len(known_auto))
 
-        analysis, errors = analyses[file_id], current.errors.get(file_id, [])
+        analysis, errors = _check_analysis(text, entry, project_root, paths)
         if errors:
             attempt, unchanged = _register_invalid(state, file_id, text, paths)
             if attempt < MAX_FIX_ATTEMPTS:
@@ -1234,6 +1235,8 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
             + "."
         )
 
+    current = current_state(paths, run=run, state=state, analyses=analyses, flagged=flagged,
+                            known_auto=known_auto)
     known = current.known
     notes += known.notes
     confirmed = current.confirmed
@@ -2557,10 +2560,19 @@ def cmd_extensions(args: argparse.Namespace, project_root: Path, reports_dir: Pa
             status, body = ext.run_action(project_root, reports_dir, args.name, "reconcile",
                                           None, ["--request", args.request_id])
         else:
-            if args.context is None and not args.reports_dir:
-                raise ext.ExtensionError("Для действия без --context явно укажи --reports-dir")
+            run_dir: Path | None = None
+            if args.run:
+                # Каталог отчётов — у самой папки разбора: модель передаёт только --run.
+                run_paths = ws.resolve_run(args.run, reports_dir)
+                run_dir = run_paths.root
+                if not args.reports_dir:
+                    reports_dir = run_paths.reports_dir
+            elif args.context is None and not args.reports_dir:
+                raise ext.ExtensionError(
+                    "Для действия без --context и --run явно укажи --reports-dir")
             status, body = ext.run_action(
-                project_root, reports_dir, args.name, args.action, args.context, args.extra
+                project_root, reports_dir, args.name, args.action, args.context, args.extra,
+                run_dir=run_dir,
             )
     except (ext.ExtensionError, ws.RunNotFoundError, OSError, ValueError) as exc:
         status, body = "error", str(exc)
@@ -2822,7 +2834,7 @@ def _report_data(paths: ws.RunPaths, run: dict[str, Any], body: str) -> dict[str
     _, _, rest = body.partition(REPORT_BEGIN + "\n")
     console, _, _ = rest.partition("\n" + REPORT_END)
     problems = []
-    confirmed = load_confirmed(paths, run)
+    confirmed = confirmations(paths, run)
     for entry in run["clusters"]:
         path = paths.analysis(entry["file_id"])
         analysis = parse_analysis(ws.read_text(path)) if path.is_file() else None

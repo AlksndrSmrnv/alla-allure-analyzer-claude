@@ -46,10 +46,11 @@
 После явного одобрения собери команду для каждой одобренной версии по этому шаблону,
 сам, без субагента:
 
-    python3 .qwen/skills/alla-launch/scripts/alla_skill.py extensions action tickets submit --context <context_path> --reports-dir <reports_dir> -- --request <request_id> --shown <hash>
+    python3 .qwen/skills/alla-launch/scripts/alla_skill.py extensions action tickets submit --run <папка разбора> -- --request <request_id> --shown <hash>
 
-`context_path` и `reports_dir` возьми из контекста подготовки, который назван в задании;
-`request_id` и `hash` — из ответа `show`. Подставляй пути как отдельные аргументы shell
+Папку разбора используй ту же, что при подготовке тикета; `request_id` и `hash` — из
+ответа `show`. Скилл сам создаёт актуальный контекст действия по `--run`.
+Подставляй путь как отдельный аргумент shell
 с корректным экранированием; хеши сам не вычисляй и не подменяй. Один вызов — один
 `submit`. Хеш проверяет неизменность версии; показ и согласие он не доказывает.
 Скрипт отказал из-за изменений — подготовь и покажи новую

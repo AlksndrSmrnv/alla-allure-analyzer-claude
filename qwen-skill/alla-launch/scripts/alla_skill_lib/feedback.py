@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -59,6 +61,141 @@ def project_kb(run: dict[str, Any], entry: dict[str, Any]) -> ProjectKB:
     project_root = Path(run["project_root"])
     directory = Path(entry["kb_dir"])
     return ProjectKB(directory, kb_label(project_root, directory))
+
+
+def _feedback_state(paths: ws.RunPaths, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    if state is not None:
+        return state
+    try:
+        loaded = ws.read_json(paths.state_json) if paths.state_json.is_file() else {}
+    except (OSError, ValueError):
+        loaded = {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _record_receipt_digest(record: KBRecord) -> str:
+    # New confirmations and unrelated custom metadata do not change the saved diagnosis.
+    values = {"category": record.category, "description": record.description,
+              "resolution_steps": record.resolution_steps, "error_example": record.error_example}
+    raw = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def accepted_feedback(
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    entry: dict[str, Any],
+    *,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Диагноз, который remember действительно сохранил из этих байтов feedback.
+
+    Наличие похожей записи само по себе ничего не подтверждает. Отметка создаётся
+    только успешным remember; действуют тот же рецепт и связь записи с этой проблемой.
+    Чтение не исправляет файлы и не принимает новый текст после редактирования.
+    """
+    marks = _feedback_state(paths, state).get("accepted_feedback", {})
+    mark = marks.get(entry["file_id"]) if isinstance(marks, dict) else None
+    if not isinstance(mark, dict):
+        return None
+    try:
+        data = paths.feedback(entry["file_id"]).read_bytes()
+        kb = project_kb(run, entry)
+        if (mark.get("feedback_sha256") != hashlib.sha256(data).hexdigest()
+                or mark.get("run_uid") != ws.run_uid(paths)
+                or mark.get("kb_dir") != str(kb.directory.resolve())):
+            return None
+        record = kb.get(str(mark.get("record_id") or ""))
+        if record is None or mark.get("record_sha256") != _record_receipt_digest(record):
+            return None
+        haystack = normalize_fp(ws.read_text(paths.evidence(entry["file_id"])))
+        if record_matches(record, str(entry.get("signature") or ""), haystack,
+                          entry_tests(run, entry)) != "exact":
+            return None
+        return {"category": KB_TO_CATEGORY[record.category], "cause": record.description,
+                "fix": list(record.resolution_steps), "text": data.decode("utf-8"),
+                "record_id": record.id, "kb_entry": record.id, "details": [],
+                "confirmed": mark.get("saved", "")}
+    except (OSError, ValueError, KeyError, UnicodeError):
+        return None
+
+
+def feedback_pending(
+    paths: ws.RunPaths,
+    entry: dict[str, Any],
+    *,
+    state: dict[str, Any] | None = None,
+) -> bool:
+    """Есть ли новый ввод инженера, если принятого feedback/вывода ещё нет.
+
+    --from-analysis и --from-extension явно выбирают иной источник. Только точная
+    оставшаяся копия feedback игнорируется; следующая правка вновь считается вводом.
+    """
+    try:
+        data = paths.feedback(entry["file_id"]).read_bytes()
+    except OSError:
+        return False
+    if not data.strip():
+        return False
+    marks = _feedback_state(paths, state).get("ignored_feedback", {})
+    mark = marks.get(entry["file_id"]) if isinstance(marks, dict) else None
+    return not (isinstance(mark, dict) and mark.get("run_uid") == ws.run_uid(paths)
+                and mark.get("feedback_sha256") == hashlib.sha256(data).hexdigest())
+
+
+def _save_feedback_receipt(
+    paths: ws.RunPaths,
+    file_id: str,
+    record: KBRecord,
+    kb: ProjectKB,
+    data: bytes | None,
+    today: date,
+) -> None:
+    state = _feedback_state(paths)
+    accepted = state.get("accepted_feedback")
+    ignored = state.get("ignored_feedback")
+    accepted = dict(accepted) if isinstance(accepted, dict) else {}
+    ignored = dict(ignored) if isinstance(ignored, dict) else {}
+    accepted.pop(file_id, None)
+    ignored.pop(file_id, None)
+    uid = ws.run_uid(paths)
+    if data is not None:
+        accepted[file_id] = {
+            "feedback_sha256": hashlib.sha256(data).hexdigest(), "run_uid": uid,
+            "kb_dir": str(kb.directory.resolve()), "record_id": record.id,
+            "record_sha256": _record_receipt_digest(record), "saved": today.isoformat(),
+        }
+    else:
+        source = paths.feedback(file_id)
+        previous = source.read_bytes() if source.is_file() else b""
+        if previous.strip():
+            ignored[file_id] = {"feedback_sha256": hashlib.sha256(previous).hexdigest(),
+                                "run_uid": uid}
+    for key, marks in (("accepted_feedback", accepted), ("ignored_feedback", ignored)):
+        if marks:
+            state[key] = marks
+        else:
+            state.pop(key, None)
+    ws.write_json(paths.state_json, state)
+
+
+def _drop_feedback_receipt(paths: ws.RunPaths, file_id: str, record_id: str) -> None:
+    state = _feedback_state(paths)
+    marks = state.get("accepted_feedback", {})
+    mark = marks.get(file_id) if isinstance(marks, dict) else None
+    changed = False
+    if isinstance(mark, dict) and mark.get("record_id") == record_id:
+        marks.pop(file_id)
+        if not marks:
+            state.pop("accepted_feedback", None)
+        changed = True
+    ignored = state.get("ignored_feedback", {})
+    if isinstance(ignored, dict) and ignored.pop(file_id, None) is not None:
+        if not ignored:
+            state.pop("ignored_feedback", None)
+        changed = True
+    if changed:
+        ws.write_json(paths.state_json, state)
 
 
 @dataclass
@@ -196,6 +333,7 @@ def _remember(
 
     feedback_path = paths.feedback(file_id)
     has_feedback = feedback_path.is_file() and bool(feedback_path.read_text(encoding="utf-8").strip())
+    feedback_data: bytes | None = None
     finding: dict[str, Any] | None = None
     confirm_ref: str | None = None  # пользователь подтвердил разбор со ссылкой на запись R
     if from_extension:
@@ -238,7 +376,8 @@ def _remember(
         project_root = Path(run["project_root"])
         if from_feedback:
             # Обратная связь — слова пользователя: наблюдения и «НЕ ХВАТАЕТ» в ней необязательны.
-            parsed = parse_analysis(source.read_text(encoding="utf-8"))
+            feedback_data = source.read_bytes()
+            parsed = parse_analysis(feedback_data.decode("utf-8"))
         else:
             parsed, analysis_errors = check_entry_analysis(
                 source.read_text(encoding="utf-8"), entry, project_root, paths)
@@ -423,6 +562,10 @@ def _remember(
         # Пользователь поправил причину: прежний вывод расширения больше не подтверждён.
         changed.append(dropped)
         refresh = [_confirmed_dropped(paths, file_id)]
+    _save_feedback_receipt(paths, file_id, record, kb, feedback_data, today)
+    if feedback_data is not None and not refresh:
+        refresh = [f"Сохранённая причина добавлена в отчёт у проблемы {int(file_id)}. Выполни "
+                   f"{paths.next_command()} и выведи новый краткий разбор после done."]
     source_note = (
         f"Источник — вывод расширения {from_extension}" if from_extension
         else "Источник — разбор модели (--from-analysis)"
@@ -483,6 +626,7 @@ def reject(
         return "error", f"В {kb.directory} нет записи «{entry_id}»."
     record.reject(str(entry["signature"]), entry_tests(run, entry))
     path = kb.save(record)
+    _drop_feedback_receipt(paths, entry["file_id"], record.id)
     refresh = _report_refresh(paths, run, kb, [record.id])
     # Подтверждение, сохранённое в эту запись, отвергнуто вместе с ней.
     dropped = drop_confirmed(paths, entry["file_id"], record.id)

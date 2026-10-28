@@ -695,7 +695,14 @@ def test_later_correction_drops_the_confirmation(
         (run_dir / "summary.md").write_text("Итог прогона.", encoding="utf-8")
         out = _run(["next", str(run_dir)], capsys)[1]
     assert out.startswith("STATUS: done") and "[подтверждено по коду]" not in out, out
-    assert "Подтверждено инженером" not in (run_dir / "report.md").read_text(encoding="utf-8")
+    report = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert "разбор по коду приложения" not in report
+    if command == "remember":
+        # Новое слово инженера — само подтверждение, вместо снятого вывода расширения.
+        assert "[подтверждено инженером]" in out
+        assert "(исправление инженера, сохранено в базе знаний" in report
+    else:
+        assert "Подтверждено инженером" not in report
 
 
 def test_enable_names_the_settings_table_of_the_extension(

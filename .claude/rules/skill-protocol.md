@@ -75,8 +75,8 @@ paths:
 `apply N --run DIR [--yes --diff ХЭШ] [--repeat]`, `revert N --run DIR`,
 `remember N [N…] --run DIR [--entry ID] [--from-analysis | --from-extension ИМЯ]` (несколько
 номеров — только с `--from-analysis`, `skill-memory.md`), `reject N <id> --run DIR`,
-`extensions [list|enable|disable|run|action]` (`skill-extensions.md`; action без --context
-и с явным --reports-dir не требует папки разбора),
+`extensions [list|enable|disable|run|action]` (`skill-extensions.md`; action с --run строит
+контекст по папке разбора, без --context/--run и с явным --reports-dir работает после clean),
 `rerun [N…] --run DIR [--yes --plan ХЭШ | --wait]` (`skill-rerun.md`).
 
 - Где в синтаксисе есть `--run DIR`, он обязателен: `.last_run` после нового `prepare`

@@ -29,6 +29,7 @@ from alla_core.services.prompt_builder_service import build_launch_summary_promp
 from alla_skill_lib.agent_rules import EXECUTOR_RULES, SUMMARY_FORMAT_REF, reference_line
 from alla_skill_lib.analysis_format import ClusterAnalysis, first_sentence
 from alla_skill_lib.cluster_task import UNTRUSTED_NOTE
+from alla_skill_lib.confirmed import FEEDBACK_SOURCE
 from alla_skill_lib.history import format_date
 from alla_skill_lib.known_issues import KnownIssue, KnownIssues, KnownRecord
 from alla_skill_lib.proposals import Proposal, weakening_warnings
@@ -553,6 +554,7 @@ def _numbers_phrase(file_ids: list[str], limit: int | None = None) -> str:
 
 
 CONFIRMED_SUMMARY_NOTE = "подтверждено инженером по коду приложения"
+FEEDBACK_SUMMARY_NOTE = "причину назвал инженер, она сохранена в базе знаний"
 
 
 def _confirmed_summary(confirmed: dict[str, Any] | None) -> str:
@@ -560,7 +562,8 @@ def _confirmed_summary(confirmed: dict[str, Any] | None) -> str:
     if confirmed is None:
         return ""
     cause = _truncate(_one_line(str(confirmed["cause"])), SUMMARY_SHORT_CAUSE_CHARS)
-    return f"\n({CONFIRMED_SUMMARY_NOTE}: {confirmed['category']} — {cause})"
+    note = FEEDBACK_SUMMARY_NOTE if _from_feedback(confirmed) else CONFIRMED_SUMMARY_NOTE
+    return f"\n({note}: {confirmed['category']} — {cause})"
 
 
 def _summary_text(analysis: ClusterAnalysis, flagged: bool, detailed: bool) -> str:
@@ -964,16 +967,23 @@ def _flaky_lines(unit: list[_Problem]) -> list[str]:
 
 
 CONFIRMED_TAG = "подтверждено по коду"
+FEEDBACK_TAG = "подтверждено инженером"
 CONFIRMED_SOURCES = {"sut-code": "разбор по коду приложения"}
+FEEDBACK_SOURCE_LABEL = "исправление инженера, сохранено в базе знаний"
+
+
+def _from_feedback(confirmed: dict[str, Any]) -> bool:
+    return confirmed.get("source") == FEEDBACK_SOURCE
 
 
 def _confirmed_lines(problem: _Problem) -> list[str]:
-    """Подтверждённый пользователем вывод расширения: причина, детали и шаги."""
+    """Подтверждённая пользователем причина: вывод расширения или сохранённый feedback."""
     confirmed = problem.confirmed
     if confirmed is None:
         return []
-    source = CONFIRMED_SOURCES.get(str(confirmed.get("extension")),
-                                  f"расширение {confirmed.get('extension')}")
+    source = (FEEDBACK_SOURCE_LABEL if _from_feedback(confirmed) else
+              CONFIRMED_SOURCES.get(str(confirmed.get("extension")),
+                                    f"расширение {confirmed.get('extension')}"))
     when = f", {confirmed['confirmed']}" if confirmed.get("confirmed") else ""
     lines = [f"- **Подтверждено инженером** ({source}{when}): "
              f"{CATEGORY_LABELS[confirmed['category']]} — {_one_line(str(confirmed['cause']))}"]
@@ -1381,7 +1391,9 @@ def _history_tags(problem: _Problem) -> list[str]:
 def _brief_tags(
     problem: _Problem, *, related: bool = True, history: bool = True, flaky: bool = True,
 ) -> list[str]:
-    tags: list[str] = [CONFIRMED_TAG] if problem.confirmed is not None else []
+    tags: list[str] = []
+    if problem.confirmed is not None:
+        tags.append(FEEDBACK_TAG if _from_feedback(problem.confirmed) else CONFIRMED_TAG)
     if not problem.flagged and problem.analysis.consistency_kind == "different":
         tags.append(MIXED_GROUP_NOTE)
     if history:
@@ -1429,6 +1441,8 @@ def _not_fixed_reason(problem: _Problem, not_proposed: dict[str, str]) -> str:
     if reason:
         return reason
     if problem.confirmed is not None:
+        if _from_feedback(problem.confirmed):
+            return "причину назвал инженер — правку автотеста агент не готовил"
         return "причину подтвердил инженер по коду приложения — правку автотеста агент не готовил"
     if not problem.analysis.code:
         return "в разборе нет ссылки на строку кода автотеста — агенту негде править"

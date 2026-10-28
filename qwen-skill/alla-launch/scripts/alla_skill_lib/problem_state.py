@@ -14,7 +14,8 @@ from typing import Any
 
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.analysis_format import ClusterAnalysis
-from alla_skill_lib.confirmed import load_confirmed
+from alla_skill_lib.confirmed import FEEDBACK_SOURCE, load_confirmed
+from alla_skill_lib.feedback import accepted_feedback, feedback_pending
 from alla_skill_lib.known_issues import (
     KnownIssues, current_auto_text, current_kb_matches, kb_auto_written, known_issues,
 )
@@ -65,6 +66,24 @@ class CurrentState:
                     "cause": group.record.description} for group in self.known.groups])
 
 
+def confirmations(
+    paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Подтверждённые инженером причины по номерам: вывод расширения, затем feedback.
+
+    Исправление, которое remember сохранил из этих байтов feedback, — такое же
+    подтверждение, как вывод расширения: его видят отчёт, сводка, связи, снимок и
+    ``after_report``. Вывод расширения сильнее (remember feedback и так его снимает).
+    """
+    confirmed = load_confirmed(paths, run)
+    for entry in run["clusters"]:
+        if entry["file_id"] not in confirmed:
+            saved = accepted_feedback(paths, run, entry, state=state)
+            if saved is not None:
+                confirmed[entry["file_id"]] = {**saved, "source": FEEDBACK_SOURCE}
+    return confirmed
+
+
 def current_state(
     paths: ws.RunPaths,
     *,
@@ -113,7 +132,7 @@ def current_state(
             and paths.analysis(file_id).is_file()
             and kb_auto_written(state, file_id, ws.read_text(paths.analysis(file_id)))}
     known = known_issues(run, analyses, flagged, paths, known_auto)
-    confirmed = load_confirmed(paths, run)
+    confirmed = confirmations(paths, run, state)
     matches = current_kb_matches(run, paths)
     candidates = candidate_groups(run, analyses, flagged, project, known, matches, set(confirmed))
     eligible = {entry["file_id"] for entry in run["clusters"]
@@ -128,7 +147,7 @@ def current_state(
         file_id = entry["file_id"]
         analysis = analyses.get(file_id)
         sure = confirmed.get(file_id)
-        pending_feedback = sure is None and paths.feedback(file_id).is_file()
+        pending_feedback = sure is None and feedback_pending(paths, entry, state=state)
         accepted = bool(analysis and analysis.observations
                         and file_id not in flagged and not analysis.sources_lost
                         and analysis.consistency_kind != "different" and not entry.get("auto")

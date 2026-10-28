@@ -26,6 +26,9 @@ MAX_TEXT_CHARS = 1000
 MAX_FIX_STEPS = 10
 MAX_KB_FIELDS = 10
 _KB_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+# ``source`` подтверждения, которое дал remember из feedback (``feedback.accepted_feedback``),
+# а не вывод расширения: в ``confirmed/NN.json`` его нет, его добавляет ``problem_state``.
+FEEDBACK_SOURCE = "feedback"
 
 
 def find_finding(paths: ws.RunPaths, extension: str, file_id: str) -> Path | None:
