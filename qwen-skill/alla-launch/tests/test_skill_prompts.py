@@ -335,3 +335,44 @@ def test_knowledge_base_question_keeps_its_directives() -> None:
         "«Не сохраняй», «потом» — ничего не выполняй",
     ):
         assert directive in text, directive
+
+
+def test_ticket_preparation_task_does_not_give_the_subagent_a_submit_command() -> None:
+    from alla_skill_lib.extensions import load_manifest, render_task
+
+    skill = Path(__file__).resolve().parent.parent
+    folder = skill / "extensions" / "tickets"
+    extension = load_manifest(folder, bundled=True)
+    context = {
+        "event": "on_request_many", "out_dir": "/reports/run/extensions/tickets",
+        "stem": "request", "run_dir": "/reports/run", "project_root": "/project",
+        "report_path": "/reports/run/report.md", "reports_dir": "/reports", "settings": {},
+    }
+    task = render_task(extension, folder / "task.md", context,
+                       Path("/reports/run/extensions/tickets/request.json"))
+    for action in ("plan", "draft", "show"):
+        assert f"extensions action tickets {action} --context" in task
+    for action in ("submit", "reconcile"):
+        assert f"extensions action tickets {action}" not in task
+    assert "references/tickets.md" in task and "отдельного одобрения" in task
+    agent = " ".join((folder / "agent.md").read_text(encoding="utf-8").split())
+    # Успешные просмотры не должны скрывать отказ или вопрос по другой единице запроса.
+    for directive in ("а также отклонённые проблемы", "ошибки", "недостающих входных данных",
+                      "из plan/draft", "Команды отправки не составляй"):
+        assert directive in agent
+
+
+def test_main_ticket_workflow_is_allowed_by_general_executor_rules() -> None:
+    """Общее правило не должно запрещать main шаги из справочника tickets."""
+    skill = Path(__file__).resolve().parent.parent
+    text = (skill / "SKILL.md").read_text(encoding="utf-8")
+    writerule = " ".join(text.split("4. **Пишешь только свои файлы:", 1)[1]
+                        .split("5. **", 1)[0].split())
+    assert "основной агент ещё пишет вопрос и проверку инженера" in writerule
+    assert "<папка разбора>/extensions/tickets/<имя>.txt" in writerule
+    assert "write_file, по `references/tickets.md`" in writerule
+    actions = " ".join(text.split("Работу расширения (git, push", 1)[1]
+                       .split("**Тикеты команде.", 1)[0].split())
+    assert "отправка показанной версии `tickets`" in actions
+    assert "сверка её неопределённого результата через `reconcile`" in actions
+    assert "`references/tickets.md`" in actions

@@ -471,11 +471,7 @@ def sync_known_auto(
         current = ws.read_text(path) if path.is_file() else ""
         if current.strip() and _digest(current) != written.get(file_id):
             continue  # разбор после отката пишет модель
-        record = _exact_now(entry, str(auto["id"]))
-        text = _text_of(record, auto, entry) if record is not None else None
-        if text is not None and check_entry_analysis(text, entry, project_root, paths)[1]:
-            notes.append(KB_AUTO_INVALID_NOTE.format(number=int(file_id), entry_id=auto["id"]))
-            text = None
+        text = current_auto_text(entry, paths, project_root, notes=notes)
         if text is None:
             path.unlink(missing_ok=True)
             written.pop(file_id, None)
@@ -489,6 +485,32 @@ def sync_known_auto(
     else:
         state.pop(KB_AUTO_STATE, None)
     return active, notes
+
+
+def current_auto_text(
+    entry: dict[str, Any],
+    paths: ws.RunPaths,
+    project_root: Path,
+    *,
+    notes: list[str] | None = None,
+) -> str | None:
+    """Текущий проверенный текст разбора по записи, без изменения файлов.
+
+    Единое правило для записи в next и чтения состояния до следующего next.
+    None означает, что прежний разбор скрипта больше не действует; ручной файл
+    вызывающий код отличает по kb_auto_written и сохраняет без подмены.
+    """
+    auto = entry.get("kb_auto")
+    if not auto:
+        return None
+    record = _exact_now(entry, str(auto["id"]))
+    text = _text_of(record, auto, entry) if record is not None else None
+    if text is not None and check_entry_analysis(text, entry, project_root, paths)[1]:
+        if notes is not None:
+            notes.append(KB_AUTO_INVALID_NOTE.format(number=int(entry["file_id"]),
+                                                    entry_id=auto["id"]))
+        return None
+    return text
 
 
 def _text_of(record: KBRecord, auto: dict[str, Any], entry: dict[str, Any]) -> str:

@@ -1,7 +1,7 @@
 """Ticket workflow: source-owned documents, immutable reviews and durable requests.
 
 This module deliberately does not import the skill's implementation. Its only data
-interface is the documented extension snapshot command.
+interface is the documented extension snapshot supplied by the skill.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import subprocess
 import time
 import uuid
@@ -23,21 +22,77 @@ from pathlib import Path
 from typing import Any, Iterator
 
 API = 1
+SCRIPT_STARTED = time.monotonic()
+COMMAND_LIMIT_S = 100.0
+CLEANUP_RESERVE_S = 2.0
+LOCK_WAIT_S = 3.0
 ACTIVE = {"ready", "sending", "unknown"}
 FINAL = {"created", "linked"}
+TRANSITIONS: dict[str | None, set[str]] = {
+    None: {"ready"},
+    "ready": {"sending", "superseded"},
+    "sending": {"ready", "unknown", "created", "linked"},
+    "unknown": {"ready", "unknown", "created", "linked"},
+    "created": set(),
+    "linked": set(),
+    "superseded": set(),
+}
 CATEGORIES = {"приложение": "application", "тест": "test", "окружение": "environment",
               "данные": "data", "неизвестно": "unknown"}
 CONTROL = re.compile(r"^(team|kind|operation|target)_(\d+)$")
 TEXT_CONTROL = re.compile(r"^(question|check)_(\d+)$")
+_VALUE = (r"(?:(?:\$\{[^}\r\n]+\}|<[^>\r\n]+>|\[[^]\r\n]+\])(?=[\s,;\"'\\]|$)"
+          r"|[^\s,;\"'\\]+)")
 SECRETS = re.compile(
-    r"(?i)(?:authorization\s*:\s*(?:bearer|basic)\s+\S+|"
-    r"(?:password|api[_-]?key|access[_-]?token)\s*[=:]\s*[^\s,;]{6,}|"
-    r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)"
+    r"(?i)(?:\bauthorization[\"']?\s*:\s*[\"']?(?:bearer|basic)\s+(?P<auth>"
+    + _VALUE + r")|\b(?:password|api[_-]?key|access[_-]?token)[\"']?\s*[=:]\s*[\"']?"
+    r"(?P<value>" + _VALUE + r"))"
+)
+PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
+MASK = re.compile(
+    r"(?i)(?:[*•x]{3,}|<[^<>\r\n]+>|\$\{[^{}\r\n]+\}|"
+    r"\[?(?:redacted|masked|hidden|removed|filtered|censored)\]?|"
+    r"\*+(?:redacted|masked|hidden|removed|filtered|censored)\*+)"
 )
 
 
 class TicketError(Exception):
     """Safe message for the engineer; adapter stderr is never interpolated here."""
+
+
+class MutationDeferred(TicketError):
+    """No adapter mutation process has started; returning to ready is certain."""
+
+
+def action_deadline(ctx: dict[str, Any]) -> float:
+    deadline = SCRIPT_STARTED + COMMAND_LIMIT_S
+    supplied = ctx.get("deadline_monotonic")
+    if isinstance(supplied, (int, float)) and not isinstance(supplied, bool):
+        deadline = min(deadline, supplied)
+    return deadline
+
+
+def transition(record: dict[str, Any], target: str) -> None:
+    previous = record.get("state")
+    if target not in TRANSITIONS.get(previous, set()):
+        raise TicketError(f"Недопустимый переход запроса: {previous} → {target}.")
+    record["state"] = target
+
+
+def contains_secret(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(contains_secret(item) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_secret(item) for item in value)
+    if not isinstance(value, str):
+        return False
+    if PRIVATE_KEY.search(value):
+        return True
+    for match in SECRETS.finditer(value):
+        token = match.group("auth") or match.group("value")
+        if not MASK.fullmatch(token):
+            return True
+    return False
 
 
 def canonical(value: Any) -> bytes:
@@ -116,7 +171,18 @@ class Store:
     @contextlib.contextmanager
     def lock(self) -> Iterator[None]:
         with (self.root / "tickets.lock").open("a+b") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
+            until = min(time.monotonic() + LOCK_WAIT_S,
+                        action_deadline(self.context) - CLEANUP_RESERVE_S)
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    remaining = until - time.monotonic()
+                    if remaining <= 0:
+                        raise TicketError("Идёт предыдущая операция с трекером; повтори позже "
+                                          "или выполни reconcile.") from exc
+                    time.sleep(min(0.05, remaining))
             self.context["_lease_fd"] = handle.fileno()
             try:
                 yield
@@ -149,22 +215,16 @@ class Store:
 
 
 def snapshot(ctx: dict[str, Any]) -> dict[str, Any]:
-    command = ctx.get("snapshot_command")
-    if not isinstance(command, list) or not command or not all(
-            isinstance(part, str) for part in command):
-        raise TicketError("В контексте нет команды получения актуального снимка.")
+    path = ctx.get("snapshot_path")
+    if not isinstance(path, str) or not path:
+        raise TicketError("В контексте нет актуального снимка разбора.")
     try:
-        completed = subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL,
-                                   timeout=20, check=False)
-        first, _, body = completed.stdout.decode("utf-8").partition("\n")
-        if completed.returncode != 0 or first.strip() != "STATUS: ok":
-            raise TicketError("Не удалось получить актуальный снимок разбора.")
-        exported = json.loads(body)
-        result = read_json(Path(exported["path"]))
-        if not isinstance(result, dict) or result.get("run_uid") != ctx.get("run_uid"):
-            raise TicketError("Снимок относится к другому разбору.")
+        result = read_json(Path(path))
+        if (not isinstance(result, dict) or result.get("schema") != 1
+                or result.get("run_uid") != ctx.get("run_uid")):
+            raise TicketError("Снимок имеет другую версию или относится к другому разбору.")
         return result
-    except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
+    except (OSError, ValueError, KeyError) as exc:
         raise TicketError("Не удалось прочитать актуальный снимок разбора.") from exc
 
 
@@ -450,7 +510,7 @@ def make_ticket(ctx: dict[str, Any], snap: dict[str, Any], unit: dict[str, Any],
               "run_uid": snap["run_uid"]}
     if question and check:
         ticket.update(question=question, check=check)
-    if SECRETS.search(canonical(ticket).decode("utf-8")):
+    if contains_secret(ticket):
         raise TicketError("В данных тикета найден возможный секрет; отправка запрещена.")
     team_override = f"team_{anchor}" in params
     projected = []
@@ -476,11 +536,11 @@ class Adapter:
     def __init__(self, ctx: dict[str, Any], settings: dict[str, Any],
                  *, allow_unconfigured: bool = False) -> None:
         self.lease_fd = ctx.get("_lease_fd")
+        self.deadline = action_deadline(ctx)
         command = settings.get("adapter_command", [])
         self.configured = bool(command)
         if not command and allow_unconfigured:
             self.command = []
-            self.deadline = time.monotonic() + 90
             return
         if not isinstance(command, list) or not command or not all(
                 isinstance(item, str) and item for item in command):
@@ -499,7 +559,11 @@ class Adapter:
         self.env["PYTHONIOENCODING"] = "utf-8"
         self.project = project
         self.timeout = min(30, max(1, int(settings.get("adapter_timeout", 25))))
-        self.deadline = time.monotonic() + 90
+
+    def require_mutation_time(self) -> None:
+        if self.deadline - time.monotonic() < self.timeout + CLEANUP_RESERVE_S:
+            raise MutationDeferred("Недостаточно времени для полного вызова адаптера; запрос остаётся "
+                                   "ready. Повтори submit позже.")
 
     def call(self, operation: str, **data: Any) -> dict[str, Any]:
         if not self.configured:
@@ -508,7 +572,9 @@ class Adapter:
                         "capabilities": {"search": False, "authoritative_absence": False},
                         "payload": base64.b64encode(canonical(data["ticket"])).decode("ascii")}
             raise TicketError("Адаптер не подключён; доступны только черновики.")
-        remaining = min(self.timeout, self.deadline - time.monotonic())
+        if operation in {"create", "link"}:
+            self.require_mutation_time()
+        remaining = min(self.timeout, self.deadline - time.monotonic() - CLEANUP_RESERVE_S)
         if remaining <= 0:
             raise TicketError("Исчерпан срок команды адаптера.")
         try:
@@ -555,7 +621,11 @@ def prepared(adapter: Adapter, ticket: dict[str, Any], action: str, target: str 
         payload_text = decoded.decode("utf-8")
     except UnicodeError as exc:
         raise TicketError("Нагрузка должна быть UTF-8 для полного просмотра.") from exc
-    if SECRETS.search(payload_text):
+    try:
+        payload_data = json.loads(payload_text)
+    except ValueError:
+        payload_data = payload_text
+    if contains_secret(payload_text) or contains_secret(payload_data):
         raise TicketError("В конечной нагрузке найден возможный секрет.")
     return {"scope": scope, "capabilities": {"search": caps["search"],
              "authoritative_absence": caps["authoritative_absence"]}, "payload": payload}
@@ -644,13 +714,14 @@ def draft(ctx: dict[str, Any], anchor: int, store: Store) -> str:
                 return f"Черновик уже сохранён: {previous['request_id']}. Покажи его действием show."
     for previous in overlapping:
         if previous["state"] == "ready":
-            previous["state"] = "superseded"
+            transition(previous, "superseded")
             store.save(previous)
     record = {"schema": 1, "extension": "tickets", "request_id": request_id,
               "project_root": store.project, "run_uid": snap["run_uid"],
               "run_dir": ctx["run_dir"], "numbers": unit["numbers"], "operation": action,
-              "state": "ready", "version": version, "version_hash": digest(version),
+              "version": version, "version_hash": digest(version),
               "shown_hash": None, "created": time.time()}
+    transition(record, "ready")
     basis = projection["basis"]
     if basis and basis["source"] == "engineer":
         groups = store.groups()
@@ -673,6 +744,10 @@ def checked_version(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def show(record: dict[str, Any], store: Store, ctx: dict[str, Any] | None = None) -> str:
+    if record.get("state") != "ready":
+        raise TicketError(f"Запрос {record['request_id']}: {record.get('state')}; "
+                          "просмотр доступен только для ready. "
+                          "Для sending/unknown нужна сверка, для завершённого запроса — его итог.")
     version = checked_version(record)
     path = store.root / f"{record['request_id']}.review.md"
     ticket = version["ticket"]
@@ -690,20 +765,8 @@ def show(record: dict[str, Any], store: Store, ctx: dict[str, Any] | None = None
     record["shown_hash"] = record["version_hash"]
     record["review_hash"] = hashlib.sha256(path.read_bytes()).hexdigest()
     store.save(record)
-    output = (f"Полный просмотр: {path}\nЗапрос: {record['request_id']}\n"
-              f"Хеш показанной версии: {record['shown_hash']}\n"
-              "Основной агент: прочитай и передай инженеру полный файл; дождись его ответа. "
-              "Субагент: закончи работу, submit не вызывай.")
-    if ctx and ctx.get("snapshot_command"):
-        context_path = ctx.get("context_path") or os.environ.get("ALLA_CONTEXT")
-        if context_path:
-            command = [*ctx["snapshot_command"][:2], "extensions", "action", "tickets", "submit",
-                       "--context", str(context_path)]
-            if ctx.get("reports_dir"):
-                command += ["--reports-dir", str(ctx["reports_dir"])]
-            command += ["--", "--request", record["request_id"], "--shown", record["shown_hash"]]
-            output += "\nТолько основной агент после явного одобрения показанной версии:\n" + shlex.join(command)
-    return output
+    return (f"Полный просмотр: {path}\nЗапрос: {record['request_id']}\n"
+            f"Хеш версии: {record['shown_hash']}")
 
 
 def receipt_text(record: dict[str, Any]) -> str:
@@ -739,14 +802,14 @@ def reconcile(ctx: dict[str, Any], record: dict[str, Any], store: Store) -> str:
         outcome = response.get("outcome")
         if outcome == "found":
             record["receipt"] = validate_receipt(response)
-            record["state"] = "created" if record["operation"] == "create" else "linked"
+            transition(record, "created" if record["operation"] == "create" else "linked")
         elif (outcome == "absent" and version["prepared"]["capabilities"]["authoritative_absence"]
               and current["capabilities"]["authoritative_absence"]):
-            record["state"] = "ready"
+            transition(record, "ready")
         else:
-            record["state"] = "unknown"
+            transition(record, "unknown")
     except TicketError:
-        record["state"] = "unknown"
+        transition(record, "unknown")
     store.save(record)
     if record["state"] in FINAL:
         return receipt_text(record)
@@ -806,7 +869,8 @@ def submit(ctx: dict[str, Any], record: dict[str, Any], shown: str, store: Store
                 and set(other["numbers"]) & set(record["numbers"])
                 and other["state"] in ACTIVE | FINAL):
             raise TicketError("Есть другая активная или выполненная отправка этих проблем.")
-    record["state"] = "sending"
+    adapter.require_mutation_time()
+    transition(record, "sending")
     store.save(record)  # durable before the adapter process can mutate anything
     try:
         response = adapter.call(record["operation"], request_id=record["request_id"],
@@ -815,9 +879,13 @@ def submit(ctx: dict[str, Any], record: dict[str, Any], shown: str, store: Store
         if response.get("outcome") != "found":
             raise TicketError("Нет подтверждения результата.")
         record["receipt"] = validate_receipt(response)
-        record["state"] = "created" if record["operation"] == "create" else "linked"
+        transition(record, "created" if record["operation"] == "create" else "linked")
+    except MutationDeferred:
+        transition(record, "ready")
+        store.save(record)
+        raise
     except TicketError:
-        record["state"] = "unknown"
+        transition(record, "unknown")
     store.save(record)
     return receipt_text(record) if record["state"] in FINAL else (
         f"Запрос {record['request_id']}: итог неизвестен. Повтор — только lookup, не новая отправка.")

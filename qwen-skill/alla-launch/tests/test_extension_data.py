@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from test_skill_flow import VALID_ANALYSIS, _prepare, _run
 from test_skill_related import CUSTOMER, CUSTOMER_STEP, NPE, _next, _observation, _step_split_run
 
 from alla_skill_lib import extension_data as data
+from alla_skill_lib import extensions as ext
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.extensions import ExtensionError, load_manifest
 
@@ -132,33 +134,35 @@ def test_reconcile_after_clean_uses_actual_reports_without_context(project: Path
         testops: FakeTestOps, capsys) -> None:
     make_demo(project, extension_toml=MANIFEST.replace('act = "act.py"',
               'act = "act.py"\nreconcile = "reconcile.py"'), reconcile_py=(
-        'import json,os\nfrom pathlib import Path\n'
+        'import json,os,sys\nfrom pathlib import Path\n'
         'c=json.loads(Path(os.environ["ALLA_CONTEXT"]).read_text())\n'
-        'assert "run_dir" not in c\nprint("STATUS: ok")\n'
-        'print(c["request_id"])\n'))
+        'assert "run_dir" not in c and "request" not in c\n'
+        'rid=sys.argv[sys.argv.index("--request")+1]\n'
+        'r=json.loads((Path(c["state_dir"])/"custom-log.json").read_text())\n'
+        'assert r["key"]==rid\nprint("STATUS: ok")\nprint(rid)\n'))
     assert ext_cli(project, capsys, "enable", "demo")[0] == 0
     original, _, _ = _prepare(project, capsys)
     reports = project / "custom-reports"
     reports.mkdir()
     destination = reports / original.name
     shutil.move(str(original), destination)
-    paths = ws.RunPaths(destination)
     request_id = str(uuid.uuid4())
     directory = data.state_dir(reports, "demo", project)
-    ws.write_json(directory / "requests" / f"{request_id}.json", {
-        "schema": 1, "extension": "demo", "project_root": str(project.resolve()),
-        "request_id": request_id, "run_uid": ws.run_uid(paths),
-        "state": "created", "receipt": {"id": "X-1", "url": "https://tracker/X-1"}})
+    ws.write_json(directory / "custom-log.json", {"key": request_id})
     code, output = _run(["clean", "--reports-dir", str(reports), "--older-than-days", "0"], capsys)
     assert code == 0, output
-    assert not destination.exists() and (directory / "requests").is_dir()
+    assert not destination.exists() and (directory / "custom-log.json").is_file()
     code, output = ext_cli(project, capsys, "reconcile", "demo", "--reports-dir", str(reports),
                             "--request-id", request_id)
     assert code == 0 and request_id in output, output
     assert len(list((directory / "contexts").glob("*.json"))) == 1
+    code, output = ext_cli(project, capsys, "action", "demo", "reconcile", "--reports-dir",
+                           str(reports), "--", "--request", request_id)
+    assert code == 0 and request_id in output, output
+    assert len(list((directory / "contexts").glob("*.json"))) == 2
 
 
-def test_snapshot_feedback_requires_successful_remember_and_tracks_reject(project: Path,
+def test_snapshot_feedback_is_unconfirmed_input_without_overriding_report(project: Path,
         testops: FakeTestOps, capsys) -> None:
     run_dir, run, _ = _prepare(project, capsys)
     paths = ws.RunPaths(run_dir)
@@ -174,9 +178,10 @@ def test_snapshot_feedback_requires_successful_remember_and_tracks_reject(projec
     code, output = _run(["remember", file_id, "--run", str(run_dir)], capsys)
     assert code == 0, output
     current = problem()
-    assert current["valid"] and current["confirmed"]
-    assert current["category"] == "окружение"
-    assert current["cause"] == "Пул стенда исчерпан."
+    assert not current["valid"] and not current["confirmed"]
+    assert current["feedback_unconfirmed"]
+    assert current["category"] == "приложение"
+    assert current["cause"] != "Пул стенда исчерпан."
     record_path = next(Path(entry["kb_dir"]).glob("*.json"))
     record = json.loads(record_path.read_text())
     code, output = _run(["reject", file_id, record["id"], "--run", str(run_dir)], capsys)
@@ -213,7 +218,7 @@ def test_related_scope_survives_other_candidate_group_changes(project: Path,
     assert not any(group["numbers"] == [1, 2] for group in data.snapshot(paths, {})["groups"])
 
 
-def test_snapshot_export_refuses_foreign_project(project: Path,
+def test_action_refuses_foreign_project(project: Path,
         testops: FakeTestOps, capsys, tmp_path: Path) -> None:
     make_demo(project, extension_toml=MANIFEST.replace(
         'event = "after_apply"', 'event = "on_request_many"'))
@@ -221,7 +226,107 @@ def test_snapshot_export_refuses_foreign_project(project: Path,
     assert ext_cli(project, capsys, "enable", "demo")[0] == 0
     assert ext_cli(project, capsys, "run", "demo", "1", "--run", str(run_dir))[0] == 0
     context_file = next((run_dir / "extensions" / "demo").glob("on_request_many-*.json"))
-    code, output = _run(["extensions", "snapshot", "demo", "--context", str(context_file),
+    code, output = _run(["extensions", "action", "demo", "act", "--context", str(context_file),
                          "--project-root", str(tmp_path / "foreign"),
                          "--reports-dir", str(run_dir.parent)], capsys)
-    assert code != 0 and "не принадлежит" in output
+    assert code != 0
+
+
+def test_single_snapshot_channel_refreshes_before_every_action(project: Path,
+        testops: FakeTestOps, capsys, monkeypatch: pytest.MonkeyPatch) -> None:
+    make_demo(project, extension_toml=MANIFEST.replace('api = 1', 'api = 1\nsnapshot = true').replace(
+        'event = "after_apply"', 'event = "on_request_many"'), act_py=(
+        'import json,os\nfrom pathlib import Path\n'
+        'c=json.loads(Path(os.environ["ALLA_CONTEXT"]).read_text())\n'
+        'assert "snapshot_command" not in c\n'
+        's=json.loads(Path(c["snapshot_path"]).read_text())\n'
+        'assert s["settings"] == c["settings"]\n'
+        'print("STATUS: ok")\nprint(s["problems"][0]["cause"])\n'))
+    run_dir, run, _ = _prepare(project, capsys)
+    paths = ws.RunPaths(run_dir)
+    first = run["clusters"][0]["file_id"]
+    paths.analysis(first).write_text(VALID_ANALYSIS + "\nСОГЛАСОВАННОСТЬ: одна причина\n")
+    assert ext_cli(project, capsys, "enable", "demo")[0] == 0
+    original = data.snapshot
+    seen = []
+    def capture(paths, settings):
+        seen.append(paths)
+        return original(paths, settings)
+    monkeypatch.setattr(data, "snapshot", capture)
+    assert ext_cli(project, capsys, "run", "demo", "1", "--run", str(run_dir))[0] == 0
+    context_file = next(paths.extension_dir("demo").glob("on_request_many-*.json"))
+    assert len(seen) == 1
+    for cause in ("Первый проверенный диагноз", "Второй проверенный диагноз"):
+        ws.write_json(paths.confirmed(first), {"category": "приложение", "cause": cause,
+                                              "fix": ["Исправить"], "details": []})
+        code, output = ext_cli(project, capsys, "action", "demo", "act",
+                               "--context", str(context_file))
+        assert code == 0 and cause in output, output
+    assert len(seen) == 3
+
+
+def test_snapshot_work_consumes_action_budget(project: Path, testops: FakeTestOps,
+        capsys, monkeypatch: pytest.MonkeyPatch) -> None:
+    make_demo(project, extension_toml=MANIFEST.replace('timeout = 5', 'timeout = 110').replace(
+        'api = 1', 'api = 1\nsnapshot = true').replace(
+        'event = "after_apply"', 'event = "on_request_many"'))
+    run_dir, _, _ = _prepare(project, capsys)
+    assert ext_cli(project, capsys, "enable", "demo")[0] == 0
+    assert ext_cli(project, capsys, "run", "demo", "1", "--run", str(run_dir))[0] == 0
+    context_file = next((run_dir / "extensions" / "demo").glob("on_request_many-*.json"))
+    elapsed = [100.0]
+    monkeypatch.setattr(ext, "time", SimpleNamespace(monotonic=lambda: elapsed[0]))
+    def build(context, paths):
+        elapsed[0] += 30
+    def execute(extension, script, path, project, args, *, timeout):
+        context = ws.read_json(path)
+        assert context["deadline_monotonic"] == 205.0
+        assert timeout == ext.ACTION_LIMIT_S - 30
+        return 0, "STATUS: ok\nготово"
+    monkeypatch.setattr(data, "refresh_snapshot", build)
+    monkeypatch.setattr(ext, "run_script", execute)
+    assert ext.run_action(project, run_dir.parent, "demo", "act", str(context_file), []) == (
+        "ok", "готово")
+
+
+def test_tickets_generic_reconcile_after_clean_with_lost_response(project: Path,
+        testops: FakeTestOps, capsys) -> None:
+    bundled = Path(__file__).parents[1] / "extensions" / "tickets"
+    shutil.copytree(bundled, ws.SKILL_DIR / "extensions" / "tickets")
+    run_dir, run, _ = _prepare(project, capsys)
+    paths = ws.RunPaths(run_dir)
+    first = next(entry["file_id"] for entry in run["clusters"] if not entry["auto"])
+    paths.analysis(first).write_text(VALID_ANALYSIS + "\nСОГЛАСОВАННОСТЬ: одна причина\n")
+    code, output = ext_cli(project, capsys, "enable", "tickets")
+    assert code == 0, output
+    program = project / ".venv" / "bin" / "python"
+    program.parent.mkdir(parents=True, exist_ok=True)
+    if not program.exists():
+        program.symlink_to(sys.executable)
+    demo = Path(__file__).parents[1] / "extensions" / "tickets" / "adapters" / "demo.py"
+    command = [".venv/bin/python", str(demo), "--db", str(project / "tracker.sqlite"),
+               "--lose-response-once"]
+    with ext.config_path(project).open("a") as handle:
+        handle.write('\n[tickets]\nteam_application = "backend"\nadapter_command = '
+                     + json.dumps(command) + '\n')
+    assert ext_cli(project, capsys, "run", "tickets", str(int(first)), "--run", str(run_dir))[0] == 0
+    context_file = next(paths.extension_dir("tickets").glob("on_request_many-*.json"))
+    def action(name, *args):
+        code, output = ext_cli(project, capsys, "action", "tickets", name,
+                               "--context", str(context_file), "--", *args)
+        assert code == 0, output
+        return output
+    action("draft", "--unit", str(int(first)))
+    directory = data.state_dir(run_dir.parent, "tickets", project)
+    record_path = next((directory / "requests").glob("*.json"))
+    record = ws.read_json(record_path)
+    action("show", "--request", record["request_id"])
+    action("submit", "--request", record["request_id"], "--shown", record["version_hash"])
+    assert ws.read_json(record_path)["state"] == "unknown"
+    assert _run(["clean", "--reports-dir", str(run_dir.parent),
+                 "--older-than-days", "0"], capsys)[0] == 0
+    assert not run_dir.exists()
+    code, output = ext_cli(project, capsys, "action", "tickets", "reconcile", "--reports-dir",
+                           str(run_dir.parent), "--", "--request", record["request_id"])
+    assert code == 0 and "DEMO-1" in output, output
+    assert ws.read_json(record_path)["state"] == "created"

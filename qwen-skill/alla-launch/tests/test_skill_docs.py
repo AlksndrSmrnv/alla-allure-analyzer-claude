@@ -127,6 +127,41 @@ def test_problem_block_template_is_identical_in_skill_md_and_reference() -> None
         assert key in template
 
 
+@pytest.mark.parametrize("relative", [
+    "references/tickets.md", "extensions/tickets/commands/ticket.md",
+    "extensions/tickets/README.md",
+])
+def test_ticket_text_input_path_is_known_before_a_context_exists(relative: str) -> None:
+    """Вопрос пишется до extensions run: out_dir ещё нельзя узнать из контекста."""
+    text = _read(SKILL_DIR / relative)
+    assert "<папка разбора>/extensions/tickets/<имя>.txt" in text
+    assert "question_2.txt" in text and "check_2.txt" in text
+    assert "--text-file question_N" in text and "--text-file check_N" in text
+
+
+def test_ticket_parent_submit_template_uses_the_shown_request_and_its_context() -> None:
+    import shlex
+
+    from alla_skill_lib.cli import _build_parser
+
+    reference = _read(REFERENCES / "tickets.md")
+    template = next(line.strip() for line in reference.splitlines()
+                    if line.strip().startswith("python3 ") and "action tickets submit" in line)
+    substitutions = {
+        "<context_path>": shlex.quote("/reports/path with spaces/extensions/tickets/request.json"),
+        "<reports_dir>": "/reports", "<request_id>": "request-id", "<hash>": "hash",
+    }
+    for placeholder, value in substitutions.items():
+        template = template.replace(placeholder, value)
+    command = shlex.split(template)
+    arguments = command[2:command.index("--")]
+    parsed = _build_parser().parse_args(arguments)
+    assert parsed.name == "tickets" and parsed.action == "submit"
+    assert parsed.context == "/reports/path with spaces/extensions/tickets/request.json"
+    assert parsed.reports_dir == "/reports"
+    assert command[command.index("--") + 1:] == ["--request", "request-id", "--shown", "hash"]
+
+
 # --- шаблоны из кода ---------------------------------------------------------------
 
 

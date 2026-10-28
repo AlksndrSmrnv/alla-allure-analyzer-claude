@@ -704,11 +704,10 @@ def _fire_hook(
     from alla_skill_lib import extension_data
 
     extension_data.decorate(context, paths, context_file)
-    ws.write_json(context_file, context)
+    context["deadline_monotonic"] = min(deadline, time.monotonic() + extension.timeout)
     if extension.snapshot:
-        exported = extension_data.export(extension.name, str(context_file))
-        context["snapshot_path"] = exported["path"]
-        ws.write_json(context_file, context)
+        extension_data.refresh_snapshot(context, paths)
+    ws.write_json(context_file, context)
     label = f"{extension.title} ({extension.name})"
     if hook.script is not None:
         left = deadline - time.monotonic()
@@ -838,33 +837,57 @@ def run_action(
     reports_dir: Path,
     name: str,
     action: str,
-    context: str,
+    context: str | None,
     args: list[str],
 ) -> tuple[str, str]:
     """Действие расширения (``extensions action``): статус и текст ответа."""
-    extension, _ = find_active(project_root, name)
+    deadline = time.monotonic() + ACTION_LIMIT_S
+    extension, settings = find_active(project_root, name)
     script = extension.actions.get(action)
     if script is None:
         raise ExtensionError(
             f"у расширения {name} нет действия {action}; есть: {', '.join(extension.actions) or 'нет'}"
         )
-    # Контекст пишет только скилл, в папку разбора: чужой файл подсунул бы скрипту чужие данные.
-    context_file = Path(context).expanduser().resolve()
+    from alla_skill_lib import extension_data
+
     reports = reports_dir.resolve()
-    if (
-        not context_file.is_file()
-        or context_file.suffix != ".json"
-        or len(context_file.parents) < 4
-        or context_file.parents[2].parent != reports
-        or context_file.parent.name != name
-        or context_file.parent.parent.name != "extensions"
-    ):
-        raise ExtensionError(
-            f"контекст {context} — не файл расширения {name} из папки разбора "
-            f"({reports}/<разбор>/extensions/{name}/…json)"
-        )
+    if context is None:
+        content, context_file = extension_data.action_context(
+            name, action, reports, project_root, settings)
+    else:
+        # Контекст пишет только скилл, в папку разбора: чужой файл подсунул бы чужие данные.
+        source = Path(context).expanduser().resolve()
+        if (
+            not source.is_file() or source.suffix != ".json" or len(source.parents) < 4
+            or source.parents[2].parent != reports or source.parent.name != name
+            or source.parent.parent.name != "extensions"
+        ):
+            raise ExtensionError(
+                f"контекст {context} — не файл расширения {name} из папки разбора "
+                f"({reports}/<разбор>/extensions/{name}/…json)"
+            )
+        paths = ws.RunPaths(source.parents[2])
+        run = ws.read_run(paths)
+        if Path(run["project_root"]).resolve() != project_root.resolve():
+            raise ExtensionError("Контекст не принадлежит этому проекту")
+        content = ws.read_json(source)
+        if content.get("extension") != name:
+            raise ExtensionError("Контекст относится к другому расширению")
+        # Старые расширения привязывают результаты к имени контекста. Для нового
+        # снимка отдельная копия не даёт параллельным действиям менять вход друг друга.
+        context_file = (source.parent / f"action-{uuid.uuid4()}.json"
+                        if extension.snapshot else source)
+        content["settings"] = settings
+        extension_data.decorate(content, paths, context_file)
+        if extension.snapshot:
+            extension_data.refresh_snapshot(content, paths)
+    content["deadline_monotonic"] = min(deadline - 5, time.monotonic() + extension.timeout)
+    ws.write_json(context_file, content)
+    remaining = deadline - time.monotonic()
+    if remaining < 1:
+        return "error", "Действие не запущено: время команды скилла на расширение вышло"
     code, output = run_script(extension, script, context_file, project_root, args,
-                              timeout=ACTION_LIMIT_S)
+                              timeout=remaining)
     first, _, rest = output.partition("\n")
     status = first.removeprefix("STATUS:").strip() if first.startswith("STATUS:") else ""
     if status not in ("ok", "error"):

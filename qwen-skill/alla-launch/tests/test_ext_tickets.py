@@ -21,6 +21,12 @@ spec = importlib.util.spec_from_file_location("ext_ticketlib", SCRIPTS / "ticket
 assert spec is not None and spec.loader is not None
 t = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(t)
+EXPECTED_TRANSITIONS = {
+    None: {"ready"}, "ready": {"sending", "superseded"},
+    "sending": {"ready", "unknown", "created", "linked"},
+    "unknown": {"ready", "unknown", "created", "linked"},
+    "created": set(), "linked": set(), "superseded": set(),
+}
 
 
 def problem(number: int, **changes: Any) -> dict[str, Any]:
@@ -55,21 +61,16 @@ def case(tmp_path: Path) -> tuple[dict[str, Any], dict[str, Any], Any]:
             "problems": [problem(2), problem(5), problem(7)], "groups": []}
     snapshot_file = project / "snapshot.json"
     snapshot_file.write_bytes(t.canonical(snap))
-    exporter = project / "export_snapshot.py"
-    exporter.write_text(
-        "import json, sys\nprint('STATUS: ok')\n"
-        "print(json.dumps({'path': sys.argv[1], 'sha256':'not-used'}))\n", encoding="utf-8")
     ctx = {"api": 1, "extension": "tickets", "event": "on_request_many",
            "run_uid": snap["run_uid"], "run_dir": str(run_dir), "project_root": str(project),
            "out_dir": str(out), "state_dir": str(project / "reports" / ".extensions" / "tickets"),
            "settings": settings, "selected_numbers": [2], "params": {}, "text_params": {},
-           "stem": "on_request_many-test", "snapshot_command": [sys.executable, str(exporter),
-                                                                     str(snapshot_file)]}
+           "stem": "on_request_many-test", "snapshot_path": str(snapshot_file)}
     return ctx, snap, t.Store(ctx)
 
 
 def update_snapshot(ctx: dict[str, Any], snap: dict[str, Any]) -> None:
-    Path(ctx["snapshot_command"][-1]).write_bytes(t.canonical(snap))
+    Path(ctx["snapshot_path"]).write_bytes(t.canonical(snap))
 
 
 def wrapped_adapter(ctx: dict[str, Any], snap: dict[str, Any], **controls: Any) -> Path:
@@ -78,10 +79,13 @@ def wrapped_adapter(ctx: dict[str, Any], snap: dict[str, Any], **controls: Any) 
     control.write_bytes(t.canonical(controls))
     wrapper = project / "adapter-wrapper.py"
     wrapper.write_text(
-        "import json,os,subprocess,sys,time\n"
+        "import base64,json,os,subprocess,sys,time\n"
         "from pathlib import Path\n"
         f"control=json.loads(Path({str(control)!r}).read_text())\n"
         "raw=sys.stdin.buffer.read()\nrequest=json.loads(raw)\n"
+        "if control.get('operations'):\n"
+        "    with open(control['operations'],'a') as log: log.write(request['operation']+'\\n')\n"
+        "time.sleep(control.get('delays',{}).get(request['operation'],0))\n"
         "if control.get('check_env'):\n"
         "    assert os.environ.get('TRACKER_TEST_TOKEN') == 'private-token-value'\n"
         "    assert not any(k in os.environ for k in "
@@ -94,6 +98,10 @@ def wrapped_adapter(ctx: dict[str, Any], snap: dict[str, Any], **controls: Any) 
         "    while not gate.exists(): time.sleep(0.01)\n"
         f"result=subprocess.run([sys.executable,{str(DEMO)!r},'--db',{str(project / 'demo.db')!r}],"
         "input=raw,capture_output=True)\n"
+        "if request['operation']=='prepare' and 'payload' in control:\n"
+        "    response=json.loads(result.stdout)\n"
+        "    response['payload']=base64.b64encode(control['payload'].encode()).decode()\n"
+        "    print(json.dumps(response));sys.exit()\n"
         "if request['operation']=='prepare' and control.get('no_search'):\n"
         "    response=json.loads(result.stdout);response['capabilities']['search']=False\n"
         "    print(json.dumps(response));sys.exit()\n"
@@ -399,8 +407,10 @@ def test_show_script_does_not_submit_or_claim_engineer_approval(case: Any) -> No
     record = make_request(ctx, store)
     result = invoke(ctx, "show", "--request", record["request_id"])
     assert result.returncode == 0
-    assert "дождись его ответа" in result.stdout
-    assert "submit не вызывай" in result.stdout
+    assert "Полный просмотр:" in result.stdout
+    assert record["request_id"] in result.stdout and record["version_hash"] in result.stdout
+    assert "submit" not in result.stdout and "одобр" not in result.stdout
+    assert len(result.stdout.splitlines()) == 4  # STATUS and three reference fields
     assert store.load(record["request_id"])["state"] == "ready"
 
 
@@ -602,6 +612,189 @@ def test_blank_found_receipt_remains_unknown(case: Any, field: str) -> None:
     record = store.load(record["request_id"])
     assert "итог неизвестен" in t.reconcile(ctx, record, store)
     assert store.load(record["request_id"])["state"] == "unknown"
+
+
+@pytest.mark.parametrize("masked", [
+    "password: ******", "password: ••••••", "password: xxxxxxxx",
+    "access_token=<hidden>", "access_token=[REDACTED]", "password: REDACTED",
+    "Authorization: Bearer ***", "Authorization: Basic <masked credentials>",
+    "api_key: ${API_KEY}", "api-key=***redacted***",
+])
+def test_masked_credentials_do_not_block_real_ticket(case: Any, masked: str) -> None:
+    ctx, snap, store = case
+    snap["problems"][0]["sources"][0]["text"] += "\n" + masked
+    snap["problems"][0]["observations"].append({"source_id": "S1", "quote": masked})
+    update_snapshot(ctx, snap)
+    record = make_request(ctx, store)
+    assert masked in record["version"]["ticket"]["description"]
+
+
+@pytest.mark.parametrize("secret", [
+    "password: actualpassword", "access_token=abcdef123456",
+    "password: abc",
+    "Authorization: Bearer abc", "Authorization: Basic dXNlcjpwYXNz",
+    "api_key: real-key-value", "api-key=real-secret",
+    "password: <hidden>actualpassword", "api_key: [REDACTED]real-key-value",
+    "access_token=${API_KEY}real-value", "password: ******actualpassword",
+    "-----BEGIN PRIVATE KEY-----", "-----BEGIN OPENSSH PRIVATE KEY-----",
+])
+def test_actual_credentials_still_block_ticket(case: Any, secret: str) -> None:
+    ctx, snap, store = case
+    snap["problems"][0]["sources"][0]["text"] += "\n" + secret
+    snap["problems"][0]["observations"].append({"source_id": "S1", "quote": secret})
+    update_snapshot(ctx, snap)
+    with pytest.raises(t.TicketError, match="секрет"):
+        t.draft(ctx, 2, store)
+    assert not store.records()
+
+
+@pytest.mark.parametrize("value,blocked", [("${API_KEY}", False), ("******", False),
+                                          ("actual-secret", True), ("abc", True)])
+def test_final_adapter_payload_checks_credentials_in_json_fields(case: Any, value: str,
+                                                               blocked: bool) -> None:
+    ctx, snap, store = case
+    payload = t.canonical({"api_key": value}).decode()
+    wrapped_adapter(ctx, snap, payload=payload)
+    if blocked:
+        with pytest.raises(t.TicketError, match="конечной нагрузке"):
+            t.draft(ctx, 2, store)
+        assert not store.records()
+    else:
+        record = make_request(ctx, store)
+        assert base64.b64decode(record["version"]["prepared"]["payload"]).decode() == payload
+
+
+@pytest.mark.parametrize("previous,target", [
+    (previous, target)
+    for previous in (None, "ready", "sending", "unknown", "created", "linked", "superseded")
+    for target in ("ready", "sending", "unknown", "created", "linked", "superseded")
+    if target not in EXPECTED_TRANSITIONS[previous]
+])
+def test_each_forbidden_state_transition_is_rejected(previous: str | None, target: str) -> None:
+    record = {} if previous is None else {"state": previous}
+    before = dict(record)
+    with pytest.raises(t.TicketError, match="Недопустимый переход"):
+        t.transition(record, target)
+    assert record == before
+
+
+@pytest.mark.parametrize("previous,target", [
+    (previous, target) for previous, targets in EXPECTED_TRANSITIONS.items() for target in sorted(targets)
+])
+def test_declared_state_transition_changes_only_state(previous: str | None, target: str) -> None:
+    assert t.TRANSITIONS == EXPECTED_TRANSITIONS
+    record = {"request_id": "unchanged"}
+    if previous is not None:
+        record["state"] = previous
+    t.transition(record, target)
+    assert record == {"request_id": "unchanged", "state": target}
+
+
+@pytest.mark.parametrize("state", ["superseded", "sending", "unknown", "created", "linked"])
+def test_show_rejects_non_ready_state_without_changing_review(case: Any, state: str) -> None:
+    ctx, _, store = case
+    record = make_request(ctx, store)
+    record["state"] = state
+    store.save(record)
+    path = store.root / f"{record['request_id']}.review.md"
+    review = path.read_bytes()
+    before = t.canonical(store.load(record["request_id"]))
+    result = invoke(ctx, "show", "--request", record["request_id"])
+    assert result.returncode == 2 and "STATUS: error" in result.stdout
+    assert state in result.stdout and "ready" in result.stdout
+    assert t.canonical(store.load(record["request_id"])) == before
+    assert path.read_bytes() == review
+
+
+def test_slow_preflights_leave_ready_if_full_mutation_cannot_fit(case: Any) -> None:
+    ctx, snap, store = case
+    ctx["settings"]["adapter_timeout"] = 1
+    control = wrapped_adapter(ctx, snap)
+    record = make_request(ctx, store)
+    operations = Path(ctx["project_root"]) / "operations.txt"
+    control.write_bytes(t.canonical({"delays": {"prepare": 0.15, "search": 0.15},
+                                    "operations": str(operations)}))
+    ctx["deadline_monotonic"] = time.monotonic() + 3.2
+    before = time.monotonic()
+    with pytest.raises(t.TicketError, match="Недостаточно времени"):
+        t.submit(ctx, record, record["shown_hash"], store)
+    assert time.monotonic() - before < 2
+    assert operations.read_text().splitlines() == ["prepare", "search"]
+    assert store.load(record["request_id"])["state"] == "ready"
+    assert not (Path(ctx["project_root"]) / "demo.db").exists()
+
+
+def test_adapter_uses_script_start_instead_of_resetting_budget(case: Any, monkeypatch: Any) -> None:
+    ctx, snap, _ = case
+    operations = Path(ctx["project_root"]) / "operations.txt"
+    wrapped_adapter(ctx, snap, delays={"prepare": 1}, operations=str(operations))
+    monkeypatch.setattr(t, "SCRIPT_STARTED", time.monotonic() - 99)
+    adapter = t.Adapter(ctx, ctx["settings"])
+    with pytest.raises(t.TicketError, match="Исчерпан срок"):
+        adapter.call("prepare", ticket={})
+    assert not operations.exists()
+
+
+def test_slow_mutation_timeout_records_unknown_before_returning(case: Any) -> None:
+    ctx, snap, store = case
+    ctx["settings"]["adapter_timeout"] = 1
+    control = wrapped_adapter(ctx, snap)
+    record = make_request(ctx, store)
+    operations = Path(ctx["project_root"]) / "operations.txt"
+    control.write_bytes(t.canonical({"delays": {"create": 2}, "operations": str(operations)}))
+    ctx["deadline_monotonic"] = time.monotonic() + 10
+    before = time.monotonic()
+    assert "итог неизвестен" in t.submit(ctx, record, record["shown_hash"], store)
+    assert time.monotonic() - before < 3
+    assert store.load(record["request_id"])["state"] == "unknown"
+    assert operations.read_text().splitlines() == ["prepare", "search", "create"]
+    assert not (Path(ctx["project_root"]) / "demo.db").exists()
+
+
+def test_budget_lost_during_durable_sending_mark_restores_ready(case: Any, monkeypatch: Any) -> None:
+    ctx, snap, store = case
+    ctx["settings"]["adapter_timeout"] = 1
+    operations = Path(ctx["project_root"]) / "operations.txt"
+    wrapped_adapter(ctx, snap, operations=str(operations))
+    record = make_request(ctx, store)
+    operations.unlink()
+    original_save = store.save
+
+    def delayed_save(value: dict[str, Any]) -> None:
+        original_save(value)
+        if value["state"] == "sending":
+            time.sleep(0.4)
+
+    monkeypatch.setattr(store, "save", delayed_save)
+    ctx["deadline_monotonic"] = time.monotonic() + 3.3
+    with pytest.raises(t.TicketError, match="Недостаточно времени"):
+        t.submit(ctx, record, record["shown_hash"], store)
+    assert operations.read_text().splitlines() == ["prepare", "search"]
+    assert store.load(record["request_id"])["state"] == "ready"
+    assert not (Path(ctx["project_root"]) / "demo.db").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="flock is POSIX")
+def test_busy_lock_returns_error_in_bounded_time_and_preserves_lease(case: Any) -> None:
+    ctx, _, store = case
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import fcntl,sys,time; "
+         "f=open(sys.argv[1],'a+b');fcntl.flock(f,fcntl.LOCK_EX); "
+         "print('locked',flush=True);time.sleep(20)", str(store.root / "tickets.lock")],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "locked"
+        before = time.monotonic()
+        result = invoke(ctx, "plan")
+        elapsed = time.monotonic() - before
+        assert result.returncode == 2 and "STATUS: error" in result.stdout
+        assert "предыдущая операция" in result.stdout and "reconcile" in result.stdout
+        assert 2.8 <= elapsed < 5
+        assert child.poll() is None
+    finally:
+        child.kill()
+        child.communicate(timeout=5)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="descriptor lease is POSIX")

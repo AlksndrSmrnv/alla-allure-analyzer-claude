@@ -132,6 +132,7 @@ from alla_skill_lib.proposals import (
     revert_proposal,
     validate_proposal,
 )
+from alla_skill_lib.problem_state import CurrentState, current_state
 from alla_skill_lib.qwen_files import (
     install_batch_agent,
     install_commands,
@@ -144,7 +145,6 @@ from alla_skill_lib.related import (
     RELATED_FORMAT,
     Related,
     build_relate_task,
-    candidate_groups,
     candidate_stats,
     parse_related,
     relate_data,
@@ -560,10 +560,6 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="параметр запроса для on_request (можно несколько)")
     again.add_argument("--text-file", action="append", nargs=2, default=[],
                        metavar=("KEY", "PATH"), help="полный UTF-8 текст из out_dir/*.txt")
-    snapshot_command = ext_commands.add_parser("snapshot", parents=[common],
-                                               help="свежий публичный снимок для расширения")
-    snapshot_command.add_argument("name")
-    snapshot_command.add_argument("--context", required=True)
     reconciliation = ext_commands.add_parser("reconcile", parents=[common],
                                              help="сверить запрос после потери ответа или clean")
     reconciliation.add_argument("name")
@@ -574,7 +570,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     action.add_argument("name", help="имя расширения")
     action.add_argument("action", help="имя действия")
-    action.add_argument("--context", required=True, help="файл контекста из задания расширения")
+    action.add_argument("--context", help="файл задания; без него — постоянный контекст")
     return parser
 
 
@@ -1155,8 +1151,9 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
         state["wave"] = wave
         ws.write_json(paths.state_json, state)
         return "analyze_batch", _batch_body(paths, run, batches, len(fresh), manual_total)
-    analyses: dict[str, ClusterAnalysis] = {}
-    flagged: set[str] = set()
+    current = current_state(paths, run=run, state=state, known_auto=known_auto)
+    analyses = current.analyses
+    flagged = current.flagged
     proposals: dict[str, Proposal] = {}
     not_proposed: dict[str, str] = {}
     notes: list[str] = list(auto_notes)
@@ -1175,7 +1172,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
             return "analyze", _analyze_body(paths, entry, position, total, done, manual_total,
                                             len(known_auto))
 
-        analysis, errors = _check_analysis(text, entry, project_root, paths)
+        analysis, errors = analyses[file_id], current.errors.get(file_id, [])
         if errors:
             attempt, unchanged = _register_invalid(state, file_id, text, paths)
             if attempt < MAX_FIX_ATTEMPTS:
@@ -1237,11 +1234,10 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
             + "."
         )
 
-    known = known_issues(run, analyses, flagged, paths, known_auto)
+    known = current.known
     notes += known.notes
-    confirmed = load_confirmed(paths, run)
-    related_outcome = _related_step(paths, state, run, analyses, flagged, known, project_root,
-                                    set(confirmed))
+    confirmed = current.confirmed
+    related_outcome = _related_step(paths, state, current)
     if isinstance(related_outcome, tuple):
         return related_outcome
     related = related_outcome or Related()
@@ -1444,26 +1440,21 @@ def _proposal_step(
 def _related_step(
     paths: ws.RunPaths,
     state: dict[str, Any],
-    run: dict[str, Any],
-    analyses: dict[str, ClusterAnalysis],
-    flagged: set[str],
-    known: KnownIssues,
-    project_root: Path,
-    confirmed: set[str],
+    current: CurrentState,
 ) -> tuple[str, str] | Related | None:
     """Шаг «похожие проблемы»: (статус, текст), подтверждённые группы или None (отброшено).
 
     Нет кандидатов — шага нет. Решение модели действует, пока не изменились данные
     групп (``state.related_data_hash``): иначе ``related.md`` удаляется и просится заново.
     """
-    current_kb = current_kb_matches(run, paths)
+    run, analyses, current_kb = current.run, current.analyses, current.current_matches
     # Подтверждённые инженером проблемы не сравниваются: их причина известна (до задания —
     # иначе после remember --from-extension next снова просил бы сравнить и их).
-    groups = candidate_groups(run, analyses, flagged, project_root, known, current_kb, confirmed)
+    groups = current.candidates
     if not groups:
         paths.related.unlink(missing_ok=True)
-        # Оба поля — независимо: иначе review показал бы числа исчезнувших групп.
-        stale = [state.pop(key, None) for key in ("related_data_hash", "related")]
+        # Все поля — независимо: иначе снимок восстановил бы исчезнувшие группы.
+        stale = [state.pop(key, None) for key in ("related_data_hash", "related", "related_scopes")]
         if any(value is not None for value in stale):
             ws.write_json(paths.state_json, state)
         return Related()
@@ -1512,7 +1503,7 @@ def _related_step(
     if any(stats.get(key) != value for key, value in decided.items()):
         state["related"] = {**stats, **decided}
         ws.write_json(paths.state_json, state)
-    return related
+    return current.related
 
 
 def _relate_body(paths: ws.RunPaths, groups: int) -> str:
@@ -2549,8 +2540,6 @@ def _skip(paths: ws.RunPaths, entry: dict[str, Any], reason: str) -> tuple[str, 
 
 
 def cmd_extensions(args: argparse.Namespace, project_root: Path, reports_dir: Path) -> int:
-    from alla_skill_lib import extension_data
-
     command = args.ext_command or "list"
     try:
         if command == "list":
@@ -2562,16 +2551,14 @@ def cmd_extensions(args: argparse.Namespace, project_root: Path, reports_dir: Pa
                 args.name, args.clusters, args.run, reports_dir, ext.parse_params(args.param),
                 args.text_file,
             )
-        elif command == "snapshot":
-            status, body = "ok", json.dumps(extension_data.export(
-                args.name, args.context, project=project_root, reports=reports_dir),
-                                             ensure_ascii=False)
         elif command == "reconcile":
             if not args.reports_dir:
                 raise ext.ExtensionError("Для reconcile явно укажи --reports-dir")
-            status, body = extension_data.reconcile(args.name, args.request_id,
-                                                     reports_dir, project_root)
+            status, body = ext.run_action(project_root, reports_dir, args.name, "reconcile",
+                                          None, ["--request", args.request_id])
         else:
+            if args.context is None and not args.reports_dir:
+                raise ext.ExtensionError("Для действия без --context явно укажи --reports-dir")
             status, body = ext.run_action(
                 project_root, reports_dir, args.name, args.action, args.context, args.extra
             )
