@@ -12,6 +12,8 @@ assertion (``core.md``), а разные симптомы одной причи�
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 from collections import Counter
 from dataclasses import dataclass, field
 from math import log
@@ -156,6 +158,16 @@ class RelatedDecision:
     same: list[tuple[list[int], str]] = field(default_factory=list)
     different: list[tuple[list[int], str]] = field(default_factory=list)
     unrecognized: list[str] = field(default_factory=list)
+
+
+def relation_scope(analyses: dict[str, ClusterAnalysis], file_ids: list[str],
+                   kb: dict[str, list[dict[str, Any]]]) -> str:
+    """Отпечаток основания одной принятой группы, независимо от остальных групп."""
+    rows = [{"id": file_id, "what": analyses[file_id].what,
+             "cause": analyses[file_id].cause, "fix": analyses[file_id].fix,
+             "code": analyses[file_id].code, "consistency": analyses[file_id].consistency,
+             "kb": kb.get(file_id, [])} for file_id in sorted(file_ids, key=int)]
+    return hashlib.sha256(json.dumps(rows, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,34 @@
+name = "tickets"
+title = "Тикеты команде"
+description = "Предлагает тикеты по разобранным проблемам, готовит проверяемый просмотр и подключает трекер через отдельный адаптер"
+api = 1
+agent = "agent.md"
+snapshot = true
+timeout = 110
+commands = ["commands/ticket.md"]
+
+[settings]
+hint = true
+adapter_command = []
+adapter_env = []
+adapter_timeout = 25
+team_application = ""
+team_test = ""
+team_environment = ""
+team_data = ""
+team_unknown = ""
+
+[[hooks]]
+event = "after_report"
+script = "scripts/ticket_hint.py"
+
+[[hooks]]
+event = "on_request_many"
+task = "task.md"
+
+[actions]
+plan = "scripts/plan.py"
+draft = "scripts/draft.py"
+show = "scripts/show.py"
+submit = "scripts/submit.py"
+reconcile = "scripts/reconcile.py"

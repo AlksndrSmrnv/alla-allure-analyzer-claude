@@ -1,6 +1,7 @@
 ---
 paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/extensions.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/extension_data.py"
   - "qwen-skill/alla-launch/extensions/**"
   - "qwen-skill/alla-launch/commands/alla/extensions.md"
   - "qwen-skill/alla-launch/tests/test_skill_extensions.py"
@@ -161,3 +162,27 @@ paths:
 Вызов `ext.fire` в команде, поля — в `extensions/README.md`, событие — в `EVENTS`, тест в
 `test_skill_extensions.py`; если модель должна что-то сделать иначе — `SKILL.md` раздел 7 и
 `references/protocol.md`.
+
+## tickets и публичный снимок
+
+- `on_request_many` — один контекст с `selected_numbers`, уникальный stem на вызов.
+  Нельзя одновременно объявить `on_request`. Новое событие тоже не спрашивает общий
+  confirm; создание тикета имеет отдельный просмотр. `snapshot = true` экспортирует
+  данные через `extension_data`, новые общие поля совместимы с api 1.
+- `extensions snapshot <имя> --context FILE`: STATUS ok + JSON path/sha256. Настройки и
+  диагнозы актуальные, подтверждение расширения сильнее разбора; обратная связь принимается
+  только при действующем exact-подтверждении той же причины и рецепта в базе знаний.
+  Связи — проверенный related при текущем хеше данных или группы действующей базы знаний.
+  Нет правил отбора тикетов в ядре; расширение сравнивает значимую проекцию.
+- `--text-file KEY PATH` — обычный .txt внутри out_dir, UTF-8 до 16000 символов, без NUL;
+  CRLF, отступы и окончание файла сохраняются. Поле text_params, не подстановка в шаблон.
+- `state_dir` — actual reports_dir/.extensions/<имя>/<хеш project_root>/; переживает clean.
+  `extensions reconcile` требует явный reports-dir и UUID, читает общий конверт requests/
+  и сам создаёт контекст. Старый run_action и его граница контекста не ослабляются.
+- tickets: полный алгоритм и протокол адаптера в extensions/tickets/README.md. Модель
+  ничего не отправляет из задания подготовки. Родитель по references/tickets.md показывает
+  полный review-файл и после отдельного ответа вызывает точную команду submit.
+  Проверка байтов/проекции — Python, фактический показ и пауза — сценарии Qwen.
+- Постоянный журнал блокирует пересекающиеся проблемы одного run_uid при sending/unknown.
+  Только lookup, найдено/достоверно отсутствует/неизвестно; absent требует capability и
+  совпадения устойчивого scope. Reconcile сам не вызывает create/link/submit.

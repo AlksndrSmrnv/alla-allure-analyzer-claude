@@ -26,6 +26,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import uuid
 from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -39,10 +40,11 @@ from alla_skill_lib.proposals import parse_proposal
 from alla_skill_lib.sources import describe, load_registry
 
 API_VERSION = 1
-EVENTS = ("after_apply", "after_revert", "after_report", "on_request")
+EVENTS = ("after_apply", "after_revert", "after_report", "on_request", "on_request_many")
 PROBLEM_EVENTS = ("after_apply", "after_revert", "on_request")
 # Событие по просьбе пользователя (``extensions run``): вопрос confirm не нужен — он уже попросил.
 REQUEST_EVENT = "on_request"
+MANY_REQUEST_EVENT = "on_request_many"
 PARAM_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 PARAM_VALUE_LIMIT = 500
 MAX_SOURCES_CHARS = 60_000  # куски «Данных» проблемы в контексте расширения
@@ -108,6 +110,7 @@ class Extension:
     overrides_bundled: bool = False
     # Слэш-команды Qwen расширения: имя → файл; ставятся в .qwen/commands/alla/<имя>.md.
     commands: dict[str, Path] = field(default_factory=dict)
+    snapshot: bool = False
 
     @property
     def agent_name(self) -> str:
@@ -217,6 +220,12 @@ def load_manifest(folder: Path, *, bundled: bool) -> Extension:
     if agent is not None:
         _check_agent(agent, AGENT_PREFIX + name)
     hooks = tuple(_hook(folder, raw, agent) for raw in _list_of_tables(data, "hooks"))
+    if any(hook.event == REQUEST_EVENT for hook in hooks) and any(
+            hook.event == MANY_REQUEST_EVENT for hook in hooks):
+        raise ExtensionError("on_request и on_request_many одновременно объявлять нельзя")
+    snapshot = data.get("snapshot", False)
+    if not isinstance(snapshot, bool):
+        raise ExtensionError("snapshot — true или false")
     task_events = [hook.event for hook in hooks if hook.task is not None]
     repeated = sorted({event for event in task_events if task_events.count(event) > 1})
     if repeated:
@@ -248,6 +257,7 @@ def load_manifest(folder: Path, *, bundled: bool) -> Extension:
         agent=agent,
         timeout=timeout,
         commands=commands,
+        snapshot=snapshot,
     )
 
 
@@ -544,7 +554,8 @@ def parse_params(raw: list[str]) -> dict[str, list[str]]:
     return params
 
 
-def problem_tests(run: dict[str, Any], entry: dict[str, Any]) -> list[dict[str, Any]]:
+def problem_tests(run: dict[str, Any], entry: dict[str, Any], *,
+                  limit: int | None = MAX_CONTEXT_TESTS) -> list[dict[str, Any]]:
     """Тесты проблемы (представитель первым): имя, полное имя, ссылка в TestOps."""
     clustering = run.get("clustering") or {}
     cluster: dict[str, Any] = next((item for item in clustering.get("clusters", [])
@@ -555,7 +566,7 @@ def problem_tests(run: dict[str, Any], entry: dict[str, Any]) -> list[dict[str, 
              for test in (run.get("triage") or {}).get("failed_tests", [])}
     return [{"name": tests[test_id].get("name"), "full_name": tests[test_id].get("full_name"),
              "link": tests[test_id].get("link")}
-            for test_id in members[:MAX_CONTEXT_TESTS] if test_id in tests]
+            for test_id in members[:limit] if test_id in tests]
 
 
 def problem_sources(paths: ws.RunPaths, entry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -671,6 +682,8 @@ def _fire_hook(
     directory.mkdir(parents=True, exist_ok=True)
     problem = data.get("problem")
     stem = hook.event + (f"-{problem['file_id']}" if problem else "")
+    if hook.event == MANY_REQUEST_EVENT:
+        stem += f"-{uuid.uuid4()}"
     context_file = directory / f"{stem}.json"
     context = {
         "api": API_VERSION,
@@ -688,7 +701,14 @@ def _fire_hook(
         "params": {},
         **data,
     }
+    from alla_skill_lib import extension_data
+
+    extension_data.decorate(context, paths, context_file)
     ws.write_json(context_file, context)
+    if extension.snapshot:
+        exported = extension_data.export(extension.name, str(context_file))
+        context["snapshot_path"] = exported["path"]
+        ws.write_json(context_file, context)
     label = f"{extension.title} ({extension.name})"
     if hook.script is not None:
         left = deadline - time.monotonic()
@@ -711,7 +731,7 @@ def _fire_hook(
         "типа субагентов — тот же вызов без subagent_type. Ответ субагента покажи пользователю "
         "как есть, кроме строк «Проблема скилла: …»."
     )
-    if settings.get("confirm") and hook.event != REQUEST_EVENT:
+    if settings.get("confirm") and hook.event not in (REQUEST_EVENT, MANY_REQUEST_EVENT):
         question = hook.ask or f"запустить «{extension.title}»"
         return [f"- {label}: спроси пользователя: «{question}» Только после явного «да» {launch}"]
     return [f"- {label}: {launch}"]
@@ -749,9 +769,10 @@ def render_task(
         "patch_path": problem.get("patch_path", ""),
     }
     for action in extension.actions:
-        values[f"action_{action.replace('-', '_')}"] = ws.skill_command(
-            "extensions", "action", extension.name, action, "--context", str(context_file)
-        )
+        arguments = ["extensions", "action", extension.name, action, "--context", str(context_file)]
+        if context.get("event") == MANY_REQUEST_EVENT:
+            arguments += ["--reports-dir", context["reports_dir"]]
+        values[f"action_{action.replace('-', '_')}"] = ws.skill_command(*arguments)
     for key, value in context["settings"].items():
         values[f"settings_{key.replace('-', '_')}"] = value
     for key, items in (context.get("params") or {}).items():

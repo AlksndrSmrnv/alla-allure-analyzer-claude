@@ -75,7 +75,7 @@ paths:
 `apply N --run DIR [--yes --diff ХЭШ] [--repeat]`, `revert N --run DIR`,
 `remember N [N…] --run DIR [--entry ID] [--from-analysis | --from-extension ИМЯ]` (несколько
 номеров — только с `--from-analysis`, `skill-memory.md`), `reject N <id> --run DIR`,
-`extensions [list|enable|disable|run|action]` (`skill-extensions.md`),
+`extensions [list|enable|disable|run|action|snapshot|reconcile]` (`skill-extensions.md`),
 `rerun [N…] --run DIR [--yes --plan ХЭШ | --wait]` (`skill-rerun.md`).
 
 - Где в синтаксисе есть `--run DIR`, он обязателен: `.last_run` после нового `prepare`
@@ -145,6 +145,10 @@ paths:
   базе знаний разобраны автоматически».
 - `write_atomic`/`write_atomic_bytes` (`workspace`) делают `fsync` перед `os.replace`; через
   них же `apply`/`revert` пишут исходник, `NN.orig` и отметку применения.
+- `run.uid` — отдельный постоянный UUID. Создаётся вместе с папкой и один раз при открытии
+  существующей папки без идентификатора. Полный fsync-временный файл публикуется os.link
+  без перезаписи; проигравший процесс читает победителя. Повреждённый UUID — ошибка,
+  не переназначение. Имя папки после clean может повториться, UUID — новый.
 - Стадии выгрузки идут в stderr. Пустой прогон — `error`. Ошибка одного кластера деградирует
   его до «неизвестно» с предупреждением, а не роняет `prepare`.
 - `pipeline` (numpy/scipy/sklearn, ~0,5 с) импортируется только внутри `cmd_prepare`:

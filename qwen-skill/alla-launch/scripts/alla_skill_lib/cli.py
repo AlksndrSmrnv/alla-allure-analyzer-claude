@@ -148,6 +148,7 @@ from alla_skill_lib.related import (
     candidate_stats,
     parse_related,
     relate_data,
+    relation_scope,
     related_groups,
     validate_related,
 )
@@ -557,6 +558,16 @@ def _build_parser() -> argparse.ArgumentParser:
     again.add_argument("--run", required=True, help="папка разбора")
     again.add_argument("--param", action="append", default=[], metavar="КЛЮЧ=ЗНАЧЕНИЕ",
                        help="параметр запроса для on_request (можно несколько)")
+    again.add_argument("--text-file", action="append", nargs=2, default=[],
+                       metavar=("KEY", "PATH"), help="полный UTF-8 текст из out_dir/*.txt")
+    snapshot_command = ext_commands.add_parser("snapshot", parents=[common],
+                                               help="свежий публичный снимок для расширения")
+    snapshot_command.add_argument("name")
+    snapshot_command.add_argument("--context", required=True)
+    reconciliation = ext_commands.add_parser("reconcile", parents=[common],
+                                             help="сверить запрос после потери ответа или clean")
+    reconciliation.add_argument("name")
+    reconciliation.add_argument("--request-id", required=True)
     action = ext_commands.add_parser(
         "action", parents=[common],
         help="выполнить действие расширения (из его задания); аргументы скрипта — после --",
@@ -1489,6 +1500,12 @@ def _related_step(
             f"Затем выполни: {paths.next_command()}",
         ])
     related = related_groups(decision, run)
+    scopes = [{"numbers": [int(n) for n in group.file_ids], "cause": group.cause,
+               "fingerprint": relation_scope(analyses, group.file_ids, current_kb)}
+              for group in related.groups]
+    if state.get("related_scopes") != scopes:
+        state["related_scopes"] = scopes
+        ws.write_json(paths.state_json, state)
     decided = {"confirmed_groups": len(related.groups),
                "confirmed_problems": sum(len(group.file_ids) for group in related.groups)}
     stats = state.get("related") or {}
@@ -2532,6 +2549,8 @@ def _skip(paths: ws.RunPaths, entry: dict[str, Any], reason: str) -> tuple[str, 
 
 
 def cmd_extensions(args: argparse.Namespace, project_root: Path, reports_dir: Path) -> int:
+    from alla_skill_lib import extension_data
+
     command = args.ext_command or "list"
     try:
         if command == "list":
@@ -2540,13 +2559,23 @@ def cmd_extensions(args: argparse.Namespace, project_root: Path, reports_dir: Pa
             status, body = "ok", _extensions_toggle(project_root, args.name, command == "enable")
         elif command == "run":
             status, body = "ok", _extensions_run(
-                args.name, args.clusters, args.run, reports_dir, ext.parse_params(args.param)
+                args.name, args.clusters, args.run, reports_dir, ext.parse_params(args.param),
+                args.text_file,
             )
+        elif command == "snapshot":
+            status, body = "ok", json.dumps(extension_data.export(
+                args.name, args.context, project=project_root, reports=reports_dir),
+                                             ensure_ascii=False)
+        elif command == "reconcile":
+            if not args.reports_dir:
+                raise ext.ExtensionError("Для reconcile явно укажи --reports-dir")
+            status, body = extension_data.reconcile(args.name, args.request_id,
+                                                     reports_dir, project_root)
         else:
             status, body = ext.run_action(
                 project_root, reports_dir, args.name, args.action, args.context, args.extra
             )
-    except (ext.ExtensionError, ws.RunNotFoundError) as exc:
+    except (ext.ExtensionError, ws.RunNotFoundError, OSError, ValueError) as exc:
         status, body = "error", str(exc)
     print(f"STATUS: {status}")
     if body:
@@ -2652,12 +2681,34 @@ def _extensions_run(
     run_dir: str,
     reports_dir: Path,
     params: dict[str, list[str]],
+    text_files: list[list[str]] | None = None,
 ) -> str:
     """Запустить расширение по просьбе пользователя (``on_request``) или повторить его хук."""
     paths = ws.resolve_run(run_dir, reports_dir)
     run = ws.read_json(paths.run_json)
     project_root = Path(run["project_root"])
     extension, _ = ext.find_active(project_root, name)
+    if extension.hooks_for(ext.MANY_REQUEST_EVENT):
+        from alla_skill_lib import extension_data
+
+        # Существование и пригодность номеров оценивает расширение по снимку:
+        # отклонённый номер не должен скрывать остальные выбранные проблемы.
+        try:
+            selected = sorted({int(number) for number in clusters})
+        except ValueError as exc:
+            raise ext.ExtensionError("Номера проблем должны быть целыми числами") from exc
+        if any(number < 1 for number in selected):
+            raise ext.ExtensionError("Номера проблем должны быть положительными")
+        directory = paths.extension_dir(name)
+        directory.mkdir(parents=True, exist_ok=True)
+        texts = extension_data.text_files(text_files or [], directory)
+        if set(texts) & set(params):
+            raise ext.ExtensionError("Один ключ нельзя передать через --param и --text-file")
+        return ext.block(ext.fire(ext.MANY_REQUEST_EVENT, paths, run, {
+            "selected_numbers": selected, "params": params, "text_params": texts,
+        }, only={name}))
+    if text_files:
+        raise ext.ExtensionError("--text-file поддерживается только событием on_request_many")
     if extension.hooks_for(ext.REQUEST_EVENT):
         return _extensions_request(extension, clusters, paths, run, params)
     if params:

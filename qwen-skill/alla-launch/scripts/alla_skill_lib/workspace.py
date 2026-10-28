@@ -195,10 +195,48 @@ def create_run_dir(reports_dir: Path, launch_id: int, now: datetime) -> RunPaths
             suffix += 1
             root = reports_dir / f"{base}-{suffix}"
     paths = RunPaths(root.resolve())
+    run_uid(paths)
     paths.clusters_dir.mkdir()
     for name in ("analyses", "evidence", "proposals", "feedback"):
         (paths.root / name).mkdir()
     return paths
+
+
+def run_uid(paths: RunPaths) -> str:
+    """Назначить UUID ровно один раз, включая одновременное открытие старого разбора.
+
+    Публикуем уже полный файл через link, который не заменяет существующее имя.
+    os.replace здесь нельзя: второй процесс подменил бы UUID первого.
+    """
+    destination = paths.root / "run.uid"
+    if not destination.exists():
+        temporary = paths.root / f".run-uid-{uuid.uuid4().hex}.tmp"
+        try:
+            with temporary.open("xb") as handle:
+                handle.write((str(uuid.uuid4()) + "\n").encode("ascii"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(temporary, destination)
+            except FileExistsError:
+                pass
+            if os.name != "nt":
+                descriptor = os.open(paths.root, os.O_RDONLY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
+    try:
+        if destination.is_symlink():
+            raise ValueError("символическая ссылка")
+        value = destination.read_text(encoding="ascii").strip()
+        if str(uuid.UUID(value)) != value:
+            raise ValueError("не UUID")
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise RunNotFoundError(f"Идентификатор разбора повреждён: {destination}") from exc
+    return value
 
 
 def find_unfinished_run(
