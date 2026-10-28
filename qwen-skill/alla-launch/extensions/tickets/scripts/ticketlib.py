@@ -41,20 +41,6 @@ CATEGORIES = {"приложение": "application", "тест": "test", "окр
               "данные": "data", "неизвестно": "unknown"}
 CONTROL = re.compile(r"^(team|kind|operation|target)_(\d+)$")
 TEXT_CONTROL = re.compile(r"^(question|check)_(\d+)$")
-_VALUE = (r"(?:(?:\$\{[^}\r\n]+\}|<[^>\r\n]+>|\[[^]\r\n]+\])(?=[\s,;\"'\\]|$)"
-          r"|[^\s,;\"'\\]+)")
-SECRETS = re.compile(
-    r"(?i)(?:\bauthorization[\"']?\s*:\s*[\"']?(?:bearer|basic)\s+(?P<auth>"
-    + _VALUE + r")|\b(?:password|api[_-]?key|access[_-]?token)[\"']?\s*[=:]\s*[\"']?"
-    r"(?P<value>" + _VALUE + r"))"
-)
-PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
-MASK = re.compile(
-    r"(?i)(?:[*•x]{3,}|<[^<>\r\n]+>|\$\{[^{}\r\n]+\}|"
-    r"\[?(?:redacted|masked|hidden|removed|filtered|censored)\]?|"
-    r"\*+(?:redacted|masked|hidden|removed|filtered|censored)\*+)"
-)
-NON_SECRET_WORDS = {"null", "none", "undefined", "required", "missing", "empty", "invalid"}
 
 
 class TicketError(Exception):
@@ -82,24 +68,6 @@ def transition(record: dict[str, Any], target: str) -> None:
     if target not in TRANSITIONS.get(previous, set()):
         raise TicketError(f"Недопустимый переход запроса: {previous} → {target}.")
     record["state"] = target
-
-
-def contains_secret(value: Any) -> bool:
-    if isinstance(value, dict):
-        return any(contains_secret(item) for item in value.values())
-    if isinstance(value, list):
-        return any(contains_secret(item) for item in value)
-    if not isinstance(value, str):
-        return False
-    if PRIVATE_KEY.search(value):
-        return True
-    for match in SECRETS.finditer(value):
-        token = match.group("auth") or match.group("value")
-        if MASK.fullmatch(token):
-            continue
-        if match.group("auth") or (len(token) >= 6 and token.lower() not in NON_SECRET_WORDS):
-            return True
-    return False
 
 
 def canonical(value: Any) -> bytes:
@@ -518,8 +486,6 @@ def make_ticket(ctx: dict[str, Any], snap: dict[str, Any], unit: dict[str, Any],
               "run_uid": snap["run_uid"]}
     if question and check:
         ticket.update(question=question, check=check)
-    if contains_secret(ticket):
-        raise TicketError("В данных тикета найден возможный секрет; отправка запрещена.")
     team_override = f"team_{anchor}" in params
     projected = []
     for row in selected:
@@ -626,15 +592,9 @@ def prepared(adapter: Adapter, ticket: dict[str, Any], action: str, target: str 
     if not decoded or len(decoded) > 1_000_000:
         raise TicketError("Нагрузка адаптера пустая или слишком большая.")
     try:
-        payload_text = decoded.decode("utf-8")
+        decoded.decode("utf-8")  # просмотр показывает нагрузку целиком как текст
     except UnicodeError as exc:
         raise TicketError("Нагрузка должна быть UTF-8 для полного просмотра.") from exc
-    try:
-        payload_data = json.loads(payload_text)
-    except ValueError:
-        payload_data = payload_text
-    if contains_secret(payload_text) or contains_secret(payload_data):
-        raise TicketError("В конечной нагрузке найден возможный секрет.")
     return {"scope": scope, "capabilities": {"search": caps["search"],
              "authoritative_absence": caps["authoritative_absence"]}, "payload": payload}
 
@@ -684,11 +644,21 @@ def draft(ctx: dict[str, Any], anchor: int, store: Store) -> str:
     records = store.records()
     overlapping = [record for record in records if record["run_uid"] == snap["run_uid"]
                    and set(record["numbers"]) & set(unit["numbers"])]
+    params = assessment["params"]
+    requested = (params.get(f"operation_{anchor}", "create"), params.get(f"target_{anchor}"))
     for record in overlapping:
         if record["state"] in {"sending", "unknown"}:
-            return f"Запрос {record['request_id']}: результат неизвестен. Выполни reconcile; новая отправка запрещена."
+            raise TicketError(f"Запрос {record['request_id']}: результат неизвестен. "
+                              "Выполни reconcile; новая отправка запрещена.")
         if record["state"] in FINAL and record["numbers"] == unit["numbers"]:
-            return receipt_text(record)
+            done = (record["operation"],
+                    record["version"]["projection"]["controls"].get("target_id"))
+            if done != requested:
+                # Другая операция или цель по уже отправленному составу — не успех прежней.
+                raise TicketError(f"Проблемы {unit['numbers']} уже отправлены: "
+                                  f"{receipt_text(record)} Запрошенная операция {requested[0]}"
+                                  f"{' → ' + requested[1] if requested[1] else ''} не готовится.")
+            return f"Уже выполнено ранее, повторно не отправляется. {receipt_text(record)}"
     completed = [record for record in overlapping if record["state"] in FINAL]
     if completed:
         covered = {number for record in completed for number in record["numbers"]}

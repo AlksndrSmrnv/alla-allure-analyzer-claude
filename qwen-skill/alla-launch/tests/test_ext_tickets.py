@@ -335,7 +335,8 @@ def test_unknown_intersection_cannot_bypass_with_other_group(case: Any) -> None:
     ctx["selected_numbers"] = [2, 5]
     ctx["params"] = {"group": ["2,5"]}
     update_snapshot(ctx, snap)
-    assert "новая отправка запрещена" in t.draft(ctx, 2, store)
+    with pytest.raises(t.TicketError, match="новая отправка запрещена"):
+        t.draft(ctx, 2, store)
     assert len(store.records()) == 1
 
 
@@ -533,7 +534,8 @@ def test_revoking_group_does_not_release_unknown_request(case: Any) -> None:
     ctx.update(selected_numbers=[], params={"revoke_group": [decision]})
     t.revoke(ctx, store)
     ctx.update(selected_numbers=[2], params={})
-    assert "новая отправка запрещена" in t.draft(ctx, 2, store)
+    with pytest.raises(t.TicketError, match="новая отправка запрещена"):
+        t.draft(ctx, 2, store)
     assert store.load(record["request_id"])["state"] == "unknown"
 
 
@@ -556,6 +558,18 @@ def test_saved_research_becomes_automatic_candidate_only_for_same_diagnosis(case
     assert [row["numbers"] for row in t.assess(ctx, snap, store, automatic=True)["units"]] == [[2], [5], [7]]
     snap["problems"][0]["cause"] = "Другое неизвестное поведение"
     assert [row["numbers"] for row in t.assess(ctx, snap, store, automatic=True)["units"]] == [[5], [7]]
+
+
+def test_repeated_draft_of_sent_set_is_receipt_only_for_the_same_operation(case: Any) -> None:
+    ctx, snap, store = case
+    record = make_request(ctx, store)
+    t.submit(ctx, record, record["shown_hash"], store)
+    assert t.draft(ctx, 2, store).startswith("Уже выполнено ранее")
+    ctx["params"] = {"operation_2": ["link"], "target_2": ["DEMO-1"]}
+    update_snapshot(ctx, snap)
+    with pytest.raises(t.TicketError, match="уже отправлены.*link → DEMO-1 не готовится"):
+        t.draft(ctx, 2, store)
+    assert len(store.records()) == 1
 
 
 def test_partial_completed_overlap_does_not_hide_uncovered_problem(case: Any) -> None:
@@ -615,69 +629,27 @@ def test_blank_found_receipt_remains_unknown(case: Any, field: str) -> None:
     assert store.load(record["request_id"])["state"] == "unknown"
 
 
-@pytest.mark.parametrize("masked", [
-    "password: ******", "password: ••••••", "password: xxxxxxxx",
-    "access_token=<hidden>", "access_token=[REDACTED]", "password: REDACTED",
-    "Authorization: Bearer ***", "Authorization: Basic <masked credentials>",
-    "api_key: ${API_KEY}", "api-key=***redacted***",
+@pytest.mark.parametrize("text", [
+    "password: actualpassword", "password: cannot be blank", "password: incorrect",
+    "Authorization: Bearer abc", "https://user:password@host/api",
+    "-----BEGIN PRIVATE KEY-----", "password: ******",
 ])
-def test_masked_credentials_do_not_block_real_ticket(case: Any, masked: str) -> None:
+def test_credentials_in_logs_go_to_ticket_as_is(case: Any, text: str) -> None:
+    # Решение владельца: секреты в логах и разборе тикет не блокируют.
     ctx, snap, store = case
-    snap["problems"][0]["sources"][0]["text"] += "\n" + masked
-    snap["problems"][0]["observations"].append({"source_id": "S1", "quote": masked})
+    snap["problems"][0]["sources"][0]["text"] += "\n" + text
+    snap["problems"][0]["observations"].append({"source_id": "S1", "quote": text})
     update_snapshot(ctx, snap)
     record = make_request(ctx, store)
-    assert masked in record["version"]["ticket"]["description"]
+    assert text in record["version"]["ticket"]["description"]
 
 
-@pytest.mark.parametrize("message", [
-    "Field password: must not be blank", "password=null",
-    "password: size must be between 8 and 64", "password: required",
-    "password: missing", "password: undefined", "password: invalid",
-    "password: abc",
-])
-def test_validation_messages_do_not_block_ticket(case: Any, message: str) -> None:
+def test_adapter_payload_with_credentials_is_kept(case: Any) -> None:
     ctx, snap, store = case
-    assert not t.contains_secret(message)
-    snap["problems"][0]["sources"][0]["text"] += "\n" + message
-    snap["problems"][0]["observations"].append({"source_id": "S1", "quote": message})
-    update_snapshot(ctx, snap)
-    record = make_request(ctx, store)
-    assert message in record["version"]["ticket"]["description"]
-
-
-@pytest.mark.parametrize("secret", [
-    "password: actualpassword", "access_token=abcdef123456",
-    "Authorization: Bearer abc", "Authorization: Basic dXNlcjpwYXNz",
-    "api_key: real-key-value", "api-key=real-secret",
-    "password: <hidden>actualpassword", "api_key: [REDACTED]real-key-value",
-    "access_token=${API_KEY}real-value", "password: ******actualpassword",
-    "-----BEGIN PRIVATE KEY-----", "-----BEGIN OPENSSH PRIVATE KEY-----",
-])
-def test_actual_credentials_still_block_ticket(case: Any, secret: str) -> None:
-    ctx, snap, store = case
-    snap["problems"][0]["sources"][0]["text"] += "\n" + secret
-    snap["problems"][0]["observations"].append({"source_id": "S1", "quote": secret})
-    update_snapshot(ctx, snap)
-    with pytest.raises(t.TicketError, match="секрет"):
-        t.draft(ctx, 2, store)
-    assert not store.records()
-
-
-@pytest.mark.parametrize("value,blocked", [("${API_KEY}", False), ("******", False),
-                                          ("actual-secret", True), ("abc", False)])
-def test_final_adapter_payload_checks_credentials_in_json_fields(case: Any, value: str,
-                                                               blocked: bool) -> None:
-    ctx, snap, store = case
-    payload = t.canonical({"api_key": value}).decode()
+    payload = t.canonical({"api_key": "actual-secret"}).decode()
     wrapped_adapter(ctx, snap, payload=payload)
-    if blocked:
-        with pytest.raises(t.TicketError, match="конечной нагрузке"):
-            t.draft(ctx, 2, store)
-        assert not store.records()
-    else:
-        record = make_request(ctx, store)
-        assert base64.b64decode(record["version"]["prepared"]["payload"]).decode() == payload
+    record = make_request(ctx, store)
+    assert base64.b64decode(record["version"]["prepared"]["payload"]).decode() == payload
 
 
 @pytest.mark.parametrize("previous,target", [
