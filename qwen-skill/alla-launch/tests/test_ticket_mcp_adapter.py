@@ -374,7 +374,11 @@ def test_connect_guide_examples_are_valid_and_prepare_a_ticket(project: Path, in
     (project / "mcp-tracker.toml").write_text(examples[index], encoding="utf-8")
     _, draft = prepared(project)
     assert draft["scope"]["project_or_queue"] in {"BACK", "team/autotests"}
-    assert json.loads(base64.b64decode(draft["payload"]))["arguments"]
+    arguments = json.loads(base64.b64decode(draft["payload"]))["arguments"]
+    assert arguments
+    if index == 0:  # вложенные таблицы получают подстановки на любой глубине
+        assert arguments["fields"]["project"] == {"key": "BACK"}
+        assert arguments["fields"]["issuetype"] == {"name": "Bug"}
 
 
 def test_connect_guide_error_table_quotes_real_adapter_messages() -> None:
