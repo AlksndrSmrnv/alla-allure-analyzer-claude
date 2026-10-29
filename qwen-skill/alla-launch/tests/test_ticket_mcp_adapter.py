@@ -5,9 +5,11 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
+import textwrap
 import time
 import uuid
 from pathlib import Path
@@ -18,6 +20,8 @@ from mcp_tracker_config import FAKE, config_text
 
 ADAPTER = Path(__file__).resolve().parents[1] / "extensions" / "tickets" / "adapters" / "mcp.py"
 EXAMPLE = ADAPTER.with_name("mcp-tracker.example.toml")
+EXTENSIONS = ADAPTER.parents[2]
+GUIDE = ADAPTER.parents[1] / "CONNECT-MCP.md"
 
 
 @pytest.fixture
@@ -357,3 +361,71 @@ def test_example_config_is_valid_and_prepares_a_ticket(project: Path) -> None:
     (project / "mcp-tracker.toml").write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
     _, draft = prepared(project)
     assert draft["scope"] == {"site": "https://tracker.company", "project_or_queue": "BACK"}
+
+
+def guide_examples() -> list[str]:
+    text = GUIDE.read_text(encoding="utf-8")
+    return re.findall(r"<!-- example: mcp-tracker -->\n```toml\n(.*?)```", text, flags=re.S)
+
+
+@pytest.mark.parametrize("index", range(2))
+def test_connect_guide_examples_are_valid_and_prepare_a_ticket(project: Path, index: int) -> None:
+    examples = guide_examples()
+    assert len(examples) == 2
+    (project / "mcp-tracker.toml").write_text(examples[index], encoding="utf-8")
+    _, draft = prepared(project)
+    assert draft["scope"]["project_or_queue"] in {"BACK", "team/autotests"}
+    assert json.loads(base64.b64decode(draft["payload"]))["arguments"]
+
+
+def test_connect_guide_error_table_quotes_real_adapter_messages() -> None:
+    text = GUIDE.read_text(encoding="utf-8")
+    table = text.split("<!-- adapter-errors -->", 1)[1].split("\n\n", 1)[0]
+    fragments = re.findall(r"^\| `([^`]+)` \|", table, flags=re.M)
+    assert len(fragments) >= 15
+    source = ADAPTER.read_text(encoding="utf-8")
+    assert [item for item in fragments if item not in source] == []
+
+
+def test_connect_guide_probes_work_against_the_fake_server(project: Path) -> None:
+    write_config(project)
+    text = GUIDE.read_text(encoding="utf-8")
+    probes = re.findall(r"printf '%s' '(\{.*?\})' \|", text)
+    assert [json.loads(item)["operation"] for item in probes] == ["prepare", "search", "lookup"]
+    prepare_probe, search_probe, lookup_probe = (json.loads(item) for item in probes)
+    config = (project / "mcp-tracker.toml").read_text(encoding="utf-8")
+    (project / "mcp-tracker.toml").write_text(
+        config.replace("https://tracker.test", "https://tracker.company")
+        .replace("[projects]\n", '[projects]\ntest = "TEST"\n'), encoding="utf-8")
+    assert response(invoke(project, prepare_probe))["scope"] == search_probe["scope"] == {
+        "site": "https://tracker.company", "project_or_queue": "TEST"}
+    assert response(invoke(project, search_probe))["matches"] == []
+    assert lookup_probe["scope"] == search_probe["scope"]
+    lookup_probe["request_id"] = prepare_probe["request_id"]
+    assert response(invoke(project, lookup_probe))["outcome"] == "unknown"
+
+
+def test_connect_guide_tool_check_snippet_lists_server_tools(project: Path) -> None:
+    write_config(project)
+    text = GUIDE.read_text(encoding="utf-8")
+    found = re.search(r"<<'EOF'\n(.*?)\n\s*EOF\n", text, flags=re.S)
+    assert found is not None
+    script = textwrap.dedent(found.group(1))
+    config = project / "mcp-tracker.toml"
+    ok = subprocess.run([sys.executable, "-", str(config)], input=script, capture_output=True,
+                        text=True, cwd=project, timeout=60)
+    assert ok.returncode == 0, ok.stderr
+    assert "[create] create_issue: есть" in ok.stdout and "НЕТ" not in ok.stdout
+    config.write_text(config.read_text(encoding="utf-8").replace(
+        'tool = "create_issue"', 'tool = "creat_issue"'), encoding="utf-8")
+    bad = subprocess.run([sys.executable, "-", str(config)], input=script, capture_output=True,
+                         text=True, cwd=project, timeout=60)
+    assert "[create] creat_issue: НЕТ У СЕРВЕРА" in bad.stdout
+
+
+@pytest.mark.parametrize("name", ["README.md", "AUTHORING.md", "tickets/README.md",
+                                  "tickets/CONNECT-MCP.md"])
+def test_extension_guides_link_to_existing_files(name: str) -> None:
+    path = EXTENSIONS / name
+    for target in re.findall(r"\]\((?!https?:|#)([^)#\s]+)", path.read_text(encoding="utf-8")):
+        assert (path.parent / target).exists(), f"{name}: {target}"

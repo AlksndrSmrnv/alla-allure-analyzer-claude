@@ -372,7 +372,9 @@ failsafe; набор TestNG из `suiteXmlFiles` при `-Dtest` не приме
 локальные черновики. Трекер подключается через его MCP-сервер встроенным адаптером
 (`mcp-tracker.toml`) или своим адаптером. Настройки маршрутов, подключение MCP,
 демонстрационный трекер и шаблон адаптера —
-[../extensions/tickets/README.md](../extensions/tickets/README.md).
+[../extensions/tickets/README.md](../extensions/tickets/README.md). Поручаете подключение
+MCP агенту — дайте ему
+[../extensions/tickets/CONNECT-MCP.md](../extensions/tickets/CONNECT-MCP.md).
 
 Расширение добавляет скиллу функцию без правки его кода: на событие скилла
 («правка применена», «правка откатана», «отчёт готов») или по просьбе

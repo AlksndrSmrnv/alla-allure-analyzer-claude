@@ -356,6 +356,15 @@ default_branch = ""                                # основная ветка
 следуй .qwen/skills/alla-launch/extensions/AUTHORING.md
 ```
 
+Чтобы заводить дефекты и тикеты во внутреннем трекере, свое расширение писать не нужно:
+подключите MCP-сервер трекера к встроенному `tickets`. Агенту дайте
+[`extensions/tickets/CONNECT-MCP.md`](qwen-skill/alla-launch/extensions/tickets/CONNECT-MCP.md):
+
+```text
+подключи MCP нашего трекера к alla, чтобы она заводила тикеты по проблемам;
+следуй .qwen/skills/alla-launch/extensions/tickets/CONNECT-MCP.md
+```
+
 ## Что появится в проекте
 
 ```text

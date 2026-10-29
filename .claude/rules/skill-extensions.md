@@ -187,6 +187,10 @@ paths:
   Действие без --context/--run с явным --reports-dir получает только общий контекст проекта и
   настройки. Ядро не читает записи расширения; их формат, UUID и принадлежность проекту
   проверяет сам обработчик. Run-bound граница --context не ослабляется.
+- Инструкция агенту, подключающему MCP трекера, — `extensions/tickets/CONNECT-MCP.md`: порядок,
+  пробы `prepare`/`search`, таблица сообщений адаптера (`test_ticket_mcp_adapter.py` сверяет её
+  с `mcp.py`, а примеры `mcp-tracker` из неё — с `load_config`). Меняя формат
+  `mcp-tracker.toml`, подстановки или тексты ошибок `mcp.py`, правь и её.
 - MCP трекера: встроенный `extensions/tickets/adapters/mcp.py` — обычный адаптер `api = 1`
   (ядро и скрипты tickets не знают про MCP; решение — `docs/plans/2026-10-28-tracker-mcp.md`).
   Клиент stdio на stdlib, формат — `mcp-tracker.toml` (пример рядом). `prepare` чистый и сервер
