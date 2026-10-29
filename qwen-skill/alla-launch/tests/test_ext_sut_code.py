@@ -417,6 +417,25 @@ def test_first_clone_runs_in_background(tmp_path: Path, sut: dict[str, Any]) -> 
     assert (tree / SERVICE).read_text(encoding="utf-8") == SERVICE_BUG
 
 
+def test_fetch_timeout_keeps_working_on_the_existing_copy(
+        tmp_path: Path, sut: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    """git не ответил за таймаут — как любой сбой обновления: предупреждение, копия на диске."""
+    repo = sutlib.Repo("orders", sut["url"], tmp_path / ".alla-sut" / "orders-x")
+    sutlib.ensure_clone(repo, time.monotonic() + 30, allow_local=True)
+    (repo.folder / "fetched").unlink(missing_ok=True)  # свежая отметка пропустила бы обновление
+    real_git = sutlib.git
+
+    def slow_fetch(cwd: Path, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if args[0] == "fetch":
+            raise sutlib.SutError("git fetch не ответил за 60 с")
+        return real_git(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(sutlib, "git", slow_fetch)
+    warning = sutlib.fetch(repo, allow_local=True)
+
+    assert warning is not None and "не ответил" in warning and "смотрю на данные" in warning
+
+
 def test_cleanup_keeps_trees_used_recently(tmp_path: Path, sut: dict[str, Any]) -> None:
     """keep_trees — мягкий лимит: дерево, которым недавно пользовался другой запрос, остаётся."""
     repo = sutlib.Repo("orders", sut["url"], tmp_path / ".alla-sut" / "orders-x")

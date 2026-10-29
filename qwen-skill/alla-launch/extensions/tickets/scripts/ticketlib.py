@@ -10,7 +10,6 @@ import argparse
 import base64
 import binascii
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -146,6 +145,10 @@ class Store:
 
     @contextlib.contextmanager
     def lock(self) -> Iterator[None]:
+        try:
+            import fcntl
+        except ImportError as exc:  # Windows
+            raise TicketError("Расширение tickets работает только на macOS и Linux.") from exc
         with (self.root / "tickets.lock").open("a+b") as handle:
             until = min(time.monotonic() + LOCK_WAIT_S,
                         action_deadline(self.context) - CLEANUP_RESERVE_S)

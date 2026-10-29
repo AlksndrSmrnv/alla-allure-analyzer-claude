@@ -441,13 +441,16 @@ def fetch(repo: Repo, allow_local: bool) -> str | None:
     with contextlib.suppress(OSError, ValueError):
         if time.time() - int(stamp.read_text(encoding="utf-8")) < FETCH_FRESH:
             return None
-    result = git(repo.git_dir, "fetch", "--quiet", "--prune", "--tags", "origin",
-                 timeout=NETWORK_TIMEOUT, check=False, allow_local=allow_local)
-    if result.returncode != 0:
+    try:
+        result = git(repo.git_dir, "fetch", "--quiet", "--prune", "--tags", "origin",
+                     timeout=NETWORK_TIMEOUT, check=False, allow_local=allow_local)
+        failure = "" if result.returncode == 0 else tail(result.stderr) or "нет связи"
+    except SutError as exc:  # git не ответил за таймаут: копия на диске есть, работаем по ней
+        failure = str(exc)
+    if failure:
         when = datetime.fromtimestamp(stamp.stat().st_mtime).strftime("%d.%m %H:%M") \
             if stamp.is_file() else "?"
-        return (f"копию {repo.name} обновить не удалось ({tail(result.stderr) or 'нет связи'}) — "
-                f"смотрю на данные от {when}")
+        return f"копию {repo.name} обновить не удалось ({failure}) — смотрю на данные от {when}"
     stamp.write_text(str(int(time.time())), encoding="utf-8")
     return None
 
