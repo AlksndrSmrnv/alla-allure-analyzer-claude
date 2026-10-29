@@ -15,9 +15,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from mcp_tracker_config import config_text
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "extensions" / "tickets" / "scripts"
 DEMO = SCRIPTS.parent / "adapters" / "demo.py"
+MCP = SCRIPTS.parent / "adapters" / "mcp.py"
 spec = importlib.util.spec_from_file_location("ext_ticketlib", SCRIPTS / "ticketlib.py")
 assert spec is not None and spec.loader is not None
 t = importlib.util.module_from_spec(spec)
@@ -842,3 +844,58 @@ def test_orphan_before_first_database_connect_retains_lease_until_completion(cas
         if reconciler is not None and reconciler.poll() is None:
             reconciler.kill()
             reconciler.communicate(timeout=5)
+
+
+def use_mcp_adapter(ctx: dict[str, Any], snap: dict[str, Any], *server_args: str) -> sqlite3.Connection:
+    project = Path(ctx["project_root"])
+    tracker = project / "tracker.sqlite"
+    teams = {"Product": "BACK", "QA": "QA", "SRE": "OPS", "Data": "DATA"}
+    (project / "mcp-tracker.toml").write_text(
+        config_text(tracker, *server_args, projects=teams, search_text=""), encoding="utf-8")
+    ctx["settings"]["adapter_command"] = [".venv/bin/python", str(MCP), "--config",
+                                          "mcp-tracker.toml"]
+    update_snapshot(ctx, snap)
+    return sqlite3.connect(tracker)
+
+
+def test_mcp_adapter_creates_then_links_through_the_whole_flow(case: Any) -> None:
+    ctx, snap, store = case
+    use_mcp_adapter(ctx, snap)
+    record = make_request(ctx, store)
+    assert "Создан тикет" in t.submit(ctx, record, record["shown_hash"], store)
+    ctx["selected_numbers"] = [5]
+    ctx["params"] = {"operation_5": ["link"], "target_5": ["TRK-1"]}
+    update_snapshot(ctx, snap)
+    t.draft(ctx, 5, store)
+    linked = next(row for row in store.records() if row["numbers"] == [5])
+    t.show(linked, store)
+    linked = store.load(linked["request_id"])
+    assert "Связь добавлена" in t.submit(ctx, linked, linked["shown_hash"], store)
+    connection = sqlite3.connect(Path(ctx["project_root"]) / "tracker.sqlite")
+    [(comments, description)] = connection.execute("SELECT comments, description FROM issues")
+    connection.close()
+    assert f"alla-request: {linked['request_id']}" in comments
+    assert f"alla-request: {record['request_id']}" in description
+
+
+def test_mcp_adapter_lost_response_is_found_by_label_on_reconcile(case: Any) -> None:
+    ctx, snap, store = case
+    use_mcp_adapter(ctx, snap, "--lose-response-once").close()
+    record = make_request(ctx, store)
+    assert "итог неизвестен" in t.submit(ctx, record, record["shown_hash"], store)
+    record = store.load(record["request_id"])
+    assert record["state"] == "unknown"
+    assert "Создан тикет" in t.reconcile(ctx, record, store)
+    connection = sqlite3.connect(Path(ctx["project_root"]) / "tracker.sqlite")
+    assert connection.execute("SELECT count(*) FROM issues").fetchone()[0] == 1
+    connection.close()
+
+
+def test_mcp_adapter_never_claims_absence_so_blind_index_keeps_the_lock(case: Any) -> None:
+    ctx, snap, store = case
+    use_mcp_adapter(ctx, snap, "--lose-response-once", "--search-blind").close()
+    record = make_request(ctx, store)
+    assert record["version"]["prepared"]["capabilities"]["authoritative_absence"] is False
+    assert "итог неизвестен" in t.submit(ctx, record, record["shown_hash"], store)
+    assert "итог неизвестен" in t.reconcile(ctx, store.load(record["request_id"]), store)
+    assert store.load(record["request_id"])["state"] == "unknown"

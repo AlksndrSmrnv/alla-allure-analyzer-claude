@@ -187,8 +187,17 @@ paths:
   Действие без --context/--run с явным --reports-dir получает только общий контекст проекта и
   настройки. Ядро не читает записи расширения; их формат, UUID и принадлежность проекту
   проверяет сам обработчик. Run-bound граница --context не ослабляется.
-- Подключение MCP трекера без своего адаптера на API — будущая задача, код не менять,
-  пока путь не выбран: `docs/plans/2026-10-28-tracker-mcp.md`.
+- MCP трекера: встроенный `extensions/tickets/adapters/mcp.py` — обычный адаптер `api = 1`
+  (ядро и скрипты tickets не знают про MCP; решение — `docs/plans/2026-10-28-tracker-mcp.md`).
+  Клиент stdio на stdlib, формат — `mcp-tracker.toml` (пример рядом). `prepare` чистый и сервер
+  не запускает; метка `alla-request: UUID` в `{body}` обязательна, это ключ `lookup`
+  (`[lookup]`/`[lookup_link]`; `absent` не возвращается никогда, `authoritative_absence`
+  всегда false). Мутации сначала ищут метку (повторная доставка не плодит тикеты) и шлют
+  `tool`/`arguments` из payload без пересборки. Сервер — `Popen(close_fds=False)`, без
+  отсоединения: он наследует дескриптор блокировки; stderr сервера и его тексты ошибок не
+  выводятся; `PATH` сервера безопасный, остальное окружение — из `adapter_env`. Только stdio.
+  Тесты: `test_ticket_mcp_adapter.py`, сквозные — в конце `test_ext_tickets.py`, фейковый
+  сервер — `tests/fake_mcp_server.py`, общий конфиг — `tests/mcp_tracker_config.py`.
 - tickets: полный алгоритм и протокол адаптера в extensions/tickets/README.md. Модель
   ничего не отправляет из задания подготовки. Родитель по references/tickets.md показывает
   полный review-файл и после отдельного ответа собирает submit с --run по точному шаблону

@@ -1,0 +1,62 @@
+# Пример alla-extensions/mcp-tracker.toml для adapters/mcp.py (Jira-подобный MCP).
+# Имена инструментов и поля ответов у каждого MCP-сервера свои: возьми их из его документации
+# или из списка инструментов (`tools/list`) и проверь на тестовом проекте трекера.
+# Подстановки в arguments: {title} {title_q} {body} {team} {project} {tracker_kind}
+# {target_id} {request_id} {launch_id} {site}. {title_q} — заголовок, экранированный для
+# вставки в кавычки запроса. {body} обязателен в create/link: он несёт метку alla-request.
+
+site = "https://tracker.company"      # устойчивый адрес трекера: часть области запроса
+
+[server]
+command = ["npx", "-y", "some-tracker-mcp"]   # имя ищется на безопасном PATH; путь — от корня проекта
+extra_path = []                               # каталоги для PATH сервера (node, uvx), если нужны
+timeout = 20                                  # секунд на весь вызов адаптера; меньше adapter_timeout
+
+[projects]                  # команда из team_* → проект или очередь трекера
+backend = "BACK"
+qa = "QA"
+
+[kinds]                     # kind тикета → тип в трекере (по умолчанию — как есть)
+bug = "Bug"
+task = "Task"
+investigation = "Task"
+
+[create]
+tool = "create_issue"
+arguments = { project = "{project}", type = "{tracker_kind}", summary = "{title}", description = "{body}" }
+[create.result]             # id — из JSON ответа (id_path) или регулярным выражением (id_regex)
+id_path = "key"
+url_template = "https://tracker.company/browse/{id}"
+
+[link]                      # необязателен: без него «добавить в существующий» недоступно
+tool = "add_comment"
+arguments = { issue = "{target_id}", text = "{body}" }
+[link.result]               # успех — ответ без ошибки; id берётся из target_id
+url_template = "https://tracker.company/browse/{id}"
+
+[search]                    # необязателен: без него поиск похожих помечается неподключённым
+tool = "search_issues"
+arguments = { query = 'project = "{project}" AND resolution = Unresolved AND text ~ "{title_q}"' }
+[search.result]
+items_path = "issues"       # где в ответе список; пусто — весь ответ
+id_path = "key"
+state_path = "status"
+url_template = "https://tracker.company/browse/{id}"
+# empty_regex = "No issues found"   # текст ответа «ничего не найдено», если это не пустой список
+
+[lookup]                    # необязателен: после обрыва поиск тикета по метке запроса
+tool = "search_issues"
+arguments = { query = 'project = "{project}" AND text ~ "{request_id}"' }
+[lookup.result]
+items_path = "issues"
+id_path = "key"
+url_template = "https://tracker.company/browse/{id}"
+verify_path = "description"  # найденный тикет принимается, только если поле содержит метку
+
+[lookup_link]               # то же для link: метка лежит в комментарии
+tool = "search_issues"
+arguments = { query = 'project = "{project}" AND comment ~ "{request_id}"' }
+[lookup_link.result]
+items_path = "issues"
+id_path = "key"
+url_template = "https://tracker.company/browse/{id}"
