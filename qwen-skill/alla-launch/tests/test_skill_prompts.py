@@ -12,7 +12,11 @@ from pathlib import Path
 import pytest
 
 from alla_skill_lib.agent_rules import EXECUTOR_RULES
-from alla_skill_lib.analysis_format import parse_analysis, validate_analysis
+from alla_skill_lib.analysis_format import (
+    ANALYSIS_NOTE,
+    parse_analysis,
+    validate_analysis,
+)
 from alla_skill_lib.cluster_task import (
     IMAGES_NOTE,
     RULES,
@@ -48,6 +52,17 @@ def test_every_variant_keeps_the_answer_format_and_step_rules(variant: str, has_
     assert ("БАЗА ЗНАНИЙ:" in task) is has_kb
     if not has_kb:
         assert "знаний" not in task
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+@pytest.mark.parametrize("has_kb", [False, True])
+def test_every_variant_ends_the_answer_with_the_closing_note(variant: str, has_kb: bool) -> None:
+    """Qwen показывает текст файла над вопросом «Применить это изменение?»."""
+    task = _task(variant, has_kb=has_kb)
+    assert f"{ANALYSIS_NOTE}   (последней строкой, дословно)" in task
+    template = task.split("Ответ — строго в таком формате")[1].split("\n\n")[1]
+    assert template.splitlines()[-1].startswith("ПРИМЕЧАНИЕ:")
+    assert "Последняя строка файла — «ПРИМЕЧАНИЕ: …»" in task
 
 
 def test_symptom_and_log_task_requires_log_evidence_before_a_quote() -> None:

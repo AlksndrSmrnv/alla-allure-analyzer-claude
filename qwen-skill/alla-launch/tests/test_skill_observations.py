@@ -13,6 +13,7 @@ from test_skill_flow import MARKDOWN_ANALYSIS, VALID_ANALYSIS, _finish, _next, _
 from alla_skill_lib import review
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.analysis_format import (
+    ANALYSIS_NOTE,
     EXPECTED_FORMAT,
     parse_analysis,
     quote_found,
@@ -277,3 +278,18 @@ def test_what_is_missing_reaches_the_summary_and_refreshes_it(
     # Поменялось только «НЕ ХВАТАЕТ» — сводка устарела и запрашивается заново.
     assert _next(run_dir, capsys).startswith("STATUS: summary")
     assert "адреса auth-service в конфигурации" in (run_dir / "summary_task.md").read_text("utf-8")
+
+
+@pytest.mark.parametrize("closing_section", ["КОД: tests/OrderTest.java:6 — assertEquals", "БАЗА ЗНАНИЙ: нет"])
+def test_closing_note_is_a_section_of_its_own(closing_section: str) -> None:
+    """Примечание — последняя строка файла: оно не попадает ни в шаги, ни в КОД, ни в БАЗУ ЗНАНИЙ."""
+    body = (
+        "ЧТО СЛОМАЛОСЬ: Тест получил 500.\nПРИЧИНА: тест — устаревшее ожидание.\n"
+        "КАК ИСПРАВИТЬ:\n1. Ожидать 201.\n"
+    )
+    parsed = parse_analysis(f"{body}{closing_section}\n{ANALYSIS_NOTE}\n")
+    assert parsed.fix == "1. Ожидать 201."
+    assert all("ПРИМЕЧАНИЕ" not in line and "отчёта Аллы" not in line for line in parsed.code)
+    assert parsed.kb_ref is None
+    assert not parsed.unrecognized
+    assert parse_analysis(f"{body}{closing_section}\n").fix == parsed.fix

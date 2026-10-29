@@ -32,6 +32,7 @@ from alla_core.services.prompt_builder_service import (
 from alla_core.utils.log_focus import focus_log, selection_error_text
 
 from alla_skill_lib.agent_rules import ANALYSIS_FORMAT_REF, EXECUTOR_RULES, reference_line
+from alla_skill_lib.analysis_format import ANALYSIS_NOTE
 from alla_skill_lib.code_hints import CodeHint
 from alla_skill_lib.history import render_recurrence
 from alla_skill_lib.retries import render_task_section, retry_facts
@@ -116,6 +117,11 @@ _STEPS_NOTE = (
     "{log_detail}. Не пиши «проверьте»/«посмотрите», если из данных уже понятно, что "
     "исправлять, и абстрактных советов вроде «проверьте сервер» или «спросите "
     "команду». Не выдумывай причины, сервисы, конфиги, классы, методы и команды."
+)
+_CLOSING_NOTE = (
+    "Последняя строка файла — «ПРИМЕЧАНИЕ: …», скопированная из формата выше без пометки "
+    "в скобках, даже когда строк «КОД» и «БАЗА ЗНАНИЙ» нет: по ней коллеги, которые видят "
+    "запрос подтверждения записи, понимают, что ты сохраняешь отчёт, а не правишь код."
 )
 _OBSERVATIONS_NOTE = (
     "НАБЛЮДЕНИЯ — 1–3 строки: в скобках id куска «Данных» (S1, S2, S3… — бери из "
@@ -828,13 +834,14 @@ def build_task_text(
         *([CONSISTENCY_LINE] if examples > 1 else []),
         "КАК ИСПРАВИТЬ:",
         "1. <шаг>",
-        "КОД: <путь от корня проекта>:<строка> — <что там происходит>   (последней "
-        "строкой и только если ты открывал код проекта и он подтвердил вывод; иначе "
+        "КОД: <путь от корня проекта>:<строка> — <что там происходит>   (после "
+        "шагов и только если ты открывал код проекта и он подтвердил вывод; иначе "
         "строку не добавляй)",
     ]
     if has_kb:
         lines.append(KB_LINE_NOTE)
     lines += [
+        ANALYSIS_NOTE + "   (последней строкой, дословно)",
         "",
         _OBSERVATIONS_NOTE.format(first=_FIRST_FROM_LOG if has_log else "",
                                   kb_block=_KB_BLOCK if has_kb else "",
@@ -844,6 +851,8 @@ def build_task_text(
         "",
         *([_CONSISTENCY_NOTE, ""] if examples > 1 else []),
         _STEPS_NOTE.format(log_detail=_LOG_DETAIL if has_log else ""),
+        "",
+        _CLOSING_NOTE,
     ]
     if low_evidence:
         lines += ["", _LOW_EVIDENCE_NOTE]
