@@ -899,3 +899,24 @@ def test_mcp_adapter_never_claims_absence_so_blind_index_keeps_the_lock(case: An
     assert "итог неизвестен" in t.submit(ctx, record, record["shown_hash"], store)
     assert "итог неизвестен" in t.reconcile(ctx, store.load(record["request_id"]), store)
     assert store.load(record["request_id"])["state"] == "unknown"
+
+
+def test_mcp_adapter_typo_in_a_tool_name_is_refused_before_sending(case: Any) -> None:
+    """submit вызывает search до sending: имя любого инструмента файла сверяется с сервером там,
+    поэтому опечатка в [link] (её нет в нагрузке создания) не сжигает запрос в unknown."""
+    ctx, snap, store = case
+    use_mcp_adapter(ctx, snap).close()
+    record = make_request(ctx, store)
+    config = Path(ctx["project_root"]) / "mcp-tracker.toml"
+    config.write_text(config.read_text(encoding="utf-8").replace(
+        'tool = "add_comment"', 'tool = "add_coment"'), encoding="utf-8")
+    with pytest.raises(t.TicketError):
+        t.submit(ctx, record, record["shown_hash"], store)
+    assert store.load(record["request_id"])["state"] == "ready"
+    connection = sqlite3.connect(Path(ctx["project_root"]) / "tracker.sqlite")
+    assert connection.execute("SELECT count(*) FROM issues").fetchone()[0] == 0
+    connection.close()
+    config.write_text(config.read_text(encoding="utf-8").replace(
+        'tool = "add_coment"', 'tool = "add_comment"'), encoding="utf-8")
+    assert "Создан тикет" in t.submit(ctx, store.load(record["request_id"]),
+                                      record["shown_hash"], store)

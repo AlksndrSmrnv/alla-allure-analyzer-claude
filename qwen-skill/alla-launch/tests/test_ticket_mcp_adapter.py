@@ -9,7 +9,6 @@ import re
 import sqlite3
 import subprocess
 import sys
-import textwrap
 import time
 import uuid
 from pathlib import Path
@@ -405,22 +404,43 @@ def test_connect_guide_probes_work_against_the_fake_server(project: Path) -> Non
     assert response(invoke(project, lookup_probe))["outcome"] == "unknown"
 
 
-def test_connect_guide_tool_check_snippet_lists_server_tools(project: Path) -> None:
+def check_run(project: Path, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([sys.executable, str(ADAPTER), "--config", "mcp-tracker.toml", "--check"],
+                          capture_output=True, text=True, encoding="utf-8", timeout=60, cwd=project,
+                          env={"PYTHONIOENCODING": "utf-8", **(env or {})})
+
+
+def test_check_lists_tools_and_flags_a_missing_one(project: Path) -> None:
     write_config(project)
-    text = GUIDE.read_text(encoding="utf-8")
-    found = re.search(r"<<'EOF'\n(.*?)\n\s*EOF\n", text, flags=re.S)
-    assert found is not None
-    script = textwrap.dedent(found.group(1))
-    config = project / "mcp-tracker.toml"
-    ok = subprocess.run([sys.executable, "-", str(config)], input=script, capture_output=True,
-                        text=True, cwd=project, timeout=60)
-    assert ok.returncode == 0, ok.stderr
+    ok = check_run(project)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
     assert "[create] create_issue: есть" in ok.stdout and "НЕТ" not in ok.stdout
+    assert "Инструменты сервера: add_comment, create_issue, search_issues" in ok.stdout
+    assert not (project / "tracker.sqlite").exists() or not issues(project)
+    config = project / "mcp-tracker.toml"
     config.write_text(config.read_text(encoding="utf-8").replace(
         'tool = "create_issue"', 'tool = "creat_issue"'), encoding="utf-8")
-    bad = subprocess.run([sys.executable, "-", str(config)], input=script, capture_output=True,
-                         text=True, cwd=project, timeout=60)
-    assert "[create] creat_issue: НЕТ У СЕРВЕРА" in bad.stdout
+    bad = check_run(project)
+    assert bad.returncode == 1 and "[create] creat_issue: НЕТ У СЕРВЕРА" in bad.stdout
+    assert "[search] search_issues: есть" in bad.stdout
+
+
+def test_check_reports_a_broken_file_without_starting_anything(project: Path) -> None:
+    (project / "mcp-tracker.toml").write_text('site = "x"\n', encoding="utf-8")
+    failure = check_run(project)
+    assert failure.returncode == 1 and failure.stdout.startswith("Ошибка: ")
+
+
+def test_search_refuses_a_typo_in_any_tool_name_before_a_write_could_happen(project: Path) -> None:
+    """submit зовёт search до записи sending: опечатка в create.tool должна отказать здесь."""
+    write_config(project)
+    config = project / "mcp-tracker.toml"
+    request_id, draft = prepared(project)
+    config.write_text(config.read_text(encoding="utf-8").replace(
+        'tool = "create_issue"', 'tool = "creat_issue"'), encoding="utf-8")
+    failure = invoke(project, search_request(request_id, draft))
+    assert failure.returncode == 1 and "creat_issue" in json.loads(failure.stdout)["error"]
+    assert not issues(project)
 
 
 @pytest.mark.parametrize("name", ["README.md", "AUTHORING.md", "tickets/README.md",

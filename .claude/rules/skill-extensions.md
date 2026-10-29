@@ -200,6 +200,10 @@ paths:
   `tool`/`arguments` из payload без пересборки. Сервер — `Popen(close_fds=False)`, без
   отсоединения: он наследует дескриптор блокировки; stderr сервера и его тексты ошибок не
   выводятся; `PATH` сервера безопасный, остальное окружение — из `adapter_env`. Только stdio.
+  `search` сверяет с сервером имена **всех** инструментов файла (`Config.tools`): `submit` зовёт
+  поиск до записи `sending`, и опечатка в имени отказывает, пока запрос `ready` (после
+  `sending` любая ошибка адаптера — `unknown` навсегда, `absent` адаптер не отдаёт). Без `[search]`
+  защиты нет — режим `mcp.py --check` (читающая сверка имён, код 1 при расхождении).
   Тесты: `test_ticket_mcp_adapter.py`, сквозные — в конце `test_ext_tickets.py`, фейковый
   сервер — `tests/fake_mcp_server.py`, общий конфиг — `tests/mcp_tracker_config.py`.
 - tickets: полный алгоритм и протокол адаптера в extensions/tickets/README.md. Модель

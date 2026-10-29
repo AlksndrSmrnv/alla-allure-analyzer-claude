@@ -38,10 +38,13 @@ GitLab / YouTrack к Алле». Что делает `tickets` и как уст�
 - Код скилла и `adapters/` не правь (обновление скилла перезапишет). Не хватает возможности —
   это просьба разработчикам скилла, а не повод править `mcp.py` или читать `state.json`.
 - **Ошибка при настоящей отправке необратима.** Перед записью скрипт сохраняет запрос как
-  `sending`; любая ошибка адаптера после этого (опечатка в имени инструмента, неверный проект,
+  `sending`; любая ошибка адаптера после этого (неверный проект или тип, права токена,
   таймаут) переводит его в `unknown`, а адаптер `absent` не возвращает никогда. Такой запрос не
-  отменить: проблемы этого разбора остаются заблокированными. Поэтому всё, что можно, проверяй
-  пробами без записи (раздел 6) и только потом отправляй. Ломать нарочно через `submit` нельзя.
+  отменить: проблемы этого разбора остаются заблокированными. Опечатки в именах инструментов
+  до этого не доходят: при настроенном `[search]` их ловят `draft` и `submit` (адаптер при поиске
+  сверяет с сервером имена **всех** инструментов файла, а `submit` вызывает поиск до записи
+  `sending`); без `[search]` их ловит только проба `--check` раздела 6. Остальное проверяй
+  пробами без записи и только потом отправляй. Ломать нарочно через `submit` нельзя.
 - Пробуй только на тестовом проекте трекера. Для настоящей отправки держи **запасную проблему**
   (или новый `prepare <launch> --fresh`, если блокировка уже случилась: она действует в
   пределах одного разбора).
@@ -103,8 +106,8 @@ GitLab / YouTrack к Алле». Что делает `tickets` и как уст�
      нельзя. Секреты в `config.toml` не пиши.
    - Файл `config.toml` правят пользователь и команды `extensions enable|disable`; строку
      `enabled` сам не меняй.
-4. Сказать инженеру перезапустить Qwen Code: появится `/alla:ticket N [N…]`. Пробы 1–4 и 7
-   раздела 6 и `extensions run tickets …` перезапуска не требуют.
+4. Сказать инженеру перезапустить Qwen Code: появится `/alla:ticket N [N…]`. Пробы раздела 6
+   и `extensions run tickets …` перезапуска не требуют: он нужен только слэш-команде.
 
 ## 5. Как описать инструменты в `mcp-tracker.toml`
 
@@ -199,7 +202,7 @@ url_template = "{site}/-/issues/{id}"
 
 ## 6. Проверка — от безопасной к настоящей
 
-Пробы 2–4 и 7 запускают адаптер напрямую: он читает JSON со stdin и печатает один JSON-ответ;
+Пробы 2, 4 и 7 запускают адаптер напрямую: он читает JSON со stdin и печатает один JSON-ответ;
 при ошибке — `{"api":1,"error":"…"}` и код 1. `request_id` в пробах — любой канонический
 UUID. Все пробы идут в **тестовый** проект: команда `test` из `[projects]` (раздел 4, шаг 2).
 
@@ -215,50 +218,19 @@ UUID. Все пробы идут в **тестовый** проект: кома�
 
    В ответе `scope` (`site` и проект) и `payload` в base64: раскодируй и проверь поля
    `tool` и `arguments` (тип, проект, описание с `alla-request:` в конце).
-3. **Имена инструментов — проверка без записи.** Адаптер сверяет имя только того инструмента,
-   который вызывает (проба `search` — только `[search].tool`), а имя `[create].tool`
-   проверится лишь настоящей отправкой, то есть ценой необратимой ошибки. Поэтому сверь все
-   имена заранее: скрипт запускает сервер из `[server] command`, читает `tools/list` и сравнивает
-   с файлом (список страниц сервера не листается, ждёт до 30 с):
+3. **Имена инструментов — проверка без записи.** Режим `--check` запускает сервер из
+   `[server] command`, читает его список инструментов и сверяет с файлом. Он обязателен, если
+   в файле нет `[search]` (иначе имена не проверит никто до настоящей отправки), и полезен
+   всегда: показывает точные имена сервера для исправления:
 
    ```bash
-   env HOME="$HOME" TRACKER_TOKEN="$TRACKER_TOKEN" .venv/bin/python - alla-extensions/mcp-tracker.toml <<'EOF'
-   import json, signal, subprocess, sys, tomllib
-   signal.alarm(30)
-   config = tomllib.load(open(sys.argv[1], "rb"))
-   wanted = {name: config[name]["tool"]
-             for name in ("create", "link", "search", "lookup", "lookup_link") if name in config}
-   server = subprocess.Popen(config["server"]["command"], stdin=subprocess.PIPE,
-                             stdout=subprocess.PIPE, text=True)
-   def send(message):
-       server.stdin.write(json.dumps(message) + "\n")
-       server.stdin.flush()
-   def reply(number):
-       for line in server.stdout:
-           try:
-               message = json.loads(line)
-           except ValueError:
-               continue
-           if message.get("id") == number:
-               return message
-   send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-       "protocolVersion": "2025-06-18", "capabilities": {},
-       "clientInfo": {"name": "alla-probe", "version": "1"}}})
-   reply(1)
-   send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-   send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-   names = {tool["name"] for tool in reply(2)["result"]["tools"]}
-   server.stdin.close()
-   server.terminate()
-   for section, tool in wanted.items():
-       print(f"[{section}] {tool}: {'есть' if tool in names else 'НЕТ У СЕРВЕРА'}")
-   print("Инструменты сервера:", ", ".join(sorted(names)))
-   EOF
+   env -i HOME="$HOME" TRACKER_TOKEN="$TRACKER_TOKEN" PYTHONIOENCODING=utf-8 .venv/bin/python .qwen/skills/alla-launch/extensions/tickets/adapters/mcp.py --config alla-extensions/mcp-tracker.toml --check
    ```
 
-   У каждого раздела должно быть «есть». Поправь имя по списку «Инструменты сервера».
+   У каждого раздела должно быть «есть»; код возврата 1 и «НЕТ У СЕРВЕРА» — поправь имя по
+   строке «Инструменты сервера».
 4. **`search` — читающий вызов настоящего трекера**: проверяет `arguments`, язык запроса и
-   `items_path`. Нужен раздел `[search]`; в `scope` подставь `site` и проект из ответа шага 2:
+   `items_path`, а заодно имена всех инструментов файла. Нужен раздел `[search]`; в `scope` подставь `site` и проект из ответа шага 2:
 
    ```bash
    printf '%s' '{"api":1,"operation":"search","request_id":"00000000-0000-4000-8000-000000000001","action":"create","target_id":null,"scope":{"site":"https://tracker.company","project_or_queue":"TEST"},"ticket":{"kind":"bug","team":"test","title":"Проба подключения","description":"Проверка настройки, не тикет.","launch_id":1}}' | env -i HOME="$HOME" TRACKER_TOKEN="$TRACKER_TOKEN" PYTHONIOENCODING=utf-8 .venv/bin/python .qwen/skills/alla-launch/extensions/tickets/adapters/mcp.py --config alla-extensions/mcp-tracker.toml
@@ -323,7 +295,7 @@ UUID. Все пробы идут в **тестовый** проект: кома�
 | `нужен target_id из поиска` | `link` без `target_id`; он берётся только из результата поиска |
 | `Команда MCP-сервера не найдена` | `[server] command` не находится на безопасном `PATH`; дай путь с `/` (от корня проекта) или каталог в `extra_path` |
 | `Не удалось запустить MCP-сервер` | файл не запускается: права, интерпретатор |
-| `У MCP-сервера нет инструмента из mcp-tracker.toml` | неверное имя `tool`; точные имена даёт проба 3. При настоящей отправке это **необратимая** ошибка (раздел 2) |
+| `У MCP-сервера нет инструмента из mcp-tracker.toml` | неверное имя `tool`; точные имена даёт проба 3 (`--check`). Ловится в `draft`/`submit` при настроенном `[search]`; без него при настоящей отправке — **необратимая** ошибка (раздел 2) |
 | `MCP-сервер не ответил вовремя` | долгий старт (`npx` скачивает пакет), нет `HOME`/токена в `adapter_env`, нет сети, мост ждёт ручного входа (OAuth); подними `[server] timeout` (меньше `adapter_timeout`) |
 | `MCP-сервер завершился без ответа` | сервер упал на старте; запусти его команду вручную и посмотри его вывод |
 | `MCP-сервер отклонил запрос` | сервер не принял служебный вызов (`initialize`, `tools/list`): неверная версия сервера или не MCP stdio |

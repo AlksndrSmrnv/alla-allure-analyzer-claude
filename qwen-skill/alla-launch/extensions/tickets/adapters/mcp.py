@@ -1,6 +1,7 @@
 """Универсальный адаптер tickets для MCP-сервера трекера (stdio, api = 1).
 
 Подключается явно через adapter_command: `mcp.py --config alla-extensions/mcp-tracker.toml`.
+`--check` — проверка для человека: запускает сервер и сверяет с ним имена инструментов файла.
 Сам запускает MCP-сервер из конфигурации, говорит с ним JSON-RPC по stdin/stdout и
 сопоставляет нейтральный тикет с вызовами его инструментов по шаблонам файла.
 `prepare` чистый и сервер не запускает. Метка `alla-request: UUID` попадает в текст
@@ -137,6 +138,12 @@ class Config:
     lookup: Tool | None
     lookup_link: Tool | None
 
+    def tools(self) -> dict[str, str]:
+        """Раздел файла → имя инструмента сервера, для всех настроенных разделов."""
+        sections = {"create": self.create, "link": self.link, "search": self.search,
+                    "lookup": self.lookup, "lookup_link": self.lookup_link}
+        return {name: tool.name for name, tool in sections.items() if tool is not None}
+
 
 def text_field(section: dict[str, Any], key: str, where: str, *, required: bool = False,
                default: str = "") -> str:
@@ -269,6 +276,7 @@ class Session:
         self.deadline = time.monotonic() + config.budget
         self.lines: queue.Queue[bytes | None] = queue.Queue()
         self.finished = False
+        self.available: set[str] = set()
         self.next_id = 0
         self.process: subprocess.Popen[bytes] | None = None
         self.reader: threading.Thread | None = None
@@ -376,6 +384,7 @@ class Session:
             cursor = result.get("nextCursor")
             if not isinstance(cursor, str) or not cursor:
                 break
+        self.available = names
         missing = sorted(set(self.tools) - names)
         if missing:
             raise ProtocolError("У MCP-сервера нет инструмента из mcp-tracker.toml: "
@@ -532,7 +541,9 @@ def search(config: Config, root: Path, request: dict[str, Any]) -> dict[str, Any
     variables = ticket_variables(config, ticket, request_id, target)
     if checked_scope(config, request.get("scope")) != scope_of(config, variables["project"]):
         raise ProtocolError("Область поиска не соответствует команде тикета")
-    with Session(config, root, [tool.name]) as session:
+    # submit вызывает search до записи sending: опечатка в имени любого инструмента файла
+    # всплывает здесь, пока запрос ещё ready, а не при отправке, где он стал бы unknown.
+    with Session(config, root, sorted(set(config.tools().values()))) as session:
         reply = session.call(tool.name, render(tool.arguments, variables))
     reason = "Найдено поиском MCP трекера"
     return {"api": API, "matches": [{**row, "reason": reason}
@@ -602,14 +613,31 @@ def lookup(config: Config, root: Path, request: dict[str, Any]) -> dict[str, Any
     return {"api": API, "outcome": "unknown"}
 
 
+def check(config: Config, root: Path) -> int:
+    """Читающая проверка для человека: сервер запускается, все инструменты файла должны быть."""
+    with Session(config, root, []) as session:
+        available = session.available
+    missing = 0
+    for section, name in config.tools().items():
+        found = name in available
+        missing += not found
+        print(f"[{section}] {name}: {'есть' if found else 'НЕТ У СЕРВЕРА'}")
+    print("Инструменты сервера: " + (", ".join(sorted(available)) or "нет"))
+    return 1 if missing else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True,
                         help="mcp-tracker.toml: путь от корня проекта")
+    parser.add_argument("--check", action="store_true",
+                        help="проверить файл и наличие его инструментов у сервера; без записи")
     args = parser.parse_args()
     root = Path.cwd()
     try:
         config = load_config(root / args.config)
+        if args.check:
+            return check(config, root)
         request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
         if not isinstance(request, dict) or type(request.get("api")) is not int or request["api"] != API:
             raise ProtocolError("Поддерживается JSON-объект с api = 1")
@@ -631,6 +659,9 @@ def main() -> int:
         message = str(exc)
     except (ValueError, UnicodeError):
         message = "Запрос не соответствует контракту адаптера"
+    if args.check:
+        print(f"Ошибка: {message}")
+        return 1
     print(canonical({"api": API, "error": message}))
     print(message, file=sys.stderr)
     return 1
