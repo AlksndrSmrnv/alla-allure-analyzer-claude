@@ -115,6 +115,8 @@ def test_neighbouring_info_is_not_swallowed_by_the_stack() -> None:
     '[{"level": "error", "msg": "array, not a record"}]',
     "I, [2026-10-03T10:58:00.100123 #41]  INFO -- : Rescued error in retry loop",
     "W, [2026-10-03T10:58:00.100123 #41]  WARN -- : error budget low",
+    '{"level": 40, "msg": "pino warn: error budget low"}',
+    "[10:00:02 INF] Request finished with error budget low",
     "E, garbage without a Ruby Logger header",
     "info: Billing.Jobs.ReportJob[0] error report sent",
     "warn: Billing.Jobs.ReportJob[0]\n      error rate above threshold",
@@ -160,6 +162,10 @@ def test_error_words_outside_the_level_position_are_not_errors(line: str) -> Non
     '{"log": {"level": "error", "logger": "x"}, "message": "ecs nested"}',
     '{"level": 3, "message": "zerolog error"}',
     '{"level": 5, "message": "zerolog panic"}',
+    '{"level": 50, "msg": "pino error"}',
+    '{"level": 60, "msg": "pino fatal"}',
+    "[10:00:02 ERR] Failed to register claim",
+    "[10:00:02 FTL] Host terminated unexpectedly",
     '{"level": "dpanic", "msg": "zap development panic"}',
 ])
 def test_error_levels_in_the_level_position(line: str) -> None:

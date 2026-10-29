@@ -276,7 +276,10 @@ HTTP-клиента в сигнатуре (`v10`), ключ связи повт�
 precision 0.932 → 0.980, recall 0.977 → 0.987, скрытых групп 6 → 0, потеря доказательств
 24/156 → 8/156. Осталось: склейка `db-read + formulary` и дробление `formulary` в
 `shared_assert_background` (общий фоновый блок держит пару, «Кластеризация» в `core.md`),
-потеря строк в форматах pino, Serilog, журнала PostgreSQL и Monolog (`log_formats_more`),
+потеря строк в форматах журнала PostgreSQL и Monolog (`log_formats_more`; pino и Serilog
+закрыты 2026-10-30: `one_problem_noisy` потеря доказательств 3/3 → 0/3, `log_formats_more`
+4/9 → 2/9, но `kb_auto` у `one_problem_noisy` 1 → 0 — шумовые ошибки логов теперь видны, и
+группа без одинаковых строк-ошибок не разбирается по записи без модели),
 лог с ANSI-цветами (`log_traps_more`) и `one_problem_noisy`, две попытки `retries_more`,
 отрезанные лимитом в 5 попыток. Исправлять их можно по dev.
 `info_business_error` (разные бизнес-ошибки в INFO-записях при одном сообщении ассерта)

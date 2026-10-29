@@ -72,9 +72,11 @@ from alla_core.utils.text_normalization import repeat_key
 ERROR_LEVELS = frozenset({
     "ERROR", "ERR", "FATAL", "SEVERE", "CRITICAL", "CRIT", "ALERT", "EMERG", "EMERGENCY",
     "PANIC", "DPANIC",  # logrus, zap, zerolog
+    "FTL",  # Serilog
 })
 LEVELS = ERROR_LEVELS | frozenset({
     "WARN", "WARNING", "INFO", "DEBUG", "TRACE", "NOTICE", "FINE", "FINER", "FINEST", "CONFIG",
+    "INF", "WRN", "DBG", "VRB",  # Serilog
 })
 _LEVEL_SCAN_TOKENS = 6
 
@@ -87,6 +89,7 @@ _TIMESTAMP_RE = re.compile(
     r"|" + _MONTH + r" \d{1,2}, \d{4} \d{1,2}:\d{2}:\d{2} [AP]M"  # JUL
     r"|" + _MONTH + r"\s+\d{1,2} \d{2}:\d{2}:\d{2}"    # syslog
     r"|\d{2}:\d{2}:\d{2}[.,]\d{3}"                    # logback: 10:00:00.123
+    r"|(?<=\[)\d{2}:\d{2}:\d{2}(?= )"                  # Serilog: [10:00:00 ERR]
     r")"
 )
 _LOGFMT_START_RE = re.compile(r"^(?:time|ts|timestamp|t)=\S")
@@ -111,8 +114,10 @@ _JSON_LEVEL_KEYS = ("level", "lvl", "severity", "log.level")
 # значение такого поля идёт строками под записью; остальные (сообщение) остаются в заголовке.
 _JSON_STACK_KEYS = frozenset({"stack_trace", "stacktrace", "stack", "exception",
                               "extendedstacktrace"})
-_ZEROLOG_LEVELS = {-1: "TRACE", 0: "DEBUG", 1: "INFO", 2: "WARN", 3: "ERROR", 4: "FATAL",
-                   5: "PANIC"}
+# Число под ``level``: zerolog (-1…5) и pino (10…60) — диапазоны не пересекаются.
+_NUMERIC_LEVELS = {-1: "TRACE", 0: "DEBUG", 1: "INFO", 2: "WARN", 3: "ERROR", 4: "FATAL",
+                   5: "PANIC",
+                   10: "TRACE", 20: "DEBUG", 30: "INFO", 40: "WARN", 50: "ERROR", 60: "FATAL"}
 _PYTHON_LEVEL_RE = re.compile(r"^(?P<level>[A-Z]+):(?=\S)")
 _JUL_LEVEL_RE = re.compile(r"^(?P<level>[A-Z]+): ")
 _TRACEBACK_RE = re.compile(r"^Traceback \(most recent call last\):")
@@ -298,7 +303,7 @@ def _json_level(record: dict[str, Any]) -> tuple[bool, str | None]:
         level = value.upper()
         return True, level if level in LEVELS else None
     if key == "level" and isinstance(value, int) and not isinstance(value, bool):
-        return True, _ZEROLOG_LEVELS.get(value)
+        return True, _NUMERIC_LEVELS.get(value)
     return True, None
 
 
