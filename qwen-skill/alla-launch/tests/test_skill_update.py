@@ -356,5 +356,6 @@ def test_update_keeps_staging_when_retained_files_cannot_be_restored(
     reason = alla_skill.swap_skill_dir(source)
 
     assert "не вернулись на место" in reason and ".alla-update-" in reason
+    assert (skill / "scripts" / "alla_skill_lib" / "stale.py").is_file()  # прежняя папка на месте
     kept = list(skill.parent.glob(".alla-update-*/new/.env"))
     assert len(kept) == 1 and kept[0].read_text(encoding="utf-8") == "ALLURE_TOKEN=secret\n"

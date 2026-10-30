@@ -499,16 +499,16 @@ def swap_skill_dir(source: Path) -> str:
                 os.rename(str(new_dir / name), str(old_dir / name))
             except OSError:
                 stuck.append(name)
-        if stuck:
-            # Единственная копия .env/.venv осталась в staging: не удалять.
-            return "{}; {} не вернулись на место, они лежат в {}".format(
-                error, ", ".join(stuck), new_dir
-            )
         if swapped and not SKILL_DIR.exists():
             try:
                 os.rename(str(old_dir), str(SKILL_DIR))
             except OSError:
                 return "{}; прежняя папка скилла осталась в {}".format(error, old_dir)
+        if stuck:
+            # Единственная копия .env/.venv осталась в staging: не удалять.
+            return "{}; {} не вернулись на место, они лежат в {}".format(
+                error, ", ".join(stuck), new_dir
+            )
         shutil.rmtree(str(staging), ignore_errors=True)
         return str(error)
     shutil.rmtree(str(staging), ignore_errors=True)
