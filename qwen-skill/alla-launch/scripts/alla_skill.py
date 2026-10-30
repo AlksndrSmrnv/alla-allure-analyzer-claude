@@ -335,7 +335,10 @@ _TABLE_RE = re.compile(r"^\s*(\[\[?)\s*([^\[\]]*?)\s*\]\]?\s*(?:#.*)?$")
 _STRING_RE = re.compile(
     r"""^\s*([A-Za-z_][\w-]*)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(?:#.*)?$"""
 )
-_URL_PASSWORD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/@\s]*:[^/@\s]*@")
+# Пароль в userinfo любой схемы, а у http(s) — любой userinfo (токен без пароля тоже секрет).
+_URL_PASSWORD_RE = re.compile(
+    r"^(?:[A-Za-z][A-Za-z0-9+.-]*://[^/@\s]*:[^/@\s]*@|https?://[^/\s]*@)", re.IGNORECASE
+)
 _SKILL_NAME_RE = re.compile(r"^name:\s*alla-launch\s*$", re.MULTILINE)
 UPDATE_CONFIG_HINT = (
     "Адрес репозитория вписывает в alla-extensions/config.toml проекта автотестов сам "
@@ -398,15 +401,17 @@ def git_env() -> dict[str, str]:
     env["GIT_ASKPASS"] = os.environ.get("GIT_ASKPASS", "echo")
     if "GIT_SSH_COMMAND" not in env and "GIT_SSH" not in env:
         try:
+            # Из папки проекта: clone локальную настройку проекта не наследует, поэтому
+            # найденную команду передаём ему через GIT_SSH_COMMAND.
             configured = subprocess.run(
-                ["git", "config", "--get", "core.sshCommand"], stdout=subprocess.PIPE,
+                ["git", "-C", str(PROJECT_DIR), "config", "--get", "core.sshCommand"],
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, universal_newlines=True,
                 timeout=GIT_TIMEOUT,
             ).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             configured = ""
-        if not configured:
-            env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
+        env["GIT_SSH_COMMAND"] = configured or "ssh -o BatchMode=yes"
     return env
 
 

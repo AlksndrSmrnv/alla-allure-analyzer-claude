@@ -205,7 +205,9 @@ def test_update_without_repository_explains_how_to_set_it(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize(
-    "url", ["https://user:token@git.example.com/alla.git", "http://:pw@host/x.git", "-oBad"]
+    "url",
+    ["https://user:token@git.example.com/alla.git", "http://:pw@host/x.git", "-oBad",
+     "https://TOKEN@git.example.com/alla.git", "ssh://git:pw@host/x.git"],
 )
 def test_update_refuses_credentials_in_url(tmp_path: Path, url: str) -> None:
     project, skill, stub = _project(tmp_path)
@@ -215,6 +217,25 @@ def test_update_refuses_credentials_in_url(tmp_path: Path, url: str) -> None:
     assert result.returncode == 2
     assert result.stdout.startswith("STATUS: error")
     assert (skill / ".env").is_file()
+
+
+def test_ssh_urls_with_user_only_are_allowed() -> None:
+    for url in ("git@git.example.com:team/alla.git", "ssh://git@git.example.com/team/alla.git"):
+        assert not alla_skill._URL_PASSWORD_RE.match(url)
+
+
+def test_git_env_forwards_project_ssh_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """core.sshCommand из настроек репозитория проекта доходит до clone через GIT_SSH_COMMAND."""
+    _git(tmp_path, "init", "--quiet")
+    _git(tmp_path, "config", "core.sshCommand", "ssh -i /ключ/проекта")
+    monkeypatch.setattr(alla_skill, "PROJECT_DIR", tmp_path)
+    for name in ("GIT_SSH_COMMAND", "GIT_SSH"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert alla_skill.git_env()["GIT_SSH_COMMAND"] == "ssh -i /ключ/проекта"
+
+    _git(tmp_path, "config", "--unset", "core.sshCommand")
+    assert "BatchMode=yes" in alla_skill.git_env().get("GIT_SSH_COMMAND", "BatchMode=yes")
 
 
 def test_update_refuses_outside_installed_skill(tmp_path: Path, repo: Path) -> None:
