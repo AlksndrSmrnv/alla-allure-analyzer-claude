@@ -221,8 +221,12 @@ def test_update_refuses_credentials_in_url(tmp_path: Path, url: str) -> None:
 
 
 def test_ssh_urls_with_user_only_are_allowed() -> None:
-    for url in ("git@git.example.com:team/alla.git", "ssh://git@git.example.com/team/alla.git"):
+    for url in (
+        "git@git.example.com:team/alla.git", "ssh://git@git.example.com/team/alla.git",
+        "ssh://git@[2001:db8::1]/team/alla.git", "git@[2001:db8::1]:team/alla.git",
+    ):
         assert not alla_skill._URL_PASSWORD_RE.match(url)
+        assert not alla_skill._REMOTE_HELPER_RE.match(url)
 
 
 def test_git_env_forwards_project_ssh_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

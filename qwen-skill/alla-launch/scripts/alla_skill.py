@@ -335,6 +335,7 @@ _TABLE_RE = re.compile(r"^\s*(\[\[?)\s*([^\[\]]*?)\s*\]\]?\s*(?:#.*)?$")
 _STRING_RE = re.compile(
     r"""^\s*([A-Za-z_][\w-]*)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(?:#.*)?$"""
 )
+_REMOTE_HELPER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*::")  # транспорт::адрес
 # Пароль в userinfo любой схемы, а у http(s) — любой userinfo (токен без пароля тоже секрет).
 _URL_PASSWORD_RE = re.compile(
     r"^(?:[A-Za-z][A-Za-z0-9+.-]*://[^/@\s]*:[^/@\s]*@|https?://[^/\s]*@)", re.IGNORECASE
@@ -545,7 +546,7 @@ def update(argv: Sequence[str]) -> int:
         return update_error("Не задан репозиторий скилла. " + UPDATE_CONFIG_HINT, 2)
     if source.startswith("-") or ref.startswith("-"):
         return update_error("Адрес и ветка репозитория не могут начинаться с «-».", 2)
-    if "::" in source:
+    if _REMOTE_HELPER_RE.match(source):
         return update_error(
             "Адрес вида транспорт::адрес (remote-helper git) не поддерживается: укажи обычный ssh- "
             "или https-адрес без учётных данных.",
