@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -82,7 +83,9 @@ def running_in_venv() -> bool:
 def self_command(*args: str) -> str:
     parts = ["python" if os.name == "nt" else "python3", str(Path(__file__).resolve())]
     parts.extend(args)
-    return " ".join('"{}"'.format(p) if " " in p else p for p in parts)
+    if os.name == "nt":
+        return " ".join('"{}"'.format(p) if " " in p else p for p in parts)
+    return shlex.join(parts)
 
 
 def python_version(executable: str) -> tuple[int, int] | None:

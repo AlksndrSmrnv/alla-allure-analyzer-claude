@@ -117,14 +117,18 @@ def locate(trees: list[dict[str, Any]], sources: list[dict[str, Any]]) -> tuple[
             by_name.setdefault(name.rsplit("/", 1)[-1], []).append(name)
         tree["_by_name"] = by_name
     for frame in frames:
+        # Не первый репозиторий с файлом того же имени, а тот, чей путь совпал дальше всего.
+        best: tuple[int, str, dict[str, Any]] | None = None
         for tree in trees:
-            path = sutlib.match_frame(frame, tree["_by_name"])
-            if path:
-                located.append({"repo": tree["repo"], "path": path, "line": frame.line,
-                                "why": f"кадр «{frame.text[:160]}»", "tree": tree["tree"]})
-                break
-        else:
+            scored = sutlib.score_frame(frame, tree["_by_name"])
+            if scored and (best is None or scored[0] > best[0]):
+                best = (scored[0], scored[1], tree)
+        if best is None:
             missing.append(frame.text[:160])
+            continue
+        _, path, tree = best
+        located.append({"repo": tree["repo"], "path": path, "line": frame.line,
+                        "why": f"кадр «{frame.text[:160]}»", "tree": tree["tree"]})
         if len(located) >= MAX_LOCATIONS:
             break
     texts: list[dict[str, Any]] = []

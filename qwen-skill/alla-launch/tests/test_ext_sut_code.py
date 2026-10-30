@@ -28,6 +28,7 @@ BUNDLED = Path(cli.__file__).resolve().parents[2] / "extensions"
 SCRIPTS = BUNDLED / "sut-code" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import check  # noqa: E402
+import prepare  # noqa: E402
 import sutlib  # noqa: E402
 
 SERVICE = "src/main/java/ru/company/OrderService.java"
@@ -191,6 +192,23 @@ def test_prepare_named_tag_finds_frame_and_message(project: Path, testops: FakeT
     assert f"  - {SERVICE}:10: throw new NullPointerException(\"customer is null\");" in data
     assert "OrderTest.createOrder(OrderTest.java:6)" in data  # кадр теста — без файла в SUT
     assert "--- [S3 · " in data
+
+
+def test_frame_goes_to_the_repository_whose_path_matches_best(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Файл с тем же именем в первом репозитории не перебивает точное совпадение пакета."""
+    files = {"/trees/payments": ["src/main/java/com/payments/OrderService.java"],
+             "/trees/orders": ["src/main/java/com/orders/OrderService.java"]}
+    monkeypatch.setattr(sutlib, "tracked_files", lambda root: files[str(root)])
+    trees = [{"repo": "payments", "tree": "/trees/payments"},
+             {"repo": "orders", "tree": "/trees/orders"}]
+    trace = {"kind": "trace", "text": "at com.orders.OrderService.create(OrderService.java:10)"}
+
+    located, _, missing = prepare.locate(trees, [trace])
+
+    assert missing == []
+    assert [(place["repo"], place["path"]) for place in located] == [
+        ("orders", "src/main/java/com/orders/OrderService.java")]
 
 
 def test_prepare_without_ref_is_approximate_by_launch_date(

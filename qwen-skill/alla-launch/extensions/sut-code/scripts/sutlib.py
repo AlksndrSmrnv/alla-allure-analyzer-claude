@@ -766,6 +766,12 @@ def tracked_files(tree: Path) -> list[str]:
 
 def match_frame(frame: Frame, files_by_name: dict[str, list[str]]) -> str | None:
     """Файл дерева для кадра: то же имя и самый длинный общий хвост пути."""
+    scored = score_frame(frame, files_by_name)
+    return scored[1] if scored else None
+
+
+def score_frame(frame: Frame, files_by_name: dict[str, list[str]]) -> tuple[int, str] | None:
+    """Лучший файл дерева для кадра и длина общего хвоста пути (чем больше, тем точнее)."""
     parts = [part for part in frame.path.split("/") if part and part not in (".", "..")]
     if not parts:
         return None
@@ -777,7 +783,7 @@ def match_frame(frame: Frame, files_by_name: dict[str, list[str]]) -> str | None
             common += 1
         if best is None or common > best[0] or (common == best[0] and len(candidate) < len(best[1])):
             best = (common, candidate)
-    return best[1] if best else None
+    return best
 
 
 _EXCEPTION_MESSAGE = re.compile(r"(?:\w+(?:Exception|Error|Fault|Panic)|panic):\s*(?P<msg>.{6,})")

@@ -6,7 +6,9 @@ Qwen Code молча пропускает команду с битым frontmatt
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import shutil
 from pathlib import Path
 
@@ -102,6 +104,20 @@ def test_install_commands_writes_new_and_changed_only(
     (target_dir / "apply.md").write_text("старая версия", encoding="utf-8")
     assert qwen_files.install_commands(tmp_path) == [target_dir / "apply.md"]
     assert (target_dir / "my.md").exists()  # чужое не удаляется
+
+
+@pytest.mark.skipif(os.name == "nt", reason="на Windows свои кавычки")
+def test_setup_hint_quotes_awkward_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Подсказка с командой должна разбираться shell и при апострофе или скобках в пути."""
+    import alla_skill
+
+    awkward = Path("/work/QA'sTests/e2e(test)/alla_skill.py")
+    monkeypatch.setattr(alla_skill, "__file__", str(awkward))
+    command = alla_skill.self_command("setup", "--python", "/opt/py 3.11/bin/python")
+
+    parts = shlex.split(command)
+    assert parts[1].endswith("QA'sTests/e2e(test)/alla_skill.py")
+    assert parts[2:] == ["setup", "--python", "/opt/py 3.11/bin/python"]
 
 
 def test_setup_installs_the_same_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
