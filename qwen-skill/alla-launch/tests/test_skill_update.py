@@ -207,7 +207,8 @@ def test_update_without_repository_explains_how_to_set_it(tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     "url",
     ["https://user:token@git.example.com/alla.git", "http://:pw@host/x.git", "-oBad",
-     "https://TOKEN@git.example.com/alla.git", "ssh://git:pw@host/x.git"],
+     "https://TOKEN@git.example.com/alla.git", "ssh://git:pw@host/x.git",
+     "https::https://u:t@host/r.git", "ext::sh -c id"],
 )
 def test_update_refuses_credentials_in_url(tmp_path: Path, url: str) -> None:
     project, skill, stub = _project(tmp_path)

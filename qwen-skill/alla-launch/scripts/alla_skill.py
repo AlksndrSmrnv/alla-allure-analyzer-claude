@@ -477,11 +477,12 @@ def tree_changes(old: Path, new: Path) -> tuple[int, int, int]:
     return len(after - before), changed, len(before - after)
 
 
-def swap_skill_dir(source: Path) -> str:
+def swap_skill_dir(source: Path, version: str = "") -> str:
     """Заменить папку скилла копией ``source``; пустая строка — готово, иначе причина.
 
     Копия собирается рядом (одна файловая система) и ставится переименованием, старая
-    папка сохраняется до конца: при сбое она возвращается на место.
+    папка сохраняется до конца: при сбое она возвращается на место. Маркер версии пишется в
+    копию до замены: файлы и маркер меняются одним переименованием.
     """
     staging = Path(tempfile.mkdtemp(prefix=".alla-update-", dir=str(SKILL_DIR.parent)))
     new_dir, old_dir = staging / "new", staging / "old"
@@ -489,6 +490,8 @@ def swap_skill_dir(source: Path) -> str:
     swapped = False
     try:
         shutil.copytree(str(source), str(new_dir), ignore=UPDATE_IGNORE)
+        if version:
+            (new_dir / VERSION_MARKER.name).write_text(version + "\n", encoding="utf-8")
         os.rename(str(SKILL_DIR), str(old_dir))
         swapped = True
         for name in UPDATE_KEEP:
@@ -542,6 +545,12 @@ def update(argv: Sequence[str]) -> int:
         return update_error("Не задан репозиторий скилла. " + UPDATE_CONFIG_HINT, 2)
     if source.startswith("-") or ref.startswith("-"):
         return update_error("Адрес и ветка репозитория не могут начинаться с «-».", 2)
+    if "::" in source:
+        return update_error(
+            "Адрес вида транспорт::адрес (remote-helper git) не поддерживается: укажи обычный ssh- "
+            "или https-адрес без учётных данных.",
+            2,
+        )
     if _URL_PASSWORD_RE.match(source):
         return update_error(
             "В адресе репозитория пароль или токен — так нельзя. Используй ssh-ключ или "
@@ -585,16 +594,12 @@ def update(argv: Sequence[str]) -> int:
             print("Скилл уже последней версии ({}), ничего не менял.".format(sha[:8]))
             return 0
         added, changed, removed = tree_changes(SKILL_DIR, folder)
-        reason = swap_skill_dir(folder)
+        reason = swap_skill_dir(folder, version)
         if reason:
             return update_error("Не удалось заменить папку скилла: {}. Скилл не изменён.".format(reason))
     finally:
         shutil.rmtree(str(scratch), ignore_errors=True)
 
-    try:
-        VERSION_MARKER.write_text(version + "\n", encoding="utf-8")
-    except OSError as error:
-        print("Не удалось записать {}: {}".format(VERSION_MARKER, error), file=sys.stderr, flush=True)
     print("STATUS: updated")
     print(
         "Скилл обновлён: {} → {}. Файлов: добавлено {}, изменено {}, удалено {}.".format(
