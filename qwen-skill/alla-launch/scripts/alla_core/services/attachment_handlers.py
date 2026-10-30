@@ -109,7 +109,7 @@ def _parse_any_json(content: bytes, decoded_text: str | None) -> Any:
     if decoded_text is not None:
         try:
             return json.loads(decoded_text)
-        except (ValueError, json.JSONDecodeError):
+        except ValueError:
             pass
     # Fallback: ijson.items с пустым префиксом отдаёт значение целиком.
     try:

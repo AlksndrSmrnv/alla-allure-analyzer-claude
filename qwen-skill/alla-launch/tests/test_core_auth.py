@@ -7,7 +7,7 @@ import time
 import httpx
 import pytest
 
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 from alla_core.clients.auth import AllureAuthManager, _TokenInfo
 from alla_core.exceptions import AuthenticationError
 

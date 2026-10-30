@@ -1,4 +1,4 @@
-"""Иерархия пользовательских исключений пакета alla."""
+"""Иерархия пользовательских исключений ядра alla."""
 
 
 class AllaError(Exception):
@@ -31,16 +31,3 @@ class PaginationLimitError(AllaError):
     def __init__(self, message: str, *, pages_needed: int | None = None) -> None:
         self.pages_needed = pages_needed
         super().__init__(message)
-
-
-class KnowledgeBaseError(AllaError):
-    """Ошибка при работе с базой знаний."""
-
-
-class LLMApiError(AllaError):
-    """Ошибка при взаимодействии с LLM API."""
-
-    def __init__(self, status_code: int, message: str, endpoint: str) -> None:
-        self.status_code = status_code
-        self.endpoint = endpoint
-        super().__init__(f"LLM HTTP {status_code} от {endpoint}: {message}")

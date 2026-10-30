@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from alla_core.models.clustering import ClusteringReport
-from alla_core.models.llm import LLMAnalysisResult, LLMClusterAnalysis
 from alla_core.models.testops import TriageReport
 from alla_core.services.prompt_builder_service import build_launch_summary_prompt
 
@@ -292,25 +291,15 @@ def build_summary_data(
     listed_ids = {entry["cluster_id"] for entry in listed}
     rejected = known.rejected if known else {}
     cluster_analyses = {
-        entry["cluster_id"]: LLMClusterAnalysis(
-            cluster_id=entry["cluster_id"],
-            analysis_text=_summary_text(
-                analyses[entry["file_id"]],
-                entry["file_id"] in flagged,
-                entry["file_id"] in detailed,
-            ) + (f"\n({REJECTED_SUMMARY_NOTE})" if entry["file_id"] in rejected else "")
-            + (f"\n({KB_AUTO_SUMMARY_NOTE})" if known and entry["file_id"] in known.auto else "")
-            + _confirmed_summary((confirmed or {}).get(entry["file_id"])),
-        )
+        entry["cluster_id"]: _summary_text(
+            analyses[entry["file_id"]],
+            entry["file_id"] in flagged,
+            entry["file_id"] in detailed,
+        ) + (f"\n({REJECTED_SUMMARY_NOTE})" if entry["file_id"] in rejected else "")
+        + (f"\n({KB_AUTO_SUMMARY_NOTE})" if known and entry["file_id"] in known.auto else "")
+        + _confirmed_summary((confirmed or {}).get(entry["file_id"]))
         for entry in listed
     }
-    llm_result = LLMAnalysisResult(
-        total_clusters=len(cluster_analyses),
-        analyzed_count=len(cluster_analyses),
-        failed_count=0,
-        skipped_count=0,
-        cluster_analyses=cluster_analyses,
-    )
     # cluster_count остаётся полным: в шапке данных — число всех проблем прогона.
     clustering = clustering.model_copy(update={"clusters": [
         cluster.model_copy(update={"label": _truncate(_one_line(cluster.label), SUMMARY_LABEL_CHARS)})
@@ -318,7 +307,7 @@ def build_summary_data(
         if cluster.cluster_id in listed_ids
     ]})
     numbers = {entry["cluster_id"]: int(entry["file_id"]) for entry in listed}
-    prompt = build_launch_summary_prompt(clustering, triage, llm_result, numbers)
+    prompt = build_launch_summary_prompt(clustering, triage, cluster_analyses, numbers)
     rest = largest[MAX_SUMMARY_LISTED:]
     return "\n".join([
         prompt.user_prompt,
@@ -1338,7 +1327,6 @@ def _opinion(problem: _Problem, reason: str) -> str:
 
 
 MIXED_GROUP_NOTE = "в группе, похоже, несколько проблем"
-UNCHECKED_GROUP_NOTE = "однородность группы не проверена: недостаточно данных"
 SOURCES_LOST_NOTE = "цитата не сверена с данными: файл источников задания не найден"
 IMAGE_QUOTE_NOTE = "текст прочитан агентом со скриншота, не сверен"
 

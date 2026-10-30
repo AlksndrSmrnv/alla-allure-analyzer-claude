@@ -6,7 +6,7 @@ import asyncio
 import re
 
 import pytest
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 from test_core_log_events import OLD_FORMAT_LOGS, _old_extract_error_blocks
 
 from alla_core.models.clustering import ClusterSignature, FailureCluster

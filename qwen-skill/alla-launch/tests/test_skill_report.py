@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 
 from alla_core.models.clustering import ClusterSignature, ClusteringReport, FailureCluster
 from alla_core.models import common

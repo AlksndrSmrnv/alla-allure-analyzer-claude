@@ -23,7 +23,6 @@ from skill_fixtures import (  # noqa: F401
     ORDER_TEST_JAVA,
     project_fixture,
     testops_fixture,
-    without_libmagic,
 )
 from test_skill_flow import _run
 from test_skill_review import _fake_qwen, _finished_run, _journal

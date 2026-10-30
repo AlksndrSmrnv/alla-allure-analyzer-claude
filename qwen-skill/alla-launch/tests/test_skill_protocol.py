@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 from skill_fake_testops import TOKEN, FakeTestOps, LaunchFixture, default_launch
-from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import project_fixture, testops_fixture  # noqa: F401
 from test_skill_flow import (
     MARKDOWN_ANALYSIS,
     PROPOSAL,

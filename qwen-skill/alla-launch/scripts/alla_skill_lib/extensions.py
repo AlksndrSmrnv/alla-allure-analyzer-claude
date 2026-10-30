@@ -42,7 +42,6 @@ from alla_skill_lib.sources import describe, load_registry
 
 API_VERSION = 1
 EVENTS = ("after_apply", "after_revert", "after_report", "on_request", "on_request_many")
-PROBLEM_EVENTS = ("after_apply", "after_revert", "on_request")
 # Событие по просьбе пользователя (``extensions run``): вопрос confirm не нужен — он уже попросил.
 REQUEST_EVENT = "on_request"
 MANY_REQUEST_EVENT = "on_request_many"

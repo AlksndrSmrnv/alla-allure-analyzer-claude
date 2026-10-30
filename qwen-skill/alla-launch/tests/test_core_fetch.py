@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from skill_fixtures import project_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import project_fixture  # noqa: F401
 from skill_fake_testops import FakeTestOps, default_launch
 from alla_core.clients.auth import AllureAuthManager
 from alla_core.clients.testops_client import AllureTestOpsClient

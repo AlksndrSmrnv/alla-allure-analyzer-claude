@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 from skill_factories import make_error_log, make_failed_test_summary
 from alla_core.models.common import TestStatus as Status
 from alla_core.models.testops import FailedTestSummary

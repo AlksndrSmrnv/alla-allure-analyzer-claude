@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from skill_fake_testops import FakeTestOps
-from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import project_fixture, testops_fixture  # noqa: F401
 from test_skill_flow import MARKDOWN_ANALYSIS, VALID_ANALYSIS, _finish, _next, _prepare, _run
 
 from alla_skill_lib import review

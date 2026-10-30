@@ -328,8 +328,7 @@ def parse_log_sections(
         )
         body = log_snippet[body_start:body_end].strip()
         if body:
-            # `файл` остаётся без префикса для обратной совместимости с
-            # downstream-кодом (HTML-отчёт, CLI). Все остальные типы секций
+            # Секция `файл` остаётся без префикса; остальные типы
             # (HTTP, журнал, …) получают префикс ``<тип>: ``.
             label = name if section_type == "файл" else f"{section_type}: {name}"
             sections.append((label, body))

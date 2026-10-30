@@ -10,7 +10,6 @@ import pytest
 from skill_fixtures import (  # noqa: F401
     project_fixture,
     testops_fixture,
-    without_libmagic,
 )
 from skill_factories import make_failed_test_summary
 from skill_fake_testops import FakeTestOps, default_launch

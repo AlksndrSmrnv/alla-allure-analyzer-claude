@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 
 from alla_skill_lib.code_hints import SKIP_DIRS
 from alla_skill_lib.proposals import (

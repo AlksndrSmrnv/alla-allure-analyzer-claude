@@ -2,16 +2,13 @@
 
 import json
 import logging
-from contextlib import contextmanager
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 from alla_core.models.common import TestStatus as Status
 from alla_core.models.testops import AttachmentMeta, FailedTestSummary
-from alla_core.services import log_extraction_service
 from alla_core.services.log_extraction_service import (
     LogExtractionConfig,
     LogExtractionService,
@@ -145,59 +142,36 @@ class TestExtractErrorBlocks:
         assert "[INFO]" not in result
 
 
-@contextmanager
-def _fake_magic(*mimes: str):
-    """libmagic в окружении скилла нет: подставляем фейковый модуль ``magic``.
-
-    Один MIME — ответ на каждый вызов, несколько — по очереди (как ``side_effect``).
-    """
-    answers = iter(mimes)
-
-    def from_buffer(*_args, **_kwargs) -> str:
-        return mimes[0] if len(mimes) == 1 else next(answers)
-
-    fake = SimpleNamespace(from_buffer=from_buffer)
-    with patch.object(log_extraction_service, "_MAGIC_AVAILABLE", True), \
-         patch.object(log_extraction_service, "_magic", fake, create=True):
-        yield
-
-
 class TestDetectContentType:
-    def test_json_bytes_detected_as_json(self):
+    def test_json_mime_detected_as_json(self):
         content = b'{"key": "value", "status": 500}'
-        with _fake_magic("application/json"):
-            assert _detect_content_type(content) == "json"
+        assert _detect_content_type(content, fallback_mime="application/json") == "json"
 
     def test_text_plain_detected_as_text(self):
         content = b"2026-01-01 [ERROR] something failed"
-        with _fake_magic("text/plain"):
-            assert _detect_content_type(content) == "text"
+        assert _detect_content_type(content, fallback_mime="text/plain") == "text"
 
-    def test_xml_bytes_detected_as_xml(self):
+    def test_xml_mime_detected_as_xml(self):
         content = b"<?xml version='1.0'?><root><error>fail</error></root>"
-        with _fake_magic("application/xml"):
-            assert _detect_content_type(content) == "xml"
+        assert _detect_content_type(content, fallback_mime="application/xml") == "xml"
 
     def test_binary_image_returns_binary(self):
         content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-        with _fake_magic("image/png"):
-            assert _detect_content_type(content) == "binary"
+        assert _detect_content_type(content, fallback_mime="image/png") == "binary"
 
-    def test_json_heuristic_when_magic_says_text(self):
-        """Если magic вернул text/plain, но контент начинается с {, считать json."""
+    def test_json_heuristic_when_mime_says_text(self):
+        """Если MIME text/plain, но контент начинается с {, считать json."""
         content = b'{"RqUID": "abc"}'
-        with _fake_magic("text/plain"):
-            assert _detect_content_type(content) == "json"
+        assert _detect_content_type(content, fallback_mime="text/plain") == "json"
 
-    def test_magic_unavailable_falls_back_to_fallback_mime(self):
+    def test_mime_parameters_and_case_are_ignored(self):
         content = b'{"key": "value"}'
-        with patch("alla_core.services.log_extraction_service._MAGIC_AVAILABLE", False):
-            assert _detect_content_type(content, fallback_mime="application/json") == "json"
+        assert _detect_content_type(content, fallback_mime="Application/JSON; charset=utf-8") == "json"
 
-    def test_magic_unavailable_binary_fallback(self):
-        content = b"\x89PNG\r\n"
-        with patch("alla_core.services.log_extraction_service._MAGIC_AVAILABLE", False):
-            assert _detect_content_type(content, fallback_mime="image/png") == "binary"
+    def test_unknown_mime_uses_first_bytes(self):
+        assert _detect_content_type(b'{"key": 1}') == "json"
+        assert _detect_content_type(b"<root/>") == "xml"
+        assert _detect_content_type(b"plain words") == "text"
 
 
 class TestDecodeText:
@@ -421,8 +395,7 @@ class TestLogExtractionServiceIntegration:
         service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
         summary = make_summary()
 
-        with _fake_magic("application/json"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.log_snippet is not None
         assert "req-abc" in summary.log_snippet
@@ -445,8 +418,7 @@ class TestLogExtractionServiceIntegration:
         # В логе есть id операции: он берётся, только если это операция теста.
         summary.status_message = "Request RqUID=mixed-id failed"
 
-        with _fake_magic("text/plain"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.log_snippet is not None
         assert "Connection refused" in summary.log_snippet
@@ -460,8 +432,7 @@ class TestLogExtractionServiceIntegration:
         service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
         summary = make_summary()
 
-        with _fake_magic("image/png"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.log_snippet is None
         assert summary.correlation_hint is None
@@ -518,8 +489,7 @@ class TestLogExtractionServiceIntegration:
         service = LogExtractionService(provider, LogExtractionConfig(concurrency=2))
         summary = make_summary()
 
-        with _fake_magic("application/json"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.log_snippet is not None
         assert "first" in summary.log_snippet
@@ -536,8 +506,7 @@ class TestLogExtractionServiceIntegration:
         service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
         summary = make_summary()
 
-        with _fake_magic("application/json"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.log_snippet is not None
         # Заголовок секции должен быть однострочным
@@ -565,8 +534,7 @@ class TestLogExtractionServiceIntegration:
         service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
         summary = make_summary()
 
-        with _fake_magic("text/plain", "application/json", "text/plain"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.log_snippet is None
         assert summary.correlation_hint == "operUID=239482348, rqUID=324234523420"
@@ -580,8 +548,7 @@ class TestLogExtractionServiceIntegration:
         summary = make_summary()
         summary.status_trace = "Caused by: HttpError: RqUID=abc-xyz not found"
 
-        with _fake_magic("text/plain"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.correlation_hint == "rqUID=abc-xyz"
 
@@ -594,8 +561,7 @@ class TestLogExtractionServiceIntegration:
         summary = make_summary()
         summary.status_trace = "OperUID=op-b"
 
-        with _fake_magic("text/plain"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         # Ответ — не лог: его id и id трейса — операции самого теста.
         assert summary.correlation_hint == "operUID=op-a, operUID=op-b"
@@ -610,8 +576,7 @@ class TestLogExtractionServiceIntegration:
         service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
         summary = make_summary()
 
-        with _fake_magic("text/plain"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.correlation_hint is None
 
@@ -652,10 +617,7 @@ class TestLogExtractionServiceIntegration:
 
         # Эвристика _detect_content_type увидит ведущий '[' и переключит
         # text/plain на 'json' — handler примет его как JSON-массив.
-        # _MAGIC_AVAILABLE=False гонит через fallback_mime path, чтобы тест
-        # не зависел от наличия системной libmagic.
-        with patch("alla_core.services.log_extraction_service._MAGIC_AVAILABLE", False):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.log_snippet is not None
         # Заголовок секции — журнал
@@ -688,8 +650,7 @@ class TestLogExtractionServiceIntegration:
         )
         summary = make_summary()
 
-        with _fake_magic("text/plain"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.log_snippet is not None
         # Общий бюджет включает точный заголовок, фрагмент и служебные пометки.
@@ -741,8 +702,7 @@ class TestOperationLog:
                                                                      operation_id_keys=keys))
         summary = make_summary()
         summary.status_message = message
-        with patch("alla_core.services.log_extraction_service._MAGIC_AVAILABLE", False):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
         return summary, provider
 
     @pytest.mark.asyncio
@@ -927,8 +887,7 @@ class TestDetailsAttachmentAugmentation:
         service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
         summary = make_failed_test_summary(status_message="AssertionError")
 
-        with _fake_magic("text/plain"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.status_message == "AssertionError"
         assert summary.log_snippet is not None
@@ -1078,8 +1037,7 @@ class TestDetailsAttachmentAugmentation:
         service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
         summary = make_failed_test_summary(status_message="AssertionError")
 
-        with _fake_magic("text/plain"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.status_message == f"AssertionError\n\n{details}"
         assert summary.log_snippet is not None
@@ -1104,8 +1062,7 @@ class TestDetailsAttachmentAugmentation:
         service = LogExtractionService(provider, LogExtractionConfig(concurrency=1))
         summary = make_failed_test_summary(status_message="AssertionError")
 
-        with _fake_magic("text/plain"):
-            await service.enrich_with_logs([summary])
+        await service.enrich_with_logs([summary])
 
         assert summary.status_message == "AssertionError"
         assert summary.log_snippet is not None

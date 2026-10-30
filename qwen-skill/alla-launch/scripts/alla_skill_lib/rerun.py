@@ -53,7 +53,6 @@ NOT_IN_REACTOR = "Could not find the selected project in the reactor"
 # surefire: тесты выключены (skipTests, maven.test.skip) — отчётов не будет, код выхода 0.
 TESTS_SKIPPED = "Tests are skipped."
 
-OUTCOMES = ("passed", "reproduced", "other", "not_run")
 MAX_SHOWN_SKIPPED = 10
 MESSAGE_KEEP_CHARS = 4000
 MAX_OFFER_NAMES = 5

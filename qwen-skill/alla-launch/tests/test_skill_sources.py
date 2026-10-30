@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from skill_fake_testops import FakeTestOps
-from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import project_fixture, testops_fixture  # noqa: F401
 from test_skill_flow import _prepare
 
 from alla_core.models.clustering import ClusterSignature, FailureCluster

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path, PurePath
 
 import pytest
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 
 from alla_skill_lib.code_hints import JvmTest, ProjectIndex, jvm_test_of
 from alla_skill_lib.history import recurrence, run_records

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from skill_fixtures import project_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import project_fixture  # noqa: F401
 from eval import corpus_dev
 from skill_fake_testops import FakeTestOps
 from alla_skill_lib.report import render_green_report

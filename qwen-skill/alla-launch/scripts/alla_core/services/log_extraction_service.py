@@ -44,14 +44,8 @@ logger = logging.getLogger(__name__)
 # Определение content type и декодирование текста
 # ---------------------------------------------------------------------------
 
-try:
-    import magic as _magic
-    _MAGIC_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    _MAGIC_AVAILABLE = False
-
-_MAGIC_JSON_MIMES = frozenset({"application/json", "text/json", "application/x-ndjson"})
-_MAGIC_XML_MIMES = frozenset({"application/xml", "text/xml"})
+_JSON_MIMES = frozenset({"application/json", "text/json", "application/x-ndjson"})
+_XML_MIMES = frozenset({"application/xml", "text/xml"})
 
 
 # «[» открывает JSON-массив, только если за ней JSON-значение; «[2026-10-04 …]» и
@@ -69,19 +63,15 @@ def _looks_like_json(content: bytes) -> bool:
 
 
 def _detect_content_type(content: bytes, *, fallback_mime: str = "") -> str:
-    """Определить тип содержимого по байтам.
+    """Определить тип содержимого по MIME вложения и первым байтам.
 
-    Использует python-magic если доступен, иначе fallback_mime.
     Возвращает 'json', 'xml', 'text' или 'binary'.
     """
-    if _MAGIC_AVAILABLE:
-        mime: str = _magic.from_buffer(content[:2048], mime=True) or ""
-    else:
-        mime = fallback_mime.lower().split(";")[0].strip()
+    mime = fallback_mime.lower().split(";")[0].strip()
 
-    if mime in _MAGIC_JSON_MIMES:
+    if mime in _JSON_MIMES:
         return "json"
-    if mime in _MAGIC_XML_MIMES:
+    if mime in _XML_MIMES:
         return "xml"
     if mime.startswith("text/"):
         # Дополнительная эвристика: text/plain может быть JSON-дампом
@@ -540,7 +530,7 @@ class LogExtractionService:
         """Скачать аттачменты для каждого теста и заполнить ``log_snippet`` in-place.
 
         Для каждого аттачмента:
-        1. Определить тип содержимого через python-magic.
+        1. Определить тип содержимого по MIME вложения и первым байтам.
         2. text/plain: извлечь [ERROR]-блоки + HTTP-контекст через regex.
         3. JSON: потоковый парсинг через ijson, fallback на regex.
         4. XML: regex по тексту.

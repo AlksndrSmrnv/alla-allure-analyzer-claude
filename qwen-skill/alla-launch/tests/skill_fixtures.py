@@ -19,14 +19,6 @@ if str(SCRIPTS_DIR) not in sys.path:
 from skill_fake_testops import TOKEN, FakeTestOps, default_launch  # noqa: E402
 
 
-@pytest.fixture(autouse=True)
-def without_libmagic(monkeypatch: pytest.MonkeyPatch) -> None:
-    """В venv скилла нет python-magic — тесты не должны зависеть от libmagic."""
-    from alla_core.services import log_extraction_service
-
-    monkeypatch.setattr(log_extraction_service, "_MAGIC_AVAILABLE", False)
-
-
 ORDER_TEST_JAVA = (
     "package ru.company.orders;\n"
     "\n"

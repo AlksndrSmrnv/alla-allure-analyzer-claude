@@ -3,7 +3,7 @@
 import json
 from typing import Any
 
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 from alla_core.models.testops import AttachmentMeta
 from alla_core.services.attachment_handlers import (
     AttachmentContext,

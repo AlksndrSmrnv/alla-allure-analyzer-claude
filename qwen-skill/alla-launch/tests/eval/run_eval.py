@@ -92,7 +92,6 @@ class PreparedRun:
 
 def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
     """Выполнить ``prepare`` на прогоне без сети, во временном проекте и папке скилла."""
-    from alla_core.services import log_extraction_service
     from alla_skill_lib import cli, pipeline, workspace
     from alla_skill_lib.cluster_task import select_log_source
 
@@ -119,8 +118,6 @@ def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
         monkeypatch.setattr(pipeline, "collect_launch", collect)
         # Кассета подменяет TestOps в памяти процесса: выгрузка — здесь, не фоновым заданием.
         monkeypatch.setattr(cli, "RUN_IN_BACKGROUND", False)
-        # В venv скилла нет python-magic: тип вложения — из метаданных TestOps.
-        monkeypatch.setattr(log_extraction_service, "_MAGIC_AVAILABLE", False)
         out = io.StringIO()
         started = time.perf_counter()
         with replay(fixture), contextlib.redirect_stdout(out), \

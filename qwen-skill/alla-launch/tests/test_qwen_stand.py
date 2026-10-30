@@ -36,7 +36,7 @@ from skill_fake_testops import (
     wide_launch,
     wide_test_class,
 )
-from skill_fixtures import project_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import project_fixture  # noqa: F401
 from test_skill_flow import _prepare
 
 

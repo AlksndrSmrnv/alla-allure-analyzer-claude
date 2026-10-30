@@ -24,7 +24,6 @@ from alla_skill_lib.report import (
     render_report,
 )
 from alla_skill_lib.workspace import RunPaths
-from skill_fixtures import without_libmagic  # noqa: F401
 from test_skill_report import APP, ENV, TEST, _run, _section
 
 POOL = "HikariPool-1 - Connection is not available, request timed out"

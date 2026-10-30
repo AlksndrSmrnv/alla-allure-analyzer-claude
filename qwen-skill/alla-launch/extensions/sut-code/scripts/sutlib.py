@@ -719,7 +719,6 @@ _LIBRARY = re.compile(
     r"org\.springframework|io\.netty|reactor|okhttp3|retrofit2|com\.fasterxml)\.|"
     r"(?:site-packages|dist-packages|node_modules|/usr/lib/|/usr/local/lib/|<frozen |"
     r"/go/pkg/mod/|/vendor/|\.gradle/caches)")
-MAX_FRAMES = 8
 
 
 def frames(sources: list[dict[str, Any]]) -> list[Frame]:

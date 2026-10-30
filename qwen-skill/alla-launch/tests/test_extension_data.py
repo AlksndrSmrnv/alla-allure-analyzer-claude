@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import project_fixture, testops_fixture  # noqa: F401
 from skill_fake_testops import FakeTestOps
 from test_skill_extensions import MANIFEST, ext_cli, make_demo
 from test_skill_flow import VALID_ANALYSIS, _prepare, _run

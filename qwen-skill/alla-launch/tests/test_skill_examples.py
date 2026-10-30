@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from skill_fixtures import project_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import project_fixture  # noqa: F401
 from test_skill_flow import _next, _prepare
 
 from alla_core.config import Settings

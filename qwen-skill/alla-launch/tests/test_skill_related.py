@@ -12,7 +12,6 @@ from skill_fixtures import (  # noqa: F401
     answer_related,
     project_fixture,
     related_numbers,
-    without_libmagic,
 )
 from eval.corpus_dev import step_split_one_cause
 from skill_fake_testops import FakeTestOps

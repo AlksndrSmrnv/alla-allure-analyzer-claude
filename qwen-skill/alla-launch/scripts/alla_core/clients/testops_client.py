@@ -9,7 +9,7 @@ import httpx
 from alla_core.clients.auth import AllureAuthManager
 from alla_core.clients.retry import RETRY_STATUSES, header, retry_delay
 from alla_core.config import Settings
-from alla_core.exceptions import AllaError, AllureApiError, PaginationLimitError
+from alla_core.exceptions import AllureApiError, PaginationLimitError
 from alla_core.models.common import PageResponse
 from alla_core.models.testops import AttachmentMeta, ExecutionStep, LaunchResponse, TestResultResponse
 
@@ -22,7 +22,7 @@ _StreamResult = tuple[list[bytes], int, bool, int, str, object]
 class AllureTestOpsClient:
     """HTTP-клиент для REST API Allure TestOps.
 
-    Реализует протокол :class:`~alla.clients.base.TestResultsProvider`.
+    Реализует протокол :class:`~alla_core.clients.base.TestResultsProvider`.
 
     Пути эндпоинтов — атрибуты класса, чтобы их можно было переопределить,
     если целевая версия Allure TestOps использует другую структуру API.
@@ -31,7 +31,6 @@ class AllureTestOpsClient:
     LAUNCH_ENDPOINT = "/api/launch"
     TESTRESULT_ENDPOINT = "/api/testresult"
     ATTACHMENT_ENDPOINT = "/api/testresult/attachment"
-    PROJECT_ENDPOINT = "/api/project"
 
     def __init__(self, settings: Settings, auth_manager: AllureAuthManager) -> None:
         self._endpoint = str(settings.endpoint).rstrip("/")
@@ -48,67 +47,6 @@ class AllureTestOpsClient:
         )
 
     # --- Публичный API (протокол TestResultsProvider) ---
-
-    async def find_launch_by_name(
-        self,
-        name: str,
-        project_id: int | None = None,
-    ) -> int:
-        """Найти ID запуска по точному совпадению имени.
-
-        ``GET /api/launch?projectId=X&page=0&size={page_size}&sort=created_date,DESC``
-
-        Возвращает ID первого найденного запуска или бросает :class:`AllureApiError`.
-        """
-        params: dict[str, Any] = {"page": 0, "size": self._page_size, "sort": "created_date,DESC"}
-        if project_id is not None:
-            params["projectId"] = project_id
-
-        logger.info("Поиск запуска по имени '%s' (projectId=%s)...", name, project_id)
-        data = await self._request("GET", self.LAUNCH_ENDPOINT, params=params)
-        content = data.get("content", []) if isinstance(data, dict) else []
-
-        found_names = [lch.get("name") for lch in content if isinstance(lch, dict)]
-        logger.debug("Последние %d запусков проекта: %s", len(found_names), found_names)
-
-        for launch in content:
-            if isinstance(launch, dict) and launch.get("name") == name:
-                launch_id = int(launch["id"])
-                logger.info("Найден запуск '%s' → ID %d", name, launch_id)
-                return launch_id
-
-        raise AllaError(
-            f"Запуск '{name}' не найден в последних {len(content)} запусках проекта "
-            f"(projectId={project_id}). Доступные имена: {found_names}"
-        )
-
-    async def list_projects(self) -> dict[int, str]:
-        """Вернуть отображение ``{project_id: name}`` со всех страниц ``/api/project``.
-
-        Постранично обходит ``GET /api/project?page=N&size={page_size}``,
-        пока не закончатся страницы или не сработает защита ``max_pages``.
-        Нужен для человекочитаемых имён проектов.
-        """
-        out: dict[int, str] = {}
-        page = 0
-        while page < self._max_pages:
-            params: dict[str, Any] = {"page": page, "size": self._page_size}
-            data = await self._request("GET", self.PROJECT_ENDPOINT, params=params)
-            content = data.get("content", []) if isinstance(data, dict) else []
-            for project in content:
-                if not isinstance(project, dict):
-                    continue
-                pid = project.get("id")
-                name = project.get("name")
-                if isinstance(pid, int) and isinstance(name, str):
-                    out[pid] = name
-            total_pages = data.get("totalPages") if isinstance(data, dict) else None
-            page += 1
-            if not isinstance(total_pages, int) or page >= total_pages:
-                break
-            if not content:
-                break
-        return out
 
     async def get_launch(self, launch_id: int) -> LaunchResponse:
         """Получить метаданные запуска по ID.

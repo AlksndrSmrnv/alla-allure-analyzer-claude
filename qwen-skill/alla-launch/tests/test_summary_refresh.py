@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
-from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import project_fixture, testops_fixture  # noqa: F401
 from test_skill_flow import MARKDOWN_ANALYSIS, VALID_ANALYSIS, _next, _prepare, _run
 from test_skill_report import APP, _run as report_run
 

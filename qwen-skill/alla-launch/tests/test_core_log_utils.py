@@ -2,7 +2,7 @@
 
 import pytest
 
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 from alla_core.utils.log_utils import (
     extract_correlation_pairs_from_json,
     extract_correlation_pairs_from_text,

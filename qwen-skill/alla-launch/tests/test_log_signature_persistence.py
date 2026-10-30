@@ -4,7 +4,7 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 
 from alla_core.config import Settings
 from alla_core.models.clustering import ClusteringReport, ClusterSignature, FailureCluster

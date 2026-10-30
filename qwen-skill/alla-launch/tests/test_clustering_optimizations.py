@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 
 from alla_core.services import clustering_service as clustering
 from alla_core.models.testops import FailedTestSummary

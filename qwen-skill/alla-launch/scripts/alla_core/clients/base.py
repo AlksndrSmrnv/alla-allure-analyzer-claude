@@ -15,10 +15,7 @@ from alla_core.models.testops import (
 class TestResultsProvider(Protocol):
     """Протокол, определяющий контракт любого источника данных о результатах тестов.
 
-    Реализации:
-    - AllureTestOpsClient (MVP): получает данные из HTTP API Allure TestOps
-    - Будущее: LocalAllureReportClient (читает JSON-файлы allure-report)
-    - Будущее: CachedTestResultsClient (читает из локальной БД/кэша)
+    Реализация — AllureTestOpsClient (HTTP API Allure TestOps); в тестах — фейковые провайдеры.
     """
 
     async def get_launch(self, launch_id: int) -> LaunchResponse:
@@ -57,9 +54,7 @@ class TestResultsProvider(Protocol):
 class AttachmentProvider(Protocol):
     """Протокол для получения аттачментов результатов тестов.
 
-    Разделён от TestResultsProvider для backward-compatibility:
-    источники данных, не поддерживающие аттачменты, не обязаны реализовывать
-    этот протокол. Проверка через ``isinstance(client, AttachmentProvider)``.
+    Отделён от TestResultsProvider: фейковые провайдеры в тестах вложений не знают.
 
     Реализации:
     - AllureTestOpsClient: GET /api/testresult/attachment?testResultId={id}

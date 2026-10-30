@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pytest
-from skill_fixtures import project_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import project_fixture  # noqa: F401
 from skill_fake_testops import default_launch
 
 from alla_skill_lib import cli

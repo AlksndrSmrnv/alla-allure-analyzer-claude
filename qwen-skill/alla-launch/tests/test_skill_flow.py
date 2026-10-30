@@ -12,7 +12,6 @@ from skill_fixtures import (  # noqa: F401
     nested_project_fixture,
     project_fixture,
     testops_fixture,
-    without_libmagic,
 )
 from skill_fake_testops import TOKEN, FakeTestOps, default_launch, green_launch
 

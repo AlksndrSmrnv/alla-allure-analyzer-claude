@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
-from skill_fixtures import project_fixture, testops_fixture, without_libmagic  # noqa: F401
+from skill_fixtures import project_fixture, testops_fixture  # noqa: F401
 from eval.corpus_dev import known_issue_symptoms
 from qwen_stand import KNOWLEDGE
 from skill_fake_testops import FakeTestOps

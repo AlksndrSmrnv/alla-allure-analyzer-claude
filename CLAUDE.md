@@ -106,8 +106,7 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
   `skill_fixtures.py`, фабрики моделей ядра — в `skill_factories.py`, фейковый TestOps на
   `httpx.MockTransport` — в `skill_fake_testops.py`; `conftest.py` нет, чтобы папка скилла
   оставалась самодостаточной. `skill_fixtures` импортировать раньше `alla_core`: он
-  добавляет `scripts/` в `sys.path`. libmagic в окружении нет — автоматически включается
-  фикстура `without_libmagic`. Зависимости тестов — `requirements-dev.txt`.
+  добавляет `scripts/` в `sys.path`. Зависимости тестов — `requirements-dev.txt`.
 - Сообщения коммитов — по-английски, в стиле `fix(scope): …`.
 
 ## Подробные правила — `.claude/rules/`

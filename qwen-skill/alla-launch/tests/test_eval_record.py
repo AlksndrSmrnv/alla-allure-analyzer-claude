@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 from skill_fake_testops import TOKEN, FakeTestOps, LaunchFixture, default_launch
 
 from alla_core.config import Settings

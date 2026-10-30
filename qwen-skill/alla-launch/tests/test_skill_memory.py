@@ -8,7 +8,7 @@ import stat
 from pathlib import Path
 
 import pytest
-from skill_fixtures import without_libmagic  # noqa: F401
+import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
 
 from alla_core.models.clustering import ClusterSignature, FailureCluster
 from alla_core.models.common import TestStatus as Status

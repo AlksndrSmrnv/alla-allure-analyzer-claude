@@ -17,7 +17,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from alla_core.models.clustering import ClusteringReport, FailureCluster
-from alla_core.models.llm import LLMAnalysisResult
 from alla_core.models.testops import TriageReport
 from alla_core.utils.log_focus import log_pieces, split_source_mark
 from alla_core.utils.text_normalization import normalize_text_for_llm
@@ -141,7 +140,6 @@ class LaunchSummaryPrompt:
 
     user_prompt: str
     cluster_count: int
-    analyses_used: int
 
 
 # ---------------------------------------------------------------------------
@@ -394,12 +392,12 @@ def _trace_key(trace: str | None) -> str:
 def build_launch_summary_prompt(
     clustering_report: ClusteringReport,
     triage_report: TriageReport,
-    llm_result: LLMAnalysisResult | None = None,
+    analyses: Mapping[str, str] | None = None,
     problem_numbers: Mapping[str, int] | None = None,
 ) -> LaunchSummaryPrompt:
     """Собрать данные для итогового отчёта по прогону.
 
-    ``llm_result`` — источник разборов проблем (в скилле это сжатые разборы
+    ``analyses`` — разборы проблем по ``cluster_id`` (в скилле это сжатые разборы
     агента); у проблемы без разбора идут шаг, сообщение и трейс кластера.
     ``problem_numbers`` — номера проблем по ``cluster_id``, когда в
     ``clustering_report`` передана только часть кластеров (номер из отчёта
@@ -419,7 +417,6 @@ def build_launch_summary_prompt(
         f"Уникальных проблем (кластеров): {clustering_report.cluster_count}"
     )
 
-    analyses_used = 0
     for index, cluster in enumerate(clustering_report.clusters, 1):
         number = (problem_numbers or {}).get(cluster.cluster_id, index)
         parts.append("")
@@ -427,12 +424,10 @@ def build_launch_summary_prompt(
             f"--- Проблема {number}: {cluster.label} "
             f"({cluster.member_count} тестов) ---"
         )
-        if llm_result is not None:
-            analysis = llm_result.cluster_analyses.get(cluster.cluster_id)
-            if analysis and analysis.analysis_text:
-                parts.append(analysis.analysis_text)
-                analyses_used += 1
-                continue
+        analysis = (analyses or {}).get(cluster.cluster_id)
+        if analysis:
+            parts.append(analysis)
+            continue
 
         if cluster.example_step_path:
             parts.append(f"Шаг теста: {cluster.example_step_path}")
@@ -450,7 +445,6 @@ def build_launch_summary_prompt(
     return LaunchSummaryPrompt(
         user_prompt="\n".join(parts),
         cluster_count=clustering_report.cluster_count,
-        analyses_used=analyses_used,
     )
 
 

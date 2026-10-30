@@ -12,7 +12,6 @@ from skill_fixtures import (  # noqa: F401
     nested_project_fixture,
     project_fixture,
     testops_fixture,
-    without_libmagic,
 )
 from skill_fake_testops import FakeTestOps
 from test_skill_flow import PROPOSAL, TEST_ANALYSIS, _finish, _prepare, _run

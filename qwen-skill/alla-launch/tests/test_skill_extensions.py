@@ -10,7 +10,6 @@ import pytest
 from skill_fixtures import (  # noqa: F401
     project_fixture,
     testops_fixture,
-    without_libmagic,
 )
 from skill_fake_testops import FakeTestOps
 from test_ext_git_publish import LOGIN_ANALYSIS

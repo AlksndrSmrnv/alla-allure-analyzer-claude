@@ -22,7 +22,6 @@ from skill_fixtures import (  # noqa: F401
     nested_project_fixture,
     project_fixture,
     testops_fixture,
-    without_libmagic,
 )
 from test_skill_flow import MARKDOWN_ANALYSIS, _finish, _prepare, _run
 
