@@ -49,7 +49,7 @@ zerolog, 3 и выше — ошибка). Слово
 Запись любого уровня с полями ошибки ответа — тоже ошибка (:func:`has_error_fields`):
 ``[INFO] … {"errorCode":6, "errorMessage":"счет закрыт"}``, ``errorCode=6``,
 ``<faultString>…</faultString>``. Поле — имя на ``error``/``err``/``fault`` + ``code``/``message``/
-``msg``/``text``/``description``/``string`` (``ufsErrorCode``, ``error_message``); значение «успеха»
+``msg``/``text``/``description``/``string`` (``bizErrorCode``, ``error_message``); значение «успеха»
 (пусто, ``null``, ``0``, ``OK``…) ошибкой не делает. Продолжение стека решает по-прежнему
 только уровень (:attr:`LogEvent.is_error`).
 

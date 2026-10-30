@@ -51,7 +51,7 @@ class Settings:
     retry_max_detail_requests: int = 200
     images_per_problem: int = 3
     images_max_bytes: int = 5 * 1024 * 1024
-    # Ключи id операции проекта через запятую (``ufsBusinessId,ufsRqUID``) — к реестру
+    # Ключи id операции проекта через запятую (``businessId,bizRqId``) — к реестру
     # ``log_utils._CANONICAL_CORRELATION_KEYS``: по ним из общего лога берутся записи операции.
     operation_id_keys: str = ""
     # Перезапуск тестов локально (``rerun`` скилла): запусков каждого теста до первого
@@ -108,7 +108,7 @@ class Settings:
             if not _OPERATION_KEY_RE.fullmatch(key):
                 raise ConfigurationError(
                     f"{ENV_PREFIX}OPERATION_ID_KEYS: «{key}» — не имя поля; "
-                    "ключи через запятую, например ufsBusinessId,ufsRqUID"
+                    "ключи через запятую, например businessId,bizRqId"
                 )
         for name, (low, high) in BOUNDS.items():
             value = getattr(self, name)

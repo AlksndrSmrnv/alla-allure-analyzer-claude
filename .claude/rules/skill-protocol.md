@@ -4,6 +4,7 @@ paths:
   - "qwen-skill/alla-launch/references/**"
   - "qwen-skill/alla-launch/scripts/alla_skill.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/cli.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/jobs.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/workspace.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/batch_task.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/agent_rules.py"

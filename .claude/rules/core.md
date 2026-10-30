@@ -106,7 +106,7 @@ paths:
   `_CANONICAL_CORRELATION_KEYS`: operUID, rqUID, requestId, correlationId, traceId, и ключи
   проекта `ALLURE_OPERATION_ID_KEYS` — `Settings.operation_keys` →
   `LogExtractionConfig.operation_id_keys` → `AttachmentContext.operation_keys`; регекспы —
-  `log_utils._operation_regexes`, показ ключа — как в настройке; реальный прогон: `ufsBusinessId`
+  `log_utils._operation_regexes`, показ ключа — как в настройке; пример: `businessId`
   не из реестра, записи своей операции не находились) — **все**
   значения (`log_utils.operation_ids`) из сообщения и трейса и из вложений, которые не лог
   (`attachment_handlers.log_operation_ids` → `None`: запрос и ответ HTTP, JSON, XML, HTML).
@@ -154,9 +154,9 @@ paths:
 - **Поля ошибки ответа** (`log_events.has_error_fields`) делают ошибкой событие любого уровня
   (`LogEvent.reports_error`, по нему фильтрует `error_events`): бизнес-ошибку сервисы пишут на
   INFO — `[INFO] … {"errorCode":6, "errorMessage":"счет закрыт"}`; раньше её отбрасывал отбор по
-  уровню, в том числе до отбора по операции (реальный прогон). Поле — JSON (`"key":`),
+  уровню, в том числе до отбора по операции. Поле — JSON (`"key":`),
   `key=`/`key:` или XML (`<ns:key>…</`), имя — любой префикс + `error|err|fault` + `_?` +
-  `code|message|msg|text|description|desc|string` (`ufsErrorCode`, `error_message`, `faultString`;
+  `code|message|msg|text|description|desc|string` (`bizErrorCode`, `error_message`, `faultString`;
   регистр любой; `errorCount` и `"error":` — нет). Ответ внутри строкового поля JSON-записи
   (`"message":"Response {\"errorCode\":6}"`) — тоже поле (ревью Codex: иначе INFO-запись
   отбрасывалась): вложенный уровень (до 3) читается в содержимом строкового значения с
@@ -302,7 +302,7 @@ paths:
    времени, ID, имён потоков и цифр; ключи блока — корневой класс (последний `…Exception|Error|Throwable`, то есть самый
    глубокий `Caused by`; обёртки вроде `ServletException` не ключ), `numeric_codes` и коды
    ошибки ответа (`log_events.error_field_codes`: поля ошибки на `code` — `errorCode`,
-   `error_code`, `ufsErrorCode`, `faultCode` — без «успеха»; `"errorCode":6` → `errorcode=6`,
+   `error_code`, `bizErrorCode`, `faultCode` — без «успеха»; `"errorCode":6` → `errorcode=6`,
    имя без регистра и `_`, значение без регистра, короткие коды тоже).
    «Явно разные» — у логов нет ни одного общего блока, ни общего ключа, а TF-IDF похожесть
    ниже `clustering_log_split_threshold` (0.30); или общих блока и ключа нет, а коды ошибки
@@ -478,7 +478,7 @@ paths:
 | `ALLURE_RERUN_TIMEOUT` | нет | `1800` | Общий потолок времени перезапуска, с (60–14400) |
 | `ALLURE_RERUN_MAVEN_ARGS` | нет | `""` | Свои аргументы Maven (`shlex`), значения не печатаются |
 | `ALLURE_RERUN_RESOLVE` | нет | `true` | Статус passed в TestOps прошедшим при перезапуске (после «да»); `false` — только чтение |
-| `ALLURE_OPERATION_ID_KEYS` | нет | `""` | Ключи id операции проекта через запятую (`ufsBusinessId`), к реестру; имя — `[A-Za-z][A-Za-z0-9_.-]{0,63}`, иначе `ConfigurationError` |
+| `ALLURE_OPERATION_ID_KEYS` | нет | `""` | Ключи id операции проекта через запятую (`businessId`), к реестру; имя — `[A-Za-z][A-Za-z0-9_.-]{0,63}`, иначе `ConfigurationError` |
 
 ## Тесты ядра
 

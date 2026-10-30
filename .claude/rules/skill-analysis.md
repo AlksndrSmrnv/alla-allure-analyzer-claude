@@ -2,6 +2,8 @@
 paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/cluster_task.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/sources.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/images.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/retries.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/analysis_format.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/code_hints.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/report.py"

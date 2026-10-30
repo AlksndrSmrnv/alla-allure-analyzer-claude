@@ -199,7 +199,7 @@ def operation_ids(text: str, extra_keys: tuple[str, ...] = ()) -> frozenset[tupl
     В отличие от :func:`extract_correlation_pairs_from_text` берёт **все** значения
     каждого ключа: в общем логе сервиса их много, и по ним блок лога сверяется с
     операцией теста (:func:`operation_values`). ``extra_keys`` — ключи проекта к реестру
-    (``ufsBusinessId``), показываются как написаны.
+    (``businessId``), показываются как написаны.
     """
     if not text:
         return frozenset()

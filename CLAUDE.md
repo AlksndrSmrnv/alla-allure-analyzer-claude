@@ -28,7 +28,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | `commands/alla/` | слэш-команды Qwen `/alla:run`, `/alla:apply`…; `setup` и `prepare` ставят их в `.qwen/commands/alla/` проекта |
 | `extensions/` | расширения скилла: `README.md` (контракт для авторов), встроенные `git-publish/` (ветка git), `sut-code/` (`/alla:code N` — разбор по коду приложения) и `tickets/` (`/alla:ticket N [N…]` — просмотр и отправка тикетов через пользовательский адаптер); свои — `<проект>/alla-extensions/` |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` проекта автотестов |
-| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files` |
+| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files`, `jobs`, `retries`, `images`, `extension_data` |
 | `scripts/alla_core/` | ядро: клиент TestOps, триаж, логи, кластеризация, блок «Данные» |
 | `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
 | `tests/eval/` | эталон точности: кассеты прогонов (`record.py` пишет у команды), размеченный корпус dev/holdout, метрики склеек, дробления, скрытых групп и потери доказательств (`run_eval.py`), см. `README.md` там же |
@@ -37,7 +37,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 
 ```bash
 python3.11 -m venv .venv && .venv/bin/pip install -r qwen-skill/alla-launch/requirements-dev.txt
-.venv/bin/python -m pytest                      # из корня, несколько секунд
+.venv/bin/python -m pytest                      # из корня, около 2,5 минут
 .venv/bin/ruff check qwen-skill/alla-launch
 .venv/bin/mypy qwen-skill/alla-launch/scripts qwen-skill/alla-launch/extensions   # strict, без ошибок
 .venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case A01 --output /tmp/alla-stand-001
@@ -73,7 +73,7 @@ pytest (`-rs`; на Linux пропускаются только 4 проверк
 - `inconclusive` с пунктами «оценить» — автоматические проверки прошли, оси вроде Evidence
   оцени сам по `alla-reports/` и trace. Проверки стенда без модели — `recheck`.
 - Подробности, границы песочницы и найденные особенности Qwen — `docs/skill-quality.md`
-  («Стенд Qwen») и `docs/harness-context.md`.
+  («Стенд Qwen»).
 
 Корневой `pyproject.toml` содержит только конфиг ruff/mypy/pyright/pytest, пакета нет.
 pyright настроен для навигации (`typeCheckingMode = "off"`), типы проверяет mypy.
@@ -136,6 +136,6 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 - Инструкции скилла (`SKILL.md`, `references/`, тексты заданий): формулировки — скилл
   `skill-creator`; после существенной правки — агент `qwen-executor-review` (читает скилл
   с чистым контекстом, без этого файла); поведение модели — скилл `skill-evaluation`.
-- Хуки в `.claude/settings.local.json`: ruff после правки `.py`; тесты справочников и
-  заданий после правки `SKILL.md`, `references/`, `alla_skill_lib/`; перед `git commit` —
-  ruff, pytest и mypy (`.claude/hooks/mypy_baseline` — 0: mypy чистый).
+- Хуки Claude Code (ruff после правки `.py`, тесты справочников после правки `SKILL.md`,
+  `references/`, `alla_skill_lib/`, ruff + pytest + mypy перед `git commit`) — личная настройка
+  в `.claude/settings.local.json`, в репозиторий не входит; те же проверки — команды выше.

@@ -586,10 +586,10 @@ def test_settings_operation_id_keys() -> None:
 
     assert Settings.load(None, environ=base).operation_keys == ()
     settings = Settings.load(None, environ={
-        **base, "ALLURE_OPERATION_ID_KEYS": " ufsBusinessId, ,ufsRqUID,UFSBUSINESSID"})
-    assert settings.operation_keys == ("ufsBusinessId", "ufsRqUID")
-    with pytest.raises(ConfigurationError, match="ALLURE_OPERATION_ID_KEYS: «ufs business id»"):
-        Settings.load(None, environ={**base, "ALLURE_OPERATION_ID_KEYS": "ufs business id"})
+        **base, "ALLURE_OPERATION_ID_KEYS": " businessId, ,bizRqId,BUSINESSID"})
+    assert settings.operation_keys == ("businessId", "bizRqId")
+    with pytest.raises(ConfigurationError, match="ALLURE_OPERATION_ID_KEYS: «biz id»"):
+        Settings.load(None, environ={**base, "ALLURE_OPERATION_ID_KEYS": "biz id"})
 
 
 @pytest.mark.parametrize("module", ["alla_skill_lib.workspace", "alla_skill"])

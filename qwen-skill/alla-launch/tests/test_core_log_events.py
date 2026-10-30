@@ -367,7 +367,7 @@ def test_exception_starts_an_event_only_before_frames() -> None:
 # Поля ошибки ответа: запись любого уровня с ними — ошибка
 # ---------------------------------------------------------------------------
 
-BUSINESS_INFO = ('2026-10-16 10:00:01 [INFO] [ufsBusinessId=b-301] c.e.AccountClient - Response '
+BUSINESS_INFO = ('2026-10-16 10:00:01 [INFO] [businessId=b-301] c.e.AccountClient - Response '
                  '{"status":"REJECTED","errorCode":6 , "errorMessage":"счет закрыт"}')
 
 
@@ -395,7 +395,7 @@ def test_success_values_and_other_fields_are_not_errors(record: str) -> None:
 
 @pytest.mark.parametrize("record", [
     "time=2026-10-16T10:00:01Z level=info msg=response errorCode=6",
-    "2026-10-16 10:00:01 WARN  c.e.Client - got {\"ufsErrorCode\":\"E12\"}",
+    "2026-10-16 10:00:01 WARN  c.e.Client - got {\"bizErrorCode\":\"E12\"}",
     "2026-10-16 10:00:01 [INFO] answer error_code: 10001",
     '{"level":"info","msg":"response","errorMessage":"счет закрыт"}',
     "2026-10-16 10:00:01 [INFO] SOAP <ns2:faultString>Server is busy</ns2:faultString>",
@@ -463,7 +463,7 @@ def test_has_error_fields_reads_quoted_values_whole() -> None:
 @pytest.mark.parametrize(("text", "codes"), [
     ('{"status":"REJECTED","errorCode":6,"errorMessage":"счет закрыт"}', ["errorcode=6"]),
     ("error_code=E_LIMIT errorMessage=limit exceeded", ["errorcode=e_limit"]),
-    ('{"ufsErrorCode":"12","errorCode":"12"}', ["ufserrorcode=12", "errorcode=12"]),
+    ('{"bizErrorCode":"12","errorCode":"12"}', ["bizerrorcode=12", "errorcode=12"]),
     ("<soap:faultCode>SOAP-ENV:Server</soap:faultCode>", ["faultcode=soap-env:server"]),
     ('{"errorCode":0,"errorMessage":null}', []),
     ('{"errorMessage":"счет закрыт","errorCount":3}', []),

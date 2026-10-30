@@ -227,21 +227,21 @@ def test_extract_correlation_pairs_from_json_ignores_non_scalar_values() -> None
     assert extract_correlation_pairs_from_json(obj) == {"traceId": "tr-1"}
 
 
-UFS_TEXT = (
-    '{"ufsBusinessId": "b-301"} {"UFSBUSINESSID": 1234567} ufsBusinessId=b-302 '
-    "<ufsBusinessId>b-303</ufsBusinessId> operUID=op-1"
+BUSINESS_TEXT = (
+    '{"businessId": "b-301"} {"BUSINESSID": 1234567} businessId=b-302 '
+    "<businessId>b-303</businessId> operUID=op-1"
 )
 
 
 def test_operation_ids_take_project_keys_in_every_format() -> None:
-    assert operation_ids(UFS_TEXT, ("ufsBusinessId",)) == {
-        ("ufsBusinessId", "b-301"), ("ufsBusinessId", "1234567"), ("ufsBusinessId", "b-302"),
-        ("ufsBusinessId", "b-303"), ("operUID", "op-1")}
+    assert operation_ids(BUSINESS_TEXT, ("businessId",)) == {
+        ("businessId", "b-301"), ("businessId", "1234567"), ("businessId", "b-302"),
+        ("businessId", "b-303"), ("operUID", "op-1")}
 
 
 def test_operation_ids_without_project_keys_take_only_the_registry() -> None:
-    assert operation_ids(UFS_TEXT) == {("operUID", "op-1")}
+    assert operation_ids(BUSINESS_TEXT) == {("operUID", "op-1")}
 
 
 def test_project_key_is_matched_whole() -> None:
-    assert operation_ids("myUfsBusinessIdX=b-1 ufsBusinessId2=b-2", ("ufsBusinessId",)) == set()
+    assert operation_ids("myBusinessIdX=b-1 businessId2=b-2", ("businessId",)) == set()

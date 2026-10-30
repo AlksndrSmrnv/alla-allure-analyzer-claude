@@ -145,7 +145,7 @@ paths:
 - Ревизия (`prepare.choose_revision`): `--param ref=X` (или `имя=X` для одного репозитория) →
   ветка, тег `X`/`vX`, коммит; иначе приблизительно — `rev-list -1 --before=<launch_created>`
   основной ветки (`default_branch` или HEAD bare-копии). Версию из TestOps пока не читаем
-  (решение отложено, план `docs/plans/2026-10-15-sut-code-extension.md`).
+  (решение отложено).
 - `prepare` пишет `<stem>.sut.md` (ревизии и папки, места кадров стека всех языков с окнами
   кода, `git grep -F` постоянных кусков текстов ошибок, куски `[S…]`) и `<stem>.sut-state` (не
   `.json`: `extensions action` принимает контекстом любой `.json` папки расширения).
@@ -192,7 +192,7 @@ paths:
   с `mcp.py`, а примеры `mcp-tracker` из неё — с `load_config`). Меняя формат
   `mcp-tracker.toml`, подстановки или тексты ошибок `mcp.py`, правь и её.
 - MCP трекера: встроенный `extensions/tickets/adapters/mcp.py` — обычный адаптер `api = 1`
-  (ядро и скрипты tickets не знают про MCP; решение — `docs/plans/2026-10-28-tracker-mcp.md`).
+  (ядро и скрипты tickets не знают про MCP).
   Клиент stdio на stdlib, формат — `mcp-tracker.toml` (пример рядом). `prepare` чистый и сервер
   не запускает; метка `alla-request: UUID` в `{body}` обязательна, это ключ `lookup`
   (`[lookup]`/`[lookup_link]`; `absent` не возвращается никогда, `authoritative_absence`
