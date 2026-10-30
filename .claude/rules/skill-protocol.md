@@ -16,6 +16,7 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/qwen_files.py"
   - "qwen-skill/alla-launch/commands/**"
   - "qwen-skill/alla-launch/tests/test_skill_commands.py"
+  - "qwen-skill/alla-launch/tests/test_skill_update.py"
   - "qwen-skill/alla-launch/tests/test_skill_protocol.py"
   - "qwen-skill/alla-launch/tests/test_skill_parallel.py"
   - "qwen-skill/alla-launch/tests/test_skill_flow.py"
@@ -46,6 +47,18 @@ paths:
   2, с фейковым TestOps — `ready`, `prepare 777` — `analyze`. Меняя вывод или коды `setup` и
   `check`, правь и скрипт. Фейковый сервер работает в `.venv` проекта, поэтому
   `skill_fake_testops.py` не импортирует pytest во время выполнения.
+- `update [--source URL] [--ref REF]` — тоже в `alla_skill.py` до проверки `setup_complete()`
+  (работает без `.venv`; в `cli.py` файлы скилла пришлось бы менять под работающим кодом).
+  Адрес — таблица `[update]` (`repo`, `ref`, `path`) в `<проект>/alla-extensions/config.toml`,
+  читается своим разбором `ключ = "значение"` (на 3.8 нет `tomllib`; остальные таблицы
+  `extensions.load_config` отдаёт расширениям, `update` ему не мешает). Только для скилла в
+  `…/.qwen/skills/` (рабочую копию разработчика не заменяет); пароль в адресе — отказ.
+  `git clone --depth 1` с окружением как у `sut-code` (без вопросов, ssh `BatchMode`,
+  таймаут 90 с — Qwen обрывает shell на 120 с), версия — sha в `.alla-version` (совпал —
+  `STATUS: ok`). Папка заменяется целиком через `.alla-update-*` рядом (откат при сбое),
+  сохраняются `.env` и `.venv`; затем `install_commands`. `setup` внутри не запускается —
+  печатается его команда, если `setup_complete()` ложно. Стадии — в stderr: первая строка
+  stdout `STATUS: updated|ok|error`. Проверяет `test_skill_update.py` на настоящем git.
 - `/alla-launch установи` (`SKILL.md`, «1. Старт») — модель выполняет `setup`, затем `check`, и
   без номера прогона ничего не разбирает; пустой `.env` — `check` отвечает `error`, модель
   просит пользователя вписать адрес и токен. Отдельной команды скрипта для этого нет.
@@ -54,7 +67,7 @@ paths:
 
 - `commands/alla/*.md` — команды Qwen Code (`FileCommandLoader`: подпапка `alla/` даёт имя
   `alla:<файл>`): `run`, `continue`, `apply`, `revert`, `remember`, `reject`, `review`,
-  `setup`, `extensions`, `rerun`. Frontmatter — `description`, `argument-hint` (у команд с аргументами, тогда в теле
+  `setup`, `update`, `extensions`, `rerun`. Frontmatter — `description`, `argument-hint` (у команд с аргументами, тогда в теле
   `{{args}}`), `disable-model-invocation: true` (без него команду может вызвать сама модель).
 - Тело — короткая просьба «вызови скилл alla-launch (инструмент skill) и действуй по разделу
   N»: шаги и правила не копируются, источник — `SKILL.md`. Папку разбора для `apply`,
@@ -62,7 +75,7 @@ paths:
   «Слэш-команды» (папка из сеанса, иначе `next` без аргументов; краткий разбор повторно не
   выводить).
 - Qwen читает команды из `<project>/.qwen/commands/` при старте сеанса. Копируют их
-  `setup` (`alla_skill.install_commands`, Python 3.8, без библиотеки) и `prepare`
+  `setup` и `update` (`alla_skill.install_commands`, Python 3.8, без библиотеки) и `prepare`
   (`qwen_files.install_commands`, вместе с `install_batch_agent`): только новые и изменённые
   файлы, чужие в `.qwen/commands/alla/` не удаляются. Две реализации сверяет
   `test_skill_commands.py`; он же проверяет формат, набор и разделы `SKILL.md`.
@@ -78,7 +91,8 @@ paths:
 номеров — только с `--from-analysis`, `skill-memory.md`), `reject N <id> --run DIR`,
 `extensions [list|enable|disable|run|action]` (`skill-extensions.md`; action с --run строит
 контекст по папке разбора, без --context/--run и с явным --reports-dir работает после clean),
-`rerun [N…] --run DIR [--yes --plan ХЭШ | --wait]` (`skill-rerun.md`).
+`rerun [N…] --run DIR [--yes --plan ХЭШ | --wait]` (`skill-rerun.md`),
+`update [--source URL] [--ref REF]` (только `alla_skill.py`, «Точка входа и установка»).
 
 - Где в синтаксисе есть `--run DIR`, он обязателен: `.last_run` после нового `prepare`
   указывает на другой прогон.
@@ -91,7 +105,7 @@ paths:
 ## Статусы и коды возврата
 
 - Первая строка вывода — `STATUS: analyze|analyze_batch|fix|propose|relate|summary|done|diff|
-  applied|reverted|saved|rerun|running|rerun_done|ok|ready|reviewed|setup_required|error`.
+  applied|reverted|saved|rerun|running|rerun_done|ok|ready|reviewed|setup_required|updated|error`.
 - Ошибка аргументов и любое необработанное исключение тоже дают `STATUS: error`.
 - Код возврата 0 у всех статусов, кроме `error`: статус с инструкцией — не авария.
 

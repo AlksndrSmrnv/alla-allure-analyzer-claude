@@ -54,7 +54,7 @@ def _commands() -> list[Path]:
 
 def test_command_set_is_the_documented_one() -> None:
     names = {path.stem for path in _commands()}
-    assert names == WITH_ARGS | {"review", "setup"}
+    assert names == WITH_ARGS | {"review", "setup", "update"}
     assert not list(COMMANDS_DIR.parent.glob("*.md")), "команда вне alla/ осталась бы без префикса"
     for name in names:
         assert f"`/alla:{name}" in SKILL_MD, f"/alla:{name} нет в разделе «Слэш-команды»"
