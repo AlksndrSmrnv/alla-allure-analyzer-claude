@@ -493,11 +493,17 @@ def swap_skill_dir(source: Path) -> str:
                 moved.append(name)
         os.rename(str(new_dir), str(SKILL_DIR))
     except (OSError, shutil.Error) as error:
+        stuck: list[str] = []
         for name in moved:
             try:
                 os.rename(str(new_dir / name), str(old_dir / name))
             except OSError:
-                pass
+                stuck.append(name)
+        if stuck:
+            # Единственная копия .env/.venv осталась в staging: не удалять.
+            return "{}; {} не вернулись на место, они лежат в {}".format(
+                error, ", ".join(stuck), new_dir
+            )
         if swapped and not SKILL_DIR.exists():
             try:
                 os.rename(str(old_dir), str(SKILL_DIR))
@@ -562,12 +568,14 @@ def update(argv: Sequence[str]) -> int:
         code, sha = run_git(["-C", str(clone), "rev-parse", "HEAD"])
         if code != 0 or not sha:
             return update_error("Не удалось определить версию репозитория: {}".format(sha))
+        # Версия — коммит и папка скилла в нём: смена path при том же коммите — другая версия.
+        version = "{} {}".format(sha, folder.resolve().relative_to(clone.resolve()).as_posix())
 
         try:
             current = VERSION_MARKER.read_text(encoding="utf-8").strip()
         except OSError:
             current = ""
-        if current == sha:
+        if current == version:
             print("STATUS: ok")
             print("Скилл уже последней версии ({}), ничего не менял.".format(sha[:8]))
             return 0
@@ -579,7 +587,7 @@ def update(argv: Sequence[str]) -> int:
         shutil.rmtree(str(scratch), ignore_errors=True)
 
     try:
-        VERSION_MARKER.write_text(sha + "\n", encoding="utf-8")
+        VERSION_MARKER.write_text(version + "\n", encoding="utf-8")
     except OSError as error:
         print("Не удалось записать {}: {}".format(VERSION_MARKER, error), file=sys.stderr, flush=True)
     print("STATUS: updated")

@@ -106,7 +106,7 @@ def test_update_replaces_skill_and_keeps_user_files(tmp_path: Path, repo: Path) 
     assert not (skill / "scripts" / "alla_skill_lib" / "stale.py").exists()  # удалён в новой версии
     assert (skill / ".env").read_text(encoding="utf-8") == "ALLURE_TOKEN=secret\n"
     assert (skill / ".venv" / "marker").is_file()
-    assert (skill / ".alla-version").read_text(encoding="utf-8").strip() == sha
+    assert (skill / ".alla-version").read_text(encoding="utf-8").strip() == f"{sha} {SOURCE_PATH}"
     command = project / ".qwen" / "commands" / "alla" / "run.md"
     assert command.read_text(encoding="utf-8") == "команда версии 2\n"
     assert sha[:8] in result.stdout
@@ -316,3 +316,45 @@ def test_config_table_update_does_not_break_extensions_config(tmp_path: Path) ->
 )
 def test_update_argument_split(argv: list[str], expected: tuple[str | None, str | None] | None) -> None:
     assert alla_skill.split_update_args(argv) == expected
+
+
+def test_update_reinstalls_when_path_changes_within_same_commit(tmp_path: Path, repo: Path) -> None:
+    _publish(repo, _skill_v(2), prefix="old-layout/alla-launch")
+    _publish(repo, _skill_v(3), prefix="new-layout/alla-launch")
+    project, skill, stub = _project(tmp_path)
+    _configure(project, repo.as_uri(), 'path = "old-layout/alla-launch"\n')
+    assert "STATUS: updated" in _update(stub).stdout
+    _configure(project, repo.as_uri(), 'path = "new-layout/alla-launch"\n')
+
+    result = _update(stub)
+
+    assert result.stdout.startswith("STATUS: updated")
+    assert (skill / "scripts" / "alla_skill_lib" / "new_3.py").is_file()
+    assert not (skill / "scripts" / "alla_skill_lib" / "new_2.py").exists()
+
+
+def test_update_keeps_staging_when_retained_files_cannot_be_restored(
+    tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Не вернулся .env — единственная копия остаётся в .alla-update-*, а не удаляется."""
+    _publish(repo, _skill_v(2))
+    project, skill, _ = _project(tmp_path)
+    monkeypatch.setattr(alla_skill, "SKILL_DIR", skill)
+    real_rename = os.rename
+
+    def failing_rename(src: str, dst: str) -> None:
+        if str(dst) == str(skill) and Path(src).name == "new":
+            raise OSError("занято")
+        if Path(src).name == ".env" and Path(src).parent.name == "new":
+            raise OSError("не вернуть")
+        real_rename(src, dst)
+
+    monkeypatch.setattr(alla_skill.os, "rename", failing_rename)
+    source = tmp_path / "source"
+    shutil.copytree(repo / SOURCE_PATH, source)
+
+    reason = alla_skill.swap_skill_dir(source)
+
+    assert "не вернулись на место" in reason and ".alla-update-" in reason
+    kept = list(skill.parent.glob(".alla-update-*/new/.env"))
+    assert len(kept) == 1 and kept[0].read_text(encoding="utf-8") == "ALLURE_TOKEN=secret\n"
