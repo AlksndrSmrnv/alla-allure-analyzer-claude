@@ -4,82 +4,16 @@ paths:
   - "qwen-skill/alla-launch/references/**"
   - "qwen-skill/alla-launch/scripts/alla_skill.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/cli.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/jobs.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/workspace.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/batch_task.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/agent_rules.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/errors.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/session_rules.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/session_log.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/review.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/review_model.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/qwen_files.py"
-  - "qwen-skill/alla-launch/commands/**"
-  - "qwen-skill/alla-launch/tests/test_skill_commands.py"
-  - "qwen-skill/alla-launch/tests/test_skill_update.py"
-  - "qwen-skill/alla-launch/tests/test_skill_protocol.py"
-  - "qwen-skill/alla-launch/tests/test_skill_parallel.py"
-  - "qwen-skill/alla-launch/tests/test_skill_flow.py"
   - "qwen-skill/alla-launch/tests/test_skill_docs.py"
-  - "qwen-skill/alla-launch/tests/test_skill_review.py"
-  - "qwen-skill/alla-launch/tests/test_skill_session_log.py"
-  - "qwen-skill/alla-launch/tests/qwen_stand.py"
+  - "qwen-skill/alla-launch/tests/test_skill_protocol.py"
 ---
 
 # Протокол скилла: команды, статусы, пакетный разбор, правила исполнителя
 
-## Точка входа и установка
-
-- `scripts/alla_skill.py` (Python 3.8+) перезапускает себя в `.venv` в корне проекта
-  автотестов (`project_root` — копия `workspace.detect_project_root`: `alla_skill_lib` на 3.8
-  не импортируется).
-- `setup [--python P] [-- pip-аргументы]` создаёт `.venv` проекта или берёт существующий;
-  существующий на Python < 3.11 или неработающий — `STATUS: error`, чужой venv не
-  пересоздаём; нет pip (`--without-pip`) — `ensurepip`, не вышло — `error` с командой. Если git
-  не игнорирует `.venv`, дописывает `/.venv` в корневой `.gitignore`: без слэша на конце, иначе
-  шаблон не прикрывает `.venv`-симлинк (так его делает стенд). `check-ignore` — по пути
-  `.venv`, если он есть (у симлинка путь со слэшем — ошибка 128), иначе `.venv/`. После
-  успешного pip install пишет `.venv/.alla-setup-complete` (хэш `requirements.txt`) и создаёт
-  `.env` скилла из образца. Без маркера все команды отвечают `STATUS: setup_required`.
-- Установку с нуля на Linux проверяет `.github/scripts/skill_setup_smoke.sh` (job CI в
-  `python:3.11`): `setup_required` до установки, `setup` дважды (второй берёт готовый `.venv`,
-  `/.venv` в `.gitignore` один раз), права `.env` 600, `check` с пустым `.env` — `error` и код
-  2, с фейковым TestOps — `ready`, `prepare 777` — `analyze`. Меняя вывод или коды `setup` и
-  `check`, правь и скрипт. Фейковый сервер работает в `.venv` проекта, поэтому
-  `skill_fake_testops.py` не импортирует pytest во время выполнения.
-- `update [--source URL] [--ref REF]` — тоже в `alla_skill.py` до проверки `setup_complete()`
-  (работает без `.venv`; в `cli.py` файлы скилла пришлось бы менять под работающим кодом).
-  Адрес — таблица `[update]` (`repo`, `ref`, `path`) в `<проект>/alla-extensions/config.toml`,
-  читается своим разбором `ключ = "значение"` (на 3.8 нет `tomllib`; остальные таблицы
-  `extensions.load_config` отдаёт расширениям, `update` ему не мешает). Только для скилла в
-  `…/.qwen/skills/` (рабочую копию разработчика не заменяет); пароль в адресе (у http(s) — любой userinfo, в том числе токен) — отказ; адрес `транспорт::…` (remote-helper) — тоже; `::` внутри IPv6 допустимо.
-  `git clone --depth 1` с окружением как у `sut-code` (без вопросов, ssh `BatchMode`, `core.sshCommand` из настроек проекта передаётся в `GIT_SSH_COMMAND`,
-  таймаут 90 с — Qwen обрывает shell на 120 с), версия — sha и папка скилла в репозитории (`path`) в `.alla-version` (совпали —
-  `STATUS: ok`). Папка заменяется целиком через `.alla-update-*` рядом (откат при сбое),
-  маркер версии пишется в копию до переименования (одновременные `update` не разводят файлы и маркер); сохраняются `.env` и `.venv`; затем `install_commands`. `setup` внутри не запускается —
-  печатается его команда, если `setup_complete()` ложно. Стадии — в stderr: первая строка
-  stdout `STATUS: updated|ok|error`. Проверяет `test_skill_update.py` на настоящем git.
-- `/alla-launch установи` (`SKILL.md`, «1. Старт») — модель выполняет `setup`, затем `check`, и
-  без номера прогона ничего не разбирает; пустой `.env` — `check` отвечает `error`, модель
-  просит пользователя вписать адрес и токен. Отдельной команды скрипта для этого нет.
-
-## Слэш-команды `/alla:*` (`commands/alla/`, `qwen_files.py`)
-
-- `commands/alla/*.md` — команды Qwen Code (`FileCommandLoader`: подпапка `alla/` даёт имя
-  `alla:<файл>`): `run`, `continue`, `apply`, `revert`, `remember`, `reject`, `review`,
-  `setup`, `update`, `extensions`, `rerun`. Frontmatter — `description`, `argument-hint` (у команд с аргументами, тогда в теле
-  `{{args}}`), `disable-model-invocation: true` (без него команду может вызвать сама модель).
-- Тело — короткая просьба «вызови скилл alla-launch (инструмент skill) и действуй по разделу
-  N»: шаги и правила не копируются, источник — `SKILL.md`. Папку разбора для `apply`,
-  `revert`, `remember`, `reject`, `review` команда не знает — правило в разделе `SKILL.md`
-  «Слэш-команды» (папка из сеанса, иначе `next` без аргументов; краткий разбор повторно не
-  выводить).
-- Qwen читает команды из `<project>/.qwen/commands/` при старте сеанса. Копируют их
-  `setup` и `update` (`alla_skill.install_commands`, Python 3.8, без библиотеки) и `prepare`
-  (`qwen_files.install_commands`, вместе с `install_batch_agent`): только новые и изменённые
-  файлы, чужие в `.qwen/commands/alla/` не удаляются. Две реализации сверяет
-  `test_skill_commands.py`; он же проверяет формат, набор и разделы `SKILL.md`.
-- Стенд кладёт команды в проект заранее (как со второго сеанса); сценарии `C01`, `C02`.
+Подробности — в файлах подобластей: `skill-protocol-setup.md` (установка и слэш-команды), `skill-protocol-workspace.md` (`prepare` и папка разбора), `skill-protocol-batch.md` (пакетный разбор и шаг `relate`), `skill-protocol-review.md` (проверка для пилота).
 
 ## Команды
 
@@ -88,11 +22,11 @@ paths:
 `review [run_dir | --run DIR] [--no-model]`,
 `apply N --run DIR [--yes --diff ХЭШ] [--repeat]`, `revert N --run DIR`,
 `remember N [N…] --run DIR [--entry ID] [--from-analysis | --from-extension ИМЯ]` (несколько
-номеров — только с `--from-analysis`, `skill-memory.md`), `reject N <id> --run DIR`,
+номеров — только с `--from-analysis`, `skill-memory-feedback.md`), `reject N <id> --run DIR`,
 `extensions [list|enable|disable|run|action]` (`skill-extensions.md`; action с --run строит
 контекст по папке разбора, без --context/--run и с явным --reports-dir работает после clean),
 `rerun [N…] --run DIR [--yes --plan ХЭШ | --wait]` (`skill-rerun.md`),
-`update [--source URL] [--ref REF]` (только `alla_skill.py`, «Точка входа и установка»).
+`update [--source URL] [--ref REF]` (только `alla_skill.py`, `skill-protocol-setup.md`, «Точка входа и установка»).
 
 - Где в синтаксисе есть `--run DIR`, он обязателен: `.last_run` после нового `prepare`
   указывает на другой прогон.
@@ -108,115 +42,6 @@ paths:
   applied|reverted|saved|rerun|running|rerun_done|ok|ready|reviewed|setup_required|updated|error`.
 - Ошибка аргументов и любое необработанное исключение тоже дают `STATUS: error`.
 - Код возврата 0 у всех статусов, кроме `error`: статус с инструкцией — не авария.
-
-## `prepare` и папка разбора
-
-- **Фоновое задание** (`jobs.py`, `cli.RUN_IN_BACKGROUND`). Qwen Code обрывает команду shell
-  через 120 с (`tools.shell.defaultTimeoutMs`, проверено по исходникам 0.26.1), а выгрузка
-  большого прогона дольше (моделирование: 400 падений по 3 лога при задержке TestOps 150 мс —
-  ~185 с). Раньше папка разбора писалась только после всей выгрузки, убитая команда не
-  оставляла ничего, и «повтори prepare» снова начинал с нуля. Теперь `prepare` (после
-  установки агентов и команд) под `start.lock` решает: идёт задание этого прогона или его итог
-  ещё не показан — подключиться (и с `--fresh`); иначе — продолжение неоконченного разбора,
-  ошибка настроек или новое задание `python -P -m alla_skill_lib.jobs <папка> prepare <id>
-  --fresh --project-root … --reports-dir …` (новая сессия, окружение как есть: нужны
-  `ALLURE_*`; рабочая папка — та же, что у команды, модуль — через `PYTHONPATH`, `-P` не ставит
-  её в `sys.path`: из `scripts/` относительный `SSL_CERT_FILE` сертификата прокси не находился —
-  ревью Codex).
-  Дочерняя команда — прежний синхронный путь с `--job <папка>` (скрытый аргумент); её stdout
-  — `output.txt`, код — `exit` (последним), стадия `_progress` — `progress.txt`. Родитель
-  ждёт до `jobs.WAIT_BUDGET` (75 с от начала команды). Ответ `running` (ревью исполнителя):
-  «повторяй, пока первая строка ответа — `STATUS: running`» (текст меняется, «пока ответ не
-  сменится» слабая модель понимала буквально), «в том же ходе, ничего не спрашивая» (фраза
-  пользователю иначе заканчивала ход), команда — последней строкой без скобок вокруг; SKILL.md
-  отличает его от `running` у `rerun` (раздел 8) и разрешает повтор после обрыва по тайм-ауту
-  только `setup`/`prepare`/`review` и один раз. Итог — вывод дочерней как есть и
-  отметка `delivered` (`JobState.delivered`: новый вызов начинает своё задание —
-  `JobState.active`, а вызов, который уже ждал это, всё равно получает итог; раньше второй
-  ожидающий видел «задания нет» и отвечал ложной ошибкой — ревью Codex); не дождался — `STATUS: running` со стадией и той же командой без
-  `--fresh` (`_same_command`); процесс умер без `exit` (или старше `CEILING_S`, часа) —
-  `error` «завершился без итога» с путём `worker.log`. Папка — `<reports>/.jobs/prepare-<id>/`
-  (`JobSlot`: `start.lock`, `current` и папка на каждый запуск `<время>-<id>`, `JobFiles`; новый
-  запуск прежнюю не трогает — вызов, который её ждал, заберёт итог; папки старше суток удаляет
-  следующий запуск. Раньше одна папка на команду, и третий вызов очищал итог, который ещё ждал
-  второй — ревью Codex; `ws.ensure_reports_dir` с `.gitignore`; `clean` её не трогает — нет
-  `run.json`). Повтор `review` — всегда с `--run <папка разбора>`: без неё `.last_run` мог
-  смениться новым `prepare`. Так же
-  `review` с моделью (`.jobs/review-<папка разбора>/` в папке отчётов самого разбора; без
-  модели — синхронно). Синхронно — на Windows (нет `fcntl`, `os.kill` завершает процесс), в
-  тестах (`skill_fixtures._isolate_skill`, `run_eval.py`: подмены в памяти процесса до дочернего
-  не доходят). Задания проверяет `test_skill_jobs.py` на настоящем процессе и
-  `fake_testops_server.py --delay`.
-- Продолжает свежий (<24 ч) незавершённый разбор того же прогона без обращения к TestOps;
-  `--fresh` — начать заново.
-- Папку с пустым или оборванным `run.json` (`ws.read_run`) или с другой версией
-  (`schema` ≠ `RUN_SCHEMA`, сейчас 7: `other_ids` в `rerun/plan.json`; 6 — скриншоты `images/` и `images` в записи кластера) пропускает: берёт другую свежую либо начинает новую.
-  Остальные команды на такой папке дают `error` с готовой командой `prepare <id> --fresh`.
-  Совместимости со старыми папками нет: поддерживается только текущий формат.
-- Пустой `state.json` не роняет `next`: счётчики начинаются заново.
-- `next` первым делом сверяет разборы известных проблем по базе знаний с текущими записями
-  (`known_issues.sync_known_auto`, `skill-memory.md`): пишет, обновляет или снимает их.
-  Поэтому после `reject` такой проблемы `next` отвечает `analyze` (`SKILL.md` §5,
-  `feedback.md`). Прогресс `analyze` называет их отдельно: «ещё A без данных об ошибке и K по
-  базе знаний разобраны автоматически».
-- `write_atomic`/`write_atomic_bytes` (`workspace`) делают `fsync` перед `os.replace`; через
-  них же `apply`/`revert` пишут исходник, `NN.orig` и отметку применения.
-- `run.uid` — отдельный постоянный UUID. Создаётся вместе с папкой и один раз при открытии
-  существующей папки без идентификатора. Полный fsync-временный файл публикуется os.link
-  без перезаписи; проигравший процесс читает победителя. Повреждённый UUID — ошибка,
-  не переназначение. Имя папки после clean может повториться, UUID — новый.
-- Стадии выгрузки идут в stderr. Пустой прогон — `error`. Ошибка одного кластера деградирует
-  его до «неизвестно» с предупреждением, а не роняет `prepare`.
-- `pipeline` (numpy/scipy/sklearn, ~0,5 с) импортируется только внутри `cmd_prepare`:
-  остальные команды вызываются десятки раз за разбор. Охраняет
-  `test_cli_does_not_load_clustering_libraries`.
-
-## Пакетный разбор больших прогонов (`cli.next_step`, `batch_task`)
-
-- Когда кластеров без разбора ≥ `PARALLEL_MIN_PENDING` (10) и рабочих > 1, `next` отвечает
-  `STATUS: analyze_batch` вместо `analyze`.
-- Неразобранные кластеры (в порядке номеров, не `auto`) режутся по `BATCH_SIZE` (6) в пакеты;
-  за одну волну — не больше `DEFAULT_WORKERS` (4) пакетов.
-- `batches/N.md` самодостаточен (правила; кластер → задание → файл разбора; команда проверки;
-  шаблон ответа — в самих `clusters/NN.md`) и пишется заново каждой волной.
-- Состав волны считается по диску, но выданные кластеры запоминаются в `state.json`
-  (`batched`, `wave`): пакетом кластер раздаётся не больше одного раза. Что волна не
-  записала, идёт обычным `analyze` по одному.
-- Если волна не записала ни одного разбора, пакетный режим выключается (`workers=1`,
-  пояснение в ответе `next`); включить снова — `next --workers N` (сбрасывает `batched`).
-- Основной агент раздаёт пакеты субагентам Qwen Code (`agent`, все вызовы в одном сообщении,
-  `subagent_type: alla-batch`, `run_in_background: false`), ждёт всех и зовёт `next`.
-- `alla-batch` — свой субагент (`agents/alla-batch.md`, узкая роль, инструменты read_file,
-  write_file, run_shell_command): встроенный `general-purpose` по своей системной подсказке
-  осматривал проект (ls/find, чужие пакеты), и текстом prompt это не лечилось (стенд Qwen,
-  P04). `prepare` ставит его в `<project>/.qwen/agents/` (`qwen_files.install_batch_agent`);
-  Qwen видит агентов со старта сеанса, поэтому инструкция `next` даёт запасной путь — без
-  `subagent_type`. Qwen молча пропускает невалидный файл агента: формат охраняет
-  `test_batch_agent_file_is_valid_for_qwen_and_narrow`.
-- Субагент `next` не вызывает. `verify N [N…] --run DIR` — только читающая проверка (те же
-  parse/validate, что в `next`; `state.json`, история и файлы не трогаются, попытки не
-  считаются), `STATUS: ok|fix`.
-- `state.json` пишет только основной агент. Невалидный или недописанный разбор
-  возвращается обычным `fix`/`analyze` по одному (лимит попыток прежний).
-- Хвост меньше порога, `fix`, `propose`, `relate`, `summary` идут по одному.
-- `next --workers N` (1–`MAX_WORKERS`=8; `--serial` = 1) сохраняется в `state.json`; это
-  запасной путь без субагентов.
-
-## Шаг `relate` (`cli._related_step`, `related.py`)
-
-- После предложений правок и известных проблем, до сводки. Нет кандидатов
-  (`related.candidate_groups`, см. `skill-analysis.md`) — шага нет: `related.md`, отметки в
-  `state.json` удаляются, `next` сразу просит сводку.
-- Данные групп (`relate_data`) хэшируются в `state.related_data_hash`; другой хэш — `related.md`
-  удаляется, попытки `attempts["related"]` сбрасываются, `next` отвечает `STATUS: relate` с
-  заданием `relate_task.md`. Тот же хэш — решение действует (после `skip`/`reject`/правки
-  разбора, не задевших группы, повторно не спрашиваем).
-- Неверный файл — `fix` с теми же `MAX_FIX_ATTEMPTS`/`_register_invalid`, что у разборов;
-  запасной путь «верный файл отклонён» — `related_mismatch_note`: записать проблему скилла и
-  переписать одной строкой `РАЗНЫЕ` со всеми номерами. После лимита решение отбрасывается:
-  групп нет, в «Замечаниях» — `RELATED_DROPPED_NOTE`.
-- `state.related` — только числа (`candidate_stats` и `confirmed_*`): их берёт `review` в
-  `pilot-summary.md`.
 
 ## Правила исполнителя и справочники
 
@@ -258,78 +83,8 @@ paths:
   (`proposal_mismatch_note`), субагент — то же в выводе `verify` и строка «Проблема скилла»;
   `next` без правки файла не повторять. Неполадку записать по абсолютному пути
   (`agent_rules.record_problem`). Останавливать `remember` считает сам скрипт (модель отказы
-  не сосчитает, см. `skill-memory.md`).
+  не сосчитает, см. `skill-memory-feedback.md`).
 - `errors.py` — подсказки по сбоям выгрузки: токен, TLS, таймаут, лимит страниц, 404. При
   ошибке сертификата сначала — корневой сертификат прокси в `SSL_CERT_FILE` (httpx читает её
   из окружения, не из `.env`), `ALLURE_SSL_VERIFY=false` — только временный обход с
   последствием (токен не защищён).
-
-## Проверка разбора для пилота (`review`, `review.py`, `review_model.py`)
-
-- Выключена по умолчанию и на разбор не влияет: ни задания, ни ответы `next`, ни правила
-  исполнителя о ней не говорят. В `SKILL.md` — только раздел 6 «по прямой просьбе»; из
-  терминала пилот запускает её без модели разбора. Новый справочник для неё не заводить:
-  `test_skill_docs` требует ссылку на каждый справочник из `SKILL.md`, описание — в
-  `setup.md` («Пилот: проверка разбора»).
-- Журнал сеанса: Qwen Code ≥ 0.25 пишет `<QWEN_HOME|~/.qwen>/projects/<sanitizeCwd>/chats/
-  <сеанс>.jsonl` и `subagents/<сеанс>/agent-*.jsonl`, shell-командам передаёт
-  `QWEN_CODE_SESSION_ID`/`QWEN_CODE_PROJECT_DIR`. `prepare` (новый и продолжение) и `next`
-  пишут их в `state.json` (`sessions`, до 20; `qwen_project_dir`) — `session_log.note_session`.
-  `review` сеанс не запоминает. Окно разбора — ходы разговора (от реплики пользователя до
-  следующей, по каждому сеансу; записи субагентов — в ход своего сеанса по времени), где есть
-  команда скилла с папкой разбора в выводе или в аргументах (`next --run DIR`, упавший без
-  вывода папки); ход берётся целиком (упавший `next` и действия после него — тоже),
-  посторонние ходы между сеансами не входят. Ход обрезается на первом `review`: проверка и
-  всё после неё — не разбор (идущий `review` ещё без результата выглядел бы падением без
-  STATUS). Время — сумма длительностей ходов до последней записи, включая время результата
-  инструмента. Финальный ответ — текст после последнего `done` до следующего вызова; чтение и запись
-  `skill-problems.md` и чтение справочников `references/*.md` его не обрывают (`done` велит
-  дописать файл по `problem-report.md` до вывода отчёта). У shell в журнале вывод обёрнут `Command:`/`Output:` —
-  берётся `resultDisplay.output`, иначе вырезается из `Output:`.
-- Проблемы скилла для `review` — пункты `skill-problems.md` целиком, с полями «Где:»,
-  «Произошло:»…; новый пункт — только следующий номер на отступе внешней нумерации, «1. …»
-  из цитаты вывода — продолжение пункта (`read_skill_problems`,
-  `process.skill_problems`, читаются и без журнала) плюс строки субагентов из журнала
-  (`journal.skill_problems`); сумма — `review.skill_problems`.
-- Правила поведения (`shell_only_skill_commands`, `no_code_search`, `listed_code_only`,
-  `allowed_reads`, `allowed_writes`, `report_verbatim` — дословно и без блока «Проблемы
-  скилла» в ответе) — одна реализация в
-  `session_rules.py` для стенда и `review`; стенд оборачивает их под прежними именами.
-  Меняя правило, проверь оба: `test_qwen_stand.py` и `test_skill_session_log.py`.
-- Заполнение окна — `session_log.ContextUse`: пик `promptTokenCount` (максимум запроса, не
-  сумма) и число записей `system`/`chat_compression` (Qwen Code 0.26), отдельно у основного
-  агента и у субагентов (пик — наибольший). В окне разбора — `SessionLog.context`, по всем
-  журналам папки проекта Qwen — `project_context` (стенд). В `report.md` («Затраты»),
-  `pilot-summary.md` («пик контекста», «сжатий истории») и краткий итог (строка только при
-  сжатиях). Оценку хода не меняет: окно модели у пилота своё, порога в скрипте нет.
-- Разбор по записи базы знаний (`kb_auto` в записи кластера и хэш файла в `state.json`,
-  `known_issues.kb_auto_written`) `review` считает работой скрипта, как `auto`: не оценивает
-  моделью, не считает в качестве; в размере — «из них по базе знаний — K».
-- Оценка хода — коды причин `review.REASONS` (`sources_lost` — потерян реестр источников); `сбой` — `not_done`, `status_error`,
-  `exception` (в выводе команды traceback), `no_status` (ни STATUS, ни traceback: тайм-аут
-  инструмента, прерывание, пустой вывод — стектрейса там нет); `no_journal` и `fix_attempts` оценку не снижают. Пороги качества —
-  `GOOD_CONFIRMED_SHARE`, `GOOD_MAX_CATEGORY_DISAGREE`, `FAIR_CONFIRMED_SHARE`; доли — от числа
-  запрошенных проблем (невозвращённая оценка — не подтверждение), «хорошо» — только при полном
-  ответе. Меняя пороги или причины, правь таблицу в `setup.md`.
-- Проверяющая модель — отдельный процесс `qwen` (`ALLA_REVIEW_QWEN` или PATH): временная
-  рабочая папка (в ней только копии скриншотов), `--approval-mode plan`, `--json-schema`, `--system-prompt`, окружение без
-  `QWEN_CODE_*` (иначе запись ушла бы в журнал родителя). Таблица категорий берётся из
-  `references/analysis-format.md` (`categories_table`), а не копией. Оцениваются
-  `MAX_REVIEWED` (10) крупнейших по тестам проблем, разобранных моделью; оценки
-  незапрошенных номеров отбрасываются. Нет `qwen`, тайм-аут (код 55), мусор — отчёт без
-  оценки с `error_code`.
-- Скриншоты проверяющему — без инструментов: `stage_images` копирует во временную рабочую
-  папку `qwen` только файлы из `images` записи кластера оцениваемых проблем, лежащие в
-  `images/<file_id>/` и изображения по байтам, под именами `pNN-S<k>.<ext>`; раздел
-  `SHOTS_HEADER` проблемы ссылается на них `@имя`, и headless `qwen` сам подставляет файлы
-  частями-изображениями в конец запроса (`@` разворачивается только для файлов из рабочей
-  папки и временной папки `~/.qwen/tmp`, вызовов инструментов не тратит). Непринятая копия —
-  «изображение не приложено»: не картинка, а также сбой чтения оригинала или записи копии
-  (`_copy_image`, неполная копия удаляется) — `review` из-за скриншота не падает. `SYSTEM_PROMPT`: цитату со скриншота сверять с картинкой, без
-  картинки — не засчитывать ни за, ни против, а причину только по скриншоту — «частично»
-  (описано в `setup.md`). Имя копии — без пробелов и точки в конце: иначе разбор `@`
-  в Qwen обрежет путь.
-- `pilot-summary.md` — только числа, коды причин, имена проверок и фиксированные слова; имя
-  модели и версия проходят через `_safe_word`, причина без оценки — только `error_code`.
-  Новое поле в сводке — только из этих источников; утечку охраняет
-  `test_pilot_summary_has_no_run_data`.

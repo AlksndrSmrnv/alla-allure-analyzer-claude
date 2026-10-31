@@ -163,7 +163,7 @@ python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['clus
 ## Счётчики gates
 
 `gates` — сколько пар падений решил каждый gate кластеризации (`ClusteringGateStats`, см.
-`.claude/rules/core.md`, «Кластеризация»). Пары — среди падений с текстом; пару засчитывает
+`.claude/rules/core-clustering.md`, «Кластеризация»). Пары — среди падений с текстом; пару засчитывает
 **первый** gate, который её решил (assertion → шаг → лог → сообщение), поэтому пары,
 разрезанные шагом, в счётчики лога не попадают.
 
@@ -199,7 +199,7 @@ python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['clus
 
 Близкая пара — два кластера с почти одинаковым текстом ошибки (хоть одна пара падений между
 ними с похожестью сообщений не ниже порога) и правило, которое их развело
-(`ClusteringReport.near_pairs`, `.claude/rules/core.md`, «Кластеризация»). Печатается строкой
+(`ClusteringReport.near_pairs`, `.claude/rules/core-clustering.md`, «Кластеризация»). Печатается строкой
 под таблицей, в `--details` — по паре с причиной; в базовой линии, без направления «хуже».
 
 | ключ | что значит |
@@ -275,7 +275,7 @@ dev нерешённые ошибки — базовая линия записы
 HTTP-клиента в сигнатуре (`v10`), ключ связи повторов у каждой попытки — dev без `--heavy`
 precision 0.932 → 0.980, recall 0.977 → 0.987, скрытых групп 6 → 0, потеря доказательств
 24/156 → 8/156. Осталось: склейка `db-read + formulary` и дробление `formulary` в
-`shared_assert_background` (общий фоновый блок держит пару, «Кластеризация» в `core.md`),
+`shared_assert_background` (общий фоновый блок держит пару, «Кластеризация» в `core-clustering.md`),
 потеря строк в форматах журнала PostgreSQL и Monolog (`log_formats_more`; pino и Serilog
 закрыты 2026-10-30: `one_problem_noisy` потеря доказательств 3/3 → 0/3, `log_formats_more`
 4/9 → 2/9, но `kb_auto` у `one_problem_noisy` 1 → 0 — шумовые ошибки логов теперь видны, и

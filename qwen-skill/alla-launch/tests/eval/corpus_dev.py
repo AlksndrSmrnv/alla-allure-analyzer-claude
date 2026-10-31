@@ -1749,7 +1749,7 @@ _JAVA_FORMATS: list[tuple[str, str, str, str, str, tuple[str, str, str], list[st
      ["Renewal of SUB-301 failed: payment method PM-88 expired in 09/2026"]),
 ]
 # В MDC лога — id запроса: из такого лога берутся только записи операции теста, а её id —
-# из вложения-запроса (core.md, «Сбор данных»).
+# из вложения-запроса (core-logs.md, «Операция теста»).
 _JAVA_REQUESTS = {
     "java-long-mdc": [("Request", '{"headers": {"requestId": "r-77"}}', "application/json")],
 }
