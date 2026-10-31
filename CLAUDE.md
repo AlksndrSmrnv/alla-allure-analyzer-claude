@@ -127,15 +127,15 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 | `skill-protocol-batch.md` | пакетный разбор, субагент `alla-batch`, шаг `relate` | `cli.py`, `batch_task.py` |
 | `skill-protocol-review.md` | проверка разбора для пилота (`review`), журнал сеанса Qwen | `review.py`, `review_model.py`, `session_log.py`, `qwen_stand.py` |
 | `skill-analysis.md` | `problem_state.current_state` — общий источник диагнозов для `next`, отчёта и снимка | `problem_state.py`, `report.py`, `related.py`, `known_issues.py`, `confirmed.py` |
-| `skill-analysis-task.md` | задание кластера: данные, лог операции, примеры, источники, повторы | `cluster_task.py`, `sources.py`, `retries.py`, `code_hints.py`, `prompt_builder_service.py`, `log_focus.py` |
-| `skill-analysis-images.md` | скриншоты в задании кластера | `images.py`, `cluster_task.py` |
+| `skill-analysis-task.md` | задание кластера: данные, лог операции, примеры, источники, повторы | `cluster_task.py`, `analysis_format.py`, `sources.py`, `retries.py`, `code_hints.py`, `prompt_builder_service.py`, `log_focus.py` |
+| `skill-analysis-images.md` | скриншоты в задании кластера | `images.py`, `cluster_task.py`, `analysis_format.py` |
 | `skill-analysis-format.md` | цитаты в НАБЛЮДЕНИЯ, разбор модели и его проверка | `analysis_format.py`, `cluster_task.py`, `sources.py`, `references/analysis-format.md` |
 | `skill-analysis-report.md` | отчёт, краткий разбор, `report.md`, сводка «Коротко» | `report.py`, `references/summary-format.md` |
 | `skill-analysis-confirmed.md` | подтверждённые выводы расширений в отчёте | `confirmed.py`, `report.py` |
 | `skill-analysis-known.md` | известные проблемы из базы знаний в отчёте | `known_issues.py`, `report.py` |
 | `skill-analysis-related.md` | похожие проблемы: кандидаты, задание, показ | `related.py`, `report.py`, `references/related-format.md` |
 | `skill-memory.md` | база знаний: место, узнавание, тесты записи; отметки flaky | `kb.py`, `signature.py`, `modules.py`, `feedback.py`, `history.py`, `flaky.py`, `references/feedback.md` |
-| `skill-memory-kb-auto.md` | разбор точно узнанной проблемы без модели | `kb.py`, `known_issues.py` |
+| `skill-memory-kb-auto.md` | разбор точно узнанной проблемы без модели | `kb.py`, `known_issues.py`, `signature.py`, `feedback.py` |
 | `skill-memory-signature.md` | сигнатура: материал, нормализация, версии | `signature.py` |
 | `skill-memory-modules.md` | модули и база знаний модуля | `modules.py` |
 | `skill-memory-feedback.md` | обратная связь (`remember`/`reject`), история | `feedback.py`, `history.py`, `references/feedback.md` |
@@ -147,11 +147,11 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 | `skill-rerun.md` | перезапуск тестов локально (`rerun`): команда и статусы, отчёт, проверка | `rerun.py`, `rerun_worker.py`, `flaky.py`, `resolve.py`, `commands/alla/rerun.md` |
 | `skill-rerun-candidates.md` | кандидаты-флаки, предложение после отчёта, проверка правки после `apply`, `--remember` | `flaky.py`, `rerun.py` |
 | `skill-rerun-worker.md` | план, Maven фоновым заданием, отчёты surefire, попытки | `rerun.py`, `rerun_worker.py` |
-| `skill-rerun-resolve.md` | статус passed в TestOps | `resolve.py` |
+| `skill-rerun-resolve.md` | статус passed в TestOps | `resolve.py`, `rerun.py` |
 | `core.md` | ядро: состав, происхождение, только чтение TestOps, тесты ядра | `alla_core/`, `pipeline.py` |
 | `core-fetch.md` | сбор данных: полнота выгрузки, повторы, попытки, вложения, изображения | `triage_service.py`, `retry_linking.py`, `image_attachments.py`, `models/testops.py`, `pipeline.py` |
 | `core-log-events.md` | события лога, поля ошибки ответа, NDJSON, префикс сборщика | `log_events.py`, `attachment_handlers.py` |
-| `core-logs.md` | операция теста, происхождение, id операции, отбор логов | `log_utils.py`, `log_focus.py`, `text_normalization.py`, `log_extraction_service.py`, `attachment_handlers.py` |
+| `core-logs.md` | операция теста, происхождение, id операции, отбор логов | `log_utils.py`, `log_events.py`, `log_focus.py`, `text_normalization.py`, `log_extraction_service.py`, `attachment_handlers.py` |
 | `core-clustering.md` | кластеризация: gates, счётчики, близкие пары, примеры | `clustering_service.py`, `models/clustering.py`, `message_resources.py`, `text_normalization.py`, `step_paths.py` |
 | `core-client.md` | клиент TestOps, настройки `ALLURE_*` | `clients/`, `config.py`, `exceptions.py`, `models/testops.py` |
 

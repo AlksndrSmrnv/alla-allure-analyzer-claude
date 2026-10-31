@@ -2,6 +2,7 @@
 paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/images.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/cluster_task.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/analysis_format.py"
 ---
 
 # Задания: скриншоты в задании кластера

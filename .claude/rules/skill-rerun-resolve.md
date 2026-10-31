@@ -1,6 +1,7 @@
 ---
 paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/resolve.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/rerun.py"
 ---
 
 # Перезапуск: статус в TestOps

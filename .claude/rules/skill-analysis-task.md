@@ -9,6 +9,7 @@ paths:
   - "qwen-skill/alla-launch/tests/test_skill_prompts.py"
   - "qwen-skill/alla-launch/tests/test_skill_sources.py"
   - "qwen-skill/alla-launch/tests/test_code_references.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/analysis_format.py"
 ---
 
 # Задания: задание кластера

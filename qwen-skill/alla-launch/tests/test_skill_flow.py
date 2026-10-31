@@ -130,7 +130,7 @@ def test_prepare_is_read_only_and_hides_token(project: Path, testops: FakeTestOp
 
 def test_log_without_errors_stays_out_of_the_task(project: Path, testops: FakeTestOps, capsys) -> None:
     # Стенд F02/X01 (test_bug): app.log скачивается, но в нём только INFO, а «responded 201
-    # Created» — не HTTP-сигнал (только 4xx/5xx), и отбор от ошибок его не берёт (core-logs.md).
+    # Created» — не HTTP-сигнал (только 4xx/5xx), и отбор от ошибок его не берёт (_HTTP_STATUS_RE в log_extraction_service.py).
     # Причину «тест» модель выводит из кода теста; станет лог доходить — обнови skill-quality.md.
     from skill_fake_testops import test_bug_launch  # на уровне модуля pytest собрал бы его тестом
 

@@ -2,6 +2,8 @@
 paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/kb.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/known_issues.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/signature.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/feedback.py"
 ---
 
 # База знаний: разбор без модели
