@@ -128,7 +128,7 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 | `skill-protocol-review.md` | проверка разбора для пилота (`review`), журнал сеанса Qwen | `review.py`, `review_model.py`, `session_log.py`, `qwen_stand.py` |
 | `skill-analysis.md` | `problem_state.current_state` — общий источник диагнозов для `next`, отчёта и снимка | `problem_state.py`, `report.py`, `related.py`, `known_issues.py`, `confirmed.py` |
 | `skill-analysis-task.md` | задание кластера: данные, лог операции, примеры, источники, повторы | `cluster_task.py`, `analysis_format.py`, `sources.py`, `retries.py`, `code_hints.py`, `prompt_builder_service.py`, `log_focus.py` |
-| `skill-analysis-images.md` | скриншоты в задании кластера | `images.py`, `cluster_task.py`, `analysis_format.py` |
+| `skill-analysis-images.md` | скриншоты в задании кластера | `images.py`, `cluster_task.py`, `analysis_format.py`, `sources.py`, `report.py`, `related.py` |
 | `skill-analysis-format.md` | цитаты в НАБЛЮДЕНИЯ, разбор модели и его проверка | `analysis_format.py`, `cluster_task.py`, `sources.py`, `references/analysis-format.md` |
 | `skill-analysis-report.md` | отчёт, краткий разбор, `report.md`, сводка «Коротко» | `report.py`, `references/summary-format.md` |
 | `skill-analysis-confirmed.md` | подтверждённые выводы расширений в отчёте | `confirmed.py`, `report.py` |
