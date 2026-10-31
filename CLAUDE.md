@@ -139,8 +139,8 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 | `skill-memory-signature.md` | сигнатура: материал, нормализация, версии | `signature.py` |
 | `skill-memory-modules.md` | модули и база знаний модуля | `modules.py` |
 | `skill-memory-feedback.md` | обратная связь (`remember`/`reject`), история | `feedback.py`, `history.py`, `references/feedback.md` |
-| `skill-proposals.md` | предложения правок, `apply`/`revert`, состояние применения | `proposals.py` |
-| `skill-extensions.md` | расширения: манифест, события (`on_request`), хуки, действия, команды, `config.toml` | `extensions.py`, `extension_data.py`, `extensions/` |
+| `skill-proposals.md` | предложения правок, `apply`/`revert`, состояние применения | `proposals.py`, `references/proposal-format.md` |
+| `skill-extensions.md` | расширения: манифест, события (`on_request`), хуки, действия, команды, `config.toml` | `extensions.py`, `extension_data.py`, `extensions/`, `commands/alla/extensions.md` |
 | `skill-extensions-git-publish.md` | git-publish | `extensions/git-publish/` |
 | `skill-extensions-sut-code.md` | sut-code | `extensions/sut-code/` |
 | `skill-extensions-tickets.md` | tickets и публичный снимок | `extensions/tickets/`, `extension_data.py` |
