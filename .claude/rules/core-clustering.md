@@ -7,6 +7,7 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_core/utils/step_paths.py"
   - "qwen-skill/alla-launch/tests/test_core_clustering.py"
   - "qwen-skill/alla-launch/tests/test_clustering_optimizations.py"
+  - "qwen-skill/alla-launch/scripts/alla_core/utils/log_events.py"
 ---
 
 # Ядро: кластеризация

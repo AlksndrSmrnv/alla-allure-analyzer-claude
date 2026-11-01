@@ -152,7 +152,7 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 | `core-fetch.md` | сбор данных: полнота выгрузки, повторы, попытки, вложения, изображения | `triage_service.py`, `retry_linking.py`, `image_attachments.py`, `models/testops.py`, `pipeline.py`, `clients/testops_client.py`, `exceptions.py`, `text_normalization.py`, `log_extraction_service.py` |
 | `core-log-events.md` | события лога, поля ошибки ответа, NDJSON, префикс сборщика | `log_events.py`, `attachment_handlers.py`, `log_focus.py` |
 | `core-logs.md` | операция теста, происхождение, id операции, отбор логов | `log_utils.py`, `log_events.py`, `log_focus.py`, `text_normalization.py`, `log_extraction_service.py`, `attachment_handlers.py`, `config.py` |
-| `core-clustering.md` | кластеризация: gates, счётчики, близкие пары, примеры | `clustering_service.py`, `models/clustering.py`, `message_resources.py`, `text_normalization.py`, `step_paths.py` |
+| `core-clustering.md` | кластеризация: gates, счётчики, близкие пары, примеры | `clustering_service.py`, `models/clustering.py`, `message_resources.py`, `text_normalization.py`, `step_paths.py`, `log_events.py` |
 | `core-client.md` | клиент TestOps, настройки `ALLURE_*` | `clients/`, `config.py`, `exceptions.py`, `models/testops.py` |
 
 ## Инструменты Claude Code
