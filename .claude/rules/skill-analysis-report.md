@@ -4,6 +4,8 @@ paths:
   - "qwen-skill/alla-launch/references/summary-format.md"
   - "qwen-skill/alla-launch/tests/test_skill_report.py"
   - "qwen-skill/alla-launch/tests/test_summary_refresh.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/sources.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/analysis_format.py"
 ---
 
 # Отчёт и краткий разбор

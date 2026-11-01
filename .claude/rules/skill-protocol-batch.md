@@ -3,6 +3,7 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/cli.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/batch_task.py"
   - "qwen-skill/alla-launch/tests/test_skill_parallel.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/qwen_files.py"
 ---
 
 # Протокол: пакетный разбор и шаг `relate`

@@ -4,6 +4,7 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/cluster_task.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/sources.py"
   - "qwen-skill/alla-launch/references/analysis-format.md"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/report.py"
 ---
 
 # Задания: цитаты и разбор модели

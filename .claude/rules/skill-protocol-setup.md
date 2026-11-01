@@ -5,6 +5,7 @@ paths:
   - "qwen-skill/alla-launch/commands/**"
   - "qwen-skill/alla-launch/tests/test_skill_update.py"
   - "qwen-skill/alla-launch/tests/test_skill_commands.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/workspace.py"
 ---
 
 # Протокол: установка и слэш-команды

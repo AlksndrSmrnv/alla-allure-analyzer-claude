@@ -8,6 +8,10 @@ paths:
   - "qwen-skill/alla-launch/tests/test_core_triage.py"
   - "qwen-skill/alla-launch/tests/test_core_fetch.py"
   - "qwen-skill/alla-launch/tests/test_core_retries.py"
+  - "qwen-skill/alla-launch/scripts/alla_core/clients/testops_client.py"
+  - "qwen-skill/alla-launch/scripts/alla_core/exceptions.py"
+  - "qwen-skill/alla-launch/scripts/alla_core/utils/text_normalization.py"
+  - "qwen-skill/alla-launch/scripts/alla_core/services/log_extraction_service.py"
 ---
 
 # Ядро: сбор данных — выгрузка и триаж

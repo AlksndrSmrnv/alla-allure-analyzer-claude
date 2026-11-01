@@ -6,6 +6,7 @@ paths:
   - "qwen-skill/alla-launch/tests/test_skill_review.py"
   - "qwen-skill/alla-launch/tests/test_skill_session_log.py"
   - "qwen-skill/alla-launch/tests/qwen_stand.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/session_rules.py"
 ---
 
 # Протокол: проверка разбора для пилота

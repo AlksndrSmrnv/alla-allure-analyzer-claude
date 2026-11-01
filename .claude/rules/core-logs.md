@@ -9,6 +9,7 @@ paths:
   - "qwen-skill/alla-launch/tests/test_core_log_utils.py"
   - "qwen-skill/alla-launch/tests/test_log_selection.py"
   - "qwen-skill/alla-launch/scripts/alla_core/utils/log_events.py"
+  - "qwen-skill/alla-launch/scripts/alla_core/config.py"
 ---
 
 # Ядро: операция теста и отбор логов

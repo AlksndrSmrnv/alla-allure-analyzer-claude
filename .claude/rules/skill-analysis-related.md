@@ -4,6 +4,7 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/report.py"
   - "qwen-skill/alla-launch/references/related-format.md"
   - "qwen-skill/alla-launch/tests/test_skill_related.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/known_issues.py"
 ---
 
 # Отчёт: похожие проблемы

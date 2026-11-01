@@ -2,6 +2,7 @@
 paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/modules.py"
   - "qwen-skill/alla-launch/tests/test_skill_modules.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/feedback.py"
 ---
 
 # Память скилла: модули
