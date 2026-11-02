@@ -688,19 +688,21 @@ def _result(raw: dict[str, Any]) -> TestResultResponse:
     return TestResultResponse.model_validate(data)
 
 
+_STEP_FIELDS = ("name", "status", "statusDetails", "message", "trace", "attachments")
+
+
 def _scenario_steps(scenario: object) -> list[dict[str, Any]]:
     """Корни дерева шагов: список, ``{steps: [...]}``, ``{content}``.
 
-    Обёртка с ошибкой или с именем и статусом — сама корень: иначе failed-корень с passed-
-    подшагами терял путь упавшего шага, а его скриншоты — пометку «упавший шаг» (ревью
-    Codex). Безымянная обёртка без статуса — только контейнер.
+    Обёртка с любым полем шага (имя, статус, ошибка, вложения) — сама корень: иначе failed-
+    корень с passed-подшагами терял путь упавшего шага, а его скриншоты — пометку «упавший
+    шаг» (ревью Codex). Только голая обёртка ``{steps: [...]}`` — контейнер.
     """
     if isinstance(scenario, list):
         return [item for item in scenario if isinstance(item, dict)]
     if not isinstance(scenario, dict):
         return []
-    if any(scenario.get(key) for key in ("statusDetails", "message", "trace")) \
-            or (scenario.get("name") and scenario.get("status")):
+    if any(scenario.get(key) for key in _STEP_FIELDS):
         return [scenario]
     for key in ("steps", "content", "children"):
         if isinstance(scenario.get(key), list):

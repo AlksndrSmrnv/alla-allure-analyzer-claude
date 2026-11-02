@@ -68,8 +68,9 @@ REST API TestOps у пользователей закрыт (решение по
 - **Один запрос на результат.** Полный ответ кешируется (`_full`, блокировка на id):
   `get_test_result_execution`, `get_test_result_detail`, `get_attachments_for_test_result` и
   `get_attachment_content` его переиспользуют. Шаги: `scenario` (`{steps}`, список,
-  `{content}`; обёртка с ошибкой или с именем и статусом — сама корень, иначе failed-корень
-  с passed-подшагами терял путь упавшего шага — ревью Codex), фикстуры before — в начало дерева, after
+  `{content}`; обёртка с любым полем шага — имя, статус, ошибка, вложения — сама корень,
+  иначе failed-корень с passed-подшагами терял путь упавшего шага; только голая
+  `{steps: [...]}` — контейнер, ревью Codex), фикстуры before — в начало дерева, after
   (`type`/ключ с `after`, `teardown`) — в конец; вложения шага (id или объект) — метаданными
   из словаря, без `content`. `message`/`trace` верхнего уровня без `statusDetails` — в
   `statusDetails` (`_result`). Без expand (`aql: id = N`) — `get_test_result_detail` для

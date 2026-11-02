@@ -520,16 +520,21 @@ def test_full_result_decodes_attachments_and_orders_fixtures(monkeypatch: pytest
     assert all("content" not in (item.model_extra or {}) for item in attachments)
 
 
-def test_named_failed_scenario_root_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("root", [
+    {"name": "createOrder", "status": "failed"},
+    {"name": "Checkout"},  # имя без статуса — шаг пути
+    {"status": "failed"},  # безымянный failed-корень — предок упавшего шага
+])
+def test_scenario_root_with_step_fields_is_kept(monkeypatch: pytest.MonkeyPatch,
+                                                root: dict[str, Any]) -> None:
     fixture = _full_fixture({
         "message": "boom",
-        "scenario": {"name": "createOrder", "status": "failed",
-                     "steps": [{"name": "Открыть", "status": "passed"}]},
+        "scenario": {**root, "steps": [{"name": "Открыть", "status": "passed"}]},
         "attachments": {},
     })
     FakeTestOps(fixture).install(monkeypatch)
     steps = _run(_settings(), lambda client: client.get_test_result_execution(101))
-    assert [(step.name, step.status) for step in steps] == [("createOrder", "failed")]
+    assert [(step.name, step.status) for step in steps] == [(root.get("name"), root.get("status"))]
     assert steps[0].steps is not None and steps[0].steps[0].name == "Открыть"
 
 
