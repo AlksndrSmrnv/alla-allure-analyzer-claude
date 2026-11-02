@@ -26,8 +26,8 @@ def _chain(exc: BaseException) -> Iterator[BaseException]:
         current = current.__cause__ or current.__context__
 
 
-# Настройки и .env меняет пользователь: модель, получив «задай ALLURE_SSL_VERIFY=false»,
-# иначе сама отключила бы проверку TLS или полезла в файл с токеном.
+# Настройки и .env меняет пользователь: модель, получив «задай ALLURE_ENDPOINT=…»,
+# иначе сама правила бы файл с токеном.
 USER_ACTION_NOTE = (
     "Это настройка пользователя: скажи ему, что нужно сделать, и остановись. "
     "Не меняй .env и переменные окружения сам, содержимое .env не читай и не выводи."
@@ -39,15 +39,14 @@ def fetch_error_hint(exc: BaseException, settings: Settings, env_file: Path) -> 
     causes = list(_chain(exc))
     texts = " ".join(str(item) for item in causes)
     if any(isinstance(item, ssl.SSLError) for item in causes) or "CERTIFICATE_VERIFY_FAILED" in texts:
-        # Сначала доверие сертификату прокси: ALLURE_SSL_VERIFY=false снимает проверку целиком,
-        # и токен уходит любому посреднику. httpx берёт SSL_CERT_FILE только из окружения.
+        # Проверку TLS скилл отключать не умеет: доверие корпоративному прокси задаётся его
+        # корневым сертификатом. httpx берёт SSL_CERT_FILE только из окружения.
         return (
             "Не удалось проверить TLS-сертификат. Если сертификат подменяет корпоративный "
             "прокси, укажи файл с его корневым сертификатом в переменной окружения "
             "SSL_CERT_FILE (в .env скилла она не читается; файл заменяет встроенный список "
-            "доверенных сертификатов) и перезапусти Qwen Code. Только как временный обход — "
-            f"ALLURE_SSL_VERIFY=false (в {env_file} или в переменных окружения): проверка "
-            "отключится полностью, и API-токен сможет перехватить посредник."
+            "доверенных сертификатов) и перезапусти Qwen Code. Проверку сертификата "
+            "отключить нельзя: иначе API-токен смог бы перехватить посредник."
         )
     if any(isinstance(item, httpx.TimeoutException) for item in causes):
         return (

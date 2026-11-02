@@ -41,10 +41,7 @@ class AllureTestOpsClient:
         self._retries = settings.http_retries
         self.last_total_elements: int | None = None
         self._sleep = asyncio.sleep  # подменяется в тестах
-        self._http = httpx.AsyncClient(
-            timeout=settings.request_timeout,
-            verify=settings.ssl_verify,
-        )
+        self._http = httpx.AsyncClient(timeout=settings.request_timeout)
 
     # --- Публичный API (протокол TestResultsProvider) ---
 

@@ -45,7 +45,6 @@ paths:
 | `ALLURE_PAGE_SIZE` | нет | `100` | Размер страницы TestOps API |
 | `ALLURE_MAX_PAGES` | нет | `200` | Защита пагинации; больше страниц — `PaginationLimitError` сразу после первой страницы |
 | `ALLURE_DETAIL_CONCURRENCY` | нет | `10` | Параллелизм details/comments |
-| `ALLURE_SSL_VERIFY` | нет | `true` | Проверка TLS |
 | `ALLURE_LOGS_CONCURRENCY` | нет | `5` | Параллелизм скачивания attachments |
 | `ALLURE_LOGS_MAX_ATTACHMENT_BYTES` | нет | `10485760` | Максимум байт из одного вложения (stream-чтение с обрезкой) |
 | `ALLURE_LOGS_MAX_SNIPPET_CHARS` | нет | `65536` | Максимум символов финального `log_snippet` одного теста |

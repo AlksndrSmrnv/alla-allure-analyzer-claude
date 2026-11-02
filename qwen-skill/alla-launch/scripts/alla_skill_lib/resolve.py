@@ -144,7 +144,6 @@ async def send(
         endpoint=settings.endpoint,
         api_token=settings.token,
         timeout=settings.request_timeout,
-        ssl_verify=settings.ssl_verify,
         retries=settings.http_retries,
     )
     outcome = Outcome({}, [])

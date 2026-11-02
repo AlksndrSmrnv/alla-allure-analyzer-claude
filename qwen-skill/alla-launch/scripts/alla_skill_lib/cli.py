@@ -2875,7 +2875,6 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
     lines += [
         f"ALLURE_ENDPOINT: {settings.endpoint}",
         "ALLURE_TOKEN: задан (значение не показывается)",
-        f"Проверка TLS: {'включена' if settings.ssl_verify else 'отключена (ALLURE_SSL_VERIFY=false)'}",
     ]
     # Корневая база показывается всегда; модульные (<модуль>/alla-kb) — если они есть.
     for kb_dir in sorted({find_kb_dir(project_root), *discover_kb_dirs(project_root)}):
@@ -2910,7 +2909,6 @@ async def _ping_testops(settings: Settings) -> None:
         endpoint=settings.endpoint,
         api_token=settings.token,
         timeout=settings.request_timeout,
-        ssl_verify=settings.ssl_verify,
         retries=settings.http_retries,
     )
     await auth.get_auth_header()

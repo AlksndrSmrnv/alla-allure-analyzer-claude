@@ -36,7 +36,6 @@ class Settings:
     # 200 страниц по 100 — 20 000 результатов вместе со скрытыми повторами.
     max_pages: int = 200
     detail_concurrency: int = 10
-    ssl_verify: bool = True
     logs_concurrency: int = 5
     logs_max_attachment_bytes: int = 10 * 1024 * 1024
     logs_max_snippet_chars: int = 64 * 1024

@@ -511,13 +511,13 @@ def test_settings_env_overrides_file(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(
         "# comment\nexport ALLURE_ENDPOINT='https://file.example'\nALLURE_TOKEN=file-token\n"
-        "ALLURE_SSL_VERIFY=false\nDATABASE_URL=postgres://ignored\n",
+        "ALLURE_HTTP_RETRIES=5\nDATABASE_URL=postgres://ignored\n",
         encoding="utf-8",
     )
     settings = Settings.load(env_file, environ={"ALLURE_TOKEN": "env-token", "ALLURE_PAGE_SIZE": "7"})
     assert settings.endpoint == "https://file.example"
     assert settings.token == "env-token"
-    assert settings.ssl_verify is False
+    assert settings.http_retries == 5
     assert settings.page_size == 7
     assert "env-token" not in repr(settings)
 

@@ -281,12 +281,12 @@ def test_fetch_error_hints(exc: BaseException, expected: str) -> None:
 
 
 
-def test_tls_hint_offers_trusting_the_proxy_before_disabling_verification() -> None:
+def test_tls_hint_offers_trusting_the_proxy_and_never_disabling_verification() -> None:
     error = _wrapped(httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] bad"))
     hint = fetch_error_hint(error, _settings(), Path("/skill/.env"))
-    assert hint.index("SSL_CERT_FILE") < hint.index("ALLURE_SSL_VERIFY=false")
-    assert "временный обход" in hint
-    assert "перехватить" in hint
+    assert "SSL_CERT_FILE" in hint
+    assert "SSL_VERIFY" not in hint
+    assert "отключить нельзя" in hint
 
 # --- зависшая модель, файлы модели, битые кластеры ---------------------------------
 

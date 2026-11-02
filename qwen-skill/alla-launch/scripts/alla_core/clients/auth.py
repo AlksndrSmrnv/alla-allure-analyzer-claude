@@ -43,7 +43,6 @@ class AllureAuthManager:
         api_token: str,
         *,
         timeout: int = 30,
-        ssl_verify: bool = True,
         retries: int = 0,
     ) -> None:
         self._endpoint = endpoint.rstrip("/")
@@ -53,7 +52,7 @@ class AllureAuthManager:
         self._sleep = asyncio.sleep  # подменяется в тестах
         self._token_info: _TokenInfo | None = None
         self._token_lock = asyncio.Lock()
-        self._http = httpx.AsyncClient(timeout=timeout, verify=ssl_verify)
+        self._http = httpx.AsyncClient(timeout=timeout)
 
     async def get_auth_header(self) -> dict[str, str]:
         """Вернуть заголовок ``Authorization`` с валидным JWT.
