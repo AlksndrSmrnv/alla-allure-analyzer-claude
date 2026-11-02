@@ -1894,19 +1894,28 @@ def check_check_after_setup(ctx: Context) -> dict[str, Any]:
 
 
 def check_files_after_consent(ctx: Context) -> dict[str, Any]:
-    """Файлы в .qwen/ ставит только install-files --yes, и только после показа списка."""
-    calls = [c for c in ctx.trace.skill_commands() if "install-files" in command_of(c)]
-    listed = [i for i, c in enumerate(calls) if "--yes" not in command_of(c)]
-    written = [i for i, c in enumerate(calls) if "--yes" in command_of(c)]
-    if not listed:
+    """Файлы в .qwen/ ставит только install-files --yes, после показа списка и после «да»."""
+    listed_turn = written_turn = 0
+    written_call: ToolCall | None = None
+    for turn, calls in enumerate(ctx.trace.turn_calls, start=1):
+        for call in calls:
+            if call not in ctx.trace.skill_commands() or "install-files" not in command_of(call):
+                continue
+            if "--yes" in command_of(call):
+                if not written_turn:
+                    written_turn, written_call = turn, call
+            elif not listed_turn:
+                listed_turn = turn
+    if not listed_turn:
         return bad("install-files без --yes (показ списка) не вызывался")
-    if not written:
+    if not written_turn:
         return bad("после «Да, поставь.» install-files --yes не вызывался")
-    if min(written) < min(listed):
-        return bad("install-files --yes вызван раньше показа списка")
+    if written_turn < 2 or written_turn < listed_turn:
+        return bad(f"install-files --yes вызван в ходе {written_turn}, до согласия пользователя")
     if not (ctx.project / ".qwen" / "commands" / "alla" / "run.md").is_file():
         return bad("команды /alla:* не появились в .qwen/")
-    return ok(at(calls[written[0]]))
+    assert written_call is not None
+    return ok(at(written_call))
 
 
 def check_asks_for_env(ctx: Context) -> dict[str, Any]:

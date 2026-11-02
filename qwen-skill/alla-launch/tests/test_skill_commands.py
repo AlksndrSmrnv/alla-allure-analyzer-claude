@@ -127,6 +127,23 @@ def test_setup_hint_quotes_awkward_paths(monkeypatch: pytest.MonkeyPatch) -> Non
     assert parts[2:] == ["setup", "--python", "/opt/py 3.11/bin/python"]
 
 
+def test_source_without_trailing_newline_is_installed_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """write_text дописывает перевод строки: сверка с ним, иначе файл вечно «изменён»."""
+    monkeypatch.setattr(ws, "SKILL_DIR", tmp_path / "no-skill")
+    source = tmp_path / "ext-agent.md"
+    source.write_text("без перевода строки", encoding="utf-8")
+    project = tmp_path / "project"
+
+    plan = qwen_files.planned_files(project, {"alla-demo": source})
+    assert [item.state for item in plan] == [qwen_files.NEW]
+    assert len(qwen_files.install_planned(plan)) == 1
+    plan = qwen_files.planned_files(project, {"alla-demo": source})
+    assert [item.state for item in plan] == [qwen_files.SAME]
+    assert qwen_files.install_planned(plan) == []
+
+
 def test_install_files_lists_without_writing_and_installs_after_yes(
     project: Path, testops: FakeTestOps, capsys,
 ) -> None:

@@ -359,6 +359,28 @@ def test_report_must_be_verbatim(tmp_path: Path) -> None:
     assert CHECKS["report_verbatim"](ctx)["status"] == "fail"
 
 
+def test_files_are_installed_only_after_the_consent_turn(tmp_path: Path) -> None:
+    listing = ("run_shell_command", {"command": f"python3 {SKILL} install-files"}, "STATUS: install_files")
+    writing = ("run_shell_command", {"command": f"python3 {SKILL} install-files --yes"}, "STATUS: ok")
+    project = tmp_path / "p"
+    (project / ".qwen" / "commands" / "alla").mkdir(parents=True)
+    (project / ".qwen" / "commands" / "alla" / "run.md").write_text("x", encoding="utf-8")
+
+    def verdict(*turns: list[tuple[str, dict[str, Any], str]]) -> str:
+        paths = []
+        for number, calls in enumerate(turns, start=1):
+            path = tmp_path / f"trace-{number}.jsonl"
+            path.write_text("\n".join(json.dumps(e) for e in events(*calls)))
+            paths.append(path)
+        ctx = Context(SCENARIOS["I01"], parse_traces(paths), project, [])
+        return CHECKS["files_after_consent"](ctx)["status"]
+
+    assert verdict([listing], [writing]) == "pass"
+    assert verdict([listing, writing], []) == "fail"  # записал до «да»
+    assert verdict([listing], []) == "fail"  # «да» получено, а установки нет
+    assert verdict([writing], [writing]) == "fail"  # без показа списка
+
+
 def test_negative_case_detects_activation(tmp_path: Path) -> None:
     quiet = context(tmp_path, events(final="Allure Report — это…"), case="A04")
     assert CHECKS["not_activated"](quiet)["status"] == "pass"

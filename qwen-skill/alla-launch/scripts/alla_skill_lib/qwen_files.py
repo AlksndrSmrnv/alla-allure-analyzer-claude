@@ -34,7 +34,7 @@ def commands_source() -> Path:
 
 def _install(source: Path, target: Path) -> bool:
     """Скопировать ``source`` в ``target``, если его там нет или он другой; True — записан."""
-    text = source.read_text(encoding="utf-8")
+    text = _written_text(source)
     try:
         if target.is_file() and target.read_text(encoding="utf-8") == text:
             return False
@@ -59,11 +59,17 @@ class PlannedFile:
 NEW, CHANGED, SAME = "new", "changed", "same"
 
 
+def _written_text(source: Path) -> str:
+    """Текст, каким ``ws.write_text`` запишет файл: всегда с переводом строки в конце."""
+    text = source.read_text(encoding="utf-8")
+    return text if text.endswith("\n") else text + "\n"
+
+
 def _state(source: Path, target: Path) -> str:
     try:
         if not target.is_file():
             return NEW
-        return SAME if target.read_text(encoding="utf-8") == source.read_text(encoding="utf-8") else CHANGED
+        return SAME if target.read_text(encoding="utf-8") == _written_text(source) else CHANGED
     except OSError:
         return CHANGED
 
