@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -293,7 +294,7 @@ FAKE_QWEN = """#!{python}
 import json, os, sys
 argv = sys.argv[1:]
 prompt = sys.stdin.read()
-log = {{"argv": argv, "env": sorted(k for k in os.environ if k.startswith("QWEN_CODE_")),
+log = {{"argv": argv, "env": sorted(os.environ),
        "cwd": os.getcwd(), "files": sorted(os.listdir(".")), "prompt": prompt}}
 open({log!r}, "w", encoding="utf-8").write(json.dumps(log, ensure_ascii=False))
 mode = {mode!r}
@@ -336,7 +337,7 @@ def test_model_assessment_with_clean_context(project: Path, testops: FakeTestOps
 
     assert code == 0, out
     call = json.loads(log.read_text(encoding="utf-8"))
-    assert call["env"] == []  # сеанс родителя проверяющему не передаётся
+    assert not [key for key in call["env"] if key.startswith("QWEN_CODE_")]  # сеанс родителя
     assert not Path(call["cwd"]).is_relative_to(project)  # без контекста проекта
     assert "--json-schema" in call["argv"] and "plan" in call["argv"]
     assert "=== ПРОБЛЕМА 1" in call["prompt"] and "----- РАЗБОР АГЕНТА -----" in call["prompt"]
@@ -351,6 +352,34 @@ def test_model_assessment_with_clean_context(project: Path, testops: FakeTestOps
     assert facts["grades"]["quality"] == review.QUALITY_FAIR
     report = (run_dir / "review" / "report.md").read_text(encoding="utf-8")
     assert "скорее «окружение»" in report and "Разборам можно доверять." in report
+
+
+def test_reviewer_gets_short_environment(project: Path, testops: FakeTestOps, capsys,
+                                         monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Проверяющему — только ``CHILD_ENV`` и ключ модели из настроек Qwen, без токенов
+    TestOps и трекера (ревью безопасности)."""
+    run_dir, _, _ = _finished_run(project, capsys, monkeypatch, tmp_path)
+    script, log = _fake_qwen(tmp_path, "ok")
+    monkeypatch.setenv(review_model.QWEN_ENV, str(script))
+    for name in ("ALLURE_TOKEN", "TRACKER_TOKEN", "QWEN_CODE_SESSION_ID", "MY_MODEL_KEY",
+                 "QWEN_CODE_KEY", "HTTPS_PROXY"):
+        monkeypatch.setenv(name, "x")
+    settings = Path(os.environ["QWEN_HOME"]) / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"modelProviders": {
+        "openai": [{"id": "m", "envKey": "MY_MODEL_KEY"}, {"id": "q", "envKey": "QWEN_CODE_KEY"}],
+        "other": {"models": [{"id": "n", "envKey": 5}]}}}), encoding="utf-8")
+
+    assert _run(["review", "--run", str(run_dir)], capsys)[0] == 0
+    env = set(json.loads(log.read_text(encoding="utf-8"))["env"])
+    assert {"PATH", "MY_MODEL_KEY", "HTTPS_PROXY", "QWEN_HOME"} <= env
+    assert not env & {"ALLURE_TOKEN", "TRACKER_TOKEN", "QWEN_CODE_SESSION_ID", "QWEN_CODE_KEY"}
+    # __CF_USER_TEXT_ENCODING macOS добавляет дочернему процессу сам.
+    assert {key for key in env if not key.startswith("__CF_")} <= review_model.CHILD_ENV | {"MY_MODEL_KEY"}
+
+    settings.write_text("{битый", encoding="utf-8")  # без настроек — только CHILD_ENV, не падает
+    assert _run(["review", "--run", str(run_dir)], capsys)[0] == 0
+    assert "MY_MODEL_KEY" not in json.loads(log.read_text(encoding="utf-8"))["env"]
 
 
 def test_reviewer_gets_screenshots_of_reviewed_problems_only(
