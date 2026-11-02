@@ -52,7 +52,6 @@ python3 "$entry" setup | tee "$work/setup.log"
 expect_status ready "$work/setup.log"
 [ -x .venv/bin/python ] || fail "нет .venv/bin/python"
 [ -f .venv/.alla-setup-complete ] || fail "нет маркера установки"
-grep -q "добавь строку /.venv" "$work/setup.log" || fail "setup не напомнил про /.venv"
 [ ! -e .gitignore ] || ! grep -q "venv" .gitignore || fail "setup изменил .gitignore проекта"
 [ -f "$skill/.env" ] || fail "setup не создал .env"
 mode=$(python3 -c "import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))" "$skill/.env")

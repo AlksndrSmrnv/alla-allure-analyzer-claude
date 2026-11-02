@@ -884,7 +884,11 @@ def write_stand_profile(project: Path) -> Path:
              "(allow file-read-metadata)\n(allow file-read*\n    (literal \"/\")\n"
              + "\n".join(rules) + "\n)\n"
              "; семафоры multiprocessing: без них joblib (кластеризация) пишет предупреждение\n"
-             "; в вывод prepare и уходит в последовательный режим\n(allow ipc-posix-sem)")
+             "; в вывод prepare и уходит в последовательный режим\n(allow ipc-posix-sem)\n"
+             "; pip проверяет TLS через системную службу доверия (truststore → trustd); без неё\n"
+             "; setup в песочнице падает с OSStatus -26276 (сценарии I01, P02)\n"
+             '(allow mach-lookup (global-name "com.apple.trustd") '
+             '(global-name "com.apple.trustd.agent"))')
     path = project / ".qwen" / f"sandbox-macos-{STAND_PROFILE}.sb"
     write(path, base.replace("(allow file-read*)", block))
     return path
@@ -2021,8 +2025,10 @@ def check_project_unchanged(ctx: Context) -> dict[str, Any]:
     status = run(["git", "-C", str(ctx.project), "status", "--porcelain",
                   "--untracked-files=all"]).stdout
     # alla-kb/ меняют только команды скилла (remember/reject) — их проверяет сценарий.
+    # .qwen/agents и .qwen/commands — результат install-files после «да» (сценарий I01).
+    installed = (".qwen/agents/", ".qwen/commands/") if "files_after_consent" in ctx.scenario.checks else ()
     allowed = ("alla-reports/", ".qwen/tmp/", *(("alla-kb/",) if ctx.scenario.knowledge else ()),
-               *ctx.scenario.edits)
+               *installed, *ctx.scenario.edits)
     changed = [line for line in status.splitlines() if not any(part in line for part in allowed)]
     return bad("; ".join(changed[:10])) if changed else ok()
 
