@@ -8,8 +8,8 @@
 site = "https://tracker.company"      # устойчивый адрес трекера: часть области запроса
 
 [server]
-command = ["npx", "-y", "some-tracker-mcp"]   # имя ищется на безопасном PATH; путь — от корня проекта
-extra_path = []                               # каталоги для PATH сервера (node, uvx), если нужны
+command = ["/opt/mcp/tracker-mcp", "--stdio"]  # уже установленный сервер; путь — от корня проекта или имя на безопасном PATH
+extra_path = []                               # каталоги для PATH сервера (например, node), если нужны
 timeout = 20                                  # секунд на весь вызов адаптера; меньше adapter_timeout
 
 [projects]                  # команда из team_* → проект или очередь трекера

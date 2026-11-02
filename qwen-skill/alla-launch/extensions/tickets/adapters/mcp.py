@@ -352,7 +352,7 @@ class Session:
             try:
                 message = json.loads(line.decode("utf-8"))
             except (UnicodeError, ValueError):
-                continue  # посторонняя строка (лог npx и т.п.): не часть протокола
+                continue  # посторонняя строка (лог запуска сервера и т.п.): не часть протокола
             if isinstance(message, dict):
                 return message
 

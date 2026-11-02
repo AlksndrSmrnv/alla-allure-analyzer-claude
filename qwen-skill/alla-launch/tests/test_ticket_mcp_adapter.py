@@ -362,6 +362,13 @@ def test_example_config_is_valid_and_prepares_a_ticket(project: Path) -> None:
     assert draft["scope"] == {"site": "https://tracker.company", "project_or_queue": "BACK"}
 
 
+def test_examples_never_launch_a_package_that_downloads_itself() -> None:
+    texts = [EXAMPLE.read_text(encoding="utf-8"), *guide_examples()]
+    for text in texts:
+        command = next(line for line in text.splitlines() if line.startswith("command = "))
+        assert "npx" not in command and '"-y"' not in command
+
+
 def guide_examples() -> list[str]:
     text = GUIDE.read_text(encoding="utf-8")
     return re.findall(r"<!-- example: mcp-tracker -->\n```toml\n(.*?)```", text, flags=re.S)
