@@ -33,7 +33,7 @@ from typing import Any
 
 import httpx
 
-from alla_core.clients.retry import RETRY_STATUSES, header, retry_delay
+from alla_core.clients.retry import RETRY_STATUSES, retry_delay
 from alla_core.config import Settings
 from alla_core.exceptions import AllureApiError, McpError, PaginationLimitError
 from alla_core.models.common import PageResponse
@@ -42,6 +42,8 @@ from alla_core.models.testops import AttachmentMeta, ExecutionStep, LaunchRespon
 logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2025-06-18"
+# Версии Streamable HTTP: 2024-11-05 — старый SSE-транспорт, его клиент не умеет.
+SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 FIND_RESULTS_TOOL = "testops_find_testresults"
 FULL_EXPAND = ("scenario", "fixtures", "attachments")
 # Сколько байт содержимого вложений держать между запросом результата и разбором логов.
@@ -58,6 +60,16 @@ _PARAM_CANDIDATES = {
     "size": ("size", "pageSize", "limit"),
     "expand": ("expand", "expansion", "expands"),
 }
+
+
+@dataclass
+class _Exchange:
+    """Ответ сервера на один POST: статус, заголовки, тело (не SSE) и свой ответ JSON-RPC."""
+
+    status: int
+    headers: httpx.Headers
+    text: str
+    reply: dict[str, Any] | None
 
 
 @dataclass
@@ -91,8 +103,10 @@ class TestOpsMcpClient:
         self._params: dict[str, str | None] | None = None
         self._init_lock = asyncio.Lock()
         self._rpc_id = 0
-        self._first_pages: dict[int, PageResponse[TestResultResponse]] = {}
+        self._first_pages: dict[int, tuple[PageResponse[TestResultResponse], bool]] = {}
         self._server_page_size: int | None = None
+        self._totals_known = True
+        self._generation = 0
         self._full: dict[int, _FullResult] = {}
         self._full_locks: dict[int, asyncio.Lock] = {}
         self._owner: dict[int, int] = {}  # id вложения → id результата
@@ -108,21 +122,39 @@ class TestOpsMcpClient:
             return await self._initialize()
 
     async def _initialize(self) -> list[dict[str, Any]]:
-        self._session_id = None
-        self._protocol = None
-        result = await self._rpc("initialize", {
+        """Новый сеанс: ``initialize`` без старого сеанса, затем ``tools/list`` уже в новом.
+
+        Старый id сеанса заменяется только ответом ``initialize``: параллельные запросы до
+        этого идут со старым (получат 404 и дождутся нового). Сбой — ``_params`` пуст, и
+        следующий вызов откроет сеанс заново.
+        """
+        self._params = None
+        exchange = await self._request("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
             "clientInfo": {"name": "alla-launch", "version": "1"},
-        }, initializing=True)
+        }, session=False)
+        result = self._result(exchange, "initialize", had_session=False)
         version = result.get("protocolVersion") if isinstance(result, dict) else None
-        self._protocol = version if isinstance(version, str) else PROTOCOL_VERSION
-        await self._notify("notifications/initialized")
+        if version not in SUPPORTED_VERSIONS:
+            raise McpError(
+                "protocol",
+                f"сервер предложил версию протокола MCP {version!r}, скилл знает "
+                + ", ".join(SUPPORTED_VERSIONS),
+            )
+        session = exchange.headers.get("mcp-session-id")
+        self._session_id = session or None
+        self._protocol = version
+        self._generation += 1
+        notified = await self._post({"jsonrpc": "2.0", "method": "notifications/initialized"}, None)
+        self._check_status(notified, had_session=False)
         tools: list[dict[str, Any]] = []
         cursor: str | None = None
         while True:
-            listed = await self._rpc("tools/list", {"cursor": cursor} if cursor else {},
-                                     initializing=True)
+            listed = self._result(
+                await self._request("tools/list", {"cursor": cursor} if cursor else {}),
+                "tools/list", had_session=False,
+            )
             page = listed.get("tools") if isinstance(listed, dict) else None
             tools.extend(item for item in page or [] if isinstance(item, dict))
             cursor = listed.get("nextCursor") if isinstance(listed, dict) else None
@@ -139,12 +171,14 @@ class TestOpsMcpClient:
         return tools
 
     async def _ensure_ready(self) -> dict[str, str | None]:
-        if self._params is None:
+        params = self._params
+        if params is None:
             async with self._init_lock:
                 if self._params is None:
                     await self._initialize()
-        assert self._params is not None
-        return self._params
+                params = self._params
+        assert params is not None
+        return params
 
     # --- Протокол TestResultsProvider ---
 
@@ -157,7 +191,7 @@ class TestOpsMcpClient:
         скажет).
         """
         page = await self.get_test_results_for_launch(launch_id)
-        self._first_pages[launch_id] = page
+        self._first_pages[launch_id] = (page, self._totals_known)
         first = page.content[0] if page.content else None
         extra = (first.model_extra or {}) if first is not None else {}
         launch_raw = extra.get("launch")
@@ -188,7 +222,8 @@ class TestOpsMcpClient:
             arguments[params["size"]] = size
         payload = await self._call_tool(arguments)
         # Сервер урезал страницу — дальше считаем страницы его размером, а не запрошенным.
-        result = _page(payload, page, self._server_page_size or size, paged=bool(params["page"]))
+        result, self._totals_known = _page(payload, page, self._server_page_size or size,
+                                           paged=bool(params["page"]))
         if result.size < size:
             self._server_page_size = result.size
         return result
@@ -196,20 +231,33 @@ class TestOpsMcpClient:
     async def get_all_test_results_for_launch(
         self, launch_id: int,
     ) -> list[TestResultResponse]:
-        """Все результаты прогона, включая hidden, по страницам; потолок — ``max_pages``."""
+        """Все результаты прогона, включая hidden, по страницам; потолок — ``max_pages``.
+
+        Без итогов в ответе — страницы, пока приходят новые id: пустая страница или та же
+        (сервер не листает) — конец; ``last_total_elements`` тогда ``None``.
+        """
         all_results: list[TestResultResponse] = []
+        seen: set[int] = set()
         page = 0
         while True:
             cached = self._first_pages.pop(launch_id, None) if page == 0 else None
-            page_resp = cached or await self.get_test_results_for_launch(
-                launch_id, page=page, size=self._page_size,
-            )
+            if cached is not None:
+                page_resp, known = cached
+            else:
+                page_resp = await self.get_test_results_for_launch(
+                    launch_id, page=page, size=self._page_size,
+                )
+                known = self._totals_known
+            ids = {result.id for result in page_resp.content}
+            if not known and not ids - seen:
+                break
+            seen |= ids
             all_results.extend(page_resp.content)
-            self.last_total_elements = page_resp.total_elements
-            if page == 0 and page_resp.total_pages > self._max_pages:
+            self.last_total_elements = page_resp.total_elements if known else None
+            if known and page == 0 and page_resp.total_pages > self._max_pages:
                 raise PaginationLimitError(
                     f"В прогоне {page_resp.total_elements} результатов "
-                    f"({page_resp.total_pages} страниц по {self._page_size}), "
+                    f"({page_resp.total_pages} страниц по {page_resp.size}), "
                     f"лимит — {self._max_pages} страниц.",
                     pages_needed=page_resp.total_pages,
                 )
@@ -219,9 +267,10 @@ class TestOpsMcpClient:
             if page >= self._max_pages:
                 raise PaginationLimitError(
                     f"Превышен max_pages={self._max_pages}. "
-                    f"Получено {len(all_results)}/{page_resp.total_elements} "
-                    f"результатов. Увеличьте ALLURE_MAX_PAGES при необходимости.",
-                    pages_needed=page_resp.total_pages,
+                    f"Получено {len(all_results)}"
+                    + (f"/{page_resp.total_elements}" if known else "")
+                    + " результатов. Увеличьте ALLURE_MAX_PAGES при необходимости.",
+                    pages_needed=page_resp.total_pages if known else None,
                 )
         logger.info("Получено %d результатов тестов для запуска %d (%d страниц)",
                     len(all_results), launch_id, page + 1)
@@ -364,37 +413,44 @@ class TestOpsMcpClient:
         result = await self._rpc("tools/call", {"name": FIND_RESULTS_TOOL, "arguments": arguments})
         return tool_payload(result, f"{FIND_RESULTS_TOOL} ({arguments})")
 
-    async def _rpc(self, method: str, params: dict[str, Any], *, initializing: bool = False) -> Any:
-        """Запрос JSON-RPC; на 404 с сеансом (сервер его забыл) — один новый сеанс."""
-        if not initializing:
-            await self._ensure_ready()
-        self._rpc_id += 1
-        request_id = self._rpc_id
-        message = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-        resp = await self._post(message)
-        if resp.status_code == 404 and self._session_id and not initializing:
-            logger.info("MCP TestOps: сеанс истёк, открываю новый")
+    async def _rpc(self, method: str, params: dict[str, Any]) -> Any:
+        """Запрос JSON-RPC в открытом сеансе; 404 (сервер забыл сеанс) — одно новое открытие на
+        всех, кто его получил (поколение сеанса), и повтор."""
+        await self._ensure_ready()
+        generation = self._generation
+        exchange = await self._request(method, params)
+        if exchange.status == 404 and self._session_id:
             async with self._init_lock:
-                await self._initialize()
-            resp = await self._post(message)
-        self._check_status(resp)
-        if initializing and method == "initialize":
-            session = header(resp, "Mcp-Session-Id")
-            self._session_id = session if isinstance(session, str) and session else None
-        reply = rpc_reply(resp, request_id)
+                if self._generation == generation:
+                    logger.info("MCP TestOps: сеанс истёк, открываю новый")
+                    await self._initialize()
+            exchange = await self._request(method, params)
+        return self._result(exchange, method, had_session=True)
+
+    async def _request(
+        self, method: str, params: dict[str, Any], *, session: bool = True,
+    ) -> _Exchange:
+        self._rpc_id += 1
+        message = {"jsonrpc": "2.0", "id": self._rpc_id, "method": method, "params": params}
+        return await self._post(message, self._rpc_id, session=session)
+
+    def _result(self, exchange: _Exchange, method: str, *, had_session: bool) -> Any:
+        self._check_status(exchange, had_session=had_session)
+        reply = exchange.reply
+        if reply is None:
+            raise McpError("protocol", f"{method}: в ответе нет сообщения JSON-RPC")
         error = reply.get("error")
         if isinstance(error, dict):
             raise McpError("tool", f"{method}: {error.get('message') or error}")
         return reply.get("result")
 
-    async def _notify(self, method: str) -> None:
-        resp = await self._post({"jsonrpc": "2.0", "method": method})
-        self._check_status(resp)
-
-    def _check_status(self, resp: httpx.Response) -> None:
-        status = resp.status_code
+    def _check_status(self, exchange: _Exchange, *, had_session: bool) -> None:
+        status = exchange.status
         if status < 400:
             return
+        if status == 404 and had_session:
+            raise McpError("protocol",
+                           "сервер не принял сеанс MCP и после нового открытия (HTTP 404)")
         if status == 404:
             raise McpError("not_found", f"по адресу {self._url} нет MCP-сервера (HTTP 404)")
         if status == 405:
@@ -403,34 +459,104 @@ class TestOpsMcpClient:
                 f"{self._url} не принимает Streamable HTTP (HTTP 405): скилл не умеет старый "
                 "SSE-транспорт MCP",
             )
-        raise AllureApiError(status, resp.text[:500], "mcp")
+        raise AllureApiError(status, exchange.text[:500], "mcp")
 
-    async def _post(self, message: dict[str, Any]) -> httpx.Response:
-        """POST с повторами: все вызовы читают, поэтому повторяются как GET прежнего клиента."""
-        headers = {
-            "Authorization": f"api-token {self._token}",
-            "Accept": "application/json, text/event-stream",
-            "Content-Type": "application/json",
-        }
-        if self._session_id:
-            headers["Mcp-Session-Id"] = self._session_id
-        if self._protocol:
-            headers["MCP-Protocol-Version"] = self._protocol
+    async def _post(
+        self, message: dict[str, Any], request_id: int | None, *, session: bool = True,
+    ) -> _Exchange:
+        """POST с повторами: все вызовы читают, поэтому повторяются как GET прежнего клиента.
+
+        Заголовки сеанса — на каждую попытку: за паузу сеанс мог смениться.
+        """
         method = str(message.get("method"))
         attempt = 0
         while True:
+            headers = {
+                "Authorization": f"api-token {self._token}",
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            }
+            if session and self._session_id:
+                headers["Mcp-Session-Id"] = self._session_id
+            if session and self._protocol:
+                headers["MCP-Protocol-Version"] = self._protocol
             try:
-                resp = await self._http.post(self._url, json=message, headers=headers)
+                exchange = await self._exchange(message, request_id, headers)
             except httpx.RequestError as exc:
                 if attempt >= self._retries:
                     raise AllureApiError(0, str(exc), "mcp") from exc
                 await self._pause(method, attempt, "сбой сети", None)
             else:
-                if resp.status_code not in RETRY_STATUSES or attempt >= self._retries:
-                    return resp
-                await self._pause(method, attempt, f"HTTP {resp.status_code}",
-                                  header(resp, "Retry-After"))
+                if exchange.status not in RETRY_STATUSES or attempt >= self._retries:
+                    return exchange
+                await self._pause(method, attempt, f"HTTP {exchange.status}",
+                                  exchange.headers.get("Retry-After"))
             attempt += 1
+
+    async def _exchange(
+        self, message: dict[str, Any], request_id: int | None, headers: dict[str, str],
+    ) -> _Exchange:
+        """Один POST. Ответ JSON читается целиком; поток SSE — до своего ответа, после чего
+        закрывается (сервер не обязан закрывать его сам); запросы сервера в потоке получают
+        ответ отдельным POST."""
+        async with self._http.stream("POST", self._url, json=message, headers=headers) as resp:
+            content_type = (resp.headers.get("content-type") or "").lower()
+            if resp.status_code >= 400 or not content_type.startswith("text/event-stream"):
+                text = (await resp.aread()).decode("utf-8", errors="replace")
+                reply = None
+                if resp.status_code < 400 and request_id is not None and text.strip():
+                    reply = _json_reply(text, request_id)
+                return _Exchange(resp.status_code, resp.headers, text, reply)
+            reply = await self._read_sse(resp, request_id, headers)
+            return _Exchange(resp.status_code, resp.headers, "", reply)
+
+    async def _read_sse(
+        self, resp: httpx.Response, request_id: int | None, headers: dict[str, str],
+    ) -> dict[str, Any] | None:
+        data: list[str] = []
+
+        async def event_done() -> dict[str, Any] | None:
+            if not data:
+                return None
+            text = "\n".join(data)
+            data.clear()
+            try:
+                message = json.loads(text)
+            except ValueError:
+                return None
+            if not isinstance(message, dict):
+                return None
+            if request_id is not None and message.get("id") == request_id \
+                    and ("result" in message or "error" in message):
+                return message
+            if "method" in message and "id" in message:
+                await self._answer_server(message, headers)
+            return None
+
+        # aiter_lines режет и по \r\n, и по одиночным \r и \n — как требует SSE.
+        async for line in resp.aiter_lines():
+            if line == "":
+                found = await event_done()
+                if found is not None:
+                    return found
+            elif line.startswith("data:"):
+                data.append(line[5:].removeprefix(" "))
+        found = await event_done()
+        if found is not None or request_id is None:
+            return found
+        raise McpError("protocol", f"в потоке SSE нет ответа на запрос {request_id}")
+
+    async def _answer_server(self, message: dict[str, Any], headers: dict[str, str]) -> None:
+        """Ответ на запрос сервера в потоке: ``ping`` — пустой результат, прочее — нет метода."""
+        body: dict[str, Any] = {"jsonrpc": "2.0", "id": message["id"]}
+        if message.get("method") == "ping":
+            body["result"] = {}
+        else:
+            body["error"] = {"code": -32601, "message": "Method not found"}
+        try:
+            await self._http.post(self._url, json=body, headers=headers)
+        except httpx.HTTPError as exc:
+            logger.warning("MCP TestOps: ответ на %s не отправлен: %s", message.get("method"), exc)
 
     async def _pause(self, method: str, attempt: int, reason: str, retry_after: object) -> None:
         delay = retry_delay(retry_after, attempt)
@@ -462,26 +588,13 @@ def _tool_params(tool: dict[str, Any]) -> dict[str, str | None]:
     }
 
 
-def rpc_reply(resp: httpx.Response, request_id: object) -> dict[str, Any]:
-    """Ответ на запрос ``request_id`` из тела JSON или потока SSE."""
-    content_type = (resp.headers.get("content-type") or "").lower()
-    messages: list[Any] = []
-    if content_type.startswith("text/event-stream"):
-        for event in resp.text.replace("\r\n", "\n").split("\n\n"):
-            data = "\n".join(line[5:].lstrip() for line in event.split("\n")
-                             if line.startswith("data:"))
-            if data:
-                try:
-                    messages.append(json.loads(data))
-                except ValueError:
-                    continue
-    else:
-        try:
-            body = resp.json()
-        except ValueError:
-            raise McpError("protocol", f"ответ не JSON: {resp.text[:200]}") from None
-        messages = body if isinstance(body, list) else [body]
-    for message in messages:
+def _json_reply(text: str, request_id: int) -> dict[str, Any]:
+    """Ответ на запрос ``request_id`` из тела JSON (одно сообщение или пакет)."""
+    try:
+        body = json.loads(text)
+    except ValueError:
+        raise McpError("protocol", f"ответ не JSON: {text[:200]}") from None
+    for message in body if isinstance(body, list) else [body]:
         if isinstance(message, dict) and message.get("id") == request_id:
             return message
     raise McpError("protocol", f"в ответе нет сообщения с id {request_id}")
@@ -526,13 +639,16 @@ def _items(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _page(payload: Any, page: int, size: int, *, paged: bool) -> PageResponse[TestResultResponse]:
-    """Страница результатов в ``PageResponse``.
+def _page(
+    payload: Any, page: int, size: int, *, paged: bool,
+) -> tuple[PageResponse[TestResultResponse], bool]:
+    """Страница результатов в ``PageResponse`` и известен ли итог (``totalPages``/``total…``).
 
     Размер страницы — из ответа (сервер может урезать запрошенный), иначе запрошенный; без
     ``size`` в ответе неполная страница при известном итоге, где результатов ещё больше, —
-    тоже урезанная сервером. Итогов нет — ещё страница, пока эта полная. Без параметра
-    страницы у инструмента страница одна: следующие запросы вернули бы её же.
+    тоже урезанная сервером. Итогов нет — ещё страница, пока эта не пуста (конец решает
+    ``get_all_test_results_for_launch`` по новым id). Без параметра страницы у инструмента
+    страница одна: следующие запросы вернули бы её же.
     """
     items = [_result(item) for item in _items(payload)]
     meta = payload if isinstance(payload, dict) else {}
@@ -543,10 +659,11 @@ def _page(payload: Any, page: int, size: int, *, paged: bool) -> PageResponse[Te
         if total is not None and 0 < len(items) < size and page * size + len(items) < total:
             actual = len(items)
     pages = _int(meta.get("totalPages"))
+    known = pages is not None or total is not None
     if pages is None and total is not None:
         pages = max(1, math.ceil(total / actual))
     if pages is None:
-        pages = page + 2 if len(items) >= actual else page + 1
+        pages = page + 2 if items else page + 1
     if not paged:
         pages = page + 1
     return PageResponse[TestResultResponse](
@@ -555,7 +672,7 @@ def _page(payload: Any, page: int, size: int, *, paged: bool) -> PageResponse[Te
         totalPages=pages,
         size=actual,
         number=page,
-    )
+    ), known
 
 
 def _result(raw: dict[str, Any]) -> TestResultResponse:

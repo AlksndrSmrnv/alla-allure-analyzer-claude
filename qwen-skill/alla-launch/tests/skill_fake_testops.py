@@ -651,6 +651,10 @@ class FakeTestOps:
         self.resolved: dict[int, dict[str, Any]] = {}
         self.resolve_status_of: dict[int, int] = {}
         self.sse = False
+        # Поток SSE: перед ответом — запрос сервера ping; строки — через \r (тоже по SSE).
+        self.sse_ping = False
+        self.sse_newline = "\n"
+        self.answers: list[dict[str, Any]] = []  # ответы клиента на запросы сервера
         self.tools: list[dict[str, Any]] = [FIND_TOOL_SCHEMA]
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -688,6 +692,9 @@ class FakeTestOps:
         method = message.get("method")
         if "id" not in message:
             return httpx.Response(202)
+        if method is None:  # ответ клиента на запрос сервера (ping)
+            self.answers.append(message)
+            return httpx.Response(202)
         if method != "initialize" and request.headers.get("Mcp-Session-Id") != MCP_SESSION:
             return httpx.Response(400, json={"error": "no session"})
         if method == "initialize":
@@ -720,7 +727,12 @@ class FakeTestOps:
         body: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id}
         body["error" if error is not None else "result"] = error if error is not None else result
         if self.sse:
-            text = "event: message\ndata: " + json.dumps(body, ensure_ascii=False) + "\n\n"
+            nl = self.sse_newline
+            text = ""
+            if self.sse_ping:
+                text += f"event: message{nl}data: " + json.dumps(
+                    {"jsonrpc": "2.0", "id": "srv-1", "method": "ping"}) + nl + nl
+            text += f"event: message{nl}data: " + json.dumps(body, ensure_ascii=False) + nl + nl
             return httpx.Response(200, text=text, headers={
                 "Content-Type": "text/event-stream", **(headers or {})})
         return httpx.Response(200, json=body, headers=headers)

@@ -55,7 +55,9 @@ def fetch_error_hint(exc: BaseException, settings: Settings, env_file: Path) -> 
         )
     if any(isinstance(item, httpx.ConnectError) for item in causes):
         return (
-            f"Нет соединения с {settings.endpoint}. Проверь ALLURE_ENDPOINT, VPN и прокси."
+            f"Нет соединения с {settings.mcp_endpoint}. Проверь "
+            + ("ALLURE_MCP_URL" if settings.mcp_url.strip() else "ALLURE_ENDPOINT")
+            + ", VPN и прокси."
         )
     limit = next((item for item in causes if isinstance(item, PaginationLimitError)), None)
     if limit is not None:

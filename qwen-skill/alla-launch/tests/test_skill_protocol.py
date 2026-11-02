@@ -268,7 +268,8 @@ def _wrapped(cause: BaseException) -> AllureApiError:
     [
         (_wrapped(httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] bad")), "SSL_CERT_FILE"),
         (_wrapped(httpx.ReadTimeout("slow")), "ALLURE_REQUEST_TIMEOUT (сейчас 11 с)"),
-        (_wrapped(httpx.ConnectError("refused")), "Нет соединения с https://testops.example"),
+        (_wrapped(httpx.ConnectError("refused")),
+         "Нет соединения с https://testops.example/api/mcp. Проверь ALLURE_ENDPOINT"),
         (PaginationLimitError("много"), "ALLURE_MAX_PAGES (сейчас 7)"),
         (AllureApiError(404, "нет", "/api/launch/1"), "Запуск не найден"),
         (AllureApiError(403, "нельзя", "/api/launch/1"), "Проверь ALLURE_TOKEN"),
@@ -280,6 +281,12 @@ def test_fetch_error_hints(exc: BaseException, expected: str) -> None:
     hint = fetch_error_hint(exc, _settings(), Path("/skill/.env"))
     assert (expected in hint) if expected else hint == ""
 
+
+
+def test_connect_hint_names_the_own_mcp_url() -> None:
+    settings = Settings(endpoint="https://testops.example", token="t", mcp_url="https://mcp.example/x")
+    hint = fetch_error_hint(_wrapped(httpx.ConnectError("refused")), settings, Path("/skill/.env"))
+    assert "Нет соединения с https://mcp.example/x. Проверь ALLURE_MCP_URL" in hint
 
 
 def test_tls_hint_offers_trusting_the_proxy_and_never_disabling_verification() -> None:

@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import sys
 from collections.abc import Callable, Generator
@@ -21,7 +20,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 if __package__ in (None, ""):  # запуск файлом: tests/ и scripts/ в sys.path
     _TESTS = Path(__file__).resolve().parents[1]
@@ -34,36 +32,22 @@ import httpx  # noqa: E402
 _LAUNCH_AQL = re.compile(r"^launch = (\d+)$")
 _ID_AQL = re.compile(r"^id = (\d+)$")
 _EXPAND_KEYS = ("scenario", "fixtures", "attachments")
-# Тело уже раскодировано: длину и сжатие пересчитает httpx.Response.
-_DROPPED_HEADERS = {"content-encoding", "content-length", "transfer-encoding"}
 
 
 @dataclass
 class Recording:
-    """Ответы MCP TestOps, разложенные по частям кассеты."""
+    """Ответы инструмента MCP TestOps, разложенные по частям кассеты."""
 
     launch_id: int | None = None
     pages: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
     details: dict[int, dict[str, Any]] = field(default_factory=dict)
-    mcp_path: str = "/api/mcp"
 
-    def store(self, request: httpx.Request, body: bytes, response: httpx.Response) -> None:
-        from alla_core.clients.mcp_client import rpc_reply, tool_items
+    def store(self, arguments: dict[str, Any], payload: Any) -> None:
+        from alla_core.clients.mcp_client import tool_items
 
-        if request.url.path != self.mcp_path or response.status_code >= 400:
-            return
-        try:
-            message = json.loads(request.content)
-        except ValueError:
-            return
-        if not isinstance(message, dict) or message.get("method") != "tools/call":
-            return
-        arguments = (message.get("params") or {}).get("arguments") or {}
         aql = next((value.strip() for value in arguments.values()
                     if isinstance(value, str) and value.strip()), "")
-        reply = rpc_reply(httpx.Response(response.status_code, headers=response.headers,
-                                         content=body), message.get("id"))
-        items = tool_items(reply.get("result"))
+        items = tool_items({"structuredContent": payload})
         if match := _LAUNCH_AQL.match(aql):
             self.launch_id = int(match[1])
             page = next((value for key, value in arguments.items()
@@ -87,51 +71,39 @@ class Recording:
         return LaunchFixture(launch=launch, results=results, details=self.details)
 
 
-class RecordingTransport(httpx.AsyncBaseTransport):
-    """Транспорт, который передаёт запросы дальше и складывает ответы в ``Recording``."""
-
-    def __init__(self, inner: httpx.AsyncBaseTransport, recording: Recording) -> None:
-        self._inner = inner
-        self._recording = recording
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        response = await self._inner.handle_async_request(request)
-        body = await response.aread()
-        self._recording.store(request, body, response)
-        headers = [
-            (name, value) for name, value in response.headers.items()
-            if name.lower() not in _DROPPED_HEADERS
-        ]
-        return httpx.Response(response.status_code, headers=headers, content=body,
-                              request=request)
-
-    async def aclose(self) -> None:
-        await self._inner.aclose()
-
-
 @contextmanager
-def recording_clients(
+def recording_tool_calls(
     recording: Recording,
     inner: Callable[[bool], httpx.AsyncBaseTransport] | None = None,
 ) -> Generator[None]:
-    """Подменить ``httpx.AsyncClient`` клиентом с записывающим транспортом.
+    """Складывать ответы ``testops_find_testresults`` в ``Recording``.
 
-    ``inner(verify)`` строит настоящий транспорт; по умолчанию — ``AsyncHTTPTransport``.
+    Перехват — на уровне клиента (данные инструмента после разбора JSON-RPC), а не
+    транспорта: так запись не зависит от того, ответил сервер JSON или потоком SSE.
+    ``inner(verify)`` — свой транспорт httpx (тесты); по умолчанию — настоящий.
     """
+    from alla_core.clients.mcp_client import TestOpsMcpClient
+
+    real_call = TestOpsMcpClient._call_tool
     real_client = httpx.AsyncClient
-    make_inner = inner or (lambda verify: httpx.AsyncHTTPTransport(verify=verify))
+
+    async def call(self: TestOpsMcpClient, arguments: dict[str, Any]) -> Any:
+        payload = await real_call(self, arguments)
+        recording.store(arguments, payload)
+        return payload
 
     class _Client(real_client):  # type: ignore[misc, valid-type]
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            kwargs["transport"] = RecordingTransport(
-                make_inner(kwargs.get("verify", True)), recording
-            )
+            if inner is not None:
+                kwargs["transport"] = inner(kwargs.get("verify", True))
             super().__init__(*args, **kwargs)
 
+    TestOpsMcpClient._call_tool = call  # type: ignore[method-assign]
     httpx.AsyncClient = _Client  # type: ignore[misc]
     try:
         yield
     finally:
+        TestOpsMcpClient._call_tool = real_call  # type: ignore[method-assign]
         httpx.AsyncClient = real_client  # type: ignore[misc]
 
 
@@ -148,8 +120,8 @@ def record(
 
     if out_dir.exists() and any(out_dir.iterdir()):
         raise FileExistsError(f"Каталог кассеты {out_dir} не пуст: укажите новый каталог.")
-    recording = Recording(mcp_path=urlsplit(settings.mcp_endpoint).path)
-    with recording_clients(recording, inner):
+    recording = Recording()
+    with recording_tool_calls(recording, inner):
         data = asyncio.run(collect_launch(launch_id, settings))
     save_cassette(recording.fixture(), out_dir)
     return data

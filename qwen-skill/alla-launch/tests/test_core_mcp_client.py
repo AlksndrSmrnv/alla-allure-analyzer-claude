@@ -134,6 +134,68 @@ def test_launch_and_full_result_over_json_and_sse(monkeypatch: pytest.MonkeyPatc
     ]
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r", "\r\n"])
+def test_sse_with_a_server_ping_and_any_line_breaks(monkeypatch: pytest.MonkeyPatch,
+                                                     newline: str) -> None:
+    fake = FakeTestOps(default_launch())
+    fake.sse, fake.sse_ping, fake.sse_newline = True, True, newline
+    fake.install(monkeypatch)
+
+    page = _run(_settings(), lambda client: client.get_test_results_for_launch(777))
+    assert [result.id for result in page.content] == [101, 102, 103]
+    # На каждый ping в потоке клиент ответил пустым результатом.
+    assert fake.answers and all(answer == {"jsonrpc": "2.0", "id": "srv-1", "result": {}}
+                                for answer in fake.answers)
+
+
+def test_sse_stream_is_closed_after_the_own_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Сервер не закрывает поток после ответа: клиент не ждёт его конца."""
+    fake = FakeTestOps(default_launch())
+
+    class _Endless(httpx.AsyncByteStream):
+        def __init__(self, first: bytes) -> None:
+            self.first = first
+
+        async def __aiter__(self):  # type: ignore[override]
+            yield self.first
+            await asyncio.sleep(3600)  # поток висит, пока клиент его не закроет
+            yield b""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = fake.handle(request)
+        message = json.loads(request.content)
+        if message.get("method") != "tools/call":
+            return response
+        frame = b"data: " + response.content + b"\n\n"
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                              stream=_Endless(frame))
+
+    _install(monkeypatch, handler)
+
+    async def action(client: TestOpsMcpClient) -> Any:
+        return await asyncio.wait_for(client.get_test_results_for_launch(777), timeout=5)
+
+    page = _run(_settings(), action)
+    assert [result.id for result in page.content] == [101, 102, 103]
+
+
+def test_unknown_protocol_version_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeTestOps(default_launch())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = fake.handle(request)
+        if json.loads(request.content).get("method") == "initialize":
+            body = json.loads(response.content)
+            body["result"]["protocolVersion"] = "2024-11-05"
+            return httpx.Response(200, json=body, headers={"Mcp-Session-Id": MCP_SESSION})
+        return response
+
+    _install(monkeypatch, handler)
+    with pytest.raises(McpError) as exc_info:
+        _run(_settings(), lambda client: client.connect())
+    assert exc_info.value.reason == "protocol" and "2024-11-05" in str(exc_info.value)
+
+
 def test_missing_tool_and_missing_server_get_hints(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeTestOps(default_launch())
     fake.tools = []
@@ -220,6 +282,40 @@ def test_forgotten_session_is_reopened_once(monkeypatch: pytest.MonkeyPatch) -> 
     assert fake.calls == [{"aql": "launch = 777", "page": 0, "size": 3}]
 
 
+def test_parallel_requests_share_one_new_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Сервер забыл сеанс посреди параллельной выгрузки: новый сеанс один, и все запросы
+    проходят в нём, а не уходят без Mcp-Session-Id."""
+    fake = FakeTestOps(default_launch())
+    sessions = iter(["session-a", "session-b", "session-c"])
+    current: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        message = json.loads(request.content)
+        if message.get("method") == "initialize":
+            current.append(next(sessions))
+            body = json.loads(fake.handle(request).content)
+            return httpx.Response(200, json=body, headers={"Mcp-Session-Id": current[-1]})
+        if request.headers.get("Mcp-Session-Id") != current[-1]:
+            return httpx.Response(404)
+        headers = dict(request.headers)
+        headers["mcp-session-id"] = MCP_SESSION
+        forwarded = httpx.Request(request.method, request.url, content=request.content,
+                                  headers=headers)
+        return fake.handle(forwarded)
+
+    _install(monkeypatch, handler)
+
+    async def action(client: TestOpsMcpClient) -> Any:
+        await client.connect()
+        current.append("session-z")  # сервер перезапустился: прежний сеанс забыт
+        return await asyncio.gather(*(client.get_test_result_execution(result_id)
+                                      for result_id in (101, 102, 103, 108)))
+
+    steps = _run(_settings(), action)
+    assert len(steps) == 4 and steps[0][0].name == "Создать заказ"
+    assert current == ["session-a", "session-z", "session-b"]  # одно новое открытие
+
+
 def test_tool_error_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeTestOps(default_launch())
     fake.install(monkeypatch)
@@ -274,8 +370,8 @@ def test_pages_without_totals_continue_until_a_short_page(monkeypatch: pytest.Mo
         return results, client.last_total_elements
 
     results, total = _run(_settings(), action)
-    assert len(results) == 8 and total == 8
-    assert [call["page"] for call in fake.calls] == [0, 1, 2]
+    assert len(results) == 8 and total is None
+    assert [call["page"] for call in fake.calls] == [0, 1, 2, 3]  # последняя — пустая
 
 
 def test_server_page_size_wins_over_the_requested_one(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -307,6 +403,27 @@ def test_tool_without_page_parameter_gets_one_page(monkeypatch: pytest.MonkeyPat
     results = _run(_settings(), lambda client: client.get_all_test_results_for_launch(777))
     assert [result.id for result in results] == [101, 102, 103]  # первая страница — один раз
     assert fake.calls == [{"aql": "launch = 777", "size": 3}]
+
+
+def test_short_pages_without_totals_continue_until_nothing_new(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Сервер отдаёт по 2 без итогов и размера: короткая страница — ещё не конец."""
+    fake = FakeTestOps(default_launch())
+    original = fake._find
+
+    def find(arguments: dict[str, Any]) -> Any:
+        return original({**arguments, "size": 2})["content"]
+
+    fake._find = find  # type: ignore[method-assign]
+    fake.install(monkeypatch)
+
+    async def action(client: TestOpsMcpClient) -> Any:
+        results = await client.get_all_test_results_for_launch(777)
+        return results, client.last_total_elements
+
+    results, total = _run(_settings(), action)
+    assert len({result.id for result in results}) == len(results) == 8
+    assert total is None  # итог сервер не сообщил — сверять не с чем
+    assert [call["page"] for call in fake.calls] == [0, 1, 2, 3, 4]  # последняя — пустая
 
 
 def test_launch_comes_from_results(monkeypatch: pytest.MonkeyPatch) -> None:

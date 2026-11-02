@@ -34,18 +34,30 @@ REST API TestOps у пользователей закрыт (решение по
   страницы — `size` ответа, иначе запрошенный, а неполная страница при итоге больше
   полученного — урезанная сервером: дальше страницы считаются его размером
   (`_server_page_size`), иначе терялся хвост прогона (ревью Codex); итогов
-  (`totalPages`/`totalElements`/`total`) нет — следующая страница, пока эта полная
-  (`last_total_elements` тогда — сколько получено).
+  (`totalPages`/`totalElements`/`total`) нет — страницы, пока приходят новые id (пустая
+  или повтор прежней — конец, повтор в результаты не идёт), `last_total_elements` тогда
+  `None`: короткая страница без итогов ещё не конец, иначе выгрузка обрывалась на первой
+  урезанной странице (ревью Grok).
 - Транспорт — свой Streamable HTTP на `httpx` (пакет `mcp` не берём: веб-сервер и десяток
   зависимостей в lock): JSON-RPC в POST, `Authorization: api-token <token>`,
   `Accept: application/json, text/event-stream`, `Mcp-Session-Id` из ответа `initialize`,
-  `MCP-Protocol-Version` после него; ответ JSON или SSE (`rpc_reply` ищет сообщение со своим
-  id). `initialize` → `notifications/initialized` → `tools/list` (с `nextCursor`) лениво, при
-  первом вызове; `connect()` — то же явно (`check`). 404 при открытом сеансе — сервер его
-  забыл: один новый сеанс и повтор. Ошибки — `McpError(reason)`: `not_found` (404 без сеанса),
-  `transport` (405: старый SSE-транспорт не поддерживается), `no_tool`, `tool` (`isError`,
-  JSON-RPC error), `protocol`; 401/403 и прочие HTTP — `AllureApiError` со статусом
-  (`errors.fetch_error_hint` различает их).
+  `MCP-Protocol-Version` после него (заголовки — на каждую попытку). Ответ JSON читается
+  целиком; поток SSE (`_read_sse`, `httpx.stream`) — по строкам (`aiter_lines` режет и по
+  одиночному `\r`), до своего ответа, затем закрывается: сервер не обязан закрывать поток
+  сам; запрос сервера в потоке (`ping`) получает ответ отдельным POST (`ping` — `{}`, прочее —
+  -32601), иначе сервер, ждущий ответа на ping, держал бы `tools/call` до таймаута (ревью
+  Grok). Версия из `initialize` — только `SUPPORTED_VERSIONS` (Streamable HTTP: 2025-03-26,
+  2025-06-18, 2025-11-25), иначе `McpError(protocol)`. `initialize` → `notifications/initialized`
+  → `tools/list` (с `nextCursor`) лениво, при первом вызове; `connect()` — то же явно
+  (`check`). **Сеанс забыт** (404 при открытом сеансе): одно новое открытие на всех
+  получивших 404 — по поколению сеанса (`_generation`) под `_init_lock`, остальные ждут и
+  повторяют в новом; старый id заменяется только ответом нового `initialize` (параллельные
+  запросы не уходят без `Mcp-Session-Id`), сбой открытия — `_params = None`, следующий вызов
+  откроет заново (ревью Grok); 404 и после нового сеанса — `McpError(protocol)`, а не «нет
+  сервера». Ошибки — `McpError(reason)`: `not_found` (404 без сеанса), `transport` (405:
+  старый SSE-транспорт не поддерживается), `no_tool`, `tool` (`isError`, JSON-RPC error),
+  `protocol`; 401/403 и прочие HTTP — `AllureApiError` со статусом (`errors.fetch_error_hint`
+  различает их; сеть — подсказка про `mcp_endpoint` и `ALLURE_MCP_URL`, если он задан).
 - **Повторы при временных сбоях.** Все вызовы MCP читают, поэтому повторяются как GET прежнего
   клиента: до `http_retries` раз при `RETRY_STATUSES` (429, 502, 503, 504) и
   `httpx.RequestError`; пауза — `Retry-After` в секундах, иначе 1, 2, 4… с, не больше 30 с
