@@ -52,8 +52,8 @@ python3 "$entry" setup | tee "$work/setup.log"
 expect_status ready "$work/setup.log"
 [ -x .venv/bin/python ] || fail "нет .venv/bin/python"
 [ -f .venv/.alla-setup-complete ] || fail "нет маркера установки"
-grep -qx "/.venv" .gitignore || fail "/.venv не дописан в .gitignore"
-git check-ignore -q .venv || fail "git не игнорирует .venv"
+grep -q "добавь строку /.venv" "$work/setup.log" || fail "setup не напомнил про /.venv"
+[ ! -e .gitignore ] || ! grep -q "venv" .gitignore || fail "setup изменил .gitignore проекта"
 [ -f "$skill/.env" ] || fail "setup не создал .env"
 mode=$(python3 -c "import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))" "$skill/.env")
 [ "$mode" = 0o600 ] || fail "у .env права $mode, ждали 0o600"
@@ -62,7 +62,7 @@ mode=$(python3 -c "import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o77
 echo "== повторный setup берёт существующий .venv"
 python3 "$entry" setup | tee "$work/setup2.log"
 expect_status ready "$work/setup2.log"
-[ "$(grep -cx '/.venv' .gitignore)" = 1 ] || fail "/.venv дописан в .gitignore дважды"
+[ ! -e .gitignore ] || ! grep -q "venv" .gitignore || fail "повторный setup изменил .gitignore"
 
 echo "== check с пустым .env"
 code=0

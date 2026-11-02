@@ -742,22 +742,22 @@ def test_setup_explains_venv_without_pip(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="нужен git")
-def test_setup_adds_project_venv_to_gitignore(tmp_path: Path) -> None:
+def test_setup_only_reports_an_unignored_venv_and_never_edits_gitignore(tmp_path: Path) -> None:
     import alla_skill
 
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     gitignore = tmp_path / ".gitignore"
     gitignore.write_text("build/", encoding="utf-8")
 
-    assert alla_skill.ensure_gitignored(tmp_path) == gitignore
-    assert gitignore.read_text(encoding="utf-8") == "build/\n/.venv\n"
-    assert alla_skill.ensure_gitignored(tmp_path) is None  # уже игнорируется — без дублей
-    assert gitignore.read_text(encoding="utf-8") == "build/\n/.venv\n"
+    assert alla_skill.venv_needs_ignore(tmp_path)
+    assert gitignore.read_text(encoding="utf-8") == "build/"  # скилл файл не трогает
+    gitignore.write_text("/.venv\n", encoding="utf-8")
+    assert not alla_skill.venv_needs_ignore(tmp_path)
 
 
 @pytest.mark.skipif(shutil.which("git") is None or os.name == "nt", reason="нужны git и симлинки")
-def test_setup_ignores_symlinked_project_venv(tmp_path: Path) -> None:
-    """Шаблон «.venv/» симлинк не прикрывает: setup дописывает /.venv, и git его не берёт."""
+def test_setup_checks_a_symlinked_project_venv_by_its_type(tmp_path: Path) -> None:
+    """Шаблон «.venv/» симлинк не прикрывает: проверка идёт по пути без слэша."""
     import alla_skill
 
     project = tmp_path / "project"
@@ -766,17 +766,15 @@ def test_setup_ignores_symlinked_project_venv(tmp_path: Path) -> None:
     (project / ".venv").symlink_to(tmp_path / "shared-venv", target_is_directory=True)
     (project / ".gitignore").write_text(".venv/\n", encoding="utf-8")
 
-    assert alla_skill.ensure_gitignored(project) == project / ".gitignore"
-    subprocess.run(["git", "-C", str(project), "add", "-A"], check=True)
-    staged = subprocess.run(["git", "-C", str(project), "ls-files"], capture_output=True,
-                            text=True, check=True).stdout.split()
-    assert staged == [".gitignore"]
+    assert alla_skill.venv_needs_ignore(project)
+    (project / ".gitignore").write_text("/.venv\n", encoding="utf-8")
+    assert not alla_skill.venv_needs_ignore(project)
 
 
-def test_setup_leaves_gitignore_outside_git(tmp_path: Path) -> None:
+def test_setup_stays_quiet_outside_git(tmp_path: Path) -> None:
     import alla_skill
 
-    assert alla_skill.ensure_gitignored(tmp_path) is None
+    assert not alla_skill.venv_needs_ignore(tmp_path)
     assert not (tmp_path / ".gitignore").exists()
 
 

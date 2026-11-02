@@ -143,13 +143,11 @@ def split_setup_args(argv: Sequence[str]) -> tuple[str | None, list[str]]:
     return explicit, pip_args
 
 
-def ensure_gitignored(root: Path) -> Path | None:
-    """Дописать ``/.venv`` в ``<root>/.gitignore``, если git его не игнорирует.
+def venv_needs_ignore(root: Path) -> bool:
+    """Git видит ``.venv`` проекта как неотслеживаемую папку (``.gitignore`` скилл не правит).
 
-    ``/.venv`` без слэша на конце: ``.venv`` может быть и симлинком, а шаблон ``.venv/``
-    совпадает только с папкой. Существующий ``.venv`` git проверяет по его типу
-    (у симлинка путь со слэшем — ошибка 128); ещё не созданный — как папку.
-    Не git-репозиторий или git не установлен — ничего не делать.
+    Существующий ``.venv`` git проверяет по его типу (у симлинка путь со слэшем — ошибка 128);
+    ещё не созданный — как папку. Не git-репозиторий или git не установлен — ``False``.
     """
     path = ".venv" if os.path.lexists(str(root / ".venv")) else ".venv/"
     try:
@@ -159,15 +157,8 @@ def ensure_gitignored(root: Path) -> Path | None:
             stderr=subprocess.DEVNULL,
         )
     except OSError:
-        return None
-    if code != 1:  # 0 — уже игнорируется, 128 — не репозиторий
-        return None
-    gitignore = root / ".gitignore"
-    text = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-    prefix = "\n" if text and not text.endswith("\n") else ""
-    with gitignore.open("a", encoding="utf-8") as stream:
-        stream.write(prefix + "/.venv\n")
-    return gitignore
+        return False
+    return code == 1  # 0 — уже игнорируется, 128 — не репозиторий
 
 
 def create_env_file() -> Path | None:
@@ -286,9 +277,12 @@ def setup(argv: Sequence[str]) -> int:
     target = venv_python()
     if not ensure_pip(target):
         return 1
-    gitignore = ensure_gitignored(PROJECT_DIR)
-    if gitignore is not None:
-        print("Добавил /.venv в {}".format(gitignore), flush=True)
+    if venv_needs_ignore(PROJECT_DIR):
+        print(
+            "git не игнорирует .venv проекта: добавь строку /.venv в {} сам (setup .gitignore "
+            "не меняет).".format(PROJECT_DIR / ".gitignore"),
+            flush=True,
+        )
     try:
         SETUP_MARKER.unlink()
     except FileNotFoundError:
