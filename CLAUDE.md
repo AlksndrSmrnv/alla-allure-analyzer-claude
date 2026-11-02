@@ -6,8 +6,10 @@
 ссылке на запуск он получает результаты, извлекает ошибки и логи, кластеризует активные
 failed/broken падения; анализ пишет модель Qwen Code по заданиям скилла, Python готовит
 данные. Результат — краткий разбор в терминале, `report.md` и предложения правок
-автотестов. Скилл читает TestOps; пишет туда только статус passed тестов, прошедших при
-локальном перезапуске, и только после «да» пользователя (`resolve.py`). База знаний — проектная (`alla-kb/` в репозитории
+автотестов. Скилл читает TestOps через его встроенный MCP-сервер (REST API у пользователей
+закрыт); писать туда может только статус passed тестов, прошедших при локальном перезапуске,
+через REST, после «да» пользователя и только с `ALLURE_RERUN_RESOLVE=true` (`resolve.py`,
+по умолчанию выключено). База знаний — проектная (`alla-kb/` в репозитории
 автотестов), наполняется обратной связью пользователя.
 
 ## Состояние репозитория
@@ -29,7 +31,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | `extensions/` | расширения скилла: `README.md` (контракт для авторов), встроенные `git-publish/` (ветка git), `sut-code/` (`/alla:code N` — разбор по коду приложения) и `tickets/` (`/alla:ticket N [N…]` — просмотр и отправка тикетов через пользовательский адаптер); свои — `<проект>/alla-extensions/` |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` проекта автотестов |
 | `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files`, `jobs`, `retries`, `images`, `extension_data` |
-| `scripts/alla_core/` | ядро: клиент TestOps, триаж, логи, кластеризация, блок «Данные» |
+| `scripts/alla_core/` | ядро: клиент MCP TestOps (`clients/mcp_client.py`), триаж, логи, кластеризация, блок «Данные» |
 | `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
 | `tests/eval/` | эталон точности: кассеты прогонов (`record.py` пишет у команды), размеченный корпус dev/holdout, метрики склеек, дробления, скрытых групп и потери доказательств (`run_eval.py`), см. `README.md` там же |
 
@@ -160,7 +162,7 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 | `core-log-events.md` | события лога, поля ошибки ответа, NDJSON, префикс сборщика | `log_events.py`, `attachment_handlers.py`, `log_focus.py` |
 | `core-logs.md` | операция теста, происхождение, id операции, отбор логов | `log_utils.py`, `log_events.py`, `log_focus.py`, `text_normalization.py`, `log_extraction_service.py`, `attachment_handlers.py`, `config.py` |
 | `core-clustering.md` | кластеризация: gates, счётчики, близкие пары, примеры | `clustering_service.py`, `models/clustering.py`, `message_resources.py`, `text_normalization.py`, `step_paths.py`, `log_events.py` |
-| `core-client.md` | клиент TestOps, настройки `ALLURE_*` | `clients/`, `config.py`, `exceptions.py`, `models/testops.py` |
+| `core-client.md` | клиент MCP TestOps, REST-resolve, настройки `ALLURE_*` | `clients/`, `config.py`, `exceptions.py`, `models/testops.py` |
 
 ## Инструменты Claude Code
 

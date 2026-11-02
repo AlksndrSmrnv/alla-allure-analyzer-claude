@@ -13,9 +13,9 @@ ExecutionParameter = dict[str, Any]
 class TestResultResponse(BaseModel):
     """Сырой результат теста из Allure TestOps API.
 
-    Используется для двух эндпоинтов:
-    - ``GET /api/testresult?launchId=X`` (пагинированный список, ``trace`` обычно пустой)
-    - ``GET /api/testresult/{id}`` (индивидуальный результат, содержит top-level ``trace``)
+    Два источника (инструмент MCP ``testops_find_testresults``):
+    - ``aql: launch = X`` (страница результатов прогона, ``trace`` обычно пустой)
+    - ``aql: id = X`` (один результат, содержит top-level ``trace``)
 
     Поля намеренно Optional там, где API может их не вернуть,
     что делает модель устойчивой к вариациям API. ``extra="allow"``
@@ -66,7 +66,7 @@ class AttachmentMeta(BaseModel):
     """Метаданные аттачмента.
 
     Используется для двух источников:
-    - Из ``GET /api/testresult/attachment?testResultId={id}`` (содержит ``id``)
+    - Из словаря ``attachments`` результата (expand MCP; содержит ``id``)
     - Из execution-шагов (содержит ``source``, deprecated)
 
     Поле ``id`` используется для скачивания через новый API.
@@ -83,9 +83,9 @@ class AttachmentMeta(BaseModel):
 
 
 class ExecutionStep(BaseModel):
-    """Шаг выполнения теста из ``/api/testresult/{id}/execution``.
+    """Шаг выполнения теста из ``scenario`` или фикстур результата (expand MCP).
 
-    Ответ эндпоинта — дерево шагов. Каждый шаг может содержать вложенные
+    Дерево шагов. Каждый шаг может содержать вложенные
     ``steps``, а также ``statusDetails`` с сообщением об ошибке и стек-трейсом.
     """
 
@@ -184,7 +184,7 @@ class FetchInfo(BaseModel):
     ``results_received`` — уникальных результатов получено, ``duplicates`` — повторов id
     в ответах (страницы идущего прогона сдвигаются). ``execution_failed`` — активные падения,
     чьё дерево шагов не получено после повторов, ``detail_failed`` — чей запасной запрос
-    ошибки (``GET /api/testresult/{id}``) не прошёл: у них может не быть сообщения и шага.
+    ошибки (запрос результата по id) не прошёл: у них может не быть сообщения и шага.
     """
 
     launch_closed: bool | None = None
@@ -199,9 +199,9 @@ class FailedTestSummary(BaseModel):
     """Доменная модель: краткое описание упавшего теста для вывода триажа.
 
     ``status_message`` и ``status_trace`` заполняются трёхуровневым fallback:
-    1. Из execution-шагов (``GET /api/testresult/{id}/execution``).
+    1. Из execution-шагов (``scenario`` результата).
     2. Из ``statusDetails`` результата (пагинированный список).
-    3. Из top-level ``trace`` индивидуального результата (``GET /api/testresult/{id}``).
+    3. Из top-level ``trace`` индивидуального результата (запрос результата по id).
     """
 
     test_result_id: int

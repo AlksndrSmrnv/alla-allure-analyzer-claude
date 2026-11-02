@@ -634,7 +634,7 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
                   sut_repo: bool = False,
                   maven: tuple[tuple[str, tuple[str, ...]], ...] = (),
                   sources: dict[str, str] | None = None,
-                  ticket_seed: bool = False) -> Path:
+                  ticket_seed: bool = False, resolve: bool = False) -> Path:
     project = work / "project"
     java = project / "src" / "test" / "java" / "ru" / "company"
     write(java / "orders" / "OrderTest.java", ORDER_TEST_JAVA)
@@ -658,7 +658,10 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
     skill = project / SKILL_IN_PROJECT
     shutil.copytree(SKILL_ROOT, skill, ignore=COPY_IGNORE)
     if env_ready:
-        write(skill / ".env", f"ALLURE_ENDPOINT={endpoint}\nALLURE_TOKEN={TOKEN}\n")
+        # Запись статуса в TestOps по умолчанию выключена (REST закрыт): сценарии с ней
+        # включают её явно.
+        write(skill / ".env", f"ALLURE_ENDPOINT={endpoint}\nALLURE_TOKEN={TOKEN}\n"
+              + ("ALLURE_RERUN_RESOLVE=true\n" if resolve else ""))
     if venv is not None:
         (project / ".venv").symlink_to(venv, target_is_directory=True)
     for record in KNOWLEDGE.get(knowledge, []):
@@ -1930,18 +1933,26 @@ def check_asks_for_env(ctx: Context) -> dict[str, Any]:
 
 
 RESOLVE_PATH_RE = re.compile(r"/api/testresult/\d+/resolve")
+MCP_FIND_TOOL = "testops_find_testresults"
+
+
+MCP_READ_RPC = {"initialize", "notifications/initialized", "tools/list"}
 
 
 def check_testops_read_only(ctx: Context) -> dict[str, Any]:
-    """TestOps только читается; запись — лишь статус passed командой rerun --remember."""
+    """TestOps читается только через MCP (поиск результатов); REST — лишь запись статуса
+    passed командой rerun --remember (с обменом токена)."""
     resolve_allowed = bool(_rerun_calls(ctx, "--remember", "--result"))
     for entry in ctx.requests:
-        if entry["method"] == "GET" or entry["path"] == "/api/uaa/oauth/token":
+        if entry["path"] == "/api/mcp" and entry["method"] == "POST" and (
+                entry.get("rpc") in MCP_READ_RPC
+                or (entry.get("rpc") == "tools/call" and entry.get("tool") == MCP_FIND_TOOL)):
             continue
-        if resolve_allowed and entry["method"] == "POST" \
-                and RESOLVE_PATH_RE.fullmatch(entry["path"]):
+        if resolve_allowed and entry["method"] == "POST" and (
+                entry["path"] == "/api/uaa/oauth/token" or RESOLVE_PATH_RE.fullmatch(entry["path"])):
             continue
-        return bad(f"{entry['method']} {entry['path']}")
+        shown = f" ({entry.get('rpc')} {entry.get('tool') or ''})".rstrip() if entry.get("rpc") else ""
+        return bad(f"{entry['method']} {entry['path']}{shown}")
     return ok(f"запросов: {len(ctx.requests)}")
 
 
@@ -2232,7 +2243,7 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
         project = build_project(work, server.endpoint, venv, scenario.knowledge,
                                 scenario.env_ready, scenario.extensions, scenario.sut_repo,
                                 scenario.maven, FIXTURE_SOURCES.get(scenario.fixture),
-                                scenario.ticket_seed)
+                                scenario.ticket_seed, bool(scenario.resolved))
         installed_skill = project / SKILL_IN_PROJECT
         used_skill = fingerprint(installed_skill, skill_files(installed_skill))
         home = build_home(work, settings)

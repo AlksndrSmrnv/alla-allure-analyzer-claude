@@ -13,7 +13,7 @@ from skill_fixtures import (  # noqa: F401
     project_fixture,
     testops_fixture,
 )
-from skill_fake_testops import TOKEN, FakeTestOps, default_launch, green_launch
+from skill_fake_testops import FULL_EXPAND, TOKEN, FakeTestOps, default_launch, green_launch
 
 from alla_skill_lib import cli
 from alla_skill_lib.kb import entry_tests
@@ -120,8 +120,10 @@ def test_prepare_builds_run(project: Path, testops: FakeTestOps, capsys) -> None
 def test_prepare_is_read_only_and_hides_token(project: Path, testops: FakeTestOps, capsys) -> None:
     run_dir, _, out = _prepare(project, capsys)
 
-    methods = {(method, path) for method, path in testops.requests if method != "GET"}
-    assert methods == {("POST", "/api/uaa/oauth/token")}
+    # Только MCP: REST TestOps у пользователей закрыт; вызывается лишь поиск результатов.
+    assert {(method, path) for method, path in testops.requests} == {("POST", "/api/mcp")}
+    assert testops.calls and all(set(call) <= {"aql", "page", "size", "expand"}
+                                 for call in testops.calls)
     assert TOKEN not in out
     for path in run_dir.rglob("*"):
         if path.is_file():
@@ -137,7 +139,7 @@ def test_log_without_errors_stays_out_of_the_task(project: Path, testops: FakeTe
     testops.fixture = test_bug_launch()
     run_dir, _, out = _prepare(project, capsys, launch_id=782)
     assert out.startswith("STATUS: analyze"), out
-    assert ("GET", "/api/testresult/attachment/9101/content") in testops.requests
+    assert {"aql": "id = 201", "expand": FULL_EXPAND} in testops.calls  # с app.log
 
     task = (run_dir / "clusters" / "01.md").read_text(encoding="utf-8")
     assert "--- [S1 · сообщение об ошибке] ---\nexpected: <200> but was: <201>" in task

@@ -2,7 +2,8 @@
 """Фейковый TestOps как настоящий HTTP-сервер — для прогонов агента вне pytest.
 
 Отвечает тем же ``FakeTestOps.handle``, что и тесты, поэтому данные стенда и тестов
-одни. Слушает только 127.0.0.1. Каждый запрос пишется строкой JSON в журнал.
+одни. Слушает только 127.0.0.1. Каждый запрос пишется строкой JSON в журнал (у запросов
+к MCP — ещё метод JSON-RPC ``rpc`` и инструмент ``tool``).
 
     python tests/fake_testops_server.py --fixture default --port 8777 --log requests.jsonl
 
@@ -125,6 +126,21 @@ def build_fixture(spec: str) -> LaunchFixture:
     return FIXTURES[name]()
 
 
+def _rpc_fields(body: bytes) -> dict[str, Any]:
+    """Метод JSON-RPC и инструмент запроса к MCP — для журнала (проверка «только чтение»)."""
+    try:
+        message = json.loads(body) if body else None
+    except ValueError:
+        return {}
+    if not isinstance(message, dict) or "method" not in message:
+        return {}
+    fields: dict[str, Any] = {"rpc": message["method"]}
+    params = message.get("params")
+    if message["method"] == "tools/call" and isinstance(params, dict):
+        fields["tool"] = params.get("name")
+    return fields
+
+
 class FakeTestOpsServer:
     """HTTP-обёртка над ``FakeTestOps`` в фоновом потоке."""
 
@@ -174,18 +190,22 @@ class FakeTestOpsServer:
                     time.sleep(server.delay)
                 request = httpx.Request(self.command, f"http://testops.local{self.path}",
                                         headers=dict(self.headers), content=body)
+                session = ""
                 try:
                     response = server.fake.handle(request)
                     content = response.read()
                     status = response.status_code
                     content_type = response.headers.get("content-type", "application/json")
+                    session = response.headers.get("mcp-session-id", "")
                 except Exception as error:  # noqa: BLE001 — ошибка fixture видна в журнале
                     content = json.dumps({"error": repr(error)}).encode("utf-8")
                     status, content_type = 500, "application/json"
                 server._record({"time": time.time(), "method": self.command,
-                                "path": self.path, "status": status})
+                                "path": self.path, "status": status, **_rpc_fields(body)})
                 self.send_response(status)
                 self.send_header("Content-Type", content_type)
+                if session:
+                    self.send_header("Mcp-Session-Id", session)
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)

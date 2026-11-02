@@ -1,13 +1,17 @@
 """Фейковый Allure TestOps на ``httpx.MockTransport``.
 
-Подменяется ``httpx.AsyncClient``, поэтому вендоренные auth, пагинация,
-fallback-запросы и стриминг вложений работают как с настоящим сервером.
+Подменяется ``httpx.AsyncClient``, поэтому клиент MCP скилла (сеанс, пагинация, полный
+результат с вложениями) работает как с настоящим сервером. Чтение — только встроенный
+MCP (``POST /api/mcp``, инструмент ``testops_find_testresults``); из REST остались обмен
+токена и resolve (запись статуса, по умолчанию выключена).
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import math
+import re
 import struct
 import zlib
 from dataclasses import dataclass, field
@@ -592,13 +596,48 @@ def injection_launch(launch_id: int = 780) -> LaunchFixture:
     return fixture
 
 
-class FakeTestOps:
-    """Обработчик запросов TestOps с журналом (метод, путь).
+MCP_PATH = "/api/mcp"
+MCP_SESSION = "fake-session-1"
+FIND_TOOL = "testops_find_testresults"
+FULL_EXPAND = ["scenario", "fixtures", "attachments"]
+FIND_TOOL_SCHEMA: dict[str, Any] = {
+    "name": FIND_TOOL,
+    "description": "Search test results via AQL",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "aql": {"type": "string"},
+            "page": {"type": "integer"},
+            "size": {"type": "integer"},
+            "expand": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["aql"],
+    },
+}
+_TEXT_MIME = ("text/", "application/json", "application/xml", "application/x-ndjson")
 
-    ``resolved`` — тела ``POST /api/testresult/{id}/resolve`` по id; ``resolve_status`` —
-    код ответа на них (202 — принят, иначе ошибка без смены статуса), ``resolve_status_of`` —
-    свой код для отдельных id. ``also_launches`` — другие номера прогона с теми же падениями
-    («следующий прогон» в одном сеансе стенда).
+
+def _attachment_content(content: bytes, mime: str) -> str:
+    """Содержимое вложения в ответе MCP: текст — строкой, остальное — base64."""
+    if mime.startswith(_TEXT_MIME):
+        return content.decode("utf-8", errors="replace")
+    if not mime:
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+    return base64.b64encode(content).decode("ascii")
+
+
+class FakeTestOps:
+    """Обработчик запросов TestOps с журналом (метод, путь) и вызовов MCP (``calls``).
+
+    ``calls`` — аргументы каждого ``tools/call``. ``sse`` — отвечать на JSON-RPC потоком SSE,
+    ``tools`` — инструменты ``tools/list``. ``auth_status`` — ответ на любой запрос с чужим
+    токеном или при отказе (401/403). ``resolved`` — тела ``POST /api/testresult/{id}/resolve``
+    по id; ``resolve_status`` — код ответа на них (202 — принят, иначе ошибка без смены
+    статуса), ``resolve_status_of`` — свой код для отдельных id. ``also_launches`` — другие
+    номера прогона с теми же падениями («следующий прогон» в одном сеансе стенда).
     """
 
     def __init__(self, fixture: LaunchFixture, *, auth_status: int = 200,
@@ -608,8 +647,11 @@ class FakeTestOps:
         self.auth_status = auth_status
         self.resolve_status = resolve_status
         self.requests: list[tuple[str, str]] = []
+        self.calls: list[dict[str, Any]] = []
         self.resolved: dict[int, dict[str, Any]] = {}
         self.resolve_status_of: dict[int, int] = {}
+        self.sse = False
+        self.tools: list[dict[str, Any]] = [FIND_TOOL_SCHEMA]
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = self
@@ -624,34 +666,129 @@ class FakeTestOps:
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         self.requests.append((request.method, path))
-        fixture = self.fixture
+        if path == MCP_PATH and request.method == "POST":
+            return self._mcp(request)
         if path == "/api/uaa/oauth/token":
             if self.auth_status != 200:
                 return httpx.Response(self.auth_status, json={"error": "unauthorized"})
             return httpx.Response(200, json={"access_token": "jwt-1", "expires_in": 3600})
-        if path == f"/api/launch/{fixture.launch['id']}":
-            return httpx.Response(200, json=fixture.launch)
-        for launch_id in self.also_launches:
-            if path == f"/api/launch/{launch_id}":
-                return httpx.Response(200, json={**fixture.launch, "id": launch_id})
-        if path == "/api/testresult":
-            return self._page(request)
-        if path == "/api/testresult/attachment":
-            test_id = int(request.url.params["testResultId"])
-            return httpx.Response(200, json={"content": fixture.attachments.get(test_id, [])})
-        if path.startswith("/api/testresult/attachment/") and path.endswith("/content"):
-            attachment_id = int(path.split("/")[-2])
-            return httpx.Response(200, content=fixture.contents[attachment_id])
         if request.method == "POST" and path.startswith("/api/testresult/") \
                 and path.endswith("/resolve"):
             return self._resolve(int(path.split("/")[-2]), json.loads(request.content))
-        if path.startswith("/api/testresult/") and path.endswith("/execution"):
-            test_id = int(path.split("/")[-2])
-            return httpx.Response(200, json=fixture.executions.get(test_id, []))
-        if path.startswith("/api/testresult/"):
-            test_id = int(path.split("/")[-1])
-            return httpx.Response(200, json=fixture.details.get(test_id, {"id": test_id}))
         return httpx.Response(404, text=json.dumps({"path": path}))
+
+    # --- MCP ---
+
+    def _mcp(self, request: httpx.Request) -> httpx.Response:
+        token = request.headers.get("Authorization", "").removeprefix("api-token ").strip()
+        if self.auth_status != 200 or not token or token.startswith("Bearer"):
+            return httpx.Response(self.auth_status if self.auth_status != 200 else 401,
+                                  json={"error": "unauthorized"})
+        message = json.loads(request.content)
+        method = message.get("method")
+        if "id" not in message:
+            return httpx.Response(202)
+        if method != "initialize" and request.headers.get("Mcp-Session-Id") != MCP_SESSION:
+            return httpx.Response(400, json={"error": "no session"})
+        if method == "initialize":
+            return self._rpc_reply(message["id"], {
+                "protocolVersion": message["params"]["protocolVersion"],
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "fake-testops", "version": "26.3.1"},
+            }, headers={"Mcp-Session-Id": MCP_SESSION})
+        if method == "tools/list":
+            return self._rpc_reply(message["id"], {"tools": self.tools})
+        if method == "tools/call":
+            params = message["params"]
+            if params.get("name") != FIND_TOOL or not self.tools:
+                return self._rpc_reply(message["id"], error={"code": -32602,
+                                                             "message": "Unknown tool"})
+            arguments = params.get("arguments") or {}
+            self.calls.append(arguments)
+            try:
+                payload = self._find(arguments)
+            except ValueError as exc:
+                return self._rpc_reply(message["id"], {
+                    "content": [{"type": "text", "text": str(exc)}], "isError": True})
+            return self._rpc_reply(message["id"], {
+                "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]})
+        return self._rpc_reply(message["id"], error={"code": -32601, "message": "Method not found"})
+
+    def _rpc_reply(self, request_id: object, result: Any = None, *,
+                   error: dict[str, Any] | None = None,
+                   headers: dict[str, str] | None = None) -> httpx.Response:
+        body: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id}
+        body["error" if error is not None else "result"] = error if error is not None else result
+        if self.sse:
+            text = "event: message\ndata: " + json.dumps(body, ensure_ascii=False) + "\n\n"
+            return httpx.Response(200, text=text, headers={
+                "Content-Type": "text/event-stream", **(headers or {})})
+        return httpx.Response(200, json=body, headers=headers)
+
+    def _launch_ids(self) -> set[int]:
+        return {int(self.fixture.launch["id"]), *self.also_launches}
+
+    def _decorate(self, result: dict[str, Any], launch_id: int) -> dict[str, Any]:
+        """Результат как в ответе MCP: с id прогона, проектом и его временем."""
+        launch = self.fixture.launch
+        extra = {"launchId": launch_id, "projectId": launch.get("projectId"),
+                 "launchName": launch.get("name"), "createdDate": launch.get("createdDate")}
+        return {**{key: value for key, value in extra.items() if value is not None}, **result}
+
+    def _find(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        aql = str(arguments.get("aql", "")).strip()
+        expand = arguments.get("expand") or []
+        if match := re.fullmatch(r"launch = (\d+)", aql):
+            if expand:
+                raise ValueError("expand работает только с одним id")
+            launch_id = int(match[1])
+            results = self.fixture.results if launch_id in self._launch_ids() else []
+            page = int(arguments.get("page", 0))
+            size = int(arguments.get("size", 20))
+            return {
+                "content": [self._decorate(item, launch_id)
+                            for item in results[page * size:(page + 1) * size]],
+                "totalElements": len(results),
+                "totalPages": max(1, math.ceil(len(results) / size)),
+                "size": size,
+                "number": page,
+            }
+        if match := re.fullmatch(r"id = (\d+)", aql):
+            result_id = int(match[1])
+            found = [self._result(result_id, full=bool(expand))]
+            return {"content": [item for item in found if item is not None],
+                    "totalElements": len(found), "totalPages": 1, "size": 1, "number": 0}
+        raise ValueError(f"AQL не поддерживается фейком: {aql}")
+
+    def _result(self, result_id: int, *, full: bool) -> dict[str, Any] | None:
+        """Результат по id. ``details`` с ключами expand — ответ MCP, записанный кассетой с
+        настоящего TestOps: отдаётся как есть (без expand — без этих ключей)."""
+        fixture = self.fixture
+        detail = fixture.details.get(result_id, {})
+        if any(key in detail for key in FULL_EXPAND):
+            return detail if full else {key: value for key, value in detail.items()
+                                        if key not in FULL_EXPAND}
+        base = next((item for item in fixture.results if item["id"] == result_id), None)
+        if base is None and result_id not in fixture.details:
+            return None
+        result = self._decorate({**(base or {}), **detail}, int(fixture.launch["id"]))
+        if not full:
+            return result
+        attachments: dict[str, dict[str, Any]] = {}
+        for meta in fixture.attachments.get(result_id, []):
+            entry = dict(meta)
+            mime = str(meta.get("contentType") or meta.get("type") or "").lower()
+            if mime:
+                entry["contentType"] = mime
+            content = fixture.contents.get(meta["id"]) if meta.get("id") is not None else None
+            if content is not None:
+                entry["contentLength"] = len(content)
+                entry["content"] = _attachment_content(content, mime)
+            attachments[str(meta.get("id"))] = entry
+        return {**result, "scenario": {"steps": fixture.executions.get(result_id, [])},
+                "fixtures": [], "attachments": attachments}
+
+    # --- REST: запись статуса ---
 
     def _resolve(self, test_id: int, body: dict[str, Any]) -> httpx.Response:
         status = self.resolve_status_of.get(test_id, self.resolve_status)
@@ -660,15 +797,3 @@ class FakeTestOps:
         self.resolved[test_id] = body
         return httpx.Response(202, json={"id": test_id, "name": f"test {test_id}",
                                          "status": body.get("status")})
-
-    def _page(self, request: httpx.Request) -> httpx.Response:
-        page = int(request.url.params["page"])
-        size = int(request.url.params["size"])
-        results = self.fixture.results
-        return httpx.Response(200, json={
-            "content": results[page * size:(page + 1) * size],
-            "totalElements": len(results),
-            "totalPages": max(1, math.ceil(len(results) / size)),
-            "size": size,
-            "number": page,
-        })

@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 
 from skill_fixtures import project_fixture  # noqa: F401
 from skill_fake_testops import FakeTestOps, default_launch
-from alla_core.clients.auth import AllureAuthManager
-from alla_core.clients.testops_client import AllureTestOpsClient
+from alla_core.clients.mcp_client import TestOpsMcpClient
 from alla_core.config import Settings
 from alla_core.exceptions import PaginationLimitError
 from alla_core.models.testops import FetchInfo
@@ -62,7 +62,7 @@ def test_page_limit_fails_after_the_first_page(monkeypatch) -> None:
     settings = Settings(endpoint="https://testops.example", token="t", page_size=3, max_pages=2)
 
     async def fetch() -> None:
-        async with AllureTestOpsClient(settings, AllureAuthManager(settings.endpoint, "t")) as client:
+        async with TestOpsMcpClient(settings) as client:
             await client.get_all_test_results_for_launch(LAUNCH)
 
     with pytest.raises(PaginationLimitError) as exc_info:
@@ -70,43 +70,45 @@ def test_page_limit_fails_after_the_first_page(monkeypatch) -> None:
 
     assert exc_info.value.pages_needed == 3
     assert "8 результатов (3 страниц по 3)" in str(exc_info.value)
-    assert [path for _, path in fake.requests].count("/api/testresult") == 1
+    assert [call["aql"] for call in fake.calls] == [f"launch = {LAUNCH}"]
     hint = fetch_error_hint(exc_info.value, settings, Path(".env"))
     assert "ALLURE_MAX_PAGES хотя бы до 3 (сейчас 2)" in hint
 
 
 class _UnstableTestOps(FakeTestOps):
-    """Идущий прогон: страницы сдвигаются, дерево шагов одного падения не отдаётся."""
-
-    def __init__(self) -> None:
-        fixture = default_launch(LAUNCH)
-        fixture.launch["closed"] = False
-        super().__init__(fixture)
+    """Идущий прогон: страницы сдвигаются, полный результат одного падения не отдаётся."""
 
     def handle(self, request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/testresult/101/execution":
-            self.requests.append((request.method, request.url.path))
-            return httpx.Response(503, text="busy")
+        if request.url.path == "/api/mcp":
+            message = json.loads(request.content)
+            arguments = (message.get("params") or {}).get("arguments") or {}
+            if arguments.get("aql") == "id = 101" and arguments.get("expand"):
+                self.requests.append((request.method, request.url.path))
+                return httpx.Response(503, text="busy")
         return super().handle(request)
 
-    def _page(self, request: httpx.Request) -> httpx.Response:
-        response = super()._page(request)
-        page = int(request.url.params["page"])
-        if page == 0:
-            return response
-        body = json.loads(response.content)
+    def _decorate(self, result: dict[str, Any], launch_id: int) -> dict[str, Any]:
+        # Сервер, который знает прогон результата: прогон ещё не закрыт.
+        return {**super()._decorate(result, launch_id), "launch": {"id": launch_id, "closed": False}}
+
+    def _find(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        body = super()._find(arguments)
+        page = int(arguments.get("page", 0))
+        if not str(arguments.get("aql")).startswith("launch") or page == 0:
+            return body
         # Пока шла выгрузка, в начало добавился результат: TestOps насчитывает на один
         # больше, а вторая страница начинается с последнего результата первой.
         body["totalElements"] += 1
         if page == 1:
-            size = int(request.url.params["size"])
-            body["content"] = self.fixture.results[size - 1:2 * size - 1]
-        return httpx.Response(200, json=body)
+            size = int(arguments["size"])
+            body["content"] = [self._decorate(item, LAUNCH)
+                               for item in self.fixture.results[size - 1:2 * size - 1]]
+        return body
 
 
 def test_prepare_reports_incomplete_fetch(project: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("ALLURE_HTTP_RETRIES", "0")
-    fake = _UnstableTestOps()
+    fake = _UnstableTestOps(default_launch(LAUNCH))
     fake.install(monkeypatch)
 
     _, run, out = _prepare(project, capsys, LAUNCH)

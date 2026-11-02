@@ -1,7 +1,8 @@
 """Сбор данных прогона: триаж → логи из вложений → кластеризация.
 
 Использует ядро ``alla_core``: ``TriageService`` → извлечение логов
-→ ``ClusteringService``. Только чтение из TestOps: ни комментариев, ни ссылок.
+→ ``ClusteringService``. TestOps читается через его MCP-сервер (``TestOpsMcpClient``):
+только чтение, ни комментариев, ни ссылок.
 """
 
 from __future__ import annotations
@@ -11,8 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from alla_core.clients.auth import AllureAuthManager
-from alla_core.clients.testops_client import AllureTestOpsClient
+from alla_core.clients.mcp_client import TestOpsMcpClient
 from alla_core.config import Settings
 from alla_core.models.clustering import ClusteringReport
 from alla_core.models.testops import TriageReport
@@ -54,14 +54,8 @@ async def collect_launch(
     тестам, чьи данные увидит модель); ``None`` — скриншоты не скачиваются.
     """
     say = progress or (lambda message: None)
-    auth = AllureAuthManager(
-        endpoint=settings.endpoint,
-        api_token=settings.token,
-        timeout=settings.request_timeout,
-        retries=settings.http_retries,
-    )
     warnings: list[str] = []
-    async with AllureTestOpsClient(settings, auth) as client:
+    async with TestOpsMcpClient(settings) as client:
         say(f"Получаю результаты прогона #{launch_id} из TestOps…")
         triage = await TriageService(client, settings).analyze_launch(launch_id)
         warnings.extend(fetch_warnings(triage.fetch, launch_id))

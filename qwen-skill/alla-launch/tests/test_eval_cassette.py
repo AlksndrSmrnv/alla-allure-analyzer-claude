@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from skill_fixtures import project_fixture  # noqa: F401
-from skill_fake_testops import default_launch
+from skill_fake_testops import FULL_EXPAND, default_launch
 
 from alla_skill_lib import cli
 from eval.cassette import load_cassette, replay, save_cassette
@@ -44,7 +44,7 @@ def test_replayed_cassette_prepares_like_the_fixture(
                    .split(":", 1)[1].strip())
     run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
 
-    assert ("GET", "/api/testresult/attachment/9001/content") in fake.requests
+    assert {"aql": "id = 101", "expand": FULL_EXPAND} in fake.calls  # с логом app.log
     assert run["counts"] == {
         "total": 7, "passed": 1, "failed": 4, "broken": 1, "skipped": 1,
         "unknown": 0, "muted_failures": 1, "active_failures": 4,

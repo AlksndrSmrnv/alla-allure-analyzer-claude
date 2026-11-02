@@ -51,6 +51,17 @@ UNKNOWN_500 = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _resolve_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Запись статуса passed по умолчанию выключена (REST закрыт, в MCP её нет); здесь её
+    проверяют включённой."""
+    monkeypatch.setenv("ALLURE_RERUN_RESOLVE", "true")
+
+
+def test_status_in_testops_is_off_by_default() -> None:
+    assert Settings().rerun_resolve is False
+
+
 @pytest.fixture(name="flaky_testops")
 def flaky_testops_fixture(monkeypatch: pytest.MonkeyPatch) -> FakeTestOps:
     """Прогон 777, где у createOrder повтор упал иначе, а у updateOrder — прошёл."""
@@ -694,7 +705,7 @@ def test_passed_test_without_a_ci_signal_is_marked_only_in_testops(
     assert _rerun(run_dir, capsys, "--remember", "--result", job).startswith(
         "STATUS: ok\nСохранять нечего")
 
-    monkeypatch.delenv("ALLURE_RERUN_RESOLVE")
+    monkeypatch.setenv("ALLURE_RERUN_RESOLVE", "true")
     # Отметку включили после вопроса без TestOps: та же команда TestOps не трогает, спрашивает.
     stale = _rerun(run_dir, capsys, "--remember", "--result", job)
     assert stale.startswith("STATUS: ok\nПосле вопроса изменилось, что сохранится")

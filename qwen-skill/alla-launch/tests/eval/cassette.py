@@ -2,15 +2,16 @@
 
 Каталог::
 
-    launch.json                      ответ GET /api/launch/{id}
+    launch.json                      id и имя прогона
     results.json                     все результаты прогона, включая hidden
-    executions/<result_id>.json      GET /api/testresult/{id}/execution
-    details/<result_id>.json         GET /api/testresult/{id}
-    attachments/<result_id>.json     метаданные вложений результата
-    contents/<attachment_id>         байты вложения
+    executions/<result_id>.json      дерево шагов результата (корпус)
+    details/<result_id>.json         результат по id; у записанной кассеты — ответ MCP с
+                                     expand как есть (scenario, fixtures, attachments)
+    attachments/<result_id>.json     метаданные вложений результата (корпус)
+    contents/<attachment_id>         байты вложения (корпус)
 
 Поля — как у ``LaunchFixture`` (``tests/skill_fake_testops.py``); воспроизведение — через
-тот же ``FakeTestOps`` на ``httpx.MockTransport``.
+тот же ``FakeTestOps`` на ``httpx.MockTransport``: он отдаёт их по MCP.
 """
 
 from __future__ import annotations

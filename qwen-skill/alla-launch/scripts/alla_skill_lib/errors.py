@@ -1,8 +1,8 @@
 """Подсказки пользователю по типовым сбоям получения прогона из TestOps.
 
-Вендоренный клиент оборачивает сетевые ошибки в ``AllureApiError(0, …)`` и
-пишет для 404 общее «проверьте версию TestOps». Здесь по цепочке причин
-подбирается конкретное действие: какую переменную ``.env`` поправить.
+Клиент MCP оборачивает сетевые ошибки в ``AllureApiError(0, …)``, ответы MCP не по
+протоколу — в ``McpError``. Здесь по цепочке причин подбирается конкретное действие:
+какую переменную ``.env`` поправить.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 
 from alla_core.config import Settings
-from alla_core.exceptions import AllureApiError, AuthenticationError, PaginationLimitError
+from alla_core.exceptions import AllureApiError, AuthenticationError, McpError, PaginationLimitError
 
 
 def _chain(exc: BaseException) -> Iterator[BaseException]:
@@ -65,6 +65,19 @@ def fetch_error_hint(exc: BaseException, settings: Settings, env_file: Path) -> 
         return (
             f"Результатов больше лимита страниц. Увеличь ALLURE_MAX_PAGES{needed} "
             f"(сейчас {settings.max_pages}) или ALLURE_PAGE_SIZE в {env_file}."
+        )
+    mcp = next((item for item in causes if isinstance(item, McpError)), None)
+    if mcp is not None and mcp.reason in ("not_found", "no_tool"):
+        return (
+            f"MCP-сервер TestOps не найден по адресу {settings.mcp_endpoint} или в нём нет "
+            "поиска результатов. Нужен TestOps 26.2.1.8 или новее с включённым MCP; если "
+            f"сервер по другому адресу, задай ALLURE_MCP_URL в {env_file}."
+        )
+    if mcp is not None and mcp.reason == "transport":
+        return (
+            f"Сервер {settings.mcp_endpoint} не принимает Streamable HTTP. Проверь "
+            f"ALLURE_MCP_URL в {env_file}: нужен адрес встроенного MCP-сервера TestOps "
+            "(<адрес TestOps>/api/mcp)."
         )
     api = next((item for item in causes if isinstance(item, AllureApiError)), None)
     if api is not None and api.status_code == 404:

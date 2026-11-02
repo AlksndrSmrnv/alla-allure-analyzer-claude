@@ -43,15 +43,30 @@ from test_skill_flow import _prepare
 def test_server_serves_fixture_and_logs_requests(tmp_path: Path) -> None:
     log = tmp_path / "requests.jsonl"
     with FakeTestOpsServer(build_fixture("injection"), log_path=log) as server:
-        token = httpx.post(f"{server.endpoint}/api/uaa/oauth/token").json()
-        page = httpx.get(f"{server.endpoint}/api/testresult",
-                         params={"launchId": 780, "page": 0, "size": 100}).json()
-        content = httpx.get(f"{server.endpoint}/api/testresult/attachment/9001/content")
-    assert token["access_token"]
+        url = f"{server.endpoint}/api/mcp"
+        headers = {"Authorization": f"api-token {TOKEN}"}
+        init = httpx.post(url, headers=headers, json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}}})
+        headers["Mcp-Session-Id"] = init.headers["Mcp-Session-Id"]
+
+        def find(request_id: int, arguments: dict[str, object]) -> dict[str, object]:
+            reply = httpx.post(url, headers=headers, json={
+                "jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+                "params": {"name": "testops_find_testresults", "arguments": arguments}}).json()
+            return json.loads(reply["result"]["content"][0]["text"])
+
+        page = find(2, {"aql": "launch = 780", "page": 0, "size": 100})
+        full = find(3, {"aql": "id = 101", "expand": ["scenario", "fixtures", "attachments"]})
     assert INJECTED_INSTRUCTION in page["content"][0]["statusDetails"]["message"]
-    assert INJECTED_INSTRUCTION in content.text
-    methods = [json.loads(line)["method"] for line in log.read_text().splitlines()]
-    assert methods == ["POST", "GET", "GET"]
+    assert INJECTED_INSTRUCTION in full["content"][0]["attachments"]["9001"]["content"]
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [(entry["method"], entry["path"], entry.get("rpc"), entry.get("tool"))
+            for entry in entries] == [
+        ("POST", "/api/mcp", "initialize", None),
+        ("POST", "/api/mcp", "tools/call", "testops_find_testresults"),
+        ("POST", "/api/mcp", "tools/call", "testops_find_testresults"),
+    ]
 
 
 @pytest.mark.parametrize("spec", ["default", "green", "info_only", "injection", "scant", "mixed",

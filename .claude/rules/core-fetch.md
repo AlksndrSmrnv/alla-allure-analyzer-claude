@@ -9,6 +9,7 @@ paths:
   - "qwen-skill/alla-launch/tests/test_core_fetch.py"
   - "qwen-skill/alla-launch/tests/test_core_retries.py"
   - "qwen-skill/alla-launch/scripts/alla_core/clients/testops_client.py"
+  - "qwen-skill/alla-launch/scripts/alla_core/clients/mcp_client.py"
   - "qwen-skill/alla-launch/scripts/alla_core/exceptions.py"
   - "qwen-skill/alla-launch/scripts/alla_core/utils/text_normalization.py"
   - "qwen-skill/alla-launch/scripts/alla_core/services/log_extraction_service.py"
@@ -16,16 +17,17 @@ paths:
 
 # Ядро: сбор данных — выгрузка и триаж
 
-- `TriageReport.launch_created_ms` — `createdDate` прогона (`GET /api/launch/{id}`); `prepare`
+- `TriageReport.launch_created_ms` — `createdDate` прогона, а если сервер его не знает (MCP:
+  инструмента прогона нет) — самый ранний `createdDate` результатов; `prepare`
   пишет его в `run.json` как `launch_created` (ISO 8601, UTC). Нужен расширениям: `sut-code`
   по нему выбирает ревизию приложения, если инженер её не назвал.
 
 - **Полнота выгрузки** (`TriageReport.fetch`, `FetchInfo`; в `run.json` внутри `triage`,
   только числа). Результаты без повторов id (`_unique_results`: страницы идущего прогона
   сдвигаются); `results_reported` — `totalElements` последней страницы
-  (`AllureTestOpsClient.last_total_elements`, у фейковых провайдеров нет — `None`);
+  (`TestOpsMcpClient.last_total_elements`, у фейковых провайдеров нет — `None`);
   `execution_failed`/`detail_failed` — активные падения, чьё дерево шагов или запасной
-  `GET /api/testresult/{id}` не получены после повторов (у них может не быть сообщения и
+  запрос результата по id не получены после повторов (у них может не быть сообщения и
   шага — тест уйдёт не в ту проблему). `launch_closed` — поле `closed` прогона, `None` —
   TestOps его не прислал (тогда прогон идущим не считается). `fetch_warnings` — предупреждения
   прогона (`run.json` `warnings`, вывод `prepare`, отчёт) с командой `prepare <id> --fresh`:
@@ -51,7 +53,7 @@ paths:
 - Попытки активного падения — `FailedTestSummary.attempts` (`AttemptSummary`: id, статус,
   первая строка ошибки до 300 символов, `same_as_final`), последние 5; более ранние —
   число в `attempts_omitted`. Ошибка — из `statusDetails` списка (message, затем trace,
-  затем верхний `trace`), иначе `GET /api/testresult/{id}` с параллелизмом
+  затем верхний `trace`), иначе запрос результата по id (MCP, без expand) с параллелизмом
   `ALLURE_DETAIL_CONCURRENCY` и потолком `ALLURE_RETRY_MAX_DETAIL_REQUESTS` на прогон (по
   порядку падений; не запрошенные — `errors_capped`). «Та же ошибка» —
   `text_normalization.message_key` сообщения целиком (до 20 строк; нет сообщения — трейс без
@@ -69,12 +71,13 @@ paths:
   (ошибка только из списка, без запросов). Попытки не участвуют в сигнатуре и кластеризации.
 - muted failed/broken считаются отдельно и в активные кластеры не попадают.
 - Ошибка берётся из execution tree, затем из `statusDetails`, затем fallback
-  `GET /api/testresult/{id}` — для каждого падения **без трейса**, даже если сообщение есть
+  запрос результата по id — для каждого падения **без трейса**, даже если сообщение есть
   (в списке трейса обычно нет: общий ассерт о коде ответа оставался без стека с причиной и
   местом падения — ревью Codex); сообщение из него — только если своего не было.
 - Логи — из processable attachments: text, JSON, XML, NDJSON и unknown text-like. Binary
   пропускаются.
-- Изображения (`services/image_attachments.py`) не скачиваются при извлечении логов:
+- Изображения (`services/image_attachments.py`) не берутся при извлечении логов (содержимое
+  приходит в ответе MCP вместе с результатом, но в задание идёт позже и не всё):
   `enrich_with_logs` записывает их метаданные в `FailedTestSummary.image_attachments`
   (`ImageAttachmentRef`, `exclude=True`, в `run.json` не пишутся). Изображение — MIME
   `image/png|jpeg|gif|webp`, без MIME — расширение; SVG — нет (текст, может нести скрипт).

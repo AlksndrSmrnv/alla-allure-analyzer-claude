@@ -15,7 +15,7 @@ from alla_core.models.testops import (
 class TestResultsProvider(Protocol):
     """Протокол, определяющий контракт любого источника данных о результатах тестов.
 
-    Реализация — AllureTestOpsClient (HTTP API Allure TestOps); в тестах — фейковые провайдеры.
+    Реализация — TestOpsMcpClient (MCP-сервер Allure TestOps); в тестах — фейковые провайдеры.
     """
 
     async def get_launch(self, launch_id: int) -> LaunchResponse:
@@ -25,7 +25,7 @@ class TestResultsProvider(Protocol):
     async def get_test_result_detail(
         self, test_result_id: int,
     ) -> TestResultResponse:
-        """Получить детальный результат теста по ID (GET /api/testresult/{id})."""
+        """Получить детальный результат теста по ID (с ``trace``)."""
         ...
 
     async def get_test_result_execution(
@@ -56,9 +56,8 @@ class AttachmentProvider(Protocol):
 
     Отделён от TestResultsProvider: фейковые провайдеры в тестах вложений не знают.
 
-    Реализации:
-    - AllureTestOpsClient: GET /api/testresult/attachment?testResultId={id}
-                           GET /api/testresult/attachment/{id}/content
+    Реализация — TestOpsMcpClient: вложения с содержимым приходят в ответе результата
+    (``testops_find_testresults``, expand ``attachments``).
     """
 
     async def get_attachments_for_test_result(

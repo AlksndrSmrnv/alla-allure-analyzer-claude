@@ -248,8 +248,9 @@ def test_bad_token_gets_a_hint(project: Path, monkeypatch, capsys) -> None:
 
 
 def test_unknown_launch_gets_a_hint(project: Path, testops: FakeTestOps, capsys) -> None:
+    # По MCP несуществующий прогон не отличить от пустого: оба — без результатов.
     code, out = _run(["prepare", "999", "--project-root", str(project)], capsys)
-    assert code == 1 and "Запуск не найден" in out
+    assert code == 1 and "нет ни одного результата" in out and "Проверь номер запуска" in out
 
 
 def _settings() -> Settings:

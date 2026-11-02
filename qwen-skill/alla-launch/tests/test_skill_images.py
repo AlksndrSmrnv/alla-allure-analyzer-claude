@@ -111,14 +111,15 @@ def test_ambiguous_name_leaves_the_step_unknown() -> None:
     assert [(ref.step, ref.failed_step) for ref in single] == [("Оплатить", True)]
 
 
-def test_log_extraction_records_images_without_downloading_them(
+def test_only_the_failed_step_screenshot_is_staged(
     project: Path, shop: FakeTestOps, capsys,
 ) -> None:
     run_dir, _run, _out = _prepare(project, capsys, launch_id=791)
-    downloaded = [path for _method, path in shop.requests if path.endswith("/content")]
-    # Скачан только скриншот упавшего шага: ни раннего скриншота, ни SVG, ни картинки без
-    # MIME (фильтр логов пропускает вложения без MIME — изображения из него исключены).
-    assert downloaded == ["/api/testresult/attachment/9401/content"]
+    # Вложения приходят в одном ответе MCP с результатом; в задание попадает только скриншот
+    # упавшего шага: ни раннего скриншота, ни SVG, ни картинки без MIME (фильтр логов
+    # пропускает вложения без MIME — изображения из него исключены).
+    staged = sorted(path.name for path in (run_dir / "images").rglob("*") if path.is_file())
+    assert staged == ["401.png"]
     assert (run_dir / "images" / "01" / "401.png").read_bytes() == tiny_png(3, 3)
 
 

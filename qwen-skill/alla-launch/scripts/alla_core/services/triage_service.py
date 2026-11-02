@@ -168,6 +168,11 @@ def _unique_results(
     return unique
 
 
+def _earliest_created(results: list[TestResultResponse]) -> int | None:
+    """Время самого раннего результата — вместо времени прогона, если сервер его не знает (MCP)."""
+    return min((r.created_date for r in results if r.created_date), default=None)
+
+
 def fetch_warnings(info: FetchInfo, launch_id: int) -> list[str]:
     """Предупреждения о неполной выгрузке: прогон идёт, результаты потерялись, данные тестов."""
     again = f"разберите прогон заново позже: prepare {launch_id} --fresh"
@@ -215,12 +220,12 @@ class TriageService:
         """Получить результаты тестов для запуска и сформировать отчёт триажа.
 
         Шаги:
-            1. Получить метаданные запуска (имя, статус закрытия).
+            1. Получить метаданные запуска (имя; статус закрытия, если сервер его знает).
             2. Получить все результаты тестов для запуска (пагинация).
             3. Подсчитать результаты по статусам.
             4. Получить execution-шаги для упавших/сломанных тестов.
             5. Создать FailedTestSummary для каждого упавшего/сломанного теста.
-            5.5. Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}.
+            5.5. Fallback: для тестов без ошибки — запросить результат по id (MCP).
             6. Вернуть TriageReport.
         """
         # 1. Метаданные запуска
@@ -268,7 +273,7 @@ class TriageService:
             for r, steps in failures_with_execution
         ]
 
-        # 5.5. Fallback: для тестов без ошибки — запросить GET /api/testresult/{id}
+        # 5.5. Fallback: для тестов без ошибки — запросить результат по id (MCP)
         await self._fetch_missing_traces(failed_tests, fetch)
 
         # 5.6. Попытки активных падений с ошибками и прошедшие после повтора
@@ -278,7 +283,7 @@ class TriageService:
             launch_id=launch_id,
             launch_name=launch.name,
             project_id=launch.project_id,
-            launch_created_ms=launch.created_date,
+            launch_created_ms=launch.created_date or _earliest_created(all_results),
             total_results=len(results),
             passed_count=status_counts.get(TestStatus.PASSED, 0),
             failed_count=status_counts.get(TestStatus.FAILED, 0),
@@ -313,9 +318,9 @@ class TriageService:
     ) -> list[tuple[TestResultResponse, list[ExecutionStep]]]:
         """Получить execution-шаги для упавших/сломанных тестов параллельно.
 
-        Вызывает ``GET /api/testresult/{id}/execution`` для каждого упавшего
-        теста. Именно этот эндпоинт содержит ``statusDetails`` с сообщениями
-        об ошибках и стек-трейсами. Семафор ограничивает параллелизм.
+        Запрашивает результат с деревом шагов (MCP, expand ``scenario``) для каждого
+        упавшего теста: в шагах — ``statusDetails`` с сообщениями об ошибках и
+        стек-трейсами. Семафор ограничивает параллелизм.
 
         Возвращает список пар (TestResultResponse, list[ExecutionStep]).
         """
@@ -378,7 +383,7 @@ class TriageService:
         if isinstance(execution_result, BaseException):
             logger.warning(
                 "Не удалось получить execution для результата теста %d: %s. "
-                "Ошибка может быть получена через fallback (GET /api/testresult/{id}).",
+                "Ошибка может быть получена через fallback (результат по id (MCP)).",
                 result.id,
                 execution_result,
             )
@@ -390,12 +395,12 @@ class TriageService:
         summaries: list[FailedTestSummary],
         fetch: FetchInfo | None = None,
     ) -> None:
-        """Fallback: для тестов без трейса — запросить GET /api/testresult/{id}.
+        """Fallback: для тестов без трейса — запросить результат по id (MCP).
 
         Некоторые тесты имеют все execution steps в статусе passed, а в пагинированном
         списке ``trace`` обычно пустой: и при сообщении из списка (общий ассерт о коде
-        ответа) трейс с причиной и местом падения доступен только на индивидуальном
-        эндпоинте ``GET /api/testresult/{id}``.
+        ответа) трейс с причиной и местом падения доступен только в запросе одного
+        результата по id (MCP).
 
         Мутирует объекты summaries in-place: заполняет status_trace, а status_message —
         только если его не было.
@@ -405,7 +410,7 @@ class TriageService:
             return
 
         logger.info(
-            "Fallback: %d тестов без trace, запрос GET /api/testresult/{id} для каждого",
+            "Fallback: %d тестов без trace, запрос результат по id (MCP) для каждого",
             len(missing),
         )
 
@@ -441,7 +446,7 @@ class TriageService:
                     _diagnostic_text(details.get("message")) or _first_line(trace)
                 )
             logger.debug(
-                "Fallback: получен trace для теста %d из GET /api/testresult/{id}",
+                "Fallback: получен trace для теста %d из результат по id (MCP)",
                 summary.test_result_id,
             )
 
@@ -455,7 +460,7 @@ class TriageService:
         """Заполнить ``attempts`` активных падений и найти прошедшие после повтора.
 
         Ошибка попытки — из ``statusDetails`` списка результатов; нет её там — из
-        ``GET /api/testresult/{id}``, не больше ``retry_max_detail_requests`` запросов на
+        результат по id (MCP), не больше ``retry_max_detail_requests`` запросов на
         прогон (по порядку падений). Берутся последние :data:`MAX_ATTEMPTS_PER_TEST`
         попыток теста. Сбой запроса — ошибка попытки неизвестна, разбор продолжается.
         """
@@ -489,7 +494,7 @@ class TriageService:
         info.errors_capped = len(pending) - len(allowed)
         if allowed:
             logger.info(
-                "Ошибки повторов: запрос GET /api/testresult/{id} для %d попыток", len(allowed),
+                "Ошибки повторов: запрос результат по id (MCP) для %d попыток", len(allowed),
             )
         semaphore = asyncio.Semaphore(self._detail_concurrency)
 
@@ -679,9 +684,9 @@ class TriageService:
 
         Извлечение ошибки — двухуровневый fallback (третий уровень
         обрабатывается позже в ``_fetch_missing_traces``):
-            1. Из execution-шагов (дерево шагов ``GET /api/testresult/{id}/execution``).
+            1. Из execution-шагов (дерево шагов результат с деревом шагов (MCP, expand ``scenario``)).
             2. Из ``statusDetails`` результата (пагинированный список).
-            3. (позже) Из ``trace`` индивидуального результата (``GET /api/testresult/{id}``).
+            3. (позже) Из ``trace`` индивидуального результата (результат по id (MCP)).
         """
         # Попытка 1: извлечь ошибку из execution-шагов
         status_message, status_trace, failed_step_path = self._find_failure_details_in_steps(

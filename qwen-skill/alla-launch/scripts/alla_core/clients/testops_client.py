@@ -1,191 +1,31 @@
-"""Реализация HTTP-клиента Allure TestOps."""
+"""REST-клиент Allure TestOps — только запись статуса результата (resolve).
 
-import asyncio
+Читает скилл через MCP (``clients/mcp_client.py``): REST API у пользователей закрыт. Здесь
+осталась единственная запись, которой в MCP нет, — статус passed после перезапуска
+(``ALLURE_RERUN_RESOLVE``, по умолчанию выключено): на случай, когда REST открыт.
+"""
+
 import logging
 from typing import Any
 
 import httpx
 
 from alla_core.clients.auth import AllureAuthManager
-from alla_core.clients.retry import RETRY_STATUSES, header, retry_delay
 from alla_core.config import Settings
-from alla_core.exceptions import AllureApiError, PaginationLimitError
-from alla_core.models.common import PageResponse
-from alla_core.models.testops import AttachmentMeta, ExecutionStep, LaunchResponse, TestResultResponse
+from alla_core.exceptions import AllureApiError
 
 logger = logging.getLogger(__name__)
 
-# chunks, total_bytes, capped, status_code, body_preview, retry_after
-_StreamResult = tuple[list[bytes], int, bool, int, str, object]
-
 
 class AllureTestOpsClient:
-    """HTTP-клиент для REST API Allure TestOps.
+    """REST-клиент TestOps для ``POST /api/testresult/{id}/resolve``."""
 
-    Реализует протокол :class:`~alla_core.clients.base.TestResultsProvider`.
-
-    Пути эндпоинтов — атрибуты класса, чтобы их можно было переопределить,
-    если целевая версия Allure TestOps использует другую структуру API.
-    """
-
-    LAUNCH_ENDPOINT = "/api/launch"
     TESTRESULT_ENDPOINT = "/api/testresult"
-    ATTACHMENT_ENDPOINT = "/api/testresult/attachment"
 
     def __init__(self, settings: Settings, auth_manager: AllureAuthManager) -> None:
         self._endpoint = str(settings.endpoint).rstrip("/")
         self._auth = auth_manager
-        self._page_size = settings.page_size
-        self._max_pages = settings.max_pages
-        self._max_attachment_bytes = settings.logs_max_attachment_bytes
-        self._retries = settings.http_retries
-        self.last_total_elements: int | None = None
-        self._sleep = asyncio.sleep  # подменяется в тестах
         self._http = httpx.AsyncClient(timeout=settings.request_timeout)
-
-    # --- Публичный API (протокол TestResultsProvider) ---
-
-    async def get_launch(self, launch_id: int) -> LaunchResponse:
-        """Получить метаданные запуска по ID.
-
-        ``GET /api/launch/{id}``
-        """
-        data = await self._request("GET", f"{self.LAUNCH_ENDPOINT}/{launch_id}")
-        return LaunchResponse.model_validate(data)
-
-    async def get_test_result_detail(
-        self, test_result_id: int,
-    ) -> TestResultResponse:
-        """Получить детальный результат теста по ID.
-
-        ``GET /api/testresult/{id}``
-
-        Используется как fallback для получения top-level ``trace``, когда
-        execution steps и statusDetails из пагинированного списка не содержат
-        информации об ошибке.
-        """
-        data = await self._request(
-            "GET", f"{self.TESTRESULT_ENDPOINT}/{test_result_id}",
-        )
-        return TestResultResponse.model_validate(data)
-
-    async def get_test_result_execution(
-        self, test_result_id: int,
-    ) -> list[ExecutionStep]:
-        """Получить дерево шагов выполнения теста.
-
-        ``GET /api/testresult/{id}/execution``
-
-        Возвращает список корневых шагов (execution steps) с вложенными
-        ``steps``, ``statusDetails`` (сообщение об ошибке и стек-трейс),
-        ``attachments`` и другими деталями исполнения.
-        """
-        data = await self._request(
-            "GET", f"{self.TESTRESULT_ENDPOINT}/{test_result_id}/execution",
-        )
-        logger.debug(
-            "Ответ выполнения для результата теста %d: тип=%s, данные=%s",
-            test_result_id,
-            type(data).__name__,
-            str(data)[:2000],
-        )
-        # Ответ — JSON-массив шагов
-        if isinstance(data, list):
-            return [ExecutionStep.model_validate(step) for step in data]
-        # API может вернуть объект-обёртку {"steps": [...], "statusDetails": {...}, ...}
-        # Wrapper парсится в ExecutionStep, сохраняя и свои данные об ошибке,
-        # и вложенные steps. _find_failure_in_steps обойдёт дерево рекурсивно.
-        if isinstance(data, dict):
-            wrapper = ExecutionStep.model_validate(data)
-            if wrapper.status_details or wrapper.message or wrapper.trace or wrapper.steps:
-                return [wrapper]
-            # Fallback: попытка извлечь шаги из ключа "content"
-            content_raw = data.get("content")
-            if isinstance(content_raw, list):
-                return [ExecutionStep.model_validate(step) for step in content_raw]
-            return [wrapper]
-        return []
-
-    async def get_test_results_for_launch(
-        self,
-        launch_id: int,
-        page: int = 0,
-        size: int | None = None,
-    ) -> PageResponse[TestResultResponse]:
-        """Получить одну страницу результатов тестов для заданного запуска.
-
-        ``GET /api/testresult?launchId={id}&page={page}&size={size}``
-        """
-        params: dict[str, Any] = {
-            "launchId": launch_id,
-            "page": page,
-            "size": size or self._page_size,
-        }
-        data = await self._request("GET", self.TESTRESULT_ENDPOINT, params=params)
-        return PageResponse[TestResultResponse].model_validate(data)
-
-    async def get_all_test_results_for_launch(
-        self, launch_id: int,
-    ) -> list[TestResultResponse]:
-        """Получить ВСЕ результаты тестов для запуска, итерируя по страницам.
-
-        Останавливается, когда все страницы получены или достигнут защитный
-        лимит ``max_pages``.
-        """
-        all_results: list[TestResultResponse] = []
-        page = 0
-
-        while True:
-            page_resp = await self.get_test_results_for_launch(
-                launch_id, page=page, size=self._page_size,
-            )
-            all_results.extend(page_resp.content)
-            # Сколько результатов TestOps насчитал к последней странице: у идущего прогона
-            # число растёт, и сверка с полученным показывает, что выгрузка неполная.
-            self.last_total_elements = page_resp.total_elements
-            if page == 0 and page_resp.total_pages > self._max_pages:
-                # Сразу, а не после max_pages запросов: исход тот же, а ждать минуты незачем.
-                raise PaginationLimitError(
-                    f"В прогоне {page_resp.total_elements} результатов "
-                    f"({page_resp.total_pages} страниц по {self._page_size}), "
-                    f"лимит — {self._max_pages} страниц.",
-                    pages_needed=page_resp.total_pages,
-                )
-
-            logger.debug(
-                "Получена страница %d/%d (пока собрано %d результатов)",
-                page + 1,
-                page_resp.total_pages,
-                len(all_results),
-            )
-
-            if page + 1 >= page_resp.total_pages:
-                break
-
-            page += 1
-            if page >= self._max_pages:
-                logger.warning(
-                    "Достигнут лимит max_pages (%d). Получено %d/%d результатов.",
-                    self._max_pages,
-                    len(all_results),
-                    page_resp.total_elements,
-                )
-                raise PaginationLimitError(
-                    f"Превышен max_pages={self._max_pages}. "
-                    f"Получено {len(all_results)}/{page_resp.total_elements} "
-                    f"результатов. Увеличьте ALLURE_MAX_PAGES при необходимости.",
-                    pages_needed=page_resp.total_pages,
-                )
-
-        logger.info(
-            "Получено %d результатов тестов для запуска %d (%d страниц)",
-            len(all_results),
-            launch_id,
-            page + 1,
-        )
-        return all_results
-
-    # --- Запись (единственная): статус результата после перезапуска ---
 
     async def resolve_test_result(
         self, test_result_id: int, status: str, message: str,
@@ -195,14 +35,11 @@ class AllureTestOpsClient:
         ``POST /api/testresult/{id}/resolve`` с ``ResolveRequestV2Dto`` (OpenAPI 26.1.1),
         ответ ``202`` — строка результата (``TestResultRowDto``: ``id``, ``status``…). Запрос
         на один id, а не ``bulk/resolve``: выборка дерева при ошибке задела бы лишние
-        результаты. Не повторяется (``_may_retry`` — только GET). Успех — только 2xx:
-        перенаправление (прокси, страница входа) статус не меняло, хотя и не ошибка HTTP.
-        Тело пустое или не JSON — ``{}``.
+        результаты. Не повторяется: запись. Успех — только 2xx: перенаправление (прокси,
+        страница входа) статус не меняло, хотя и не ошибка HTTP. Тело пустое или не JSON — ``{}``.
         """
         path = f"{self.TESTRESULT_ENDPOINT}/{test_result_id}/resolve"
-        resp = await self._send_with_auth_retry(
-            "POST", path, json={"status": status, "message": message},
-        )
+        resp = await self._send("POST", path, json={"status": status, "message": message})
         if 300 <= resp.status_code < 400:
             raise AllureApiError(resp.status_code, "перенаправление: запрос не дошёл до TestOps", path)
         if not 200 <= resp.status_code < 300:
@@ -213,338 +50,29 @@ class AllureTestOpsClient:
             return {}
         return data if isinstance(data, dict) else {}
 
-    # --- Аттачменты (протокол AttachmentProvider) ---
-
-    async def get_attachments_for_test_result(
-        self,
-        test_result_id: int,
-    ) -> list[AttachmentMeta]:
-        """Получить список аттачментов для результата теста.
-
-        ``GET /api/testresult/attachment?testResultId={id}&size=1000``
-        """
-        params = {
-            "testResultId": test_result_id,
-            "size": 1000,  # Достаточно большой размер для получения всех аттачментов
-        }
-        logger.debug(
-            "Получение списка аттачментов для результата теста %d",
-            test_result_id,
-        )
-        data = await self._request("GET", self.ATTACHMENT_ENDPOINT, params=params)
-
-        content = data.get("content", []) if isinstance(data, dict) else []
-        attachments = [AttachmentMeta.model_validate(item) for item in content]
-
-        logger.debug(
-            "Получено %d аттачментов для результата теста %d",
-            len(attachments),
-            test_result_id,
-        )
-        return attachments
-
-    async def get_attachment_content(
-        self,
-        attachment_id: int,
-        *,
-        max_bytes: int | None = None,
-    ) -> bytes:
-        """Скачать бинарное содержимое аттачмента.
-
-        ``GET /api/testresult/attachment/{id}/content``
-
-        Контент стримится чанками и обрезается на ``max_bytes`` (по умолчанию
-        ``logs_max_attachment_bytes``), чтобы под не падал с OOM при больших логах.
-        У изображений свой потолок (``images_max_bytes``).
-        """
-        logger.debug("Скачивание аттачмента %d", attachment_id)
-        return await self._request_raw(
-            "GET",
-            f"{self.ATTACHMENT_ENDPOINT}/{attachment_id}/content",
-            max_bytes=self._max_attachment_bytes if max_bytes is None else max_bytes,
-        )
-
-    # --- Внутренний HTTP ---
-
-    def _may_retry(self, method: str, attempt: int) -> bool:
-        """Повторять только чтение (GET идемпотентен) и не больше ``http_retries`` раз."""
-        return method.upper() == "GET" and attempt < self._retries
-
-    async def _pause_before_retry(
-        self, method: str, path: str, attempt: int, reason: str, retry_after: object,
-    ) -> None:
-        delay = retry_delay(retry_after, attempt)
-        logger.warning(
-            "TestOps: %s %s — %s, повтор %d из %d через %.0f с",
-            method, path, reason, attempt + 1, self._retries, delay,
-        )
-        await self._sleep(delay)
-
-    async def _send_with_auth_retry(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: dict[str, Any] | None = None,
-        json: dict[str, Any] | None = None,
+    async def _send(
+        self, method: str, path: str, *, json: dict[str, Any] | None = None,
     ) -> httpx.Response:
-        """Выполнить запрос с повторами при временных сбоях.
+        """Запрос с заголовком авторизации и одноразовым повтором при 401 (JWT истёк).
 
-        Сетевой сбой и ответы ``RETRY_STATUSES`` у GET повторяются до ``http_retries``
-        раз с паузой (``Retry-After`` или 1, 2, 4… с): один 502 балансировщика или 429 не
-        должен обрывать выгрузку прогона. Последний сетевой сбой — ``AllureApiError(0, ...)``,
-        последний ответ со статусом отдаётся как есть: вызывающий код сам решает, какие
-        статусы считать ошибками.
-        """
-        attempt = 0
-        while True:
-            try:
-                resp = await self._send_once(method, path, params=params, json=json)
-            except AllureApiError as exc:
-                if exc.status_code != 0 or not self._may_retry(method, attempt):
-                    raise
-                await self._pause_before_retry(method, path, attempt, "сбой сети", None)
-            else:
-                if resp.status_code not in RETRY_STATUSES or not self._may_retry(method, attempt):
-                    return resp
-                await self._pause_before_retry(
-                    method, path, attempt, f"HTTP {resp.status_code}",
-                    header(resp, "Retry-After"),
-                )
-            attempt += 1
-
-    async def _send_once(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: dict[str, Any] | None = None,
-        json: dict[str, Any] | None = None,
-    ) -> httpx.Response:
-        """Одна попытка запроса с auth-header и одноразовым повтором при 401.
-
-        Транслирует ``httpx.RequestError`` в ``AllureApiError(0, ...)`` как на
-        первой, так и на повторной попытке.
+        ``httpx.RequestError`` — ``AllureApiError(0, ...)``.
         """
         url = f"{self._endpoint}{path}"
         auth_header = await self._auth.get_auth_header()
-
         try:
-            resp = await self._http.request(
-                method, url, params=params, json=json, headers=auth_header,
-            )
+            resp = await self._http.request(method, url, json=json, headers=auth_header)
         except httpx.RequestError as exc:
             raise AllureApiError(0, str(exc), path) from exc
-
         if resp.status_code == 401:
             logger.debug("Получен 401, выполняем повторную аутентификацию и повтор запроса")
             failed_token = auth_header.get("Authorization", "").removeprefix("Bearer ")
             self._auth.invalidate(failed_token=failed_token)
             auth_header = await self._auth.get_auth_header()
             try:
-                resp = await self._http.request(
-                    method, url, params=params, json=json, headers=auth_header,
-                )
+                resp = await self._http.request(method, url, json=json, headers=auth_header)
             except httpx.RequestError as exc:
                 raise AllureApiError(0, str(exc), path) from exc
-
         return resp
-
-    async def _request_raw(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: dict[str, Any] | None = None,
-        max_bytes: int | None = None,
-    ) -> bytes:
-        """Выполнить аутентифицированный HTTP-запрос, возвращая сырые байты.
-
-        Используется для скачивания аттачментов (бинарные файлы, текстовые логи).
-        Ответ читается чанками; если задан ``max_bytes`` и контент превышает
-        лимит — лишнее отбрасывается, в лог пишется warning. Это защищает
-        память пода от очень больших логов.
-        """
-        logger.debug(
-            "HTTP raw запрос (stream): %s %s%s max_bytes=%s",
-            method, self._endpoint, path, max_bytes,
-        )
-        url = f"{self._endpoint}{path}"
-        attempt = 0
-        while True:
-            try:
-                chunks, total, capped, status, body_preview, retry_after = (
-                    await self._stream_with_auth_retry(method, url, params, max_bytes, path)
-                )
-            except AllureApiError as exc:
-                if exc.status_code != 0 or not self._may_retry(method, attempt):
-                    raise
-                await self._pause_before_retry(method, path, attempt, "сбой сети", None)
-            else:
-                if status not in RETRY_STATUSES or not self._may_retry(method, attempt):
-                    break
-                await self._pause_before_retry(
-                    method, path, attempt, f"HTTP {status}", retry_after,
-                )
-            attempt += 1
-
-        if status == 404:
-            raise AllureApiError(
-                404,
-                f"Аттачмент не найден. Проверьте Swagger UI: "
-                f"{self._endpoint}/swagger-ui.html",
-                path,
-            )
-
-        if status >= 400:
-            raise AllureApiError(status, body_preview, path)
-
-        if capped:
-            logger.warning(
-                "Аттачмент %s обрезан: прочитано %d байт, превышен лимит %d",
-                path, total, max_bytes,
-            )
-
-        return b"".join(chunks)
-
-    async def _stream_with_auth_retry(
-        self,
-        method: str,
-        url: str,
-        params: dict[str, Any] | None,
-        max_bytes: int | None,
-        path: str,
-    ) -> _StreamResult:
-        """Одна попытка streaming-запроса с одноразовым повтором при 401."""
-        auth_header = await self._auth.get_auth_header()
-        result = await self._stream_attempt(method, url, params, auth_header, max_bytes, path)
-        if result[3] == 401:
-            logger.debug("Получен 401 (stream), reauth и повтор")
-            failed_token = auth_header.get("Authorization", "").removeprefix("Bearer ")
-            self._auth.invalidate(failed_token=failed_token)
-            auth_header = await self._auth.get_auth_header()
-            result = await self._stream_attempt(
-                method, url, params, auth_header, max_bytes, path,
-            )
-        return result
-
-    async def _stream_attempt(
-        self,
-        method: str,
-        url: str,
-        params: dict[str, Any] | None,
-        headers: dict[str, str],
-        max_bytes: int | None,
-        path: str,
-    ) -> _StreamResult:
-        """Одна попытка streaming-запроса. Возвращает кортеж
-        ``(chunks, total_bytes, capped, status_code, body_preview, retry_after)``;
-        ``retry_after`` — заголовок ``Retry-After`` ответа с ошибкой.
-
-        ``httpx.RequestError`` транслируется в ``AllureApiError(0, ...)``.
-        Для статусов 4xx/5xx тело **не** читается целиком: берётся первые
-        ~1 KiB (см. ``ERROR_BODY_PREVIEW_BYTES``), декодируется и режется
-        до ≤500 символов в ``body_preview``. Так error-путь не обходит
-        memory cap, действующий для успешного ответа.
-        """
-        # Маленький cap на тело ошибки. Прокси/балансировщики или сам TestOps
-        # могут отдать огромную HTML-страницу/JSON на 5xx; нельзя позволить
-        # error-пути обойти memory cap, который мы только что ввели для успешного.
-        # 1 KiB более чем достаточно для понятного сообщения об ошибке
-        # (decode → срез ≤500 символов далее).
-        ERROR_BODY_PREVIEW_BYTES = 1024
-
-        try:
-            async with self._http.stream(
-                method, url, params=params, headers=headers,
-            ) as resp:
-                status = resp.status_code
-                if status >= 400:
-                    preview_buf = bytearray()
-                    async for chunk in resp.aiter_bytes():
-                        remaining = ERROR_BODY_PREVIEW_BYTES - len(preview_buf)
-                        if remaining <= 0:
-                            break
-                        preview_buf.extend(chunk[:remaining])
-                        if len(preview_buf) >= ERROR_BODY_PREVIEW_BYTES:
-                            break
-                    preview = bytes(preview_buf).decode("utf-8", errors="replace")[:500]
-                    return [], 0, False, status, preview, header(resp, "Retry-After")
-
-                chunks: list[bytes] = []
-                total = 0
-                capped = False
-                async for chunk in resp.aiter_bytes():
-                    if max_bytes is not None and total + len(chunk) > max_bytes:
-                        remaining = max_bytes - total
-                        if remaining > 0:
-                            chunks.append(chunk[:remaining])
-                            total += remaining
-                        capped = True
-                        break
-                    chunks.append(chunk)
-                    total += len(chunk)
-                return chunks, total, capped, status, "", None
-        except httpx.RequestError as exc:
-            raise AllureApiError(0, str(exc), path) from exc
-
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: dict[str, Any] | None = None,
-        json: dict[str, Any] | None = None,
-        expect_json: bool = True,
-    ) -> Any:
-        """Выполнить аутентифицированный HTTP-запрос с повтором при 401.
-
-        Возвращает десериализованный JSON (dict или list в зависимости от эндпоинта).
-        Если ``expect_json=False``, пустое тело ответа возвращается как ``None``
-        (для write-операций, которые могут вернуть 204 No Content).
-        """
-        logger.debug(
-            "HTTP-запрос: %s %s%s параметры=%s json=%s",
-            method, self._endpoint, path, params, json,
-        )
-        resp = await self._send_with_auth_retry(method, path, params=params, json=json)
-
-        logger.debug(
-            "HTTP-ответ: %s %s status=%d content_length=%d",
-            method, path, resp.status_code, len(resp.content),
-        )
-
-        if resp.status_code == 404:
-            raise AllureApiError(
-                404,
-                f"Эндпоинт не найден. Проверьте версию Allure TestOps. "
-                f"Swagger UI: {self._endpoint}/swagger-ui.html",
-                path,
-            )
-
-        if resp.status_code >= 400:
-            body_text = resp.text[:500]
-            raise AllureApiError(resp.status_code, body_text, path)
-
-        if not resp.content:
-            if not expect_json:
-                return None
-            raise AllureApiError(
-                resp.status_code,
-                "Ответ не содержит тела (пустой content)",
-                path,
-            )
-
-        try:
-            return resp.json()
-        except Exception as exc:
-            raise AllureApiError(
-                resp.status_code,
-                f"Ответ не является валидным JSON: {resp.text[:200]}",
-                path,
-            ) from exc
-
-    # --- Жизненный цикл ---
 
     async def close(self) -> None:
         """Освободить ресурсы HTTP-клиента и менеджера аутентификации."""

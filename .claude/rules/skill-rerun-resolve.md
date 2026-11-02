@@ -10,8 +10,11 @@ paths:
 
 - Решения пользователя (2026-10-26): passed ставится и нестабильным, и «проверке правки»
   (прошли на изменённом коде); согласие — **один вопрос** вместе с базой знаний и одна команда
-  `--remember --result <job>` на обе записи; включено по умолчанию, выключает
-  `ALLURE_RERUN_RESOLVE=false` (тогда в вопросе части о TestOps нет).
+  `--remember --result <job>` на обе записи. С 2026-11-02 **выключено по умолчанию**
+  (`ALLURE_RERUN_RESOLVE=false`, тогда в вопросе части о TestOps нет): запись идёт через REST
+  API, а у пользователей открыт только MCP, где смены статуса нет; код оставлен по решению
+  пользователя («оставить выключенным») на случай открытого REST. Тесты `test_skill_rerun.py`
+  включают её фикстурой, стенд F01/F02 — строкой `ALLURE_RERUN_RESOLVE=true` в `.env`.
 - Запрос — `AllureTestOpsClient.resolve_test_result`: `POST /api/testresult/{id}/resolve`,
   тело `{"status": "passed", "message": …}` (`ResolveRequestV2Dto`, OpenAPI TestOps 26.1.1 из
   github.com/MimoJanra/TestOpsMCP, `spec/testops.json`), ответ 202 со строкой результата. Не

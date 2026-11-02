@@ -29,8 +29,10 @@ class Settings:
 
     endpoint: str = ""
     token: str = field(default="", repr=False)
+    # Адрес MCP-сервера TestOps; пусто — встроенный ``<endpoint>/api/mcp``.
+    mcp_url: str = ""
     request_timeout: int = 30
-    # Повторы GET при 429/502/503/504 и сетевых сбоях (пауза 1, 2, 4… с или Retry-After).
+    # Повторы запросов при 429/502/503/504 и сетевых сбоях (пауза 1, 2, 4… с или Retry-After).
     http_retries: int = 3
     page_size: int = 100
     # 200 страниц по 100 — 20 000 результатов вместе со скрытыми повторами.
@@ -60,7 +62,8 @@ class Settings:
     rerun_timeout: int = 1800
     rerun_maven_args: str = ""
     # Прошедшим при перезапуске — статус passed в прогоне TestOps (после «да» пользователя).
-    rerun_resolve: bool = True
+    # Выключено: запись идёт через REST API, а у пользователей открыт только MCP (в нём её нет).
+    rerun_resolve: bool = False
 
     @classmethod
     def load(
@@ -89,6 +92,11 @@ class Settings:
         settings = cls(**kwargs)  # type: ignore[arg-type]
         settings.validate(require_testops=require_testops)
         return settings
+
+    @property
+    def mcp_endpoint(self) -> str:
+        """Адрес MCP-сервера TestOps: ``ALLURE_MCP_URL`` или ``<ALLURE_ENDPOINT>/api/mcp``."""
+        return self.mcp_url.strip() or self.endpoint.strip().rstrip("/") + "/api/mcp"
 
     @property
     def operation_keys(self) -> tuple[str, ...]:
@@ -127,6 +135,11 @@ class Settings:
         if not endpoint.startswith(("http://", "https://")):
             raise ConfigurationError(
                 f"ALLURE_ENDPOINT должен начинаться с http:// или https://, получено: {endpoint!r}"
+            )
+        mcp_url = self.mcp_url.strip()
+        if mcp_url and not mcp_url.startswith(("http://", "https://")):
+            raise ConfigurationError(
+                f"ALLURE_MCP_URL должен начинаться с http:// или https://, получено: {mcp_url!r}"
             )
         if not self.token.strip():
             raise ConfigurationError("Не задан ALLURE_TOKEN — API-токен Allure TestOps")

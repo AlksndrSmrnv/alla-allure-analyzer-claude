@@ -22,6 +22,19 @@ class AllureApiError(AllaError):
         super().__init__(f"HTTP {status_code} от {endpoint}: {message}")
 
 
+class McpError(AllaError):
+    """MCP-сервер TestOps ответил не так, как ждёт скилл.
+
+    ``reason``: ``not_found`` — по адресу нет MCP (404); ``transport`` — сервер не принимает
+    Streamable HTTP (405, старый SSE); ``no_tool`` — нет нужного инструмента; ``tool`` —
+    инструмент вернул ошибку; ``protocol`` — ответ не разобрать.
+    """
+
+    def __init__(self, reason: str, message: str) -> None:
+        self.reason = reason
+        super().__init__(f"MCP TestOps: {message}")
+
+
 class PaginationLimitError(AllaError):
     """Превышен максимальный лимит страниц (защитный механизм).
 

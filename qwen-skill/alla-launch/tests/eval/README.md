@@ -9,12 +9,13 @@
 Сохранённый прогон TestOps, который воспроизводится без сети (`cassette.py`):
 
 ```
-launch.json                      ответ GET /api/launch/{id}
-results.json                     все результаты прогона, включая hidden
-executions/<result_id>.json      GET /api/testresult/{id}/execution
-details/<result_id>.json         GET /api/testresult/{id}
-attachments/<result_id>.json     метаданные вложений результата
-contents/<attachment_id>         байты вложения (не больше лимита ALLURE_LOGS_MAX_ATTACHMENT_BYTES + 1)
+launch.json                      id и имя прогона
+results.json                     все результаты прогона, включая hidden (aql: launch = <id>)
+executions/<result_id>.json      дерево шагов результата (корпус)
+details/<result_id>.json         результат по id; у записанной кассеты — ответ MCP с expand
+                                 как есть (scenario, fixtures, attachments с содержимым)
+attachments/<result_id>.json     метаданные вложений результата (корпус)
+contents/<attachment_id>         байты вложения (корпус)
 ```
 
 ## Запись своего прогона (команде, локально)
@@ -25,12 +26,13 @@ contents/<attachment_id>         байты вложения (не больше 
 .venv/bin/python qwen-skill/alla-launch/tests/eval/record.py 12345 ~/alla-cassettes/run-12345
 ```
 
-- Сбор — тот же, что у `prepare`; TestOps только читается. Путь за прокси
-  (`ALLURE_ENDPOINT=https://host/testops`) поддерживается.
+- Сбор — тот же, что у `prepare`: TestOps только читается через MCP, в кассету идут ответы
+  `testops_find_testresults`. Путь за прокси (`ALLURE_ENDPOINT=https://host/testops`)
+  поддерживается.
 - Каталог должен быть новым или пустым: поверх старой кассеты запись не идёт, иначе
   ответы двух записей смешались бы.
-- Заголовки запросов, обмен API-токена и ответ с JWT на диск не пишутся (это проверяет
-  `tests/test_eval_record.py`).
+- Заголовки запросов (API-токен) на диск не пишутся (это проверяет
+  `tests/test_eval_record.py`). Вложения хранятся целиком, как пришли в ответе MCP.
 - В кассете — настоящие сообщения, логи и имена тестов. Каталог держите **вне git** и
   никому не передавайте; наружу — только сводные цифры, и то по желанию команды.
 

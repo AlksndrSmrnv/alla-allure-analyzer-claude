@@ -1,4 +1,4 @@
-"""Запись прогона в кассету: тот же триаж при воспроизведении, токен и JWT не на диске."""
+"""Запись прогона в кассету: тот же триаж при воспроизведении, токена на диске нет."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import pytest
 import skill_fixtures  # noqa: F401  # добавляет scripts/ в sys.path
-from skill_fake_testops import TOKEN, FakeTestOps, LaunchFixture, default_launch
+from skill_fake_testops import APP_LOG, TOKEN, FakeTestOps, LaunchFixture, default_launch
 
 from alla_core.config import Settings
 from alla_skill_lib.pipeline import collect_launch
@@ -41,14 +41,15 @@ def test_recorded_cassette_replays_the_same_triage(tmp_path: Path) -> None:
     with replay(fixture):
         original = asyncio.run(collect_launch(777, settings))
 
-    assert ("POST", "/api/uaa/oauth/token") in fake.requests
-    assert cassette.results == fixture.results  # три страницы склеены, hidden на месте
-    assert cassette.contents == fixture.contents
+    assert {(method, path) for method, path in fake.requests} == {("POST", "/api/mcp")}
+    # Три страницы склеены, hidden на месте; полные ответы — с содержимым вложений.
+    assert [item["id"] for item in cassette.results] == [item["id"] for item in fixture.results]
+    assert cassette.details[101]["attachments"]["9001"]["content"] == APP_LOG
     assert replayed.triage == original.triage
     assert replayed.clustering == original.clustering
 
 
-def test_cassette_keeps_no_token_or_jwt(tmp_path: Path) -> None:
+def test_cassette_keeps_no_token(tmp_path: Path) -> None:
     _record(default_launch(), tmp_path / "cassette")
 
     files = [path for path in (tmp_path / "cassette").rglob("*") if path.is_file()]
@@ -56,21 +57,11 @@ def test_cassette_keeps_no_token_or_jwt(tmp_path: Path) -> None:
     for path in files:
         data = path.read_bytes()
         assert TOKEN.encode() not in data, path
-        assert b"jwt-1" not in data, path
-        assert b"Bearer" not in data, path
-
-
-def test_attachment_is_recorded_up_to_the_client_limit(tmp_path: Path) -> None:
-    fixture = default_launch()
-    fixture.contents[9001] = b"x" * 5000
-    _record(fixture, tmp_path / "cassette", ALLURE_LOGS_MAX_ATTACHMENT_BYTES="1024")
-
-    assert len(load_cassette(tmp_path / "cassette").contents[9001]) == 1025
+        assert b"api-token" not in data, path
 
 
 def test_record_under_an_endpoint_prefix(tmp_path: Path) -> None:
     fixture = default_launch()
-    fixture.contents[9001] = b"x" * 5000
     fake = FakeTestOps(fixture)
 
     def behind_proxy(request: httpx.Request) -> httpx.Response:
@@ -79,16 +70,14 @@ def test_record_under_an_endpoint_prefix(tmp_path: Path) -> None:
         return fake.handle(httpx.Request(request.method, request.url.copy_with(path=path),
                                          headers=request.headers, content=request.content))
 
-    settings = Settings.load(environ={**ENVIRON, "ALLURE_ENDPOINT": "https://testops.example/testops",
-                                      "ALLURE_LOGS_MAX_ATTACHMENT_BYTES": "1024"})
+    settings = Settings.load(environ={**ENVIRON, "ALLURE_ENDPOINT": "https://testops.example/testops"})
     record(777, tmp_path / "cassette", settings,
            inner=lambda verify: httpx.MockTransport(behind_proxy))
     cassette = load_cassette(tmp_path / "cassette")
 
-    assert cassette.launch == fixture.launch
-    assert cassette.results == fixture.results
-    assert {key: steps for key, steps in cassette.executions.items() if steps} == fixture.executions
-    assert len(cassette.contents[9001]) == 1025
+    assert cassette.launch == {"id": 777, "name": fixture.launch["name"]}
+    assert [item["id"] for item in cassette.results] == [item["id"] for item in fixture.results]
+    assert cassette.details[101]["scenario"] == {"steps": fixture.executions[101]}
 
 
 def test_record_refuses_a_non_empty_directory(tmp_path: Path) -> None:

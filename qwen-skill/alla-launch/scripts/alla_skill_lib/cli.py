@@ -2929,6 +2929,7 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
         return 2
     lines += [
         f"ALLURE_ENDPOINT: {settings.endpoint}",
+        f"MCP TestOps: {settings.mcp_endpoint}",
         "ALLURE_TOKEN: задан (значение не показывается)",
         _qwen_files_line(project_root),
     ]
@@ -2954,20 +2955,16 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
         return 1
     print("STATUS: ready")
     print(*lines, sep="\n")
-    print("Доступ к TestOps: токен принят.")
+    print("Доступ к TestOps: MCP-сервер ответил, токен принят.")
     return 0
 
 
 async def _ping_testops(settings: Settings) -> None:
-    from alla_core.clients.auth import AllureAuthManager
+    """Открыть сеанс MCP TestOps и убедиться, что инструмент поиска результатов есть."""
+    from alla_core.clients.mcp_client import TestOpsMcpClient
 
-    auth = AllureAuthManager(
-        endpoint=settings.endpoint,
-        api_token=settings.token,
-        timeout=settings.request_timeout,
-        retries=settings.http_retries,
-    )
-    await auth.get_auth_header()
+    async with TestOpsMcpClient(settings) as client:
+        await client.connect()
 
 
 def cmd_clean(reports_dir: Path, older_than_days: int, *, dry_run: bool) -> int:
