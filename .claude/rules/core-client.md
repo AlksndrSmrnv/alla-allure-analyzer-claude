@@ -37,7 +37,8 @@ REST API TestOps у пользователей закрыт (решение по
   (`totalPages`/`totalElements`/`total`) нет — страницы, пока приходят новые id (пустая
   или повтор прежней — конец, повтор в результаты не идёт), `last_total_elements` тогда
   `None`: короткая страница без итогов ещё не конец, иначе выгрузка обрывалась на первой
-  урезанной странице (ревью Grok).
+  урезанной странице (ревью Grok). Есть только `totalPages` — листаем по нему, но
+  `last_total_elements` тоже `None`: вычисленное число выдало бы ложную «потерю» (ревью Codex).
 - Транспорт — свой Streamable HTTP на `httpx` (пакет `mcp` не берём: веб-сервер и десяток
   зависимостей в lock): JSON-RPC в POST, `Authorization: api-token <token>`,
   `Accept: application/json, text/event-stream`, `Mcp-Session-Id` из ответа `initialize`,
@@ -67,7 +68,8 @@ REST API TestOps у пользователей закрыт (решение по
 - **Один запрос на результат.** Полный ответ кешируется (`_full`, блокировка на id):
   `get_test_result_execution`, `get_test_result_detail`, `get_attachments_for_test_result` и
   `get_attachment_content` его переиспользуют. Шаги: `scenario` (`{steps}`, список,
-  `{content}`, обёртка с ошибкой — сама корень), фикстуры before — в начало дерева, after
+  `{content}`; обёртка с ошибкой или с именем и статусом — сама корень, иначе failed-корень
+  с passed-подшагами терял путь упавшего шага — ревью Codex), фикстуры before — в начало дерева, after
   (`type`/ключ с `after`, `teardown`) — в конец; вложения шага (id или объект) — метаданными
   из словаря, без `content`. `message`/`trace` верхнего уровня без `statusDetails` — в
   `statusDetails` (`_result`). Без expand (`aql: id = N`) — `get_test_result_detail` для

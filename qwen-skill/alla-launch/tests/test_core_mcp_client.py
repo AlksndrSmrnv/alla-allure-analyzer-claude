@@ -426,6 +426,26 @@ def test_short_pages_without_totals_continue_until_nothing_new(monkeypatch: pyte
     assert [call["page"] for call in fake.calls] == [0, 1, 2, 3, 4]  # последняя — пустая
 
 
+def test_total_pages_alone_leave_the_result_count_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeTestOps(default_launch())
+    original = fake._find
+
+    def find(arguments: dict[str, Any]) -> Any:
+        body = original({**arguments, "size": 2})
+        return {"content": body["content"], "totalPages": body["totalPages"]}
+
+    fake._find = find  # type: ignore[method-assign]
+    fake.install(monkeypatch)
+
+    async def action(client: TestOpsMcpClient) -> Any:
+        results = await client.get_all_test_results_for_launch(777)
+        return results, client.last_total_elements
+
+    results, total = _run(_settings(), action)
+    assert len(results) == 8 and total is None  # не 4 × 3 = 11 «насчитанных» TestOps
+    assert [call["page"] for call in fake.calls] == [0, 1, 2, 3]
+
+
 def test_launch_comes_from_results(monkeypatch: pytest.MonkeyPatch) -> None:
     fixture = default_launch()
     fake = FakeTestOps(fixture)
@@ -498,6 +518,19 @@ def test_full_result_decodes_attachments_and_orders_fixtures(monkeypatch: pytest
     assert [(item.id, item.size, item.content_type) for item in attachments] == [
         (1, 5, "text/plain"), (2, len(PNG), "image/png"), (3, None, "application/json")]
     assert all("content" not in (item.model_extra or {}) for item in attachments)
+
+
+def test_named_failed_scenario_root_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture = _full_fixture({
+        "message": "boom",
+        "scenario": {"name": "createOrder", "status": "failed",
+                     "steps": [{"name": "Открыть", "status": "passed"}]},
+        "attachments": {},
+    })
+    FakeTestOps(fixture).install(monkeypatch)
+    steps = _run(_settings(), lambda client: client.get_test_result_execution(101))
+    assert [(step.name, step.status) for step in steps] == [("createOrder", "failed")]
+    assert steps[0].steps is not None and steps[0].steps[0].name == "Открыть"
 
 
 def test_teardown_fixtures_go_after_the_test_steps(monkeypatch: pytest.MonkeyPatch) -> None:

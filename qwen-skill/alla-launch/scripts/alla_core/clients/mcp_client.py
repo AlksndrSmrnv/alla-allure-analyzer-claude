@@ -103,9 +103,10 @@ class TestOpsMcpClient:
         self._params: dict[str, str | None] | None = None
         self._init_lock = asyncio.Lock()
         self._rpc_id = 0
-        self._first_pages: dict[int, tuple[PageResponse[TestResultResponse], bool]] = {}
+        self._first_pages: dict[int, tuple[PageResponse[TestResultResponse], bool, bool]] = {}
         self._server_page_size: int | None = None
-        self._totals_known = True
+        self._totals_known = True  # сервер сообщил totalPages или число результатов
+        self._total_known = True  # сервер сообщил число результатов
         self._generation = 0
         self._full: dict[int, _FullResult] = {}
         self._full_locks: dict[int, asyncio.Lock] = {}
@@ -191,7 +192,7 @@ class TestOpsMcpClient:
         скажет).
         """
         page = await self.get_test_results_for_launch(launch_id)
-        self._first_pages[launch_id] = (page, self._totals_known)
+        self._first_pages[launch_id] = (page, self._totals_known, self._total_known)
         first = page.content[0] if page.content else None
         extra = (first.model_extra or {}) if first is not None else {}
         launch_raw = extra.get("launch")
@@ -222,8 +223,8 @@ class TestOpsMcpClient:
             arguments[params["size"]] = size
         payload = await self._call_tool(arguments)
         # Сервер урезал страницу — дальше считаем страницы его размером, а не запрошенным.
-        result, self._totals_known = _page(payload, page, self._server_page_size or size,
-                                           paged=bool(params["page"]))
+        result, self._totals_known, self._total_known = _page(
+            payload, page, self._server_page_size or size, paged=bool(params["page"]))
         if result.size < size:
             self._server_page_size = result.size
         return result
@@ -242,18 +243,19 @@ class TestOpsMcpClient:
         while True:
             cached = self._first_pages.pop(launch_id, None) if page == 0 else None
             if cached is not None:
-                page_resp, known = cached
+                page_resp, known, total_known = cached
             else:
                 page_resp = await self.get_test_results_for_launch(
                     launch_id, page=page, size=self._page_size,
                 )
-                known = self._totals_known
+                known, total_known = self._totals_known, self._total_known
             ids = {result.id for result in page_resp.content}
             if not known and not ids - seen:
                 break
             seen |= ids
             all_results.extend(page_resp.content)
-            self.last_total_elements = page_resp.total_elements if known else None
+            # Только сообщённое сервером: вычисленное по страницам дало бы ложную «потерю».
+            self.last_total_elements = page_resp.total_elements if total_known else None
             if known and page == 0 and page_resp.total_pages > self._max_pages:
                 raise PaginationLimitError(
                     f"В прогоне {page_resp.total_elements} результатов "
@@ -268,7 +270,7 @@ class TestOpsMcpClient:
                 raise PaginationLimitError(
                     f"Превышен max_pages={self._max_pages}. "
                     f"Получено {len(all_results)}"
-                    + (f"/{page_resp.total_elements}" if known else "")
+                    + (f"/{page_resp.total_elements}" if total_known else "")
                     + " результатов. Увеличьте ALLURE_MAX_PAGES при необходимости.",
                     pages_needed=page_resp.total_pages if known else None,
                 )
@@ -641,8 +643,9 @@ def _items(payload: Any) -> list[dict[str, Any]]:
 
 def _page(
     payload: Any, page: int, size: int, *, paged: bool,
-) -> tuple[PageResponse[TestResultResponse], bool]:
-    """Страница результатов в ``PageResponse`` и известен ли итог (``totalPages``/``total…``).
+) -> tuple[PageResponse[TestResultResponse], bool, bool]:
+    """Страница результатов в ``PageResponse``; известны ли итоги (``totalPages`` или число
+    результатов) и отдельно — число результатов (без него ``totalElements`` вычислен).
 
     Размер страницы — из ответа (сервер может урезать запрошенный), иначе запрошенный; без
     ``size`` в ответе неполная страница при известном итоге, где результатов ещё больше, —
@@ -672,7 +675,7 @@ def _page(
         totalPages=pages,
         size=actual,
         number=page,
-    ), known
+    ), known, total is not None
 
 
 def _result(raw: dict[str, Any]) -> TestResultResponse:
@@ -686,12 +689,18 @@ def _result(raw: dict[str, Any]) -> TestResultResponse:
 
 
 def _scenario_steps(scenario: object) -> list[dict[str, Any]]:
-    """Корни дерева шагов: список, ``{steps: [...]}`` (обёртка с ошибкой — сама корень), ``{content}``."""
+    """Корни дерева шагов: список, ``{steps: [...]}``, ``{content}``.
+
+    Обёртка с ошибкой или с именем и статусом — сама корень: иначе failed-корень с passed-
+    подшагами терял путь упавшего шага, а его скриншоты — пометку «упавший шаг» (ревью
+    Codex). Безымянная обёртка без статуса — только контейнер.
+    """
     if isinstance(scenario, list):
         return [item for item in scenario if isinstance(item, dict)]
     if not isinstance(scenario, dict):
         return []
-    if any(scenario.get(key) for key in ("statusDetails", "message", "trace")):
+    if any(scenario.get(key) for key in ("statusDetails", "message", "trace")) \
+            or (scenario.get("name") and scenario.get("status")):
         return [scenario]
     for key in ("steps", "content", "children"):
         if isinstance(scenario.get(key), list):
