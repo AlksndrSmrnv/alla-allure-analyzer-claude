@@ -92,6 +92,7 @@ class TestOpsMcpClient:
         self._init_lock = asyncio.Lock()
         self._rpc_id = 0
         self._first_pages: dict[int, PageResponse[TestResultResponse]] = {}
+        self._server_page_size: int | None = None
         self._full: dict[int, _FullResult] = {}
         self._full_locks: dict[int, asyncio.Lock] = {}
         self._owner: dict[int, int] = {}  # id вложения → id результата
@@ -186,7 +187,11 @@ class TestOpsMcpClient:
         if params["size"]:
             arguments[params["size"]] = size
         payload = await self._call_tool(arguments)
-        return _page(payload, page, size, paged=bool(params["page"]))
+        # Сервер урезал страницу — дальше считаем страницы его размером, а не запрошенным.
+        result = _page(payload, page, self._server_page_size or size, paged=bool(params["page"]))
+        if result.size < size:
+            self._server_page_size = result.size
+        return result
 
     async def get_all_test_results_for_launch(
         self, launch_id: int,
@@ -254,8 +259,10 @@ class TestOpsMcpClient:
             if owner is None:
                 raise AllureApiError(404, f"вложение {attachment_id} не из запрошенных результатов",
                                      _ENDPOINT)
-            await self._full_result(owner, refresh=True)
-            data = self._contents.get(attachment_id)
+            # Из ответа, а не из памяти: вложения результата больше бюджета вытеснили бы
+            # нужное ещё до чтения.
+            _, fetched = await self._fetch_full(owner)
+            data = fetched.get(attachment_id)
             if data is None:
                 raise AllureApiError(404, f"вложение {attachment_id} не пришло в ответе", _ENDPOINT)
         else:
@@ -266,16 +273,22 @@ class TestOpsMcpClient:
 
     # --- Полный результат ---
 
-    async def _full_result(self, test_result_id: int, *, refresh: bool = False) -> _FullResult:
+    async def _full_result(self, test_result_id: int) -> _FullResult:
         lock = self._full_locks.setdefault(test_result_id, asyncio.Lock())
         async with lock:
             cached = self._full.get(test_result_id)
-            if cached is not None and not refresh:
+            if cached is not None:
                 return cached
-            raw = await self._find_one(test_result_id, expand=True)
-            full = self._parse_full(test_result_id, raw)
-            self._full[test_result_id] = full
+            full, _ = await self._fetch_full(test_result_id)
             return full
+
+    async def _fetch_full(self, test_result_id: int) -> tuple[_FullResult, dict[int, bytes]]:
+        """Запросить результат с полным expand; кроме разбора — содержимое вложений этого ответа."""
+        raw = await self._find_one(test_result_id, expand=True)
+        contents: dict[int, bytes] = {}
+        full = self._parse_full(test_result_id, raw, contents)
+        self._full[test_result_id] = full
+        return full, contents
 
     async def _find_one(self, test_result_id: int, *, expand: bool) -> dict[str, Any]:
         params = await self._ensure_ready()
@@ -290,7 +303,9 @@ class TestOpsMcpClient:
             raise AllureApiError(404, f"результат {test_result_id} не найден", _ENDPOINT)
         return item
 
-    def _parse_full(self, test_result_id: int, raw: dict[str, Any]) -> _FullResult:
+    def _parse_full(
+        self, test_result_id: int, raw: dict[str, Any], contents: dict[int, bytes],
+    ) -> _FullResult:
         metas: dict[int, AttachmentMeta] = {}
         attachments = raw.get("attachments")
         entries = (
@@ -299,7 +314,7 @@ class TestOpsMcpClient:
             else []
         )
         for key, value in entries:
-            meta = self._store_attachment(test_result_id, key, value)
+            meta = self._store_attachment(test_result_id, key, value, contents)
             if meta is not None and meta.id is not None:
                 metas[meta.id] = meta
         steps = [_step(item, metas) for item in _scenario_steps(raw.get("scenario"))]
@@ -310,7 +325,9 @@ class TestOpsMcpClient:
                 if key not in ("scenario", "fixtures", "attachments")}
         return _FullResult(_result(body), steps, list(metas.values()))
 
-    def _store_attachment(self, test_result_id: int, key: object, value: object) -> AttachmentMeta | None:
+    def _store_attachment(
+        self, test_result_id: int, key: object, value: object, contents: dict[int, bytes],
+    ) -> AttachmentMeta | None:
         if not isinstance(value, dict):
             return None
         attachment_id = _int(value.get("id"))
@@ -327,6 +344,7 @@ class TestOpsMcpClient:
         content = value.get("content")
         if isinstance(content, str):
             data = _decode(content, meta.content_type or meta.type)[:self._stored_bytes]
+            contents[attachment_id] = data
             self._remember_content(attachment_id, data)
         return meta
 
@@ -509,20 +527,33 @@ def _items(payload: Any) -> list[dict[str, Any]]:
 
 
 def _page(payload: Any, page: int, size: int, *, paged: bool) -> PageResponse[TestResultResponse]:
-    """Страница результатов в ``PageResponse``; итогов нет — ещё страница, пока эта полная."""
+    """Страница результатов в ``PageResponse``.
+
+    Размер страницы — из ответа (сервер может урезать запрошенный), иначе запрошенный; без
+    ``size`` в ответе неполная страница при известном итоге, где результатов ещё больше, —
+    тоже урезанная сервером. Итогов нет — ещё страница, пока эта полная. Без параметра
+    страницы у инструмента страница одна: следующие запросы вернули бы её же.
+    """
     items = [_result(item) for item in _items(payload)]
     meta = payload if isinstance(payload, dict) else {}
     total = _int(meta.get("totalElements", meta.get("total")))
+    actual = _int(meta.get("size"))
+    if actual is None or actual <= 0:
+        actual = size
+        if total is not None and 0 < len(items) < size and page * size + len(items) < total:
+            actual = len(items)
     pages = _int(meta.get("totalPages"))
     if pages is None and total is not None:
-        pages = max(1, math.ceil(total / size))
+        pages = max(1, math.ceil(total / actual))
     if pages is None:
-        pages = page + 2 if paged and len(items) >= size else page + 1
+        pages = page + 2 if len(items) >= actual else page + 1
+    if not paged:
+        pages = page + 1
     return PageResponse[TestResultResponse](
         content=items,
-        totalElements=total if total is not None else page * size + len(items),
+        totalElements=total if total is not None else page * actual + len(items),
         totalPages=pages,
-        size=size,
+        size=actual,
         number=page,
     )
 

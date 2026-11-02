@@ -278,6 +278,37 @@ def test_pages_without_totals_continue_until_a_short_page(monkeypatch: pytest.Mo
     assert [call["page"] for call in fake.calls] == [0, 1, 2]
 
 
+def test_server_page_size_wins_over_the_requested_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Сервер урезает страницу до 2 и не шлёт totalPages: страниц по 2, а не по 3 — все 8."""
+    fake = FakeTestOps(default_launch())
+    original = fake._find
+
+    def find(arguments: dict[str, Any], with_size: bool) -> Any:
+        body = original({**arguments, "size": 2})
+        del body["totalPages"]
+        if not with_size:
+            del body["size"]
+        return body
+
+    for with_size in (True, False):
+        fake.calls.clear()
+        fake._find = lambda arguments, with_size=with_size: find(arguments, with_size)  # type: ignore[method-assign]
+        fake.install(monkeypatch)
+        results = _run(_settings(), lambda client: client.get_all_test_results_for_launch(777))
+        assert len({result.id for result in results}) == len(results) == 8 and [call["page"] for call in fake.calls] == [0, 1, 2, 3]
+
+
+def test_tool_without_page_parameter_gets_one_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeTestOps(default_launch())
+    fake.tools = [{**FIND_TOOL_SCHEMA, "inputSchema": {"type": "object", "properties": {
+        "aql": {}, "size": {}, "expand": {}}}}]
+    fake.install(monkeypatch)
+
+    results = _run(_settings(), lambda client: client.get_all_test_results_for_launch(777))
+    assert [result.id for result in results] == [101, 102, 103]  # первая страница — один раз
+    assert fake.calls == [{"aql": "launch = 777", "size": 3}]
+
+
 def test_launch_comes_from_results(monkeypatch: pytest.MonkeyPatch) -> None:
     fixture = default_launch()
     fake = FakeTestOps(fixture)
@@ -371,6 +402,24 @@ def test_content_is_capped_and_evicted_content_is_fetched_again(monkeypatch: pyt
     assert (len(capped), len(default), again) == (1024, 2048, b"x" * 10)
     assert [call for call in fake.calls if call.get("expand")] == [
         {"aql": "id = 101", "expand": FULL_EXPAND}] * 2
+
+
+def test_attachments_of_one_result_larger_than_the_budget_are_all_readable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = default_launch()
+    fixture.attachments[101] = [{"id": 9001 + index, "name": f"part{index}.log", "type": "text/plain"}
+                                for index in range(3)]
+    for index in range(3):
+        fixture.contents[9001 + index] = str(index).encode() * 100
+    FakeTestOps(fixture).install(monkeypatch)
+
+    async def action(client: TestOpsMcpClient) -> Any:
+        client.content_budget = 150  # помещается одно вложение из трёх
+        await client.get_attachments_for_test_result(101)
+        return [await client.get_attachment_content(9001 + index) for index in range(3)]
+
+    assert _run(_settings(), action) == [str(index).encode() * 100 for index in range(3)]
 
 
 def test_detail_without_expand_for_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
