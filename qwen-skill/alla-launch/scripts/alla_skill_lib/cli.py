@@ -2905,7 +2905,8 @@ def _qwen_files_line(project_root: Path) -> str:
         return "Команды /alla:* и субагенты в .qwen/ проекта: установлены"
     return (
         f"Команды /alla:* и субагенты в .qwen/ проекта: не установлены или устарели "
-        f"({len(pending)} файл.); показать список: {ws.skill_command('install-files')}"
+        f"({len(pending)} файл.); показать список: "
+        f"{ws.skill_command('install-files', '--project-root', str(project_root))}"
     )
 
 

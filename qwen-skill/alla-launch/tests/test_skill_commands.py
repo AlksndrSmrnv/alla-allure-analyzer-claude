@@ -199,3 +199,4 @@ def test_prepare_and_check_do_not_write_into_qwen_dir(
 
     assert not (project / ".qwen").exists()
     assert "не установлены или устарели" in out and "install-files" in out
+    assert f"--project-root {shlex.quote(str(project))}" in out
