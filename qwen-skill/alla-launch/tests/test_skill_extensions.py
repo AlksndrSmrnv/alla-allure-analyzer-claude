@@ -127,7 +127,7 @@ def test_bundled_git_publish_manifest_is_valid() -> None:
     assert [hook.event for hook in extension.hooks] == ["after_apply", "after_revert"]
     assert set(extension.actions) == {"publish"}
     assert extension.settings == {"remote": "origin", "branch_prefix": "alla/", "base": "HEAD",
-                                  "confirm": False}
+                                  "confirm": True}  # push — только после «да»
 
 
 @pytest.mark.parametrize(("change", "error"), [

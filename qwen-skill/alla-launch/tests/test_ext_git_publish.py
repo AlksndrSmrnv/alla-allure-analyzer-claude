@@ -98,7 +98,9 @@ def test_apply_hands_publish_task_to_subagent(
     run_dir, order, out = applied_run(project, capsys)
 
     task = run_dir / "extensions" / "git-publish" / f"after_apply-{order}.md"
-    assert "Расширения:\n- Выгрузка правки в git (git-publish): запусти субагента" in out
+    # По умолчанию выгрузка спрашивает пользователя: push — внешнее действие (ревью безопасности).
+    assert ("Расширения:\n- Выгрузка правки в git (git-publish): спроси пользователя: «Выгрузить "
+            "правку в новую ветку git?» Только после явного «да» запусти субагента") in out
     assert "subagent_type «alla-git-publish»" in out and f"«Выполни задание {task}»" in out
     text = task.read_text(encoding="utf-8")
     assert "$" not in text.replace("$ ", "")  # все переменные шаблона подставлены

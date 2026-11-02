@@ -13,7 +13,7 @@ timeout = 300
 remote = "origin"         # куда пушить
 branch_prefix = "alla/"   # ветка: <prefix><прогон>-problem-<N>
 base = "HEAD"             # от какого коммита ветка: HEAD — текущий коммит инженера
-confirm = false           # true — спрашивать пользователя перед каждой выгрузкой
+confirm = true            # false — выгружать без вопроса пользователю
 
 [[hooks]]
 event = "after_apply"

@@ -433,7 +433,7 @@ enabled = ["git-publish"]
 remote = "origin"        # куда пушить
 branch_prefix = "alla/"  # начало имени ветки
 base = "HEAD"            # от какого коммита ветка, например "origin/develop"
-confirm = false          # true — спрашивать перед каждой выгрузкой
+confirm = true           # false — выгружать без вопроса
 ```
 
 ### sut-code: разбор по коду приложения

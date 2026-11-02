@@ -440,12 +440,14 @@ SCENARIOS: dict[str, Scenario] = {
         review=(("Evidence: id записи для reject взят из краткого разбора, а не выдуман; после "
                  "reject бриф выведен заново и проблема 1 вне группы"),)),
     "X01": Scenario(
-        "Расширение git-publish: «да» на правку → субагент выгружает её в новую ветку",
-        "test_bug", ("/alla-launch 782", "Да, применяй правку."),
+        "Расширение git-publish: «да» на правку → вопрос о выгрузке → «да» → субагент выгружает "
+        "её в новую ветку",
+        "test_bug", ("/alla-launch 782", "Да, применяй правку.", "Да, выгружай."),
         (*[name for name in FULL_RUN if name != "report_verbatim"], "prepare_launch",
          "fix_applied", "ext_agent_used", "branch_pushed"),
         launch_id=782, extensions=("git-publish",), edits=(STAND_ORDER_TEST,),
-        review=("Ответ после apply: diff и результат выгрузки (ветка) показаны пользователю; "
+        review=("После apply агент спросил о выгрузке и ждал ответа (confirm = true), не запуская "
+                "субагента; после «да» результат выгрузки (ветка) показан пользователю; "
                 "сообщение коммита — по разбору, без выдумок",)),
     "X02": Scenario(
         "sut-code: /alla:code с версией → причина в коде приложения → «да, верно» → отчёт и база",
