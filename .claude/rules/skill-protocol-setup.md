@@ -26,7 +26,8 @@ paths:
   `.env` скилла из образца. Без маркера все команды отвечают `STATUS: setup_required`.
 - Установку с нуля на Linux проверяет `.github/scripts/skill_setup_smoke.sh` (job CI в
   `python:3.11`): `setup_required` до установки, `setup` дважды (второй берёт готовый `.venv`,
-  `.gitignore` проекта не тронут), права `.env` 600, `check` с пустым `.env` — `error` и код
+  `.gitignore` проекта не тронут, `.qwen/commands` нет), `install-files` без `--yes` (ничего не
+  пишет) и с `--yes` (команды и `alla-batch`), права `.env` 600, `check` с пустым `.env` — `error` и код
   2, с фейковым TestOps — `ready`, `prepare 777` — `analyze`. Меняя вывод или коды `setup` и
   `check`, правь и скрипт. Фейковый сервер работает в `.venv` проекта, поэтому
   `skill_fake_testops.py` не импортирует pytest во время выполнения.
@@ -57,9 +58,16 @@ paths:
   `revert`, `remember`, `reject`, `review` команда не знает — правило в разделе `SKILL.md`
   «Слэш-команды» (папка из сеанса, иначе `next` без аргументов; краткий разбор повторно не
   выводить).
-- Qwen читает команды из `<project>/.qwen/commands/` при старте сеанса. Копируют их
-  `setup` и `update` (`alla_skill.install_commands`, Python 3.8, без библиотеки) и `prepare`
-  (`qwen_files.install_commands`, вместе с `install_batch_agent`): только новые и изменённые
-  файлы, чужие в `.qwen/commands/alla/` не удаляются. Две реализации сверяет
-  `test_skill_commands.py`; он же проверяет формат, набор и разделы `SKILL.md`.
+- Qwen читает команды из `<project>/.qwen/commands/` при старте сеанса. Ставит их (и
+  субагента `alla-batch`, и файлы включённых расширений) только `install-files`
+  (`cli.cmd_install_files`, `qwen_files.planned_files`/`install_planned`) — замечание ревью:
+  `setup`, `update` и `prepare` раньше писали в каталоги конфигурации агента без просьбы. Без
+  `--yes` команда ничего не пишет: `STATUS: install_files`, список «создать/обновить: путь —
+  что это» и просьба спросить пользователя; с `--yes` — запись только новых и изменённых
+  файлов (чужие в `.qwen/commands/alla/` не удаляются), `STATUS: ok`. `setup` и `update`
+  печатают подсказку с командой (`FILES_NOTE`), `check` — строку «Команды /alla:* и
+  субагенты… установлены | не установлены или устарели»; сам `SKILL.md` («Файлы в `.qwen/`
+  проекта») велит спросить «да». Одна реализация (Python 3.11): копии в `alla_skill.py` больше
+  нет. `extensions enable/disable` остаются явной просьбой: ставят и убирают файлы своего
+  расширения. `test_skill_commands.py` проверяет и формат, набор и разделы `SKILL.md`.
 - Стенд кладёт команды в проект заранее (как со второго сеанса); сценарии `C01`, `C02`.

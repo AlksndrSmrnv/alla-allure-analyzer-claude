@@ -402,12 +402,14 @@ SCENARIOS: dict[str, Scenario] = {
         (*FULL_RUN, "prepare_launch", "setup_once"), launch_id=777, setup_ready=False,
         note="setup ставит зависимости из сети: pip внутри песочницы"),
     "I01": Scenario(
-        "Установка по просьбе: окружения и .env нет", "default", ("/alla-launch установи",),
+        "Установка по просьбе: окружения и .env нет", "default",
+        ("/alla-launch установи", "Да, поставь."),
         ("skill_visible", "activated", "setup_once", "check_after_setup", "no_prepare",
-         "asks_for_env", *SAFE),
+         "asks_for_env", "files_after_consent", *SAFE),
         setup_ready=False, env_ready=False,
         review=("Ответ коротко говорит, что вписать в .env и что дальше — /alla-launch <номер>; "
-                "токен в чате не просит",),
+                "токен в чате не просит; перед установкой файлов в .qwen/ показан список и задан "
+                "один вопрос",),
         note="setup ставит зависимости из сети: pip внутри песочницы"),
     "R01": Scenario(
         "Проверка разбора для пилота: разбор, затем «проверь разбор»", "default",
@@ -662,14 +664,15 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
     for record in KNOWLEDGE.get(knowledge, []):
         write(project / "alla-kb" / f"{record['id']}.json",
               json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-    # Субагент пакетов уже установлен, как со второго сеанса: prepare кладёт его в
-    # .qwen/agents/, а Qwen видит агентов, которые были на старте сеанса.
-    for agent in (SKILL_ROOT / "agents").glob("*.md"):
-        write(project / ".qwen" / "agents" / agent.name, agent.read_text(encoding="utf-8"))
-    # Команды /alla:* — так же: их ставят setup и prepare, Qwen видит их со старта сеанса.
-    for command in (SKILL_ROOT / "commands").rglob("*.md"):
-        write(project / ".qwen" / "commands" / command.relative_to(SKILL_ROOT / "commands"),
-              command.read_text(encoding="utf-8"))
+    # Субагент пакетов и команды /alla:* уже стоят, как после install-files в прошлом сеансе:
+    # Qwen видит их со старта сеанса. Проект без окружения (venv None) — установка с нуля,
+    # файлов в .qwen/ ещё нет.
+    if venv is not None:
+        for agent in (SKILL_ROOT / "agents").glob("*.md"):
+            write(project / ".qwen" / "agents" / agent.name, agent.read_text(encoding="utf-8"))
+        for command in (SKILL_ROOT / "commands").rglob("*.md"):
+            write(project / ".qwen" / "commands" / command.relative_to(SKILL_ROOT / "commands"),
+                  command.read_text(encoding="utf-8"))
     # Включённые расширения — как после «extensions enable» со второго сеанса: config.toml и
     # субагент расширения уже в проекте.
     if extensions:
@@ -1888,6 +1891,22 @@ def check_check_after_setup(ctx: Context) -> dict[str, Any]:
         if re.search(r"\bcheck\b", command_of(call)):
             return ok(at(call))
     return bad("check после setup не вызывался")
+
+
+def check_files_after_consent(ctx: Context) -> dict[str, Any]:
+    """Файлы в .qwen/ ставит только install-files --yes, и только после показа списка."""
+    calls = [c for c in ctx.trace.skill_commands() if "install-files" in command_of(c)]
+    listed = [i for i, c in enumerate(calls) if "--yes" not in command_of(c)]
+    written = [i for i, c in enumerate(calls) if "--yes" in command_of(c)]
+    if not listed:
+        return bad("install-files без --yes (показ списка) не вызывался")
+    if not written:
+        return bad("после «Да, поставь.» install-files --yes не вызывался")
+    if min(written) < min(listed):
+        return bad("install-files --yes вызван раньше показа списка")
+    if not (ctx.project / ".qwen" / "commands" / "alla" / "run.md").is_file():
+        return bad("команды /alla:* не появились в .qwen/")
+    return ok(at(calls[written[0]]))
 
 
 def check_asks_for_env(ctx: Context) -> dict[str, Any]:

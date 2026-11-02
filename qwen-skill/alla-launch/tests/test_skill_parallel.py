@@ -410,16 +410,24 @@ def test_batch_agent_file_is_valid_for_qwen_and_narrow() -> None:
         assert phrase in " ".join(prompt.split()), phrase
 
 
-def test_install_batch_agent_writes_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_batch_agent_is_planned_and_updated_by_install_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from alla_skill_lib import qwen_files
     from alla_skill_lib import workspace as ws
 
     monkeypatch.setattr(ws, "SKILL_DIR", Path(cli.__file__).resolve().parents[2])
-    target = qwen_files.install_batch_agent(tmp_path)
-    assert target == tmp_path / ".qwen" / "agents" / "alla-batch.md"
+    target = tmp_path / ".qwen" / "agents" / "alla-batch.md"
+
+    def agent_item() -> qwen_files.PlannedFile:
+        return next(item for item in qwen_files.planned_files(tmp_path) if item.target == target)
+
+    assert agent_item().state == qwen_files.NEW
+    qwen_files.install_planned([agent_item()])
     assert target.read_text(encoding="utf-8") == qwen_files.batch_agent_source().read_text(
         encoding="utf-8")
-    assert qwen_files.install_batch_agent(tmp_path) is None  # уже установлен — не пишет
+    assert agent_item().state == qwen_files.SAME
+    assert qwen_files.install_planned([agent_item()]) == []  # уже установлен — не пишет
     target.write_text("старая версия", encoding="utf-8")
-    assert qwen_files.install_batch_agent(tmp_path) == target  # устарел — обновляет
+    assert agent_item().state == qwen_files.CHANGED  # устарел — install-files обновит
 

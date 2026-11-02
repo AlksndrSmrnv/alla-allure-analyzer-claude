@@ -24,8 +24,8 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | Путь (от `qwen-skill/alla-launch/`) | Что там |
 |---|---|
 | `SKILL.md`, `references/` | сценарий и правила для модели, форматы её файлов, протокол, установка |
-| `agents/alla-batch.md` | свой субагент Qwen для пакетов кластеров; `prepare` ставит его в `.qwen/agents/` проекта |
-| `commands/alla/` | слэш-команды Qwen `/alla:run`, `/alla:apply`…; `setup` и `prepare` ставят их в `.qwen/commands/alla/` проекта |
+| `agents/alla-batch.md` | свой субагент Qwen для пакетов кластеров; `install-files` ставит его в `.qwen/agents/` проекта после согласия пользователя |
+| `commands/alla/` | слэш-команды Qwen `/alla:run`, `/alla:apply`…; `install-files` ставит их в `.qwen/commands/alla/` проекта после согласия пользователя (`setup`, `update`, `prepare` в `.qwen/` не пишут) |
 | `extensions/` | расширения скилла: `README.md` (контракт для авторов), встроенные `git-publish/` (ветка git), `sut-code/` (`/alla:code N` — разбор по коду приложения) и `tickets/` (`/alla:ticket N [N…]` — просмотр и отправка тикетов через пользовательский адаптер); свои — `<проект>/alla-extensions/` |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` проекта автотестов |
 | `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files`, `jobs`, `retries`, `images`, `extension_data` |

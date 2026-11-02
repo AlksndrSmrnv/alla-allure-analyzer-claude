@@ -397,11 +397,17 @@ def test_action_runs_script_with_context(project: Path, testops: FakeTestOps, ca
     assert code == 1 and "не включено" in out
 
 
-def test_prepare_installs_agents_of_enabled_extensions(project: Path, testops: FakeTestOps, capsys) -> None:
+def test_install_files_installs_agents_of_enabled_extensions(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project)
     ext.set_enabled(project, "demo", True)
-    _prepare(project, capsys)
-    assert (project / ".qwen" / "agents" / "alla-demo.md").read_text(encoding="utf-8") == AGENT
+    _prepare(project, capsys)  # prepare в .qwen/ ничего не пишет
+    target = project / ".qwen" / "agents" / "alla-demo.md"
+    assert not target.exists()
+    code, out = _run(["install-files", "--project-root", str(project)], capsys)
+    assert out.splitlines()[0] == "STATUS: install_files" and "alla-demo.md" in out
+    assert not target.exists()
+    code, out = _run(["install-files", "--yes", "--project-root", str(project)], capsys)
+    assert code == 0 and target.read_text(encoding="utf-8") == AGENT
 
 
 def test_session_rules_allow_only_extension_text_files() -> None:
@@ -718,7 +724,9 @@ def test_extension_commands_are_installed_and_removed(
     assert code == 0 and "Команды /alla:demo-run установлены" in out
     assert target.read_text(encoding="utf-8") == COMMAND
     target.unlink()
-    _prepare(project, capsys)  # prepare возвращает удалённую команду, как субагента
+    _prepare(project, capsys)  # prepare в .qwen/ не пишет
+    assert not target.is_file()
+    assert _run(["install-files", "--yes", "--project-root", str(project)], capsys)[0] == 0  # а install-files возвращает
     assert target.is_file()
 
     code, out = ext_cli(project, capsys, "disable", "demo")

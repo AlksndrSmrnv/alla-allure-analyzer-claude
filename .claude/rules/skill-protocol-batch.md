@@ -26,7 +26,7 @@ paths:
 - `alla-batch` — свой субагент (`agents/alla-batch.md`, узкая роль, инструменты read_file,
   write_file, run_shell_command): встроенный `general-purpose` по своей системной подсказке
   осматривал проект (ls/find, чужие пакеты), и текстом prompt это не лечилось (стенд Qwen,
-  P04). `prepare` ставит его в `<project>/.qwen/agents/` (`qwen_files.install_batch_agent`);
+  P04). `install-files --yes` (после «да» пользователя, `skill-protocol-setup.md`) ставит его в `<project>/.qwen/agents/`;
   Qwen видит агентов со старта сеанса, поэтому инструкция `next` даёт запасной путь — без
   `subagent_type`. Qwen молча пропускает невалидный файл агента: формат охраняет
   `test_batch_agent_file_is_valid_for_qwen_and_narrow`.

@@ -78,15 +78,15 @@ paths:
   неисправная: удалённый манифест не возвращает встроенное.
 - Хук `task` — не больше одного на событие: задание пишется в `<событие>-NN.md`, второе
   затёрло бы первое. Хуков `script` на событие может быть несколько.
-- Агенты включённых расширений ставит `enable` и каждый `prepare`
-  (`qwen_files.install_extension_agent`); `disable` убирает файл, только если он совпадает с
+- Агенты включённых расширений ставит `enable` (явная просьба) и `install-files --yes`
+  (обновить после `update`; `prepare` в `.qwen/` не пишет, `qwen_files.install_extension_agent`); `disable` убирает файл, только если он совпадает с
   нашим.
 - Слэш-команды расширения — `commands = ["commands/<имя>.md"]` в манифесте
   (`_commands`/`_check_command`: `.md`, имя по `NAME_RE`, `description`,
   `disable-model-invocation: true`, не пустой текст). Имена команд скилла заняты
   (`skill_command_names` — из папки рядом с модулем, не из `ws.SKILL_DIR`), одна команда у двух
   включённых расширений — второе в `Active.problems`. Ставятся тем же путём, что агенты:
-  `enable`/`prepare` → `.qwen/commands/alla/<имя>.md`, `disable` — убрать, если файл наш.
+  `enable`/`install-files --yes` → `.qwen/commands/alla/<имя>.md`, `disable` — убрать, если файл наш.
   Цикл по командам в `_extensions_toggle` — своей переменной (`command`): `name` там — имя
   расширения, по нему подсказка называет таблицу настроек `[<имя>]`.
   `enable` поверх занятой команды отказывает (`command_conflict`) до записи `config.toml` и

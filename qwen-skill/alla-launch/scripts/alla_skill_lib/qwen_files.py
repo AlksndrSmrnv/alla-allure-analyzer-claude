@@ -2,13 +2,16 @@
 
 Qwen Code читает агентов из ``<проект>/.qwen/agents/`` и команды из
 ``<проект>/.qwen/commands/`` при старте сеанса, а скилл лежит в ``.qwen/skills/`` —
-поэтому скилл сам копирует их туда. Только что установленное Qwen увидит со
-следующего сеанса.
+поэтому файлы приходится копировать туда. Скилл делает это только командой
+``install-files --yes`` после согласия пользователя, ``setup``, ``update`` и ``prepare``
+в ``.qwen/`` ничего не пишут. Только что установленное Qwen увидит со следующего сеанса.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from alla_skill_lib import workspace as ws
@@ -43,32 +46,62 @@ def _install(source: Path, target: Path) -> bool:
     return True
 
 
-def install_batch_agent(project_root: Path) -> Path | None:
-    """Положить описание субагента в ``<проект>/.qwen/agents/``, если его нет или оно другое.
+@dataclass(frozen=True)
+class PlannedFile:
+    """Один файл скилла для ``.qwen/`` проекта и что с ним сделает установка."""
 
-    В текущем сеансе ``agent`` ответит, что такого типа нет (на это есть запасной путь в
-    ответе ``next``). Возвращает путь, если файл записан.
+    what: str  # «команда /alla:run», «субагент пакетов alla-batch»
+    source: Path
+    target: Path
+    state: str  # NEW | CHANGED | SAME
+
+
+NEW, CHANGED, SAME = "new", "changed", "same"
+
+
+def _state(source: Path, target: Path) -> str:
+    try:
+        if not target.is_file():
+            return NEW
+        return SAME if target.read_text(encoding="utf-8") == source.read_text(encoding="utf-8") else CHANGED
+    except OSError:
+        return CHANGED
+
+
+def planned_files(
+    project_root: Path,
+    extension_agents: Mapping[str, Path] | None = None,
+    extension_commands: Mapping[str, tuple[str, Path]] | None = None,
+) -> list[PlannedFile]:
+    """Файлы, которые ``install-files`` положит в ``<проект>/.qwen/``; на диск ничего не пишет.
+
+    Субагент пакетов ``alla-batch``, команды ``/alla:*`` скилла и — для включённых расширений —
+    их субагенты (``extension_agents``: имя агента → файл) и команды
+    (``extension_commands``: имя команды → (имя расширения, файл)). Лишние файлы в папках
+    пользователя не затрагиваются.
     """
-    source = batch_agent_source()
-    if not source.is_file():
-        return None
-    target = project_root / ".qwen" / "agents" / source.name
-    return target if _install(source, target) else None
+    files: list[PlannedFile] = []
+    agent = batch_agent_source()
+    if agent.is_file():
+        target = extension_agent_target(project_root, BATCH_AGENT)
+        files.append(PlannedFile(f"субагент пакетов {BATCH_AGENT}", agent, target, _state(agent, target)))
+    for source in sorted(commands_source().glob("*.md")):
+        target = extension_command_target(project_root, source.stem)
+        files.append(PlannedFile(f"команда /alla:{source.stem}", source, target, _state(source, target)))
+    for name, source in (extension_agents or {}).items():
+        target = extension_agent_target(project_root, name)
+        files.append(PlannedFile(f"субагент расширения {name}", source, target, _state(source, target)))
+    for name, (owner, source) in (extension_commands or {}).items():
+        target = extension_command_target(project_root, name)
+        files.append(
+            PlannedFile(f"команда /alla:{name} расширения {owner}", source, target, _state(source, target))
+        )
+    return files
 
 
-def install_commands(project_root: Path) -> list[Path]:
-    """Положить команды ``/alla:*`` в ``<проект>/.qwen/commands/alla/``; возвращает записанные.
-
-    Лишние файлы в этой папке не удаляются: их мог добавить пользователь.
-    Та же логика — ``install_commands`` в ``alla_skill.py`` (``setup`` идёт без этой библиотеки).
-    """
-    source_dir = commands_source()
-    target_dir = project_root / ".qwen" / "commands" / COMMANDS_NAMESPACE
-    return [
-        target_dir / source.name
-        for source in sorted(source_dir.glob("*.md"))
-        if _install(source, target_dir / source.name)
-    ]
+def install_planned(files: Sequence[PlannedFile]) -> list[PlannedFile]:
+    """Записать новые и изменившиеся файлы плана; возвращает записанные."""
+    return [item for item in files if item.state != SAME and _install(item.source, item.target)]
 
 
 def extension_agent_target(project_root: Path, agent_name: str) -> Path:

@@ -39,7 +39,7 @@ import shutil
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from datetime import date, datetime, timezone
 from itertools import islice
 from pathlib import Path
@@ -133,10 +133,12 @@ from alla_skill_lib.proposals import (
 )
 from alla_skill_lib.problem_state import CurrentState, confirmations, current_state
 from alla_skill_lib.qwen_files import (
-    install_batch_agent,
-    install_commands,
+    SAME,
+    PlannedFile,
     install_extension_agent,
     install_extension_command,
+    install_planned,
+    planned_files,
     remove_extension_agent,
     remove_extension_command,
 )
@@ -340,6 +342,8 @@ def _dispatch(argv: list[str] | None) -> int:
                           in_job=_JOB_DIR is not None)
     if args.command == "check":
         return cmd_check(project_root, reports_dir)
+    if args.command == "install-files":
+        return cmd_install_files(project_root, confirm=args.yes)
     if args.command == "clean":
         return cmd_clean(reports_dir, args.older_than_days, dry_run=args.dry_run)
     if args.command == "remember":
@@ -442,6 +446,13 @@ def _build_parser() -> argparse.ArgumentParser:
     check_run.add_argument("clusters", nargs="+", help="номера проблем из пакета: 3 или 03")
     commands.add_parser(
         "check", parents=[common], help="проверить окружение, настройки и доступ к TestOps"
+    )
+    installer = commands.add_parser(
+        "install-files", parents=[common],
+        help="показать (или с --yes поставить) субагентов и команды /alla:* в .qwen/ проекта",
+    )
+    installer.add_argument(
+        "--yes", action="store_true", help="поставить файлы; только после согласия пользователя"
     )
     review = commands.add_parser(
         "review", parents=[common],
@@ -629,12 +640,6 @@ def cmd_prepare(
     фоновое задание: выгрузка здесь, синхронно (как и при ``RUN_IN_BACKGROUND = False``).
     """
     started = time.monotonic()
-    installed = install_batch_agent(project_root)
-    if installed is not None:
-        _progress(f"Установлен субагент пакетов {installed} (Qwen Code увидит его со следующего сеанса).")
-    if install_commands(project_root):
-        _progress("Установлены команды /alla:* (Qwen Code увидит их со следующего сеанса).")
-    _install_extension_agents(project_root)
     if RUN_IN_BACKGROUND and not in_job:
         repeat = repeat or ws.skill_command("prepare", str(launch_id))
         slot = jobs.job_slot(reports_dir, f"prepare-{launch_id}")
@@ -2774,22 +2779,61 @@ def _extensions_request(
     return ext.block(lines)
 
 
-def _install_extension_agents(project_root: Path) -> None:
-    """Субагенты и слэш-команды включённых расширений — в ``.qwen/`` проекта."""
+def _qwen_files_plan(project_root: Path) -> list[PlannedFile]:
+    """Файлы скилла для ``.qwen/`` проекта вместе с файлами включённых расширений."""
+    agents: dict[str, Path] = {}
+    commands: dict[str, tuple[str, Path]] = {}
     for extension, _ in ext.active(project_root).extensions:
-        if extension.agent is not None and install_extension_agent(
-            project_root, extension.agent, extension.agent_name
-        ):
-            _progress(
-                f"Установлен субагент расширения {extension.agent_name} (Qwen Code увидит его со "
-                "следующего сеанса)."
-            )
+        if extension.agent is not None:
+            agents[extension.agent_name] = extension.agent
         for name, source in extension.commands.items():
-            if install_extension_command(project_root, source, name):
-                _progress(
-                    f"Установлена команда /alla:{name} расширения {extension.name} (Qwen Code "
-                    "увидит её со следующего сеанса)."
-                )
+            commands[name] = (extension.name, source)
+    return planned_files(project_root, agents, commands)
+
+
+def cmd_install_files(project_root: Path, *, confirm: bool) -> int:
+    """Показать или поставить субагентов и команды ``/alla:*`` в ``.qwen/`` проекта.
+
+    Без ``--yes`` ничего не пишет: перечисляет файлы, модель спрашивает пользователя.
+    """
+    files = _qwen_files_plan(project_root)
+    pending = [item for item in files if item.state != SAME]
+    if not pending:
+        print("STATUS: ok")
+        print("Субагенты и команды /alla:* уже установлены и совпадают с файлами скилла: ставить нечего.")
+        return 0
+    if confirm:
+        written = install_planned(files)
+        failed = [item for item in pending if item not in written]
+        print("STATUS: ok" if not failed else "STATUS: error")
+        print("Записано в .qwen/ проекта:")
+        print(*_file_lines(written), sep="\n")
+        if failed:
+            print("Не удалось записать (права или занятый файл):")
+            print(*_file_lines(failed), sep="\n")
+        print(
+            "Qwen Code читает эти файлы при старте сеанса: команды /alla:* и субагент пакетов "
+            "заработают после перезапуска."
+        )
+        return 1 if failed else 0
+    print("STATUS: install_files")
+    print("Скилл положит в .qwen/ проекта (общие для команды, их можно закоммитить):")
+    print(*_file_lines(pending), sep="\n")
+    print(
+        "Это слэш-команды Qwen Code (/alla:run, /alla:apply и другие) и субагент для пакетного "
+        "разбора больших прогонов. Удалить их можно, стерев файлы; скилл без них работает: "
+        "через /alla-launch, а пакеты — запасным путём без субагента. Ничего не записано."
+    )
+    print(
+        "Спроси пользователя, ставить ли эти файлы. Только после его «да» выполни:\n"
+        + ws.skill_command("install-files", "--yes")
+    )
+    return 0
+
+
+def _file_lines(files: Sequence[PlannedFile]) -> list[str]:
+    verbs = {"new": "создать", "changed": "обновить"}
+    return [f"- {verbs.get(item.state, 'без изменений')}: {item.target} — {item.what}" for item in files]
 
 
 def _with_report_hooks(paths: ws.RunPaths, body: str) -> str:
@@ -2855,6 +2899,16 @@ def _report_data(paths: ws.RunPaths, run: dict[str, Any], body: str) -> dict[str
 # ---------------------------------------------------------------------------
 
 
+def _qwen_files_line(project_root: Path) -> str:
+    pending = [item for item in _qwen_files_plan(project_root) if item.state != SAME]
+    if not pending:
+        return "Команды /alla:* и субагенты в .qwen/ проекта: установлены"
+    return (
+        f"Команды /alla:* и субагенты в .qwen/ проекта: не установлены или устарели "
+        f"({len(pending)} файл.); показать список: {ws.skill_command('install-files')}"
+    )
+
+
 def cmd_check(project_root: Path, reports_dir: Path) -> int:
     """Проверить окружение и доступ к TestOps, ничего не создавая."""
     env_file = ws.SKILL_DIR / ".env"
@@ -2875,6 +2929,7 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
     lines += [
         f"ALLURE_ENDPOINT: {settings.endpoint}",
         "ALLURE_TOKEN: задан (значение не показывается)",
+        _qwen_files_line(project_root),
     ]
     # Корневая база показывается всегда; модульные (<модуль>/alla-kb) — если они есть.
     for kb_dir in sorted({find_kb_dir(project_root), *discover_kb_dirs(project_root)}):

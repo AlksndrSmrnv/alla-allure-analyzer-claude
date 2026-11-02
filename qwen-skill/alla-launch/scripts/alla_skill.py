@@ -56,6 +56,12 @@ REQUIREMENTS = SKILL_DIR / "requirements.txt"
 # ставились зависимости. Нет маркера или хэш другой — окружение не готово.
 SETUP_MARKER = VENV_DIR / ".alla-setup-complete"
 MIN_VERSION = (3, 11)
+# setup и update в .qwen/ проекта не пишут: команды /alla:* и субагента ставит install-files
+# после согласия пользователя.
+FILES_NOTE = (
+    "Слэш-команды /alla:* и субагент пакетов в .qwen/ проекта setup и update не ставят. "
+    "Показать, какие файлы будут созданы или обновлены (ничего не записывает): {}"
+)
 PYTHON_CANDIDATES = ("python3.13", "python3.12", "python3.11", "python3", "python")
 CHILD_MARKER = "ALLA_SKILL_IN_VENV"
 # Коммит, из которого установлен скилл (пишет update); в .gitignore скилла.
@@ -171,30 +177,6 @@ def create_env_file() -> Path | None:
     if os.name != "nt":
         os.chmod(str(env_file), 0o600)
     return env_file
-
-
-def install_commands(project_dir: Path = PROJECT_DIR) -> list[Path]:
-    """Команды ``/alla:*`` в ``<проект>/.qwen/commands/alla/``; возвращает записанные файлы.
-
-    Та же логика, что ``qwen_files.install_commands``: здесь её не импортировать —
-    ``alla_skill_lib`` требует Python 3.11+.
-    """
-    target_dir = project_dir / ".qwen" / "commands" / "alla"
-    written: list[Path] = []
-    for source in sorted((SKILL_DIR / "commands" / "alla").glob("*.md")):
-        text = source.read_text(encoding="utf-8")
-        text = text if text.endswith("\n") else text + "\n"
-        target = target_dir / source.name
-        try:
-            if target.is_file() and target.read_text(encoding="utf-8") == text:
-                continue
-            target_dir.mkdir(parents=True, exist_ok=True)
-            target.write_text(text, encoding="utf-8")
-        except OSError as error:
-            print("Не удалось установить {}: {}".format(target, error), flush=True)
-            continue
-        written.append(target)
-    return written
 
 
 def use_existing_venv(explicit: str | None) -> bool:
@@ -313,11 +295,7 @@ def setup(argv: Sequence[str]) -> int:
         print(
             "Создан {}: впиши ALLURE_ENDPOINT и ALLURE_TOKEN (токен в чат не пиши).".format(created)
         )
-    if install_commands():
-        print(
-            "Установлены команды /alla:run, /alla:apply и другие в {}: Qwen Code покажет их "
-            "после перезапуска.".format(PROJECT_DIR / ".qwen" / "commands" / "alla")
-        )
+    print(FILES_NOTE.format(self_command("install-files")))
     return 0
 
 
@@ -601,8 +579,7 @@ def update(argv: Sequence[str]) -> int:
             current[:8] or "версия не была записана", sha[:8], added, changed, removed
         )
     )
-    if install_commands():
-        print("Команды /alla:* обновлены: Qwen Code покажет их после перезапуска.")
+    print(FILES_NOTE.format(self_command("install-files")))
     if not setup_complete():
         print(
             "Зависимости нужно доустановить (изменился requirements.txt или окружения ещё нет); "

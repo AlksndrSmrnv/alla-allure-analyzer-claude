@@ -70,7 +70,7 @@ create = "scripts/create.py"
 (`---` / `description` / `argument-hint` / `disable-model-invocation: true` / `---` и текст с
 `{{args}}`), имя файла — имя команды: `commands/jira.md` → `/alla:jira`. Имена команд скилла
 (`run`, `apply`…) заняты, у двух включённых расширений одна команда — второе не работает.
-`enable` и каждый `prepare` кладут команды в `.qwen/commands/alla/`, `disable` убирает их, если
+`enable` и `install-files --yes` кладут команды в `.qwen/commands/alla/`, `disable` убирает их, если
 файл не правили руками; Qwen видит новую команду после перезапуска сеанса. Текст команды —
 просьба «вызови скилл alla-launch и выполни `extensions run <имя> …`» (см. `sut-code/`). Хук `task` — не больше одного на событие (у расширения один
 субагент и одно задание на событие); хуков `script` может быть несколько. Ошибка в манифесте

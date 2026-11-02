@@ -57,12 +57,22 @@ grep -q "добавь строку /.venv" "$work/setup.log" || fail "setup не
 [ -f "$skill/.env" ] || fail "setup не создал .env"
 mode=$(python3 -c "import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))" "$skill/.env")
 [ "$mode" = 0o600 ] || fail "у .env права $mode, ждали 0o600"
-[ -f .qwen/commands/alla/run.md ] || fail "setup не поставил команды /alla:*"
+[ ! -e .qwen/commands ] || fail "setup поставил команды /alla:* без просьбы"
+grep -q "install-files" "$work/setup.log" || fail "setup не подсказал install-files"
 
 echo "== повторный setup берёт существующий .venv"
 python3 "$entry" setup | tee "$work/setup2.log"
 expect_status ready "$work/setup2.log"
 [ ! -e .gitignore ] || ! grep -q "venv" .gitignore || fail "повторный setup изменил .gitignore"
+
+echo "== install-files: сначала показ, запись только с --yes"
+python3 "$entry" install-files | tee "$work/files.log"
+expect_status install_files "$work/files.log"
+[ ! -e .qwen/commands ] || fail "install-files без --yes записал файлы"
+python3 "$entry" install-files --yes | tee "$work/files-yes.log"
+expect_status ok "$work/files-yes.log"
+[ -f .qwen/commands/alla/run.md ] || fail "install-files --yes не поставил команды /alla:*"
+[ -f .qwen/agents/alla-batch.md ] || fail "install-files --yes не поставил субагента alla-batch"
 
 echo "== check с пустым .env"
 code=0

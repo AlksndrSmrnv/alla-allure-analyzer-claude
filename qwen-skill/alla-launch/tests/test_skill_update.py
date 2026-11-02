@@ -107,8 +107,8 @@ def test_update_replaces_skill_and_keeps_user_files(tmp_path: Path, repo: Path) 
     assert (skill / ".env").read_text(encoding="utf-8") == "ALLURE_TOKEN=secret\n"
     assert (skill / ".venv" / "marker").is_file()
     assert (skill / ".alla-version").read_text(encoding="utf-8").strip() == f"{sha} {SOURCE_PATH}"
-    command = project / ".qwen" / "commands" / "alla" / "run.md"
-    assert command.read_text(encoding="utf-8") == "команда версии 2\n"
+    assert not (project / ".qwen" / "commands").exists()  # update команды /alla:* сам не ставит
+    assert "install-files" in result.stdout
     assert sha[:8] in result.stdout
     # Окружения ещё нет — подсказка про setup; чужих временных папок рядом не осталось.
     assert "setup" in result.stdout
