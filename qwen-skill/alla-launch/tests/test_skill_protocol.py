@@ -257,8 +257,8 @@ def _settings() -> Settings:
     return Settings(endpoint="https://testops.example", token="t", max_pages=7, request_timeout=11)
 
 
-def _wrapped(cause: BaseException) -> AllureApiError:
-    error = AllureApiError(0, str(cause), "/api/launch/1")
+def _wrapped(cause: BaseException, endpoint: str = "mcp") -> AllureApiError:
+    error = AllureApiError(0, str(cause), endpoint)
     error.__cause__ = cause
     return error
 
@@ -287,6 +287,10 @@ def test_connect_hint_names_the_own_mcp_url() -> None:
     settings = Settings(endpoint="https://testops.example", token="t", mcp_url="https://mcp.example/x")
     hint = fetch_error_hint(_wrapped(httpx.ConnectError("refused")), settings, Path("/skill/.env"))
     assert "Нет соединения с https://mcp.example/x. Проверь ALLURE_MCP_URL" in hint
+    # Запись статуса (REST) ходит на ALLURE_ENDPOINT, а не на MCP.
+    rest = _wrapped(httpx.ConnectError("refused"), "/api/testresult/9/resolve")
+    hint = fetch_error_hint(rest, settings, Path("/skill/.env"))
+    assert "Нет соединения с https://testops.example. Проверь ALLURE_ENDPOINT" in hint
 
 
 def test_tls_hint_offers_trusting_the_proxy_and_never_disabling_verification() -> None:

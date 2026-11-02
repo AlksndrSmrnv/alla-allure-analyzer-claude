@@ -54,11 +54,16 @@ def fetch_error_hint(exc: BaseException, settings: Settings, env_file: Path) -> 
             f"(сейчас {settings.request_timeout} с) в {env_file}."
         )
     if any(isinstance(item, httpx.ConnectError) for item in causes):
-        return (
-            f"Нет соединения с {settings.mcp_endpoint}. Проверь "
-            + ("ALLURE_MCP_URL" if settings.mcp_url.strip() else "ALLURE_ENDPOINT")
-            + ", VPN и прокси."
+        # Чтение идёт через MCP (ошибки клиента — с endpoint «mcp…»), запись статуса — REST.
+        via_mcp = any(
+            isinstance(item, McpError)
+            or (isinstance(item, AllureApiError) and item.endpoint.startswith("mcp"))
+            for item in causes
         )
+        if via_mcp and settings.mcp_url.strip():
+            return f"Нет соединения с {settings.mcp_endpoint}. Проверь ALLURE_MCP_URL, VPN и прокси."
+        target = settings.mcp_endpoint if via_mcp else settings.endpoint
+        return f"Нет соединения с {target}. Проверь ALLURE_ENDPOINT, VPN и прокси."
     limit = next((item for item in causes if isinstance(item, PaginationLimitError)), None)
     if limit is not None:
         needed = (
