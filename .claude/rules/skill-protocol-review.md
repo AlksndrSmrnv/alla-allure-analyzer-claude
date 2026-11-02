@@ -43,6 +43,10 @@ paths:
   скилла» в ответе) — одна реализация в
   `session_rules.py` для стенда и `review`; стенд оборачивает их под прежними именами.
   Меняя правило, проверь оба: `test_qwen_stand.py` и `test_skill_session_log.py`.
+  `allowed_reads` пропускает `read_file` сохранённого вывода инструмента своего проекта —
+  `<QWEN_HOME|~/.qwen>/tmp/<sha256 корня>/tool-results/` (`qwen_tool_results`): Qwen Code 0.26
+  кладёт туда вывод длиннее 28 тыс. символов, в том числе тело `SKILL.md` от `skill`, и
+  отдаёт модели первые 2 тыс.; `review` берёт `QWEN_HOME` из окружения (`session_log.qwen_home`).
 - Заполнение окна — `session_log.ContextUse`: пик `promptTokenCount` (максимум запроса, не
   сумма) и число записей `system`/`chat_compression` (Qwen Code 0.26), отдельно у основного
   агента и у субагентов (пик — наибольший). В окне разбора — `SessionLog.context`, по всем

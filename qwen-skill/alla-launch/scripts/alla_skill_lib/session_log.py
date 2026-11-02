@@ -77,6 +77,12 @@ def sanitize_cwd(path: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]", "-", normalized)
 
 
+def qwen_home(environ: Mapping[str, str] | None = None) -> Path:
+    """Каталог Qwen Code: ``QWEN_HOME`` или ``~/.qwen``."""
+    home = (os.environ if environ is None else environ).get(QWEN_HOME_ENV)
+    return Path(home).expanduser() if home else Path.home() / ".qwen"
+
+
 def qwen_project_dirs(
     project_root: Path, state: Mapping[str, Any], environ: Mapping[str, str] | None = None
 ) -> list[Path]:
@@ -86,9 +92,7 @@ def qwen_project_dirs(
     for raw in (state.get("qwen_project_dir"), env.get(PROJECT_DIR_ENV)):
         if raw:
             candidates.append(Path(str(raw)))
-    home = env.get(QWEN_HOME_ENV)
-    base = Path(home).expanduser() if home else Path.home() / ".qwen"
-    candidates.append(base / "projects" / sanitize_cwd(str(project_root)))
+    candidates.append(qwen_home(env) / "projects" / sanitize_cwd(str(project_root)))
     unique: list[Path] = []
     for path in candidates:
         if path not in unique:

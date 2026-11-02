@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import posixpath
@@ -71,6 +72,7 @@ class RuleContext:
     calls: list[ToolCall]
     final: str = ""
     run_dirs: list[Path] = field(default_factory=list)
+    qwen_dir: Path | None = None  # QWEN_HOME процесса Qwen; без него — HOME/.qwen
 
     def tool_targets(self, base: Path, raw: str) -> list[Path]:
         return tool_targets(base, raw, self.home)
@@ -364,10 +366,26 @@ def search_scope_problem(call: ToolCall, ctx: RuleContext, raw: str | None = Non
     return None
 
 
+def qwen_tool_results(ctx: RuleContext) -> list[Path]:
+    """Куда Qwen Code сохраняет длинный вывод инструмента этого проекта.
+
+    Qwen Code 0.26: вывод длиннее truncateToolOutputThreshold + 3000 символов (по умолчанию
+    28 тыс.; тело SKILL.md от инструмента `skill` длиннее) уходит в
+    ``<QWEN_HOME>/tmp/<sha256 корня проекта>/tool-results/``, модели — первые 2 тыс. символов
+    и путь. Дочитать его — не чтение вне проекта. Корень — как его видит Qwen (cwd), поэтому
+    хэш и от написанного, и от физического пути.
+    """
+    base = ctx.qwen_dir or ctx.home / ".qwen"
+    roots = {str(ctx.project), str(ctx.project.resolve())}
+    return [canonical(base / "tmp" / hashlib.sha256(root.encode()).hexdigest() / "tool-results")
+            for root in sorted(roots)]
+
+
 def check_allowed_reads(ctx: RuleContext) -> dict[str, Any]:
     """Чтение вне проекта и служебных файлов скилла. Несуществующий путь (опечатка модели)
     ничего не раскрывает: он не нарушение, но попадает в evidence."""
     project = canonical(ctx.project)
+    tool_results = qwen_tool_results(ctx)
     missing = []
     for call in ctx.calls:
         if call.name == "grep_search":
@@ -389,6 +407,9 @@ def check_allowed_reads(ctx: RuleContext) -> dict[str, Any]:
             for path in ctx.tool_targets(project, raw):
                 if not path.exists():
                     missing.append(at(call, f"нет такого пути: {path}"))
+                    continue
+                if call.name == "read_file" and path.is_file() and any(
+                        path.is_relative_to(saved) for saved in tool_results):
                     continue
                 if not path.is_relative_to(project):
                     return bad(at(call, f"вне проекта: {path}"))
