@@ -106,7 +106,10 @@
 ```
 
 Скилл сам поставит зависимости в `.venv` в корне проекта (создаст его, если нет; существующий
-должен быть на Python 3.11+) — это 1–3 минуты — и создаст файл настроек.
+должен быть на Python 3.11+) — это 1–3 минуты — и создаст файл настроек. Зависимости ставятся
+строго по `requirements.txt`: точные версии и проверка хешей (`pip --require-hashes`), поэтому
+подмена пакета в индексе не пройдёт. Слэш-команды `/alla:*` скилл предложит поставить отдельно
+и только после вашего «да».
 
 **3. Впишите адрес TestOps и токен** в `.qwen/skills/alla-launch/.env`:
 
@@ -463,11 +466,21 @@ Python-скрипт скилла выгружает прогон из TestOps, �
 | `qwen-skill/alla-launch/tests/` | Тесты на фейковом TestOps, стенд настоящего Qwen Code, эталон точности `eval/` |
 
 ```bash
-python3.11 -m venv .venv && .venv/bin/pip install -r qwen-skill/alla-launch/requirements-dev.txt
+python3.11 -m venv .venv && .venv/bin/pip install --require-hashes -r qwen-skill/alla-launch/requirements-dev.txt
 ```
 
 ```bash
 .venv/bin/python -m pytest
+```
+
+Зависимости закреплены lock-файлами `requirements.txt` и `requirements-dev.txt` (точные версии
+и хеши всех колёс); руками их не правят. Меняйте диапазоны в `requirements.in` и
+`requirements-dev.in` и перегенерируйте:
+
+```bash
+cd qwen-skill/alla-launch
+uv pip compile requirements.in --universal --python-version 3.11 --generate-hashes --only-binary :all: --exclude-newer <дата не новее 3 дней назад> -o requirements.txt
+uv pip compile requirements-dev.in -c requirements.txt --universal --python-version 3.11 --generate-hashes --only-binary :all: --exclude-newer <та же дата> -o requirements-dev.txt
 ```
 
 Правила разработки — в [`CLAUDE.md`](CLAUDE.md), проверка поведения модели — в

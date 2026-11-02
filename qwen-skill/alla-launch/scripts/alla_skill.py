@@ -276,7 +276,7 @@ def setup(argv: Sequence[str]) -> int:
     )
     code = subprocess.call([
         str(target), "-m", "pip", "install", "--disable-pip-version-check",
-        "-r", str(REQUIREMENTS),
+        "--require-hashes", "-r", str(REQUIREMENTS),
     ] + pip_args)
     if code != 0:
         print("STATUS: error")

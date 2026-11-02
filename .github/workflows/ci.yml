@@ -30,7 +30,7 @@ jobs:
           cache: pip
           cache-dependency-path: qwen-skill/alla-launch/requirements*.txt
       - name: Install dependencies
-        run: python -m pip install -r qwen-skill/alla-launch/requirements-dev.txt
+        run: python -m pip install --require-hashes -r qwen-skill/alla-launch/requirements-dev.txt
       # -rs: причины пропусков в журнале (на Linux пропускаются только проверки стенда для macOS).
       - name: pytest
         run: python -m pytest -rs

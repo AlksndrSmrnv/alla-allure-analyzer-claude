@@ -22,7 +22,8 @@ paths:
   не игнорирует `.venv` (`venv_needs_ignore`), только напоминает добавить `/.venv` — без слэша
   на конце, иначе шаблон не прикрывает `.venv`-симлинк (так его делает стенд). `check-ignore` —
   по пути `.venv`, если он есть (у симлинка путь со слэшем — ошибка 128), иначе `.venv/`. После
-  успешного pip install пишет `.venv/.alla-setup-complete` (хэш `requirements.txt`) и создаёт
+  успешного `pip install --require-hashes -r requirements.txt` (lock с точными версиями и хешами; диапазоны — в
+  `requirements.in`, см. `CLAUDE.md`) пишет `.venv/.alla-setup-complete` (хэш `requirements.txt`) и создаёт
   `.env` скилла из образца. Без маркера все команды отвечают `STATUS: setup_required`.
 - Установку с нуля на Linux проверяет `.github/scripts/skill_setup_smoke.sh` (job CI в
   `python:3.11`): `setup_required` до установки, `setup` дважды (второй берёт готовый `.venv`,

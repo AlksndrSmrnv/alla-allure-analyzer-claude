@@ -36,7 +36,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 ## Команды
 
 ```bash
-python3.11 -m venv .venv && .venv/bin/pip install -r qwen-skill/alla-launch/requirements-dev.txt
+python3.11 -m venv .venv && .venv/bin/pip install --require-hashes -r qwen-skill/alla-launch/requirements-dev.txt
 .venv/bin/python -m pytest                      # из корня, около 2,5 минут
 .venv/bin/ruff check qwen-skill/alla-launch
 .venv/bin/mypy qwen-skill/alla-launch/scripts qwen-skill/alla-launch/extensions   # strict, без ошибок
@@ -52,7 +52,14 @@ pytest (`-rs`; на Linux пропускаются только 4 проверк
 отдельный job гоняет `skill_setup_smoke.sh` в контейнере `python:3.11` —
 установку скилла в синтетический проект и `check`/`prepare` против фейкового TestOps.
 Стенд Qwen в CI не запускается: он только для macOS и платный. ruff и mypy закреплены в
-`requirements-dev.txt` точными версиями — обновлять вместе с исправлением их замечаний.
+`requirements-dev.in` точными версиями — обновлять вместе с исправлением их замечаний.
+
+Зависимости — lock-файлы с хешами: `requirements.txt` (runtime, его ставит `setup` с
+`--require-hashes`) и `requirements-dev.txt` собирает `uv pip compile` из `requirements.in` и
+`requirements-dev.in` (команды — README, «Для разработчиков»; `--exclude-newer` — не новее 3 дней, как
+на этом Mac). `.txt` руками не править; `test_skill_units.py` проверяет `==` и хеши у каждого
+пакета. Хеш `requirements.txt` — маркер установки: любая правка файла даёт всем один раз
+`setup_required`.
 
 ## Проверка на настоящем Qwen Code
 

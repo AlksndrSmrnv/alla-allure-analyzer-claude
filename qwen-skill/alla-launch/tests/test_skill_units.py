@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -776,6 +777,57 @@ def test_setup_stays_quiet_outside_git(tmp_path: Path) -> None:
 
     assert not alla_skill.venv_needs_ignore(tmp_path)
     assert not (tmp_path / ".gitignore").exists()
+
+
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _lock_entries(path: Path) -> dict[str, list[list[str]]]:
+    """Имя пакета (нормализованное) → блоки lock-файла: строка с версией и строки с хешами.
+
+    Блоков несколько у пакета с разной версией под разные Python (numpy, scipy).
+    """
+    entries: dict[str, list[list[str]]] = {}
+    current: list[str] | None = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line[0].isspace():
+            assert current is not None, line
+            current.append(line.strip())
+            continue
+        name = re.split(r"[=<>~!; ]", line, maxsplit=1)[0]
+        current = [line]
+        entries.setdefault(name.lower().replace("_", "-"), []).append(current)
+    return entries
+
+
+@pytest.mark.parametrize("lock, source", [
+    ("requirements.txt", "requirements.in"), ("requirements-dev.txt", "requirements-dev.in"),
+])
+def test_dependencies_are_locked_with_exact_versions_and_hashes(lock: str, source: str) -> None:
+    """setup ставит с --require-hashes: у каждого пакета ``==`` и хеши, прямые зависимости на месте."""
+    entries = _lock_entries(SKILL_ROOT / lock)
+    assert entries
+    for name, blocks in entries.items():
+        for lines in blocks:
+            assert re.match(r"^[A-Za-z0-9_.-]+==[^=]+", lines[0]), (name, lines[0])
+            assert any(item.startswith("--hash=sha256:") for item in lines), name
+    wanted = [
+        re.split(r"[=<>~!; ]", line.strip(), maxsplit=1)[0].lower().replace("_", "-")
+        for line in (SKILL_ROOT / source).read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith(("#", "-"))
+    ]
+    assert wanted
+    assert not [name for name in wanted if name not in entries]
+
+
+def test_setup_installs_only_from_the_hashed_lock() -> None:
+    import alla_skill
+
+    assert alla_skill.REQUIREMENTS.name == "requirements.txt"
+    source = (SKILL_ROOT / "scripts" / "alla_skill.py").read_text(encoding="utf-8")
+    assert '"--require-hashes", "-r", str(REQUIREMENTS)' in source
 
 
 def test_cli_does_not_load_clustering_libraries() -> None:

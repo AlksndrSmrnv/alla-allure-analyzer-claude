@@ -7,7 +7,7 @@ Harness разделяет Python-протокол и поведение Qwen Co
 ## Локальный запуск
 
 Используй существующую `.venv` проекта с зависимостями из
-`qwen-skill/alla-launch/requirements-dev.txt`. Нового runtime или пакета нет.
+`qwen-skill/alla-launch/requirements-dev.txt` (lock с хешами, ставить с `--require-hashes`). Нового runtime или пакета нет.
 
 ```bash
 .venv/bin/python scripts/skill_quality.py plan
