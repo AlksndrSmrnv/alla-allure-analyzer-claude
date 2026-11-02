@@ -80,6 +80,28 @@ def test_record_under_an_endpoint_prefix(tmp_path: Path) -> None:
     assert cassette.details[101]["scenario"] == {"steps": fixture.executions[101]}
 
 
+def test_repeated_last_page_without_totals_is_not_recorded(tmp_path: Path) -> None:
+    """Сервер без итогов не листает дальше и повторяет страницу: в кассете её нет, и
+    воспроизведение не видит лишних повторов."""
+    fixture = default_launch()
+    fake = FakeTestOps(fixture)
+    original = fake._find
+
+    def find(arguments: dict[str, object]) -> object:
+        if str(arguments.get("aql", "")).startswith("launch"):
+            page = min(int(arguments.get("page", 0)), 2)  # после последней — она же
+            return original({**arguments, "page": page})["content"]
+        return original(arguments)
+
+    fake._find = find  # type: ignore[method-assign]
+    settings = Settings.load(environ=ENVIRON)
+    record(777, tmp_path / "cassette", settings,
+           inner=lambda verify: httpx.MockTransport(fake.handle))
+
+    cassette = load_cassette(tmp_path / "cassette")
+    assert [item["id"] for item in cassette.results] == [item["id"] for item in fixture.results]
+
+
 def test_record_refuses_a_non_empty_directory(tmp_path: Path) -> None:
     (tmp_path / "cassette").mkdir()
     (tmp_path / "cassette" / "launch.json").write_text("{}", encoding="utf-8")

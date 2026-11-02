@@ -700,13 +700,14 @@ def _scenario_steps(scenario: object) -> list[dict[str, Any]]:
 
 
 def _fixtures(fixtures: object) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Фикстуры: ``{befores, afters}`` или список с ``type`` (``after…`` — после теста)."""
+    """Фикстуры: ``{befores, afters}`` или список с ``type``; ``after``/``teardown`` — после теста."""
     before: list[dict[str, Any]] = []
     after: list[dict[str, Any]] = []
     if isinstance(fixtures, dict):
         for key, value in fixtures.items():
             if isinstance(value, list):
-                target = after if "after" in str(key).lower() else before
+                kind = str(key).lower()
+                target = after if "after" in kind or "teardown" in kind else before
                 target.extend(item for item in value if isinstance(item, dict))
     elif isinstance(fixtures, list):
         for item in fixtures:

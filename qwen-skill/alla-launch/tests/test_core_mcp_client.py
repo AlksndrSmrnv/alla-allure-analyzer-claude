@@ -500,6 +500,18 @@ def test_full_result_decodes_attachments_and_orders_fixtures(monkeypatch: pytest
     assert all("content" not in (item.model_extra or {}) for item in attachments)
 
 
+def test_teardown_fixtures_go_after_the_test_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture = _full_fixture({
+        "scenario": {"steps": [{"name": "Тело", "status": "failed"}]},
+        "fixtures": {"setups": [{"name": "setUp", "status": "passed"}],
+                     "teardowns": [{"name": "tearDown", "status": "broken"}]},
+        "attachments": {},
+    })
+    FakeTestOps(fixture).install(monkeypatch)
+    steps = _run(_settings(), lambda client: client.get_test_result_execution(101))
+    assert [step.name for step in steps] == ["setUp", "Тело", "tearDown"]
+
+
 def test_content_is_capped_and_evicted_content_is_fetched_again(monkeypatch: pytest.MonkeyPatch) -> None:
     fixture = default_launch()
     fixture.contents[9001] = b"x" * 5000

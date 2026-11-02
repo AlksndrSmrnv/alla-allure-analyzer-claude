@@ -52,6 +52,13 @@ class Recording:
             self.launch_id = int(match[1])
             page = next((value for key, value in arguments.items()
                          if key in ("page", "pageNumber") and isinstance(value, int)), 0)
+            totals = isinstance(payload, dict) and any(
+                key in payload for key in ("totalPages", "totalElements", "total"))
+            seen = {item.get("id") for number, earlier in self.pages.items() if number != page
+                    for item in earlier}
+            # Без итогов клиент отбрасывает страницу без новых id (конец выгрузки) — кассета тоже.
+            if not totals and all(item.get("id") in seen for item in items):
+                return
             self.pages[page] = items
         elif (match := _ID_AQL.match(aql)) and items:
             result_id = int(match[1])
