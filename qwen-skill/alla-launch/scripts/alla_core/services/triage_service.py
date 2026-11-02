@@ -403,7 +403,7 @@ class TriageService:
         результата по id (MCP).
 
         Мутирует объекты summaries in-place: заполняет status_trace, а status_message —
-        только если его не было.
+        только если его не было (и без трейса: сообщение полного ответа MCP).
         """
         missing = [s for s in summaries if not s.status_trace]
         if not missing:
@@ -439,6 +439,10 @@ class TriageService:
             details = detail.status_details if isinstance(detail.status_details, dict) else {}
             trace = _diagnostic_text(detail.trace) or _diagnostic_text(details.get("trace"))
             if not trace:
+                # Без трейса — хотя бы сообщение, если своего не было: по MCP в списке его
+                # может не быть, а в полном ответе оно есть (ревью Codex).
+                if not summary.status_message:
+                    summary.status_message = _diagnostic_text(details.get("message"))
                 continue
             summary.status_trace = trace
             if not summary.status_message:

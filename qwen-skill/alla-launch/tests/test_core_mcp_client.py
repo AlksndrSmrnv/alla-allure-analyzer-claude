@@ -533,6 +533,24 @@ def test_named_failed_scenario_root_is_kept(monkeypatch: pytest.MonkeyPatch) -> 
     assert steps[0].steps is not None and steps[0].steps[0].name == "Открыть"
 
 
+def test_message_of_the_full_result_reaches_triage_without_a_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """В списке у теста нет ошибки, в полном ответе — только сообщение, шаги passed."""
+    fixture = default_launch()
+    fixture.details[108] = {"id": 108, "status": "failed", "message": "Order not found",
+                            "scenario": {"steps": [{"name": "Шаг", "status": "passed"}]},
+                            "attachments": {}}
+    FakeTestOps(fixture).install(monkeypatch)
+
+    async def action(client: TestOpsMcpClient) -> Any:
+        return await TriageService(client, _settings()).analyze_launch(777)
+
+    report = _run(_settings(), action)
+    silent = next(test for test in report.failed_tests if test.test_result_id == 108)
+    assert silent.status_message == "Order not found" and not silent.status_trace
+
+
 def test_teardown_fixtures_go_after_the_test_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     fixture = _full_fixture({
         "scenario": {"steps": [{"name": "Тело", "status": "failed"}]},
