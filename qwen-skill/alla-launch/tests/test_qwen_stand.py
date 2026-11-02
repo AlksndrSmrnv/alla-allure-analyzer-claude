@@ -379,6 +379,7 @@ def test_files_are_installed_only_after_the_consent_turn(tmp_path: Path) -> None
     assert verdict([listing, writing], []) == "fail"  # записал до «да»
     assert verdict([listing], []) == "fail"  # «да» получено, а установки нет
     assert verdict([writing], [writing]) == "fail"  # без показа списка
+    assert verdict([], [writing, listing]) == "fail"  # показ уже после записи
 
 
 def test_negative_case_detects_activation(tmp_path: Path) -> None:

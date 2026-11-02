@@ -36,7 +36,7 @@ def _install(source: Path, target: Path) -> bool:
     """Скопировать ``source`` в ``target``, если его там нет или он другой; True — записан."""
     text = _written_text(source)
     try:
-        if target.is_file() and target.read_text(encoding="utf-8") == text:
+        if _state(source, target) == SAME:
             return False
         target.parent.mkdir(parents=True, exist_ok=True)
         ws.write_text(target, text)
@@ -70,7 +70,7 @@ def _state(source: Path, target: Path) -> str:
         if not target.is_file():
             return NEW
         return SAME if target.read_text(encoding="utf-8") == _written_text(source) else CHANGED
-    except OSError:
+    except (OSError, ValueError):  # ValueError — файл не в UTF-8: заменить
         return CHANGED
 
 

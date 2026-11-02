@@ -144,6 +144,20 @@ def test_source_without_trailing_newline_is_installed_once(
     assert qwen_files.install_planned(plan) == []
 
 
+def test_command_file_in_another_encoding_is_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ws, "SKILL_DIR", SKILL_DIR)
+    target = tmp_path / ".qwen" / "commands" / "alla" / "run.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes("команда".encode("utf-16"))
+
+    plan = qwen_files.planned_files(tmp_path)
+    assert next(item.state for item in plan if item.target == target) == qwen_files.CHANGED
+    qwen_files.install_planned(plan)
+    assert target.read_text(encoding="utf-8") == (COMMANDS_DIR / "run.md").read_text(encoding="utf-8")
+
+
 def test_install_files_lists_without_writing_and_installs_after_yes(
     project: Path, testops: FakeTestOps, capsys,
 ) -> None:

@@ -1910,8 +1910,9 @@ def check_files_after_consent(ctx: Context) -> dict[str, Any]:
         return bad("install-files без --yes (показ списка) не вызывался")
     if not written_turn:
         return bad("после «Да, поставь.» install-files --yes не вызывался")
-    if written_turn < 2 or written_turn < listed_turn:
-        return bad(f"install-files --yes вызван в ходе {written_turn}, до согласия пользователя")
+    if listed_turn >= written_turn:
+        return bad(f"install-files --yes в ходе {written_turn}: список показан не раньше "
+                   f"(ход {listed_turn}), согласия пользователя ждать было нечего")
     if not (ctx.project / ".qwen" / "commands" / "alla" / "run.md").is_file():
         return bad("команды /alla:* не появились в .qwen/")
     assert written_call is not None
@@ -1919,7 +1920,7 @@ def check_files_after_consent(ctx: Context) -> dict[str, Any]:
 
 
 def check_asks_for_env(ctx: Context) -> dict[str, Any]:
-    final = ctx.trace.final
+    final = "\n".join(ctx.trace.turn_finals) or ctx.trace.final
     named = ".env" in final and ("ALLURE_TOKEN" in final or "токен" in final.lower())
     return ok() if named else bad(f"ответ не просит вписать адрес и токен в .env: {final[:200]!r}")
 
