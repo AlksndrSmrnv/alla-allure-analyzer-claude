@@ -59,8 +59,9 @@ GitLab / YouTrack к Алле». Что делает `tickets` и как уст�
    к нему. Не подставляй запуск, который сам скачивает и исполняет пакет при каждом старте
    (`npx -y …`, `npx` и `uvx` без версии), — это непроверенный код с доступом к токену трекера.
    Нужен ли серверу `node` — тогда его каталог пойдёт в `extra_path`.
-2. Имена переменных окружения с токеном и адресом (и нужен ли серверу `HOME`, `HTTPS_PROXY`,
-   `SSL_CERT_FILE`).
+2. Имена переменных окружения с токеном и адресом (и нужны ли серверу `HTTPS_PROXY`,
+   `SSL_CERT_FILE`). `HOME` по умолчанию не передаётся: добавляй его, только если сервер без
+   него не стартует — это покажут пробы раздела 6.
 3. Какие команды (`team_application`, `team_test`, `team_environment`, `team_data`,
    `team_unknown`) в какой проект или очередь трекера заводят тикеты.
 4. Типы тикета: что в трекере соответствует `bug`, `task`, `investigation`.
@@ -95,7 +96,7 @@ GitLab / YouTrack к Алле». Что делает `tickets` и как уст�
    ```toml
    [tickets]
    adapter_command = [".venv/bin/python", ".qwen/skills/alla-launch/extensions/tickets/adapters/mcp.py", "--config", "alla-extensions/mcp-tracker.toml"]
-   adapter_env = ["TRACKER_TOKEN", "HOME"]
+   adapter_env = ["TRACKER_TOKEN"]
    adapter_timeout = 25
    team_application = "backend"
    team_test = "qa"
@@ -216,13 +217,16 @@ url_template = "{site}/-/issues/{id}"
 UUID. Все пробы идут в **тестовый** проект: команда `test` из `[projects]` (раздел 4, шаг 2).
 
 В настоящем запуске адаптер получает только переменные из `adapter_env`; повтори это в
-пробах через `env -i`, иначе недостающую переменную не заметишь.
+пробах через `env -i`, иначе недостающую переменную не заметишь. Пробы идут без `HOME`:
+если сервер без него не стартует (`MCP-сервер не ответил вовремя` или `MCP-сервер завершился
+без ответа`, а с `HOME` проба проходит), добавь `HOME` в `adapter_env` и в `env -i` проб.
+Без такой причины домашний каталог адаптеру не передавай.
 
 1. **`extensions list`** — расширение `tickets` включено, ошибок в строке нет.
 2. **`prepare` — сервер не запускается**, видны ошибки файла и итоговый текст:
 
    ```bash
-   printf '%s' '{"api":1,"operation":"prepare","request_id":"00000000-0000-4000-8000-000000000001","action":"create","target_id":null,"ticket":{"kind":"bug","team":"test","title":"Проба подключения","description":"Проверка настройки, не тикет.","launch_id":1}}' | env -i HOME="$HOME" PYTHONIOENCODING=utf-8 .venv/bin/python .qwen/skills/alla-launch/extensions/tickets/adapters/mcp.py --config alla-extensions/mcp-tracker.toml
+   printf '%s' '{"api":1,"operation":"prepare","request_id":"00000000-0000-4000-8000-000000000001","action":"create","target_id":null,"ticket":{"kind":"bug","team":"test","title":"Проба подключения","description":"Проверка настройки, не тикет.","launch_id":1}}' | env -i PYTHONIOENCODING=utf-8 .venv/bin/python .qwen/skills/alla-launch/extensions/tickets/adapters/mcp.py --config alla-extensions/mcp-tracker.toml
    ```
 
    В ответе `scope` (`site` и проект) и `payload` в base64: раскодируй и проверь поля
@@ -233,7 +237,7 @@ UUID. Все пробы идут в **тестовый** проект: кома�
    всегда: показывает точные имена сервера для исправления:
 
    ```bash
-   env -i HOME="$HOME" TRACKER_TOKEN="$TRACKER_TOKEN" PYTHONIOENCODING=utf-8 .venv/bin/python .qwen/skills/alla-launch/extensions/tickets/adapters/mcp.py --config alla-extensions/mcp-tracker.toml --check
+   env -i TRACKER_TOKEN="$TRACKER_TOKEN" PYTHONIOENCODING=utf-8 .venv/bin/python .qwen/skills/alla-launch/extensions/tickets/adapters/mcp.py --config alla-extensions/mcp-tracker.toml --check
    ```
 
    У каждого раздела должно быть «есть»; код возврата 1 и «НЕТ У СЕРВЕРА» — поправь имя по
@@ -242,7 +246,7 @@ UUID. Все пробы идут в **тестовый** проект: кома�
    `items_path`, а заодно имена всех инструментов файла. Нужен раздел `[search]`; в `scope` подставь `site` и проект из ответа шага 2:
 
    ```bash
-   printf '%s' '{"api":1,"operation":"search","request_id":"00000000-0000-4000-8000-000000000001","action":"create","target_id":null,"scope":{"site":"https://tracker.company","project_or_queue":"TEST"},"ticket":{"kind":"bug","team":"test","title":"Проба подключения","description":"Проверка настройки, не тикет.","launch_id":1}}' | env -i HOME="$HOME" TRACKER_TOKEN="$TRACKER_TOKEN" PYTHONIOENCODING=utf-8 .venv/bin/python .qwen/skills/alla-launch/extensions/tickets/adapters/mcp.py --config alla-extensions/mcp-tracker.toml
+   printf '%s' '{"api":1,"operation":"search","request_id":"00000000-0000-4000-8000-000000000001","action":"create","target_id":null,"scope":{"site":"https://tracker.company","project_or_queue":"TEST"},"ticket":{"kind":"bug","team":"test","title":"Проба подключения","description":"Проверка настройки, не тикет.","launch_id":1}}' | env -i TRACKER_TOKEN="$TRACKER_TOKEN" PYTHONIOENCODING=utf-8 .venv/bin/python .qwen/skills/alla-launch/extensions/tickets/adapters/mcp.py --config alla-extensions/mcp-tracker.toml
    ```
 
    Успех — `{"api":1,"matches":[…]}` (пустой список тоже успех). Ошибки — по таблице раздела 7.
@@ -264,7 +268,7 @@ UUID. Все пробы идут в **тестовый** проект: кома�
    `scope` — из шага 2:
 
    ```bash
-   printf '%s' '{"api":1,"operation":"lookup","request_id":"<request_id из show>","action":"create","scope":{"site":"https://tracker.company","project_or_queue":"TEST"}}' | env -i HOME="$HOME" TRACKER_TOKEN="$TRACKER_TOKEN" PYTHONIOENCODING=utf-8 .venv/bin/python .qwen/skills/alla-launch/extensions/tickets/adapters/mcp.py --config alla-extensions/mcp-tracker.toml
+   printf '%s' '{"api":1,"operation":"lookup","request_id":"<request_id из show>","action":"create","scope":{"site":"https://tracker.company","project_or_queue":"TEST"}}' | env -i TRACKER_TOKEN="$TRACKER_TOKEN" PYTHONIOENCODING=utf-8 .venv/bin/python .qwen/skills/alla-launch/extensions/tickets/adapters/mcp.py --config alla-extensions/mcp-tracker.toml
    ```
 
    Ждём `"outcome":"found"` и тот же тикет. `unknown` при существующем тикете — индекс ещё не
@@ -305,7 +309,7 @@ UUID. Все пробы идут в **тестовый** проект: кома�
 | `Команда MCP-сервера не найдена` | `[server] command` не находится на безопасном `PATH`; дай путь с `/` (от корня проекта) или каталог в `extra_path` |
 | `Не удалось запустить MCP-сервер` | файл не запускается: права, интерпретатор |
 | `У MCP-сервера нет инструмента из mcp-tracker.toml` | неверное имя `tool`; точные имена даёт проба 3 (`--check`). Ловится в `draft`/`submit` при настроенном `[search]`; без него при настоящей отправке — **необратимая** ошибка (раздел 2) |
-| `MCP-сервер не ответил вовремя` | долгий старт сервера, нет `HOME`/токена в `adapter_env`, нет сети, мост ждёт ручного входа (OAuth); подними `[server] timeout` (меньше `adapter_timeout`) |
+| `MCP-сервер не ответил вовремя` | долгий старт сервера, нет токена в `adapter_env` (или `HOME`, если сервер без него не стартует), нет сети, мост ждёт ручного входа (OAuth); подними `[server] timeout` (меньше `adapter_timeout`) |
 | `MCP-сервер завершился без ответа` | сервер упал на старте; запусти его команду вручную и посмотри его вывод |
 | `MCP-сервер отклонил запрос` | сервер не принял служебный вызов (`initialize`, `tools/list`): неверная версия сервера или не MCP stdio |
 | `Инструмент MCP вернул ошибку` | трекер отказал: неверный проект, тип, права токена, обязательное поле; текст ошибки сервера адаптер не показывает — смотри документацию сервера и права токена, у инженера — журнал сервера; пишущий инструмент вручную не вызывай |
@@ -330,7 +334,7 @@ UUID. Все пробы идут в **тестовый** проект: кома�
   адаптер. Вложенные таблицы и списки в `arguments` (`fields = { project = { key = "{project}" } }`)
   работают, подстановки заменяются в строках на любой глубине.
 - Окружение сервера — только то, что перечислено в `adapter_env`, плюс безопасный `PATH`.
-  Серверу может понадобиться `HOME` — добавь его явно.
+  `HOME` не передаётся; добавляй его, только если сервер без него не стартует.
 - Пустой поиск не значит «нет тикета»: индекс трекера отстаёт. После обрыва ответа на
   создание без совпадения по метке запрос остаётся `unknown`, блокирует эти проблемы и
   требует проверки инженера; новый тикет «в обход» не создавай.

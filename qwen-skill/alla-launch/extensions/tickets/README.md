@@ -201,7 +201,7 @@ python3 .qwen/skills/alla-launch/scripts/alla_skill.py extensions action tickets
 ```toml
 [tickets]
 adapter_command = [".venv/bin/python", ".qwen/skills/alla-launch/extensions/tickets/adapters/mcp.py", "--config", "alla-extensions/mcp-tracker.toml"]
-adapter_env = ["TRACKER_TOKEN", "HOME"]
+adapter_env = ["TRACKER_TOKEN"]
 adapter_timeout = 25
 ```
 
@@ -243,7 +243,8 @@ adapter_timeout = 25
 - Сервер запускается без отсоединения и наследует дескриптор блокировки журнала; по
   окончании вызова ему закрывается stdin, затем `terminate`/`kill`. Окружение сервера — то,
   что адаптер получил по `adapter_env`, и безопасный `PATH` (скилл свой `PATH` адаптеру не
-  передаёт). Если серверу нужен `HOME`, добавь его в `adapter_env`.
+  передаёт). `HOME` не передаётся: добавь его в `adapter_env`, только если сервер без него
+  не стартует.
   Текст ошибок сервера наружу не выводится.
 
 Ограничения: только stdio (удалённый HTTP/OAuth MCP подключается локальным мостом вроде
