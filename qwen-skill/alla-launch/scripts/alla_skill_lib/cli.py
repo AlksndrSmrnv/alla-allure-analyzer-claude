@@ -2826,7 +2826,7 @@ def cmd_install_files(project_root: Path, *, confirm: bool) -> int:
     )
     print(
         "Спроси пользователя, ставить ли эти файлы. Только после его «да» выполни:\n"
-        + ws.skill_command("install-files", "--yes")
+        + ws.skill_command("install-files", "--yes", "--project-root", str(project_root))
     )
     return 0
 

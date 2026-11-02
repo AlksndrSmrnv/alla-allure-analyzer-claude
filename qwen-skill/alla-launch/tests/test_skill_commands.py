@@ -170,6 +170,7 @@ def test_install_files_lists_without_writing_and_installs_after_yes(
     assert out.splitlines()[0] == "STATUS: install_files"
     assert "alla-batch.md" in out and "/alla:run" in out and str(qwen_dir) in out
     assert "install-files --yes" in out and "«да»" in out
+    assert f"--project-root {shlex.quote(str(project))}" in out  # подтверждение — для того же проекта
     assert not qwen_dir.exists()  # без --yes ничего не записано
 
     code, out = _run(["install-files", "--yes", "--project-root", str(project)], capsys)
