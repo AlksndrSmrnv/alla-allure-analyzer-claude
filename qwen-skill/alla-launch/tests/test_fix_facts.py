@@ -335,3 +335,10 @@ def test_removed_fact_is_not_in_the_snapshot_before_next(
         path.unlink()
 
     assert order not in current_state(paths).analyses
+
+
+def test_other_test_source_needs_an_answer_from_git(tmp_path: Path) -> None:
+    """Без ответа git «чистым» исходник не считается (ревью Grok)."""
+    from alla_skill_lib import rerun
+
+    assert not rerun.git_clean(tmp_path, Path("OrderTest.java"))  # не репозиторий

@@ -441,3 +441,15 @@ def test_batch_task_carries_rules_reference_and_problem_line(
     assert EXECUTOR_RULES in batch
     assert "references/analysis-format.md" in batch
     assert f"«{PROBLEM_PREFIX} <где и что не так>»" in batch
+
+
+def test_checked_fix_analysis_is_named_as_the_script_writes_it() -> None:
+    """Справочники узнают разбор по проверенной правке по его началу — тому, что пишет скрипт."""
+    from alla_skill_lib.fix_facts import analysis_text
+
+    auto = {"id": "abc123def456", "state": "applied", "file": "a/OrderTest.java", "line": 6,
+            "date": "2026-11-05", "launch_id": 777}
+    start = " ".join(analysis_text(auto, ("S1", "x")).split(":", 1)[1].split()[:6])
+    assert start == "Эту ошибку уже исправляла проверенная правка"
+    for path in (SKILL_MD, REFERENCES / "feedback.md", SKILL_DIR / "commands" / "alla" / "reject.md"):
+        assert f"«{start}" in " ".join(_read(path).split()), path

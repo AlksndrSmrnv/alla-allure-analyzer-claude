@@ -743,6 +743,8 @@ def test_knowledge_base_write_error_keeps_the_result(
 
     assert out.startswith("STATUS: rerun_done")
     assert "В базу знаний итог не записан: нет прав на alla-kb/flaky." in out
+    # Итог подхватил next — ошибка видна и там (ревью Grok).
+    assert "В базу знаний итог не записан" in _run(["next", "--run", str(run_dir)], capsys)[1]
     monkeypatch.undo()
     assert "Отмечены в базе знаний нестабильными" in _rerun(run_dir, capsys, "--wait")
 

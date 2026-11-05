@@ -203,7 +203,7 @@ def record_checked(
                 or any(planned_fix.get(int(item["test_result_id"])) != record["sha_after"]
                        for item in own) \
                 or rerun.git_head_digest(project_root, str(record["file"])) != record["sha_before"] \
-                or any(not source or rerun.git_dirty(project_root, Path(source))
+                or any(not source or not rerun.git_clean(project_root, Path(source))
                        for source in others):
             # Перезапуск шёл на другой версии правки (её откатили и применили другую), до apply
             # в файле уже была ручная правка (её не запомнить), или менялись другие исходники

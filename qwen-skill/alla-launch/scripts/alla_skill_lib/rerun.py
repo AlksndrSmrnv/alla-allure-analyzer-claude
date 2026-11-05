@@ -319,9 +319,21 @@ def git_head_digest(project_root: Path, source: str) -> str:
     return hashlib.sha256(result.stdout).hexdigest() if result.returncode == 0 else ""
 
 
-def git_dirty(project_root: Path, source: PurePath) -> bool:
-    """В git есть незакоммиченные изменения исходника."""
-    return _git_dirty(project_root, source)
+def git_clean(project_root: Path, source: PurePath) -> bool:
+    """Исходник в git без незакоммиченных изменений; git не ответил — ``False``.
+
+    Строже ``_git_dirty`` (там сбой — «чистый», чтобы не мешать перезапуску): факт проверенной
+    правки без ответа git не пишется (ревью Grok).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_root), "status", "--porcelain", "--", source.as_posix()],
+            capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and not result.stdout.strip()
 
 
 def _git_dirty(project_root: Path, source: PurePath) -> bool:
