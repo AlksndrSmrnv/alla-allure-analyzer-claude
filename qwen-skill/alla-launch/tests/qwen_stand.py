@@ -219,7 +219,7 @@ class Scenario:
     # Задержка каждого ответа фейкового TestOps, с: выгрузка дольше jobs.WAIT_BUDGET, и prepare
     # отвечает STATUS: running (большой прогон).
     testops_delay: float = 0.0
-    # Результаты, которым после «да» ставится статус passed в TestOps (rerun --remember).
+    # Результаты, которым после «да» ставится статус passed в TestOps (rerun --testops).
     resolved: tuple[int, ...] = ()
     # Другие номера прогона с теми же падениями: «следующий прогон» в том же сеансе.
     also_launches: tuple[int, ...] = ()
@@ -535,9 +535,9 @@ SCENARIOS: dict[str, Scenario] = {
         review=("Evidence: причины 422 и 500 с исключением названы по тексту ответа сервиса, "
                 "голый 500 — «неизвестно»; отсутствие лога не повторяется в каждом разборе",)),
     "F01": Scenario(
-        "Флаки: после отчёта — перезапуск, «да» → Maven в фоне → итог → «да» → отметка в базе "
-        "знаний и статус passed в TestOps", "flaky",
-        ("/alla-launch 793", "Да, перезапусти.", "Да, сохрани."),
+        "Флаки: после отчёта — перезапуск, «да» → Maven в фоне → итог и отметка в базе знаний "
+        "без вопроса → «да» → статус passed в TestOps", "flaky",
+        ("/alla-launch 793", "Да, перезапусти.", "Да, отметь в TestOps."),
         (*[name for name in FULL_RUN if name != "report_verbatim"], "prepare_launch",
          "rerun_started", "rerun_result_shown", "flaky_saved", "testops_resolved"),
         launch_id=793, edits=("alla-kb/",), resolved=(101,),
@@ -545,7 +545,8 @@ SCENARIOS: dict[str, Scenario] = {
                (f"{STAND_ORDER}#updateOrder", (FAILED_500,))),
         review=("Вопрос о перезапуске задан один раз, после краткого разбора: число тестов, "
                 "проблемы, время и что тесты пойдут на этой машине; итог выведен дословно; "
-                "вопрос о сохранении — отдельно, после итога, один: база знаний и TestOps",)),
+                "про отметку в базе знаний сказано, что она уже записана (без вопроса); вопрос "
+                "после итога — один, только про TestOps",)),
     "F02": Scenario(
         "Проверка правки: «да» на правку → вопрос о перезапуске тестов проблемы → «да» → итог "
         "→ «да» → статус passed в TestOps",
@@ -1943,8 +1944,8 @@ MCP_READ_RPC = {"initialize", "notifications/initialized", "tools/list"}
 
 def check_testops_read_only(ctx: Context) -> dict[str, Any]:
     """TestOps читается только через MCP (поиск результатов); REST — лишь запись статуса
-    passed командой rerun --remember (с обменом токена)."""
-    resolve_allowed = bool(_rerun_calls(ctx, "--remember", "--result"))
+    passed командой rerun --testops (с обменом токена)."""
+    resolve_allowed = bool(_rerun_calls(ctx, "--testops", "--result"))
     for entry in ctx.requests:
         if entry["path"] == "/api/mcp" and entry["method"] == "POST" and (
                 entry.get("rpc") in MCP_READ_RPC
@@ -1959,9 +1960,9 @@ def check_testops_read_only(ctx: Context) -> dict[str, Any]:
 
 
 def check_testops_resolved(ctx: Context) -> dict[str, Any]:
-    """После «да» статус passed в TestOps поставлен командой rerun --remember, ровно нужным."""
-    if not _rerun_calls(ctx, "--remember", "--result"):
-        return bad("rerun --remember --result не выполнялся")
+    """После «да» статус passed в TestOps поставлен командой rerun --testops, ровно нужным."""
+    if not _rerun_calls(ctx, "--testops", "--result"):
+        return bad("rerun --testops --result не выполнялся")
     resolved = sorted(int(entry["path"].split("/")[-2]) for entry in ctx.requests
                       if entry["method"] == "POST" and RESOLVE_PATH_RE.fullmatch(entry["path"])
                       and entry.get("status") == 202)
@@ -2024,9 +2025,11 @@ def check_fix_checked(ctx: Context) -> dict[str, Any]:
 
 
 def check_flaky_saved(ctx: Context) -> dict[str, Any]:
-    """После «да» отметка «нестабильный» записана командой rerun --remember, а не руками."""
-    if not _rerun_calls(ctx, "--remember", "--result"):
-        return bad("rerun --remember --result не выполнялся")
+    """Отметка «нестабильный» записана скриптом по итогу перезапуска, а не руками модели."""
+    by_hand = [call for call in ctx.trace.calls
+               if call.name in WRITE_TOOLS and "alla-kb" in path_of(call)]
+    if by_hand:
+        return bad(f"модель писала в alla-kb сама: {by_hand[0].name}")
     marks = [json.loads(path.read_text(encoding="utf-8"))
              for path in (ctx.project / "alla-kb" / "flaky").glob("*.json")]
     tests = sorted(str(mark.get("test")) for mark in marks)

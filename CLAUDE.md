@@ -30,7 +30,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | `commands/alla/` | слэш-команды Qwen `/alla:run`, `/alla:apply`…; `install-files` ставит их в `.qwen/commands/alla/` проекта после согласия пользователя (`setup`, `update`, `prepare` в `.qwen/` не пишут) |
 | `extensions/` | расширения скилла: `README.md` (контракт для авторов), встроенные `git-publish/` (ветка git), `sut-code/` (`/alla:code N` — разбор по коду приложения) и `tickets/` (`/alla:ticket N [N…]` — просмотр и отправка тикетов через пользовательский адаптер); свои — `<проект>/alla-extensions/` |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` проекта автотестов |
-| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files`, `jobs`, `retries`, `images`, `extension_data` |
+| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `learn`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files`, `jobs`, `retries`, `images`, `extension_data` |
 | `scripts/alla_core/` | ядро: клиент MCP TestOps (`clients/mcp_client.py`), триаж, логи, кластеризация, блок «Данные» |
 | `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
 | `tests/eval/` | эталон точности: кассеты прогонов (`record.py` пишет у команды), размеченный корпус dev/holdout, метрики склеек, дробления, скрытых групп и потери доказательств (`run_eval.py`), см. `README.md` там же |
@@ -154,7 +154,7 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 | `skill-extensions-sut-code.md` | sut-code | `extensions/sut-code/` |
 | `skill-extensions-tickets.md` | tickets и публичный снимок | `extensions/tickets/`, `extension_data.py` |
 | `skill-rerun.md` | перезапуск тестов локально (`rerun`): команда и статусы, отчёт, проверка | `rerun.py`, `rerun_worker.py`, `flaky.py`, `resolve.py`, `commands/alla/rerun.md` |
-| `skill-rerun-candidates.md` | кандидаты-флаки, предложение после отчёта, проверка правки после `apply`, `--remember` | `flaky.py`, `rerun.py` |
+| `skill-rerun-candidates.md` | кандидаты-флаки, предложение после отчёта, проверка правки после `apply`, отметки без вопроса (`learn.py`) | `flaky.py`, `rerun.py`, `learn.py` |
 | `skill-rerun-worker.md` | план, Maven фоновым заданием, отчёты surefire, попытки | `rerun.py`, `rerun_worker.py` |
 | `skill-rerun-resolve.md` | статус passed в TestOps | `resolve.py`, `rerun.py` |
 | `core.md` | ядро: состав, происхождение, только чтение TestOps, тесты ядра | `alla_core/`, `pipeline.py` |

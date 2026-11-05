@@ -1,0 +1,105 @@
+"""Что разбор сам запоминает в базе знаний по итогу перезапуска — без отдельного вопроса.
+
+Решение пользователя (2026-11-05): проверенное фактами пишется сразу, а пользователь узнаёт
+об этом из ответа и из diff ``alla-kb/`` при коммите. Проверено фактами:
+
+- отметка «нестабильный тест» (``flaky.remember_plan``: прошёл на коде как в CI при признаке
+  из CI; снять — отмеченный тест упал все попытки той же ошибкой).
+
+Догадки модели сюда не попадают: молчание — не согласие. Статус в TestOps — по-прежнему только
+после «да» (``rerun --testops``). Запоминается один раз на задание: повторный ``--wait`` или
+сборка отчёта показывают уже записанное (``rerun/learned.json``).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+from alla_skill_lib import flaky, rerun
+from alla_skill_lib import workspace as ws
+from alla_skill_lib.kb import kb_label
+
+
+@dataclass
+class Learned:
+    """Записанное по итогу задания: строки для ответа и папки базы знаний."""
+
+    lines: list[str] = field(default_factory=list)
+    folders: list[str] = field(default_factory=list)
+    changed: bool = False  # записано сейчас (а не прочитано из ``learned.json``)
+
+
+def learn_from_rerun(paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState) -> Learned:
+    """Записать отметки «нестабильный» и проверенные правки по законченному заданию — один раз."""
+    if state.state != "done" or state.result is None or state.plan is None:
+        return Learned()
+    files = rerun.job_files(paths)
+    job = str(state.result.get("job"))
+    done = rerun.read_learned(files, job)
+    if done is not None:
+        return Learned(list(done.get("lines") or []), list(done.get("folders") or []))
+    today = date.today().isoformat()
+    try:
+        lines, folders = _flaky(run, state, today)
+    except OSError as exc:
+        # Итог перезапуска важнее: ошибка записи его не прячет, а следующий показ повторит запись.
+        return Learned([f"В базу знаний итог не записан: {exc}. Скажи это пользователю."])
+    rerun.write_learned(files, job, lines, folders)
+    return Learned(lines, folders, changed=bool(folders))
+
+
+def _flaky(run: dict[str, Any], state: rerun.JobState, today: str) -> tuple[list[str], list[str]]:
+    """Отметки «нестабильный» в ``alla-kb/flaky/``; строки ответа и папки базы знаний."""
+    assert state.result is not None and state.plan is not None
+    keep = flaky.remember_plan(state.result, state.plan, flaky.marks_for_run(run))
+    if not keep:
+        return [], []
+    keys = flaky.keys_of_tests(run)
+    entries = {entry["file_id"]: entry for entry in run["clusters"]}
+    project_root = Path(run["project_root"])
+    marked: list[str] = []
+    unmarked: list[str] = []
+    folders: set[str] = set()
+    for item in [*keep.mark, *keep.unmark]:
+        entry = entries.get(str(item.get("file_id")))
+        key = keys.get(int(item["test_result_id"]))
+        if entry is None or not key or not entry.get("kb_dir"):
+            continue
+        store = flaky.FlakyStore(Path(entry["kb_dir"]))
+        if item in keep.mark:
+            store.mark(key, {"launch_id": run["launch_id"], "passed_on": item.get("attempt"),
+                             "attempts": state.result.get("attempts"),
+                             "signals": item.get("signals") or []}, today)
+            marked.append(str(item["full_name"]))
+        elif store.unmark(key):
+            unmarked.append(str(item["full_name"]))
+        else:
+            continue
+        folders.add(kb_label(project_root, Path(entry["kb_dir"])))
+    lines = []
+    if marked:
+        lines.append("Отмечены в базе знаний нестабильными: " + "; ".join(marked) + ".")
+    if unmarked:
+        lines.append("Сняты в базе знаний отметки «нестабильный» (тест воспроизводится каждый "
+                     "раз): " + "; ".join(unmarked) + ".")
+    return lines, sorted(folders)
+
+
+def render(learned: Learned) -> str:
+    """Строки ответа ``rerun_done``: что записано без вопроса и что сказать пользователю."""
+    if not learned.lines:
+        return ""
+    if not learned.folders:
+        return "\n".join(learned.lines)
+    shown = ", ".join(learned.folders)
+    return "\n".join([
+        "Записано в базу знаний без вопроса (это проверенный итог перезапуска, а не догадка "
+        "агента):",
+        *(f"- {line}" for line in learned.lines),
+        f"Скажи это пользователю одной-двумя фразами и напомни закоммитить папку базы знаний "
+        f"{shown}. Спрашивать, сохранять ли это, не нужно: уже сохранено. Не согласен — "
+        "файл отметки можно удалить.",
+    ])

@@ -200,7 +200,7 @@ def marked_by_problem(run: dict[str, Any], marks: dict[int, dict[str, Any]]) -> 
 
 @dataclass(frozen=True)
 class RememberPlan:
-    """Что сохранить в базу знаний после перезапуска (``rerun --remember``)."""
+    """Что сохранить в базу знаний по итогу перезапуска (``learn.py``, без вопроса)."""
 
     mark: list[dict[str, Any]]  # итоги «прошёл» с признаком из CI, на коде как в CI
     unmark: list[dict[str, Any]]  # отмеченные тесты, упавшие каждый раз той же ошибкой

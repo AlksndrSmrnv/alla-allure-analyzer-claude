@@ -530,9 +530,14 @@ class JobFiles:
 
     @property
     def save_offer(self) -> Path:
-        """Что предложил сохранить последний показанный вопрос ``rerun_done``: больше этого
-        ``rerun --remember`` не делает."""
+        """Что предложил отметить в TestOps последний показанный вопрос ``rerun_done``: больше
+        этого ``rerun --testops`` не делает."""
         return self.root / "save-offer.json"
+
+    @property
+    def learned(self) -> Path:
+        """Что итог задания уже записал в базу знаний без вопроса (``learn.py``)."""
+        return self.root / "learned.json"
 
     @property
     def worker_log(self) -> Path:
@@ -550,7 +555,7 @@ class JobFiles:
 
     def clear(self) -> None:
         for path in (self.plan, self.progress, self.result, self.failed, self.pid, self.waits,
-                     self.resolved, self.save_offer, self.worker_log):
+                     self.resolved, self.save_offer, self.learned, self.worker_log):
             path.unlink(missing_ok=True)
         shutil.rmtree(self.logs, ignore_errors=True)
 
@@ -597,7 +602,7 @@ def read_resolved(files: JobFiles, job: str) -> dict[int, str]:
 
 
 def add_resolved(files: JobFiles, job: str, marks: Mapping[int, str]) -> None:
-    """Дописать отметки под блокировкой, перечитав файл: параллельный ``--remember`` иначе
+    """Дописать отметки под блокировкой, перечитав файл: параллельный ``--testops`` иначе
     затёр бы чужие (ревью Codex)."""
     import fcntl
 
@@ -611,7 +616,7 @@ def add_resolved(files: JobFiles, job: str, marks: Mapping[int, str]) -> None:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-SAVE_PARTS = ("mark", "unmark", "testops")  # отметить, снять отметку, статус passed в TestOps
+SAVE_PARTS = ("testops",)  # статус passed в TestOps; база знаний пишется без вопроса (learn.py)
 
 
 def write_save_offer(files: JobFiles, job: str, parts: Mapping[str, Iterable[int]]) -> None:
@@ -625,6 +630,16 @@ def read_save_offer(files: JobFiles, job: str) -> dict[str, set[int]]:
     if data.get("job") != job:
         return {name: set() for name in SAVE_PARTS}
     return {name: {int(value) for value in data.get(name) or []} for name in SAVE_PARTS}
+
+
+def read_learned(files: JobFiles, job: str) -> dict[str, Any] | None:
+    """Записанное в базу знаний по итогу задания ``job``; ещё не записывали — ``None``."""
+    data = _read(files.learned)
+    return data if data is not None and data.get("job") == job else None
+
+
+def write_learned(files: JobFiles, job: str, lines: list[str], folders: list[str]) -> None:
+    ws.write_json(files.learned, {"job": job, "lines": lines, "folders": folders})
 
 
 def start_job(paths: ws.RunPaths, plan: Plan, timeout: int, extra: list[str]) -> str | None:

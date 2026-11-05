@@ -93,6 +93,8 @@ from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
 from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, remember_many, reject
 from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
 from alla_skill_lib.images import place_images
+from alla_skill_lib.learn import learn_from_rerun
+from alla_skill_lib.learn import render as render_learned
 from alla_skill_lib.known_issues import (
     KB_AUTO_NOT_PROPOSED,
     KB_AUTO_STATE,
@@ -539,8 +541,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--wait", action="store_true", help="показать ход или итог идущего перезапуска",
     )
     mode_rerun.add_argument(
-        "--remember", action="store_true",
-        help="сохранить итог: отметки в базе знаний и статус passed в TestOps (только после "
+        "--testops", action="store_true",
+        help="отметить прошедшие тесты успешными (статус passed) в TestOps (только после "
              "согласия пользователя); нужен --result",
     )
     again_tests.add_argument(
@@ -1294,9 +1296,12 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
         paths.reports_dir, run_records(run, analyses, flagged, paths.root.name, known_refs)
     )
 
+    job = rerun.job_state(rerun.job_files(paths))
+    # Итог перезапуска, который модель не дождалась, пишется в базу знаний и здесь — один раз.
+    learn_from_rerun(paths, run, job)
     console, full = render_report(
         run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed, known,
-        related, confirmed, rerun.RerunView.of(rerun.job_state(rerun.job_files(paths))),
+        related, confirmed, rerun.RerunView.of(job),
         flaky.marked_by_problem(run, flaky.marks_for_run(run)),
     )
     ws.write_text(paths.report, full)
@@ -1878,8 +1883,8 @@ def _rerun(
 ) -> tuple[str, str]:
     files = rerun.job_files(paths)
     state = rerun.job_state(files)
-    if args.remember:
-        return _rerun_remember(paths, run, state, args.result_id, started)
+    if args.testops:
+        return _rerun_testops(paths, run, state, args.result_id, started)
     if args.wait or (not args.clusters and not args.yes and state.state != "none"):
         # Без номеров после перезапуска — его ход или итог: «итог покажет /alla:rerun».
         if state.state == "none":
@@ -2041,6 +2046,8 @@ def _rerun_state(
     if view is None:
         retry = ws.skill_command("rerun", *rerun.plan_problems(state), "--run", str(paths.root))
         return "ok", rerun.render_failed(state, retry)
+    # Проверенное итогом пишется в базу знаний без вопроса — до отчёта: он показывает отметки.
+    learned = learn_from_rerun(paths, run, state)
     # Разбор не закончен — итог попадёт в отчёт, когда next его соберёт.
     refreshed = _refresh_report(paths)
     lines = [
@@ -2048,161 +2055,83 @@ def _rerun_state(
         "заново не выводи:",
         rerun.render_result(view, files.logs, paths.report if refreshed else None),
     ]
-    assert state.result is not None
-    question = _save_question(paths, run, state, *_save_items(run, state))
+    told = render_learned(learned)
+    if told:
+        lines.append(told)
+    question = _testops_question(paths, run, state, _testops_items(run, state))
     if question:
         lines.append(question)
     return "rerun_done", "\n".join(lines)
 
 
-def _save_parts(keep: flaky.RememberPlan, marks: list[resolve.Mark]) -> dict[str, set[int]]:
-    """Операции сохранения: id тестов базы знаний и результатов TestOps по видам."""
-    return {"mark": {int(item["test_result_id"]) for item in keep.mark},
-            "unmark": {int(item["test_result_id"]) for item in keep.unmark},
-            "testops": {value for mark in marks for value in mark.ids}}
-
-
-def _save_question(
-    paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState,
-    keep: flaky.RememberPlan, marks: list[resolve.Mark],
+def _testops_question(
+    paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, marks: list[resolve.Mark],
 ) -> str:
-    """Вопрос о сохранении итога с командой; показанный состав — в ``save-offer.json``."""
+    """Вопрос об отметке passed в TestOps с командой; показанный состав — в ``save-offer.json``."""
     assert state.result is not None
     files = rerun.job_files(paths)
     job = str(state.result["job"])
-    rerun.write_save_offer(files, job, _save_parts(keep, marks))
-    if keep or marks:
-        what = []
-        if keep.mark:
-            names = "; ".join(str(item["full_name"]) for item in keep.mark)
-            what.append(f"отметить в базе знаний нестабильными {rerun.tests_phrase(len(keep.mark))} "
-                        f"({names})")
-        if keep.unmark:
-            names = "; ".join(str(item["full_name"]) for item in keep.unmark)
-            what.append(f"снять в базе знаний отметку «нестабильный» ({names}): "
-                        + ("тест воспроизводится" if len(keep.unmark) == 1
-                           else "тесты воспроизводятся") + " каждый раз")
-        if marks:
-            text = (f"отметить успешными в TestOps (статус passed в прогоне {run['launch_id']}) "
-                    f"{rerun.tests_phrase(len(marks))} ({resolve.names(marks)})")
-            changed = [mark for mark in marks if mark.changed]
-            if changed and len(changed) == len(marks):
-                text += (" — " + ("прошёл" if len(marks) == 1 else "прошли")
-                         + " на изменённом коде теста, в CI этого изменения ещё нет")
-            elif changed:
-                text += (f", из них на изменённом коде теста — {resolve.names(changed)}: в CI "
-                         "этого изменения ещё нет")
-            what.append(text)
-        command = ws.skill_command("rerun", "--run", str(paths.root), "--remember", "--result",
-                                   str(state.result["job"]))
-        several = len(keep.mark) + len(keep.unmark) + len(marks) > 1
-        return (
-            "После итога задай пользователю один вопрос — сохранить ли итог: " + "; ".join(what)
-            + "." + (" Тогда следующие разборы сразу покажут, какие тесты нестабильны."
-                     if keep.mark else "")
-            + " На «нет» ничего не выполняй."
-            + (" Согласие только с частью («в базу знаний да, TestOps не трогай», «только первый "
-               "тест») — не «да»: ничего не выполняй и скажи, что команда сохраняет всё сразу."
-               if several else "")
-            + (" Отметку в TestOps пользователь может выключить сам — ALLURE_RERUN_RESOLVE=false "
-               "в .env скилла (.env и переменные окружения сам не меняй); когда он скажет, что "
-               "выключил, выполни ту же команду без нового вопроса: она сохранит остальное."
-               if keep and marks else "")
-            + " Прежние «да» (на перезапуск, на правку) сюда не относятся. Только после явного "
-            f"«да» на этот вопрос выполни: {command}"
-        )
-    return ""
+    rerun.write_save_offer(files, job, {"testops": {value for mark in marks for value in mark.ids}})
+    if not marks:
+        return ""
+    text = (f"отметить успешными в TestOps (статус passed в прогоне {run['launch_id']}) "
+            f"{rerun.tests_phrase(len(marks))} ({resolve.names(marks)})")
+    changed = [mark for mark in marks if mark.changed]
+    if changed and len(changed) == len(marks):
+        text += (" — " + ("прошёл" if len(marks) == 1 else "прошли")
+                 + " на изменённом коде теста, в CI этого изменения ещё нет")
+    elif changed:
+        text += (f", из них на изменённом коде теста — {resolve.names(changed)}: в CI "
+                 "этого изменения ещё нет")
+    command = ws.skill_command("rerun", "--run", str(paths.root), "--testops", "--result", job)
+    return (
+        "После итога задай пользователю один вопрос — " + text + "?"
+        + " На «нет» ничего не выполняй."
+        + (" Согласие только с частью («только первый тест») — не «да»: ничего не выполняй и "
+           "скажи, что команда отмечает все эти тесты сразу." if len(marks) > 1 else "")
+        + " Прежние «да» (на перезапуск, на правку) сюда не относятся. Только после явного "
+        f"«да» на этот вопрос выполни: {command}"
+    )
 
 
-def _save_items(run: dict[str, Any], state: rerun.JobState) -> tuple[flaky.RememberPlan, list[resolve.Mark]]:
-    """Что сохранить по итогу: отметки базы знаний и результаты для статуса passed в TestOps."""
+def _testops_items(run: dict[str, Any], state: rerun.JobState) -> list[resolve.Mark]:
+    """Результаты для статуса passed в TestOps по итогу; отметка выключена — пусто."""
     assert state.result is not None and state.plan is not None
-    marks = flaky.marks_for_run(run)
-    keep = flaky.remember_plan(state.result, state.plan, marks)
-    # Уже отмечен по этому прогону — сохранён прежним «да»: вопрос не повторяется.
-    keep = flaky.RememberPlan([item for item in keep.mark if marks.get(
-        int(item["test_result_id"]), {}).get("launch_id") != run["launch_id"]], keep.unmark)
     settings = _rerun_settings()
     if isinstance(settings, str) or not settings.rerun_resolve:
-        return keep, []
+        return []
     messages = {int(test["test_result_id"]): str(test.get("status_message") or "")
                 for test in (run.get("triage") or {}).get("failed_tests", [])}
-    return keep, resolve.plan_marks(state.result, state.plan, state.resolved, messages)
+    return resolve.plan_marks(state.result, state.plan, state.resolved, messages)
 
 
-def _rerun_remember(
+def _rerun_testops(
     paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, job_id: str | None,
     started: float,
 ) -> tuple[str, str]:
-    """Сохранить итог перезапуска: отметки в базе знаний (``alla-kb/flaky/``) и статус passed
-    прошедших тестов в TestOps (``resolve.py``)."""
+    """Статус passed прошедшим тестам в TestOps (``resolve.py``) — после «да» на вопрос."""
     if state.state != "done" or state.result is None or state.plan is None \
             or state.result.get("job") != job_id:
-        return "error", (f"Итога перезапуска «{job_id}» в разборе {paths.root} нет — сохранять "
+        return "error", (f"Итога перезапуска «{job_id}» в разборе {paths.root} нет — отмечать "
                          "нечего. Команду не повторяй; id итога — из ответа rerun_done.")
-    keep, resolve_marks = _save_items(run, state)
-    if not keep and not resolve_marks:
-        return "ok", "Сохранять нечего. Покажи это пользователю."
-    # Согласие — на показанный вопрос: больше него (настройки или база знаний изменились после
-    # вопроса) команда не делает; меньше — можно (повтор для оставшегося).
+    marks = _testops_items(run, state)
+    if not marks:
+        return "ok", "Отмечать в TestOps нечего. Покажи это пользователю."
+    # Согласие — на показанный вопрос: больше него (настройки изменились после вопроса) команда
+    # не делает; меньше — можно (повтор для оставшегося).
     offered = rerun.read_save_offer(rerun.job_files(paths), str(job_id))
-    current = _save_parts(keep, resolve_marks)
-    if any(not current[name] <= offered[name] for name in rerun.SAVE_PARTS):
-        return "ok", ("После вопроса изменилось, что сохранится (настройки скилла или база "
-                      "знаний) — ничего не сохранено. Задай пользователю вопрос заново. "
-                      + _save_question(paths, run, state, keep, resolve_marks))
-    lines, folders = _remember_flaky(run, state, keep) if keep else ([], set())
-    testops, resolved, repeat = _resolve_in_testops(paths, run, state, resolve_marks, started) \
-        if resolve_marks else ([], False, "")
-    lines += testops
+    if not {value for mark in marks for value in mark.ids} <= offered["testops"]:
+        return "ok", ("После вопроса изменилось, что отметится в TestOps (настройки скилла) — "
+                      "ничего не отмечено. Задай пользователю вопрос заново. "
+                      + _testops_question(paths, run, state, marks))
+    lines, resolved, repeat = _resolve_in_testops(paths, run, state, marks, started)
     # Отметки показывает отчёт: после записи он пересобирается (хуки не повторяются).
-    if (folders or resolved) and _refresh_report(paths):
+    if resolved and _refresh_report(paths):
         lines.append(f"Полный разбор обновлён: {paths.report}")
-    if folders:
-        shown = ", ".join(sorted(folders))
-        lines.append(f"Скажи это пользователю и напомни закоммитить папку базы знаний {shown} "
-                     f"(отметки — в {shown}/{flaky.FLAKY_DIRNAME}/). `next` не выполняй.")
-    else:
-        lines.append("Скажи это пользователю. `next` не выполняй.")
+    lines.append("Скажи это пользователю. `next` не выполняй.")
     if repeat:
         lines.append(repeat)
-    return ("saved" if folders or resolved else "ok"), "\n".join(lines)
-
-
-def _remember_flaky(
-    run: dict[str, Any], state: rerun.JobState, keep: flaky.RememberPlan,
-) -> tuple[list[str], set[str]]:
-    """Отметки «нестабильный» в базе знаний; строки ответа и папки базы знаний."""
-    assert state.result is not None
-    keys = flaky.keys_of_tests(run)
-    entries = {entry["file_id"]: entry for entry in run["clusters"]}
-    project_root = Path(run["project_root"])
-    today = date.today().isoformat()
-    marked: list[str] = []
-    unmarked: list[str] = []
-    folders: set[str] = set()
-    for item in [*keep.mark, *keep.unmark]:
-        entry = entries.get(str(item.get("file_id")))
-        key = keys.get(int(item["test_result_id"]))
-        if entry is None or not key:
-            continue
-        store = flaky.FlakyStore(Path(entry["kb_dir"]))
-        if item in keep.mark:
-            store.mark(key, {"launch_id": run["launch_id"], "passed_on": item.get("attempt"),
-                             "attempts": state.result.get("attempts"),
-                             "signals": item.get("signals") or []}, today)
-            marked.append(str(item["full_name"]))
-        elif store.unmark(key):
-            unmarked.append(str(item["full_name"]))
-        folders.add(kb_label(project_root, Path(entry["kb_dir"])))
-    if not folders:
-        return [], folders  # тестов разбора не нашлось — в базу знаний ничего не записано
-    lines = ["Сохранено в базу знаний."]
-    if marked:
-        lines.append("Отмечены нестабильными: " + "; ".join(marked) + ".")
-    if unmarked:
-        lines.append("Сняты отметки (тест воспроизводится): " + "; ".join(unmarked) + ".")
-    return lines, folders
+    return ("saved" if resolved else "ok"), "\n".join(lines)
 
 
 def _resolve_in_testops(
@@ -2237,7 +2166,7 @@ def _resolve_in_testops(
     outcome = asyncio.run(resolve.send(
         settings, marks, env_file, today,
         deadline=started + rerun.WAIT_BUDGET, on_done=keep))
-    command = ws.skill_command("rerun", "--run", str(paths.root), "--remember", "--result", job)
+    command = ws.skill_command("rerun", "--run", str(paths.root), "--testops", "--result", job)
     lines = []
     done = outcome.done_marks(marks)
     if done:

@@ -420,14 +420,14 @@ def test_testops_writes_fail(tmp_path: Path) -> None:
 
 
 def test_testops_resolve_is_allowed_only_after_the_skill_command(tmp_path: Path) -> None:
-    """Статус passed — единственная запись, и только командой rerun --remember."""
+    """Статус passed — единственная запись, и только командой rerun --testops."""
     resolve = {"method": "POST", "path": "/api/testresult/101/resolve", "status": 202}
     bare = context(tmp_path, events(), case="F01")
     bare.requests = [resolve]
     assert CHECKS["testops_read_only"](bare)["status"] == "fail"
     assert CHECKS["testops_resolved"](bare)["status"] == "fail"
 
-    remember = f"python3 {SKILL} rerun --run {tmp_path}/p/alla-reports/793-run --remember --result j1"
+    remember = f"python3 {SKILL} rerun --run {tmp_path}/p/alla-reports/793-run --testops --result j1"
     ctx = context(tmp_path, events(("run_shell_command", {"command": remember}, "STATUS: saved")),
                   case="F01")
     ctx.requests = [resolve]
@@ -1136,7 +1136,7 @@ def test_flaky_checks_need_the_commands_and_the_mark(tmp_path: Path) -> None:
     ctx = context(tmp_path, events(
         ("run_shell_command", {"command": f"{rerun_cmd} --yes --plan abcd1234"},
          "STATUS: rerun_done"),
-        ("run_shell_command", {"command": f"{rerun_cmd} --remember --result j1"}, "STATUS: saved"),
+        ("run_shell_command", {"command": f"{rerun_cmd} --testops --result j1"}, "STATUS: saved"),
         final="Нестабильные — упали в CI, а при перезапуске прошли (1):"), case="F01")
     assert CHECKS["rerun_started"](ctx)["status"] == "fail"  # итога на диске нет
     (run_dir / "rerun").mkdir(parents=True)
