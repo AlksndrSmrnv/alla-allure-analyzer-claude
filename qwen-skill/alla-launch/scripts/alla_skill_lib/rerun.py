@@ -19,6 +19,7 @@ import contextlib
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -314,10 +315,17 @@ def fix_digest(paths: ws.RunPaths, project_root: Path, file_id: str) -> str:
         return ""
 
 
+def project_path(path: str) -> str:
+    """Путь от корня проекта в одном написании (``./a/../b`` → ``b``): так сравниваются исходник
+    теста и файл правки (ревью Codex)."""
+    return posixpath.normpath(path.replace("\\", "/")) if path else ""
+
+
 def fix_file(paths: ws.RunPaths, file_id: str) -> str:
     """Файл, который правил ``apply`` проблемы (по отметке применения); нет — ``""``."""
     try:
-        return str(json.loads(paths.proposal_record(file_id).read_text(encoding="utf-8"))["file"])
+        record = json.loads(paths.proposal_record(file_id).read_text(encoding="utf-8"))
+        return project_path(str(record["file"]))
     except (OSError, ValueError, KeyError, TypeError):
         return ""
 

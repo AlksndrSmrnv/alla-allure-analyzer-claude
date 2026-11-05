@@ -615,3 +615,19 @@ def test_mark_is_kept_when_another_variant_of_the_method_reproduces(
 
     assert lines == ["Отмечены в базе знаний нестабильными: a.B.m[usd]."]
     assert len(list((kb_dir / "flaky").glob("*.json"))) == 1
+
+
+def test_dot_slash_path_of_the_fix_is_the_test_source(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """«./autotests/…» в предложении — тот же исходник теста, что в плане (ревью Codex)."""
+    skill_fake_maven.install(nested_project / "autotests", {
+        f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
+    _git(nested_project)
+    run_dir, order, out = _applied(nested_project, capsys, f"./{SOURCE}")
+    command = out.splitlines()[-1].split("выполни: ", 1)[1].split(" — дальше", 1)[0]
+    done = _run(["rerun", *command.split(" rerun ", 1)[1].split()], capsys)[1]
+    done = _wait_done(run_dir, capsys) if done.startswith("STATUS: running") else done
+
+    assert "Запомнена проверенная правка" in done
+    assert [fact["file"] for fact in _facts(nested_project)] == [SOURCE]

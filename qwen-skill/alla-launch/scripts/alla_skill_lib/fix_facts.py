@@ -218,7 +218,8 @@ def record_checked(
                 or not _as_applied(record, project_root) \
                 or any(planned_fix.get(int(item["test_result_id"])) != record["sha_after"]
                        for item in own) \
-                or any(sources.get(int(item["test_result_id"])) != proposal.file
+                or any(rerun.project_path(sources.get(int(item["test_result_id"])) or "")
+                       != rerun.project_path(proposal.file or "")
                        and not clean.get(int(item["test_result_id"])) for item in own):
             # Предложение переписали после apply (отметка — о другом), перезапуск шёл на другой
             # версии правки (её откатили и применили другую), до apply
@@ -233,9 +234,10 @@ def record_checked(
         if not set(tests) <= covered or "" in names or len(names) > MAX_RECORD_TESTS:
             continue
         assert proposal.file is not None and proposal.line is not None
-        fact = FixFact(fact_id(str(entry["signature"]), str(entry["log_digest"]), proposal.file,
+        file = rerun.project_path(proposal.file)
+        fact = FixFact(fact_id(str(entry["signature"]), str(entry["log_digest"]), file,
                                proposal.line, list(proposal.after)),
-                       str(entry["signature"]), str(entry["log_digest"]), names, proposal.file,
+                       str(entry["signature"]), str(entry["log_digest"]), names, file,
                        proposal.line, list(proposal.before), list(proposal.after),
                        run.get("launch_id"), today, datetime.now().isoformat(timespec="seconds"))
         store = FixStore(Path(entry["kb_dir"]))
