@@ -89,6 +89,7 @@ class PlannedTest:
     # Файл правки агента на момент плана (``source_digest``): итог проверяет ровно эту правку
     # (``fix_facts``), а не применённую после плана другую.
     fix_sha: str = ""
+    fix_file: str = ""  # путь файла правки от корня проекта: воркер следит и за ним
 
 
 @dataclass(frozen=True)
@@ -223,6 +224,7 @@ def build_plan(
             signals=list((signals or {}).get(int(test["test_result_id"]), [])),
             source_sha=source_digest(project_root, jvm.source.as_posix()),
             fix_sha=fix_digest(paths, project_root, file_id),
+            fix_file=fix_file(paths, file_id),
         )
         seen[key] = planned
         plan.tests.append(planned)
@@ -302,6 +304,14 @@ def fix_digest(paths: ws.RunPaths, project_root: Path, file_id: str) -> str:
     try:
         record = json.loads(paths.proposal_record(file_id).read_text(encoding="utf-8"))
         return source_digest(project_root, str(record["file"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+
+
+def fix_file(paths: ws.RunPaths, file_id: str) -> str:
+    """Файл, который правил ``apply`` проблемы (по отметке применения); нет — ``""``."""
+    try:
+        return str(json.loads(paths.proposal_record(file_id).read_text(encoding="utf-8"))["file"])
     except (OSError, ValueError, KeyError, TypeError):
         return ""
 

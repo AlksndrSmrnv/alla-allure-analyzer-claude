@@ -2400,6 +2400,7 @@ def _apply(
     if result.status == "diff":
         return "diff", result.text + _apply_hint(paths, file_id, result, repeat)
     if result.changed:
+        fix_facts.note_clean_before(paths, file_id, project_root)
         # Порядок как в SKILL.md (раздел 4): правка применена → расширения → предложить тест.
         hooks = ext.block(ext.fire("after_apply", paths, run, {
             "problem": ext.problem_context(paths, entry, _load_apply_record(paths, file_id), run),

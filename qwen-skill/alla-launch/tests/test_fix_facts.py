@@ -372,3 +372,44 @@ def test_fact_is_rechecked_on_every_next(
 
     again = _run(["next", str(run_dir)], capsys)[1]
     assert again.startswith("STATUS: analyze") and f"clusters/{order}.md" in again
+
+
+def test_committing_the_fix_before_the_result_keeps_it_checked(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """«Файл был как в HEAD до правки» запоминается при apply: коммит правки до показа итога
+    запоминание не отменяет (ревью Grok)."""
+    skill_fake_maven.install(nested_project / "autotests", {
+        f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
+    _git(nested_project)
+    run_dir, order, out = _applied(nested_project, capsys, SOURCE)
+    record = json.loads((run_dir / "proposals" / f"{order}.applied.json").read_text(encoding="utf-8"))
+    assert record[fix_facts.CLEAN_BEFORE] is True
+    subprocess.run(["git", "-C", str(nested_project), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "commit", "-qam", "fix"], check=True, capture_output=True)
+    command = out.splitlines()[-1].split("выполни: ", 1)[1].split(" — дальше", 1)[0]
+    done = _run(["rerun", *command.split(" rerun ", 1)[1].split()], capsys)[1]
+    done = _wait_done(run_dir, capsys) if done.startswith("STATUS: running") else done
+
+    assert "Запомнена проверенная правка" in done and len(_facts(nested_project)) == 1
+
+
+def test_facts_of_other_logs_are_kept_apart_and_the_latest_wins(tmp_path: Path) -> None:
+    """Разные логи за одной сигнатурой — разные факты; в один день берётся позже записанный."""
+    (tmp_path / "A.java").write_text("a();\n", encoding="utf-8")
+    (tmp_path / "B.java").write_text("b();\n", encoding="utf-8")
+    store = fix_facts.FixStore(tmp_path / "alla-kb")
+
+    def fact(file: str, log: str, saved: str) -> fix_facts.FixFact:
+        return fix_facts.FixFact(fix_facts.fact_id("v1:s", log, file, 1), "v1:s", log, ["t"],
+                                 file, 1, [f"{file[0].lower()}();"], ["x();"], 1, "2026-11-05",
+                                 saved)
+
+    store.save(fact("A.java", "log1", "2026-11-05T09:00:00"))
+    store.save(fact("A.java", "log2", "2026-11-05T09:00:00"))
+    assert len(store.load()) == 2
+    store.save(fact("B.java", "log1", "2026-11-05T20:00:00"))
+    entry = {"kb_dir": str(tmp_path / "alla-kb"), "signature": "v1:s", "log_digest": "log1",
+             "kb": []}
+    chosen = fix_facts.match(entry, ["t"], tmp_path, today=date(2026, 11, 6))
+    assert chosen is not None and chosen["file"] == "B.java"

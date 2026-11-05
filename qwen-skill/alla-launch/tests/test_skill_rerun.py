@@ -1096,6 +1096,27 @@ def test_test_edited_during_the_rerun_is_a_check_of_the_fix(tmp_path: Path) -> N
     assert rerun.RerunView.group(item) == "fixed"
 
 
+def test_fix_file_edited_during_the_rerun_is_marked(tmp_path: Path) -> None:
+    """Правка не в исходнике теста (хелпер): изменился он — итог тоже «edited» (ревью Grok)."""
+    source = tmp_path / "src" / "OrderTest.java"
+    source.parent.mkdir()
+    source.write_text("class OrderTest {}\n", encoding="utf-8")
+    page = tmp_path / "src" / "OrderPage.java"
+    page.write_text("class OrderPage {}\n", encoding="utf-8")
+    planned = PlannedTest(1, "01", "a", f"{ORDER}.a", ORDER, "a", "src/OrderTest.java", "", "",
+                          changed="правка агента применена",
+                          source_sha=rerun.source_digest(tmp_path, "src/OrderTest.java"),
+                          fix_sha=rerun.source_digest(tmp_path, "src/OrderPage.java"),
+                          fix_file="src/OrderPage.java")
+    skill_fake_maven.install(tmp_path, {f"{ORDER}#a": ["passed"]})
+    files, plan = _job(tmp_path, timeout=60, test=planned)
+    page.write_text("class OrderPage { /* другая */ }\n", encoding="utf-8")
+    item = execute(files, plan)["tests"][0]
+
+    assert item["outcome"] == "passed" and item["edited"] is True
+    assert item["changed"] == "правка агента применена"
+
+
 def test_project_lock_holds_across_report_folders(
     nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
     tmp_path: Path,

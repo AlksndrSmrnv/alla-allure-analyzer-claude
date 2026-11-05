@@ -21,7 +21,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
@@ -73,6 +73,7 @@ class FixFact:
     after: list[str]
     launch_id: Any
     date: str
+    saved_at: str = ""  # время записи: из фактов одного дня свежее — позже записанный
 
     def proposal(self) -> Proposal:
         return Proposal("fix", self.file, self.line, list(self.before), list(self.after),
@@ -82,7 +83,7 @@ class FixFact:
         return {"id": self.id, "signature": self.signature, "log_digest": self.log_digest,
                 "tests": self.tests, "file": self.file, "line": self.line,
                 "before": self.before, "after": self.after, "launch_id": self.launch_id,
-                "date": self.date}
+                "date": self.date, "saved_at": self.saved_at}
 
     @classmethod
     def from_json(cls, data: Any) -> FixFact | None:
@@ -97,6 +98,7 @@ class FixFact:
                 before=[str(line) for line in data["before"]],
                 after=[str(line) for line in data["after"]],
                 launch_id=data.get("launch_id"), date=str(data["date"]),
+                saved_at=str(data.get("saved_at") or ""),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -105,8 +107,10 @@ class FixFact:
         return fact
 
 
-def fact_id(signature: str, file: str, line: int) -> str:
-    return hashlib.sha1(f"{signature}|{file}|{line}".encode()).hexdigest()[:12]
+def fact_id(signature: str, log_digest: str, file: str, line: int) -> str:
+    """Свой у каждой пары сигнатура + лог: сигнатура, которая сама называет причину, лог не
+    берёт, и разные причины за ней — разные факты (ревью Grok)."""
+    return hashlib.sha1(f"{signature}|{log_digest}|{file}|{line}".encode()).hexdigest()[:12]
 
 
 class FixStore:
@@ -203,11 +207,10 @@ def record_checked(
         if record is None or not _as_applied(record, project_root) \
                 or any(planned_fix.get(int(item["test_result_id"])) != record["sha_after"]
                        for item in own) \
-                or rerun.git_head_digest(project_root, str(record["file"])) != record["sha_before"] \
                 or any(not source or not rerun.git_clean(project_root, Path(source))
                        for source in others):
             # Перезапуск шёл на другой версии правки (её откатили и применили другую), до apply
-            # в файле уже была ручная правка (её не запомнить), или менялись другие исходники
+            # в файле уже была ручная правка (её не запомнить, ``CLEAN_BEFORE``), или менялись другие исходники
             # тестов — тест мог пройти не из-за этой правки (ревью Codex).
             continue
         covered = {test_id for item in own
@@ -218,10 +221,11 @@ def record_checked(
         if not set(tests) <= covered or "" in names or len(names) > MAX_RECORD_TESTS:
             continue
         assert proposal.file is not None and proposal.line is not None
-        fact = FixFact(fact_id(str(entry["signature"]), proposal.file, proposal.line),
+        fact = FixFact(fact_id(str(entry["signature"]), str(entry["log_digest"]), proposal.file,
+                               proposal.line),
                        str(entry["signature"]), str(entry["log_digest"]), names, proposal.file,
                        proposal.line, list(proposal.before), list(proposal.after),
-                       run.get("launch_id"), today)
+                       run.get("launch_id"), today, datetime.now().isoformat(timespec="seconds"))
         FixStore(Path(entry["kb_dir"])).save(fact)
         folders.add(kb_label(project_root, Path(entry["kb_dir"])))
         lines.append(f"Запомнена проверенная правка проблемы {int(file_id)} ({fact.file}:"
@@ -236,10 +240,32 @@ def _checked(item: dict[str, Any]) -> bool:
             and not item.get("edited"))
 
 
+CLEAN_BEFORE = "clean_before"  # поле отметки apply: до правки файл был как в HEAD git
+
+
+def note_clean_before(paths: ws.RunPaths, file_id: str, project_root: Path) -> None:
+    """Сразу после ``apply``: был ли файл до правки как в ``HEAD`` git (без ручных правок).
+
+    Проверяется в момент apply, а не при записи факта: коммит самой правки до показа итога
+    перезапуска иначе отменял бы запоминание (ревью Grok). Свои поля отметки ``apply`` не
+    мешают (``proposals._load_record`` берёт только свои ключи).
+    """
+    path = paths.proposal_record(file_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        clean = rerun.git_head_digest(project_root, str(data["file"])) == str(data["sha_before"])
+        ws.write_atomic(path, json.dumps({**data, CLEAN_BEFORE: clean}, ensure_ascii=False,
+                                         indent=2) + "\n")
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+
+
 def _record(paths: ws.RunPaths, file_id: str) -> dict[str, str] | None:
     """Отметка ``apply`` проблемы: файл и хэши до и после."""
     try:
         data = json.loads(paths.proposal_record(file_id).read_text(encoding="utf-8"))
+        if data.get(CLEAN_BEFORE) is not True:
+            return None  # ручная правка до apply или git не ответил
         return {key: str(data[key]) for key in ("file", "sha_before", "sha_after")}
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -303,7 +329,7 @@ def match(entry: dict[str, Any], tests: list[str], project_root: Path,
             continue
         where = location_state(fact.proposal(), project_root)
         if where in ("applied", "pending"):
-            found.append((fact.date, fact, where))
+            found.append(((fact.date, fact.saved_at), fact, where))
     if not found:
         return None
     _, fact, where = max(found, key=lambda item: item[0])

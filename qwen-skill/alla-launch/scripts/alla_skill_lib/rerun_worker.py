@@ -119,7 +119,11 @@ def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
                     continue
                 runs[test.test_result_id] += 1
                 if found.status == "passed":
-                    edited = source_digest(root, test.source) != test.source_sha
+                    # Файл правки — не обязательно исходник теста (хелпер, страница): тест должен
+                    # пройти ровно на версии из плана (ревью Grok).
+                    edited = (source_digest(root, test.source) != test.source_sha
+                              or (bool(test.fix_file)
+                                  and source_digest(root, test.fix_file) != test.fix_sha))
                     outcomes[test.test_result_id] = _outcome(
                         test, "passed", runs, attempt=attempt, surefire_flaky=found.flaky,
                         **({"changed": test.changed or EDITED_REASON, "edited": True}
