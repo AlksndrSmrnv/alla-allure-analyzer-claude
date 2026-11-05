@@ -546,3 +546,25 @@ def test_script_analysis_that_no_longer_passes_the_check_is_dropped(
 
     assert again.startswith("STATUS: analyze") and f"clusters/{order}.md" in again
     assert not (run_dir / "analyses" / f"{order}.md").exists()
+
+
+def test_result_shows_the_write_that_the_report_refresh_retried(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Первая запись упала, а пересборка отчёта записала: итог говорит о записанном (ревью
+    Codex)."""
+    original = fix_facts.FixStore.save
+    calls = []
+
+    def flaky_save(self: fix_facts.FixStore, fact: fix_facts.FixFact) -> Path:
+        calls.append(fact.id)
+        if len(calls) == 1:
+            raise OSError("временный сбой")
+        return original(self, fact)
+
+    monkeypatch.setattr(fix_facts.FixStore, "save", flaky_save)
+    _, _, done = _checked_fix(nested_project, capsys)
+
+    assert "Запомнена проверенная правка" in done and "итог не записан" not in done
+    assert len(_facts(nested_project)) == 1

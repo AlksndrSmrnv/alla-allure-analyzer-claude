@@ -749,6 +749,45 @@ def test_knowledge_base_write_error_keeps_the_result(
     assert "Отмечены в базе знаний нестабильными" in _rerun(run_dir, capsys, "--wait")
 
 
+def test_failed_write_restores_a_removed_flaky_mark(
+    nested_project: Path, flaky_testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Снятие отметки откатывается вместе с упавшей записью: иначе оно пропало бы без
+    уведомления (ревью Codex)."""
+    from alla_skill_lib import fix_facts, learn
+
+    autotests = nested_project / "autotests"
+    skill_fake_maven.install(autotests, {
+        f"{ORDER}#createOrder": [FAILED_500, "passed"], f"{ORDER}#updateOrder": [FAILED_500]})
+    run_dir, run, _ = _prepare(nested_project, capsys)
+    _finish(run_dir, capsys, {f"{int(_problem_of(run, 101)):02d}": UNKNOWN_500,
+                              f"{int(_problem_of(run, 103)):02d}": MARKDOWN_ANALYSIS})
+    out = _rerun(run_dir, capsys, "--yes", "--plan", _plan_hash(_rerun(run_dir, capsys)))
+    _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
+    [mark] = (nested_project / "alla-kb" / "flaky").glob("*.json")
+    kept = mark.read_bytes()
+
+    FakeTestOps(default_launch(778)).install(monkeypatch)
+    skill_fake_maven.install(autotests, {f"{ORDER}#createOrder": [FAILED_500]})
+    run_dir, run, _ = _prepare(nested_project, capsys, launch_id=778)
+    _finish(run_dir, capsys, {f"{int(_problem_of(run, 101)):02d}": UNKNOWN_500,
+                              f"{int(_problem_of(run, 103)):02d}": MARKDOWN_ANALYSIS})
+
+    def broken(*_args: object, **_kwargs: object) -> tuple[list[str], list[str]]:
+        raise OSError("диск заполнен")
+
+    original = fix_facts.record_checked
+    monkeypatch.setattr(learn.fix_facts, "record_checked", broken)
+    out = _rerun(run_dir, capsys, "--yes", "--plan", _plan_hash(_rerun(run_dir, capsys)))
+    out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
+
+    assert "В базу знаний итог не записан: диск заполнен." in out
+    assert mark.read_bytes() == kept
+    monkeypatch.setattr(learn.fix_facts, "record_checked", original)
+    assert "Сняты в базе знаний отметки" in _rerun(run_dir, capsys, "--wait")
+
+
 def test_passed_test_without_a_ci_signal_is_marked_only_in_testops(
     nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,

@@ -2080,6 +2080,10 @@ def _rerun_state(
     learned = learn_from_rerun(paths, run, state)
     # Разбор не закончен — итог попадёт в отчёт, когда next его соберёт.
     refreshed = _refresh_report(paths)
+    if learned.lines and not learned.folders:
+        # Запись не удалась, а сборка отчёта могла повторить её удачно: показываем, что есть
+        # теперь (ревью Codex).
+        learned = learn_from_rerun(paths, run, state)
     lines = [
         "Выведи пользователю итог между маркерами дословно, без пересказа; краткий разбор "
         "заново не выводи:",

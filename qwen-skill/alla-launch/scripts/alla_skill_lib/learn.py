@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -46,13 +47,13 @@ def learn_from_rerun(paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobSt
     today = date.today().isoformat()
     saved: list[tuple[Path, bytes | None]] = []
     try:
-        lines, folders = _flaky(run, state, today)
+        lines, folders = _flaky(run, state, today, saved)
         fix_lines, fix_folders = fix_facts.record_checked(paths, run, state, today, saved)
     except OSError as exc:
         # Итог перезапуска важнее: ошибка записи его не прячет, а следующий показ повторит запись.
         # Факты этой попытки откатываются к прежним: к следующему показу условия могут уже не
         # выполняться (ревью Grok), а факт прошлых прогонов терять нельзя (ревью Codex);
-        # отметки «нестабильный» запишутся заново так же.
+        # отметки «нестабильный» — тоже (снятая иначе пропала бы без уведомления, ревью Codex).
         _restore(saved)
         return Learned([f"В базу знаний итог не записан: {exc}. Скажи это пользователю."])
     lines += fix_lines
@@ -75,8 +76,12 @@ def _restore(saved: list[tuple[Path, bytes | None]]) -> None:
             continue
 
 
-def _flaky(run: dict[str, Any], state: rerun.JobState, today: str) -> tuple[list[str], list[str]]:
-    """Отметки «нестабильный» в ``alla-kb/flaky/``; строки ответа и папки базы знаний."""
+def _flaky(run: dict[str, Any], state: rerun.JobState, today: str,
+           saved: list[tuple[Path, bytes | None]]) -> tuple[list[str], list[str]]:
+    """Отметки «нестабильный» в ``alla-kb/flaky/``; строки ответа и папки базы знаний.
+
+    ``saved`` получает прежнее содержимое каждого файла, который может измениться, — для отката.
+    """
     assert state.result is not None and state.plan is not None
     keep = flaky.remember_plan(state.result, state.plan, flaky.marks_for_run(run))
     if not keep:
@@ -93,6 +98,7 @@ def _flaky(run: dict[str, Any], state: rerun.JobState, today: str) -> tuple[list
         if entry is None or not key or not entry.get("kb_dir"):
             continue
         store = flaky.FlakyStore(Path(entry["kb_dir"]))
+        _remember_before(store, key, saved)
         if item in keep.mark:
             store.mark(key, {"launch_id": run["launch_id"], "passed_on": item.get("attempt"),
                              "attempts": state.result.get("attempts"),
@@ -110,6 +116,21 @@ def _flaky(run: dict[str, Any], state: rerun.JobState, today: str) -> tuple[list
         lines.append("Сняты в базе знаний отметки «нестабильный» (тест воспроизводится каждый "
                      "раз): " + "; ".join(unmarked) + ".")
     return lines, sorted(folders)
+
+
+def _remember_before(store: flaky.FlakyStore, key: str,
+                     saved: list[tuple[Path, bytes | None]]) -> None:
+    """Прежнее содержимое файлов отметки теста ``key`` (новой — ``None``)."""
+    paths = {store.path_for(key)}
+    if store.folder.is_dir():
+        for path in store.folder.glob("*.json"):
+            try:
+                if json.loads(path.read_text(encoding="utf-8-sig")).get("test") == key:
+                    paths.add(path)
+            except (OSError, ValueError, AttributeError):
+                continue
+    for path in sorted(paths):
+        saved.append((path, path.read_bytes() if path.is_file() else None))
 
 
 def render(learned: Learned) -> str:
