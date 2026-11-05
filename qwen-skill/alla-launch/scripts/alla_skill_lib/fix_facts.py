@@ -242,20 +242,20 @@ def record_checked(
                        proposal.line, list(proposal.before), list(proposal.after),
                        run.get("launch_id"), today, datetime.now().isoformat(timespec="seconds"))
         store = FixStore(Path(entry["kb_dir"]))
-        # Чтение, объединение и запись — под одной блокировкой проекта: итоги двух разборов
-        # иначе затирали бы тесты друг друга (ревью Codex).
-        with _fixes_lock(paths):
-            known = store.get(fact.id)
-            if known is not None:
-                # Та же правка, проверенная заново на части тестов: прежнее покрытие не
-                # теряется (ревью Grok). Новые важнее старых, не больше MAX_RECORD_TESTS.
-                merged = list(dict.fromkeys([*names, *known.tests]))[:MAX_RECORD_TESTS]
-                fact = replace(fact, tests=sorted(merged))
-            target = store.path_for(fact)
-            previous = target.read_bytes() if target.is_file() else None
-            if saved is not None:
-                saved.append((target, previous))  # до записи: упавшая запись тоже откатится
-            store.save(fact)
+        # Чтение, объединение, запись и откат — под блокировкой проекта ``kb_write_lock``,
+        # которую держит вызывающий (``learn``): итоги двух разборов иначе затирали бы тесты
+        # и откат друг друга (ревью Codex, Grok).
+        known = store.get(fact.id)
+        if known is not None:
+            # Та же правка, проверенная заново на части тестов: прежнее покрытие не теряется
+            # (ревью Grok). Новые важнее старых, не больше MAX_RECORD_TESTS.
+            merged = list(dict.fromkeys([*names, *known.tests]))[:MAX_RECORD_TESTS]
+            fact = replace(fact, tests=sorted(merged))
+        target = store.path_for(fact)
+        previous = target.read_bytes() if target.is_file() else None
+        if saved is not None:
+            saved.append((target, previous))  # до записи: упавшая запись тоже откатится
+        store.save(fact)
         folders.add(kb_label(project_root, Path(entry["kb_dir"])))
         lines.append(f"Запомнена проверенная правка проблемы {int(file_id)} ({fact.file}:"
                      f"{fact.line}): в следующих прогонах эта же ошибка этих тестов разберётся "
@@ -264,8 +264,10 @@ def record_checked(
 
 
 @contextlib.contextmanager
-def _fixes_lock(paths: ws.RunPaths) -> Iterator[None]:
-    """Блокировка записи фактов на весь проект (файл в ``alla-reports/``, не в базе знаний)."""
+def kb_write_lock(paths: ws.RunPaths) -> Iterator[None]:
+    """Блокировка записи скрипта в ``flaky/`` и ``fixes/`` на весь проект (файл в
+    ``alla-reports/``, не в базе знаний): итог перезапуска с откатом и ``reject N fix:<id>``.
+    Не вкладывается сама в себя (``flock`` на втором дескрипторе ждал бы вечно)."""
     import fcntl
 
     paths.reports_dir.mkdir(parents=True, exist_ok=True)
@@ -576,10 +578,24 @@ def _engineer_said(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any
                == "exact" for record in records)
 
 
-def fix_auto_written(state: Mapping[str, Any], file_id: str, text: str) -> bool:
-    """Разбор проблемы — тот, что записал скрипт по факту (``sync``)."""
+SCRIPT_START = "ЧТО СЛОМАЛОСЬ: Эту ошибку уже исправляла проверенная правка fix:"
+
+
+def fix_auto_written(state: Mapping[str, Any], file_id: str, text: str,
+                     entry: Mapping[str, Any] | None = None) -> bool:
+    """Разбор проблемы — тот, что записал скрипт по факту (``sync``).
+
+    По хэшу в ``state.json``, а с ``entry`` — ещё и по началу текста с id факта кластера:
+    ``state.json`` мог не записаться после разбора, и шаблон скрипта стал бы «чужим» разбором,
+    который можно подтвердить как слова инженера (ревью Grok).
+    """
+    if not text.strip():
+        return False
     ours = (state.get(FIX_AUTO_STATE) or {}).get(file_id)
-    return bool(text.strip()) and isinstance(ours, dict) and ours.get("analysis") == digest(text)
+    if isinstance(ours, dict) and ours.get("analysis") == digest(text):
+        return True
+    auto = (entry or {}).get("fix_auto") or {}
+    return bool(auto) and text.startswith(f"{SCRIPT_START}{auto.get('id')} ")
 
 
 def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[str]:
@@ -603,11 +619,12 @@ def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[
         ours = written.get(file_id, {})
         analysis_path, proposal_path = paths.analysis(file_id), paths.proposal(file_id)
         current = ws.read_text(analysis_path) if analysis_path.is_file() else ""
-        if current.strip() and digest(current) != ours.get("analysis"):
+        if current.strip() and not fix_auto_written(state, file_id, current, entry):
             continue  # разбор после отказа от факта пишет модель
         proposal = ws.read_text(proposal_path) if proposal_path.is_file() else ""
-        own_proposal = not proposal.strip() or digest(proposal) == ours.get("proposal")
         fact = current_fact(entry)
+        own_proposal = (not proposal.strip() or digest(proposal) == ours.get("proposal")
+                        or (fact is not None and proposal == proposal_text(fact)))
         # Место правки — по текущему файлу: после apply или отката совет меняется (ревью Codex).
         text = current_text(paths, run, entry)
         if fact is None or text is None:

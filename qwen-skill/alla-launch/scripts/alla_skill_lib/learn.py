@@ -45,6 +45,17 @@ def learn_from_rerun(paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobSt
     if done is not None:
         return Learned(list(done.get("lines") or []), list(done.get("folders") or []))
     today = date.today().isoformat()
+    with fix_facts.kb_write_lock(paths):
+        return _learn(paths, run, state, files, job, today)
+
+
+def _learn(paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState,
+           files: rerun.JobFiles, job: str, today: str) -> Learned:
+    """Запись и откат — целиком под ``kb_write_lock``: параллельный разбор не вклинится между
+    записью и откатом (ревью Grok)."""
+    done = rerun.read_learned(files, job)  # другой процесс мог записать, пока ждали блокировку
+    if done is not None:
+        return Learned(list(done.get("lines") or []), list(done.get("folders") or []))
     saved: list[tuple[Path, bytes | None]] = []
     try:
         lines, folders = _flaky(run, state, today, saved)

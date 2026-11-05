@@ -180,7 +180,7 @@ def _cluster_facts(
         # Разбор по проверенной правке (fix_facts) — тоже скрипта (ревью Codex).
         item["kb_auto"] = ((bool(entry.get("kb_auto")) and kb_auto_written(state, file_id, text))
                            or (bool(entry.get("fix_auto"))
-                               and fix_facts.fix_auto_written(state, file_id, text)))
+                               and fix_facts.fix_auto_written(state, file_id, text, entry)))
         item["auto"] = item["auto"] or item["kb_auto"]
         if item["analysed"]:
             analysis, errors = check_entry_analysis(text, entry, project_root, paths)

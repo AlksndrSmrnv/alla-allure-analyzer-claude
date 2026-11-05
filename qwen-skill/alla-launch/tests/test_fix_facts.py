@@ -743,7 +743,7 @@ def test_fact_merge_is_serialized_across_runs(tmp_path: Path) -> None:
     events: list[str] = []
 
     def hold(name: str) -> None:
-        with fix_facts._fixes_lock(paths):
+        with fix_facts.kb_write_lock(paths):
             events.append(f"{name}+")
             time.sleep(0.2)
             events.append(f"{name}-")
@@ -757,3 +757,25 @@ def test_fact_merge_is_serialized_across_runs(tmp_path: Path) -> None:
     second.join()
     assert events == ["a+", "a-", "b+", "b-"]
     assert not (tmp_path / "alla-kb").exists()  # блокировка — не в базе знаний
+
+
+def test_script_analysis_is_recognised_without_its_state_mark(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """state.json не записался после разбора — шаблон скрипта всё равно его, а не «чужой»
+    разбор, который можно подтвердить как слова инженера (ревью Grok)."""
+    _checked_fix(nested_project, capsys)
+    run_dir, _, order, login = _next_launch(nested_project, capsys, monkeypatch)
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.pop(fix_facts.FIX_AUTO_STATE)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    out = _run(["remember", order, "--run", str(run_dir), "--from-analysis"], capsys)[1]
+    assert out.startswith("STATUS: error") and "написал скрипт по проверенной правке" in out
+    done = _run(["next", str(run_dir)], capsys)[1]
+    assert done.startswith("STATUS: done")
+    kb_question = next((line for line in done.splitlines() if "Какие разборы верны" in line), "")
+    assert f"Проблемы: {int(login)}." in kb_question

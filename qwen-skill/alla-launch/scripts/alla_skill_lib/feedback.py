@@ -686,7 +686,8 @@ def _forget_fix(
     from alla_skill_lib import fix_facts  # fix_facts тянет proposals и rerun
 
     kb_dir = Path(str(entry.get("kb_dir") or ""))
-    removed = fix_facts.FixStore(kb_dir).forget(wanted) if entry.get("kb_dir") else []
+    with fix_facts.kb_write_lock(paths):  # итог перезапуска не запишет факт обратно (ревью Grok)
+        removed = fix_facts.FixStore(kb_dir).forget(wanted) if entry.get("kb_dir") else []
     if not removed:
         return "error", (f"В {kb_dir / fix_facts.FIXES_DIRNAME} нет проверенной правки "
                          f"«{FIX_PREFIX}{wanted}». Скажи это пользователю.")
@@ -736,7 +737,7 @@ def _scripted_fix(paths: ws.RunPaths, entry: dict[str, Any], source: Path) -> bo
     from alla_skill_lib import fix_facts  # fix_facts тянет proposals и rerun
 
     return bool(entry.get("fix_auto")) and fix_facts.fix_auto_written(
-        _feedback_state(paths), entry["file_id"], ws.read_text(source))
+        _feedback_state(paths), entry["file_id"], ws.read_text(source), entry)
 
 
 def _blocked(paths: ws.RunPaths, entry: dict[str, Any]) -> str | None:

@@ -120,7 +120,8 @@ def current_state(
                 text = current_auto_text(entry, paths, project) or ""
                 if text:
                     current_auto.add(file_id)
-            elif entry.get("fix_auto") and fix_facts.fix_auto_written(state, file_id, text):
+            elif entry.get("fix_auto") and fix_facts.fix_auto_written(state, file_id, text,
+                                                                              entry):
                 # Разбор по проверенной правке — по текущему факту, коду и словам инженера, как
                 # сделал бы next (ревью Codex: снимок расширений видел снятый разбор).
                 text = fix_facts.current_text(paths, run, entry) or ""
