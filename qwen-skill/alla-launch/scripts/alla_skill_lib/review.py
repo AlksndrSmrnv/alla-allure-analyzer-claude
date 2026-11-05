@@ -24,6 +24,7 @@ from typing import Any
 from alla_core.models.clustering import NEAR_REASONS
 
 from alla_skill_lib import workspace as ws
+from alla_skill_lib import fix_facts
 from alla_skill_lib.known_issues import kb_auto_written
 from alla_skill_lib.related import EDGE_KINDS
 from alla_skill_lib.proposals import parse_proposal
@@ -176,7 +177,10 @@ def _cluster_facts(
         item["analysed"] = bool(text.strip())
         # Разбор известной проблемы по записи базы знаний пишет скрипт — как у auto, модель его
         # не писала, и оценивать его нечего.
-        item["kb_auto"] = bool(entry.get("kb_auto")) and kb_auto_written(state, file_id, text)
+        # Разбор по проверенной правке (fix_facts) — тоже скрипта (ревью Codex).
+        item["kb_auto"] = ((bool(entry.get("kb_auto")) and kb_auto_written(state, file_id, text))
+                           or (bool(entry.get("fix_auto"))
+                               and fix_facts.fix_auto_written(state, file_id, text)))
         item["auto"] = item["auto"] or item["kb_auto"]
         if item["analysed"]:
             analysis, errors = check_entry_analysis(text, entry, project_root, paths)

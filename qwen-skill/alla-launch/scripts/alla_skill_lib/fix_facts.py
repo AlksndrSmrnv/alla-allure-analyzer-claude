@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 from alla_core.models.clustering import FailureCluster
@@ -298,9 +299,7 @@ def match(entry: dict[str, Any], tests: list[str], project_root: Path,
     now = today or date.today()
     found = []
     for fact in FixStore(Path(kb_dir)).load():
-        if fact.signature != entry["signature"] or fact.log_digest != entry.get("log_digest"):
-            continue
-        if not set(tests) <= set(fact.tests) or _age(fact, now) > MAX_AGE_DAYS:
+        if not _fits(fact, entry, tests, now):
             continue
         where = location_state(fact.proposal(), project_root)
         if where in ("applied", "pending"):
@@ -310,6 +309,13 @@ def match(entry: dict[str, Any], tests: list[str], project_root: Path,
     _, fact, where = max(found, key=lambda item: item[0])
     return {"id": fact.id, "state": where, "file": fact.file, "line": fact.line,
             "date": fact.date, "launch_id": fact.launch_id}
+
+
+def _fits(fact: FixFact, entry: dict[str, Any], tests: list[str], today: date) -> bool:
+    """Сигнатура и отпечаток лога те же, тесты — из проверенных, факт не старше срока."""
+    return (fact.signature == entry.get("signature") and fact.log_digest == entry.get("log_digest")
+            and bool(tests) and set(tests) <= set(fact.tests)
+            and _age(fact, today) <= MAX_AGE_DAYS)
 
 
 def _age(fact: FixFact, today: date) -> int:
@@ -465,7 +471,9 @@ def current_text(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any])
     """
     auto = entry.get("fix_auto")
     fact = current_fact(entry) if auto else None
-    if not auto or fact is None:
+    # Тот же id мог перезаписать факт другого прогона (другие лог или тесты), факт мог устареть:
+    # условия ``match`` — заново (ревью Codex).
+    if not auto or fact is None or not _fits(fact, entry, entry_tests(run, entry), date.today()):
         return None
     where = location_state(fact.proposal(), Path(run["project_root"]))
     if where not in ("applied", "pending") or _engineer_said(paths, run, entry):
@@ -487,7 +495,7 @@ def _engineer_said(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any
                == "exact" for record in records)
 
 
-def fix_auto_written(state: dict[str, Any], file_id: str, text: str) -> bool:
+def fix_auto_written(state: Mapping[str, Any], file_id: str, text: str) -> bool:
     """Разбор проблемы — тот, что записал скрипт по факту (``sync``)."""
     ours = (state.get(FIX_AUTO_STATE) or {}).get(file_id)
     return bool(text.strip()) and isinstance(ours, dict) and ours.get("analysis") == digest(text)

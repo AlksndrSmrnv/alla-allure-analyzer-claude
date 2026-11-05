@@ -342,3 +342,33 @@ def test_other_test_source_needs_an_answer_from_git(tmp_path: Path) -> None:
     from alla_skill_lib import rerun
 
     assert not rerun.git_clean(tmp_path, Path("OrderTest.java"))  # не репозиторий
+
+
+@pytest.mark.parametrize("change", ["other_log", "expired"])
+def test_fact_is_rechecked_on_every_next(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, change: str,
+) -> None:
+    """Факт с тем же id перезаписал другой прогон (другой лог) или он устарел — разбор снят,
+    проблему разбирает модель; review не считает разбор скрипта разбором модели (ревью Codex)."""
+    from alla_skill_lib import workspace as ws
+    from alla_skill_lib.review import _cluster_facts
+
+    _checked_fix(nested_project, capsys)
+    run_dir, run, order, login = _next_launch(nested_project, capsys, monkeypatch)
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    paths = ws.resolve_run(str(run_dir), nested_project / "alla-reports")
+    state = json.loads(paths.state_json.read_text(encoding="utf-8"))
+    facts = _cluster_facts(paths, run, state, Path(run["project_root"]))
+    assert next(item for item in facts if item["number"] == int(order))["kb_auto"]
+
+    [path] = (nested_project / "alla-kb" / "fixes").glob("*.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if change == "other_log":
+        data["log_digest"] = "other"
+    else:
+        data["date"] = (date.today() - timedelta(days=fix_facts.MAX_AGE_DAYS + 1)).isoformat()
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    again = _run(["next", str(run_dir)], capsys)[1]
+    assert again.startswith("STATUS: analyze") and f"clusters/{order}.md" in again
