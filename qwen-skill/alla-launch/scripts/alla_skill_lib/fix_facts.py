@@ -25,6 +25,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from alla_core.models.clustering import FailureCluster
+from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib import flaky, rerun
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.kb import MAX_RECORD_TESTS, README, kb_label, secret_lines
@@ -168,6 +170,8 @@ def record_checked(
     items = {int(item["test_result_id"]): item for item in state.result.get("tests") or []}
     variants = {int(test["test_result_id"]): [int(other) for other in test.get("other_ids") or []]
                 for test in state.plan.get("tests") or []}
+    sources = {int(test["test_result_id"]): str(test.get("source") or "")
+               for test in state.plan.get("tests") or []}
     lines: list[str] = []
     folders: set[str] = set()
     for entry in run["clusters"]:
@@ -178,6 +182,14 @@ def record_checked(
             continue
         proposal = _applied_proposal(paths, file_id, project_root)
         if proposal is None or not all(_checked(item) for item in own):
+            continue
+        # Тест прошёл ровно на этой правке: файл правки — как его оставил apply, а другие
+        # исходники тестов проблемы не изменены (``changed`` о них молчит, когда есть правка
+        # агента — ревью Codex).
+        others = {sources.get(int(item["test_result_id"]), "") for item in own} - {proposal.file}
+        if not _as_applied(paths, file_id, project_root) \
+                or any(not source or rerun.git_dirty(project_root, Path(source))
+                       for source in others):
             continue
         covered = {test_id for item in own
                    for test_id in (int(item["test_result_id"]),
@@ -201,7 +213,18 @@ def record_checked(
 
 def _checked(item: dict[str, Any]) -> bool:
     return (item.get("outcome") == "passed" and int(item.get("attempt") or 0) == 1
-            and not item.get("surefire_flaky") and item.get("changed") == FIX_CHANGED)
+            and not item.get("surefire_flaky") and item.get("changed") == FIX_CHANGED
+            and not item.get("edited"))
+
+
+def _as_applied(paths: ws.RunPaths, file_id: str, project_root: Path) -> bool:
+    """Файл правки сейчас ровно тот, что записал ``apply`` (``sha_after`` отметки)."""
+    try:
+        record = json.loads(paths.proposal_record(file_id).read_text(encoding="utf-8"))
+        target = project_root / str(record["file"])
+        return hashlib.sha256(target.read_bytes()).hexdigest() == str(record["sha_after"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def _applied_proposal(paths: ws.RunPaths, file_id: str, project_root: Path) -> Proposal | None:
@@ -353,20 +376,49 @@ def digest(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def prepared(entry: dict[str, Any], tests: list[str], sources: Registry, project_root: Path,
+def prepared(entry: dict[str, Any], cluster: FailureCluster,
+             tests_by_id: dict[int, FailedTestSummary], sources: Registry, project_root: Path,
              paths: ws.RunPaths) -> dict[str, Any] | None:
     """``entry["fix_auto"]`` для ``prepare``: факт подходит и его разбор проходит проверку."""
+    from alla_skill_lib.kb import cluster_tests
     from alla_skill_lib.known_issues import first_quote  # known_issues тянет весь отчёт
 
-    auto = match(entry, tests, project_root)
-    quote = first_quote(sources) if auto is not None else None
-    if auto is None or quote is None:
+    auto = match(entry, cluster_tests(cluster, tests_by_id), project_root)
+    if auto is None or not _members_same(cluster, tests_by_id, str(entry["signature"])):
+        return None
+    quote = first_quote(sources)
+    if quote is None:
         return None
     auto["quote"] = list(quote)
     text = _text(entry, auto)
     if check_entry_analysis(text, entry, project_root, paths)[1]:
         return None
     return auto
+
+
+def _members_same(cluster: FailureCluster, tests_by_id: dict[int, FailedTestSummary],
+                  signature: str) -> bool:
+    """Каждый тест группы — та же ошибка, что у представителя: своя сигнатура та же, строки-ошибки
+    своего лога (если он есть) — те же, что у лога кластера. Сигнатура и отпечаток лога кластера
+    — представителя: другая ошибка другого участника иначе получила бы чужую правку (ревью
+    Codex; то же правило, что у ``known_issues.auto_resolution``)."""
+    from alla_skill_lib.signature import (
+        as_representatives,
+        cluster_log_errors,
+        cluster_signature,
+        log_error_lines,
+    )
+
+    shown = cluster_log_errors(cluster, tests_by_id)
+    for alone in as_representatives(cluster, tests_by_id):
+        test = (tests_by_id.get(alone.representative_test_id)
+                if alone.representative_test_id is not None else None)
+        if test is None or cluster_signature(alone, tests_by_id) != signature:
+            return False
+        own = log_error_lines(test)
+        if own and own != shown:
+            return False
+    return True
 
 
 def _text(entry: dict[str, Any], auto: dict[str, Any]) -> str:
@@ -402,14 +454,16 @@ def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[
         proposal = ws.read_text(proposal_path) if proposal_path.is_file() else ""
         own_proposal = not proposal.strip() or digest(proposal) == ours.get("proposal")
         fact = current_fact(entry)
-        if fact is None:
+        # Место правки — по текущему файлу: после apply или отката совет менять (ревью Codex).
+        where = location_state(fact.proposal(), Path(run["project_root"])) if fact else ""
+        if fact is None or where not in ("applied", "pending"):
             if current.strip():
                 analysis_path.unlink(missing_ok=True)
             if proposal.strip() and own_proposal and not paths.proposal_record(file_id).is_file():
                 proposal_path.unlink(missing_ok=True)
             written.pop(file_id, None)
             continue
-        text = _text(entry, auto)
+        text = _text(entry, {**auto, "state": where})
         if current != text:
             ws.write_text(analysis_path, text)
         ours = {"analysis": digest(text)}

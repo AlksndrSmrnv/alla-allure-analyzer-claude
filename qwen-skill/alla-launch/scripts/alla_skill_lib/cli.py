@@ -936,8 +936,8 @@ def _write_run(
             else:
                 # Проверенная правка (fix_facts): разбор и предложение пишет скрипт (next), задание
                 # то же — запасной путь, если инженер скажет, что правка не та.
-                fix_auto = fix_facts.prepared(entry, cluster_tests(cluster, tests_by_id), sources,
-                                              project_root, paths)
+                fix_auto = fix_facts.prepared(entry, cluster, tests_by_id, sources, project_root,
+                                              paths)
                 if fix_auto is not None:
                     entry["fix_auto"] = fix_auto
             shown_paths = {image.path for image in task.images.values()}

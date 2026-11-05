@@ -293,6 +293,11 @@ def _changed(
     return "код теста изменён" if dirty[source] else ""
 
 
+def git_dirty(project_root: Path, source: PurePath) -> bool:
+    """В git есть незакоммиченные изменения исходника."""
+    return _git_dirty(project_root, source)
+
+
 def _git_dirty(project_root: Path, source: PurePath) -> bool:
     try:
         result = subprocess.run(

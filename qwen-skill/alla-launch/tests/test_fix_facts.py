@@ -180,3 +180,67 @@ def test_timeout_growth_is_not_remembered(tmp_path: Path) -> None:
     assert timeouts_increased(["wait(Duration.ofSeconds(5));"], ["wait(Duration.ofSeconds(30));"])
     assert not timeouts_increased(["assertEquals(200, code);"], ["assertEquals(201, code);"])
 
+
+
+def test_other_error_of_another_member_is_left_to_the_model() -> None:
+    """Сигнатура и лог кластера — представителя: другой ответ сервиса у второго теста не
+    получает чужую правку (ревью Codex)."""
+    from test_skill_kb_auto import _cluster, _http
+
+    from alla_skill_lib.signature import cluster_signature
+
+    error = "ru.bank.payments.TransferRejectedException: transfer rejected"
+    same, same_tests = _cluster(error, error, logs=(_http("account is closed", "rq-1"),
+                                                    _http("account is closed", "rq-2")))
+    mixed, mixed_tests = _cluster(error, error, logs=(_http("account is closed", "rq-3"),
+                                                      _http("insufficient funds", "rq-4")))
+    signature = cluster_signature(same, same_tests)
+    assert cluster_signature(mixed, mixed_tests) == signature
+    assert fix_facts._members_same(same, same_tests, signature)
+    assert not fix_facts._members_same(mixed, mixed_tests, signature)
+
+
+def test_advice_follows_the_code_after_apply(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Разбор по факту «правки нет» после apply следующим next говорит «правка уже в коде»."""
+    _checked_fix(nested_project, capsys)
+    source = nested_project / SOURCE
+    source.write_text(source.read_text(encoding="utf-8").replace("(201,", "(200,"),
+                      encoding="utf-8")
+    run_dir, _, order, login = _next_launch(nested_project, capsys, monkeypatch)
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    diff = _run(["apply", order, "--run", str(run_dir)], capsys)[1]
+    applied = _run(["apply", order, "--run", str(run_dir), "--yes", "--diff",
+                    diff.split("--yes --diff ")[1].split()[0]], capsys)[1]
+    assert applied.startswith("STATUS: applied")
+
+    _run(["next", str(run_dir)], capsys)
+
+    analysis = (run_dir / "analyses" / f"{order}.md").read_text(encoding="utf-8")
+    assert "Правка уже есть в коде проекта на этой машине" in analysis
+
+
+def test_fix_with_other_edits_is_not_remembered(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Тест мог пройти благодаря чужой правке: файл не тот, что оставил apply (ревью Codex)."""
+    skill_fake_maven.install(nested_project / "autotests", {
+        f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
+    run_dir, order, out = _applied(nested_project, capsys, SOURCE)
+    source = nested_project / SOURCE
+    source.write_text(source.read_text(encoding="utf-8") + "// ещё правка\n", encoding="utf-8")
+    command = out.splitlines()[-1].split("выполни: ", 1)[1].split(" — дальше", 1)[0]
+    done = _run(["rerun", *command.split(" rerun ", 1)[1].split()], capsys)[1]
+    done = _wait_done(run_dir, capsys) if done.startswith("STATUS: running") else done
+
+    assert done.startswith("STATUS: rerun_done"), done
+    assert "Запомнена проверенная правка" not in done and _facts(nested_project) == []
+
+
+def test_test_edited_during_the_rerun_is_not_a_checked_fix() -> None:
+    passed = {"outcome": "passed", "attempt": 1, "changed": fix_facts.FIX_CHANGED}
+    assert fix_facts._checked(passed)
+    assert not fix_facts._checked({**passed, "edited": True})  # воркер: исходник изменился
+    assert not fix_facts._checked({**passed, "surefire_flaky": True})

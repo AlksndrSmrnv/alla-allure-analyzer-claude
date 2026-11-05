@@ -1087,6 +1087,7 @@ def test_test_edited_during_the_rerun_is_a_check_of_the_fix(tmp_path: Path) -> N
     item = execute(files, plan)["tests"][0]
 
     assert (item["outcome"], item["changed"]) == ("passed", rerun_worker.EDITED_REASON)
+    assert item["edited"] is True  # у правки агента changed тот же — флаг отличает (fix_facts)
     assert rerun.RerunView.group(item) == "fixed"
 
 

@@ -122,7 +122,8 @@ def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
                     edited = source_digest(root, test.source) != test.source_sha
                     outcomes[test.test_result_id] = _outcome(
                         test, "passed", runs, attempt=attempt, surefire_flaky=found.flaky,
-                        **({"changed": test.changed or EDITED_REASON} if edited else {}))
+                        **({"changed": test.changed or EDITED_REASON, "edited": True}
+                           if edited else {}))
                 elif not repeats_ci(found.message, test):
                     outcomes[test.test_result_id] = _outcome(
                         test, "other", runs, attempt=attempt, message=safe_text(found.message))
