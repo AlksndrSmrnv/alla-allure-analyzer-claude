@@ -714,6 +714,9 @@ def test_result_the_model_did_not_wait_for_is_remembered_by_the_report(
     done = _run(["next", "--run", str(run_dir)], capsys)[1]
 
     assert done.startswith("STATUS: done")
+    assert "Итог перезапуска тестов, который ты не дождался, уже в отчёте." in done
+    assert "Записано в базу знаний без вопроса" in done
+    assert "Записано в базу знаний" not in _run(["next", "--run", str(run_dir)], capsys)[1]
     assert len(list(flaky_dir.glob("*.json"))) == 1
     assert f"- Нестабильные по базе знаний: {ORDER}.createOrder (с " in \
         (run_dir / "report.md").read_text(encoding="utf-8")

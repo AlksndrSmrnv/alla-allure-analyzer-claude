@@ -1316,7 +1316,10 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
 
     job = rerun.job_state(rerun.job_files(paths))
     # Итог перезапуска, который модель не дождалась, пишется в базу знаний и здесь — один раз.
-    learn_from_rerun(paths, run, job)
+    learned = learn_from_rerun(paths, run, job)
+    # Записанное сейчас (или ошибку записи) пользователь должен узнать и из done (ревью Codex).
+    learned_note = render_learned(learned) if learned.changed or (
+        learned.lines and not learned.folders) else ""
     console, full = render_report(
         run, analyses, flagged, summary, paths, proposals, states, notes, not_proposed, known,
         related, confirmed, rerun.RerunView.of(job),
@@ -1329,7 +1332,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     kb_offer = _kb_offer(paths, run, analyses, flagged, known, set(confirmed), related, separate,
                          fix_auto)
     return "done", _done_body(console, paths, offered, feedback=True, rerun_offer=offer,
-                              kb_offer=kb_offer)
+                              kb_offer=kb_offer, learned=learned_note)
 
 
 REJECTED_NOT_PROPOSED = (
@@ -1831,6 +1834,7 @@ def _done_body(
     feedback: bool = False,
     rerun_offer: str | None = None,
     kb_offer: tuple[list[str], list[list[str]]] = ([], []),
+    learned: str = "",
 ) -> str:
     lines = [
         f"Отчёт сохранён: {paths.report}",
@@ -1844,6 +1848,8 @@ def _done_body(
         console,
         REPORT_END,
     ]
+    if learned:
+        lines.append("Итог перезапуска тестов, который ты не дождался, уже в отчёте. " + learned)
     if fixes or feedback or rerun_offer:
         lines.append("После отчёта:")
     if feedback:

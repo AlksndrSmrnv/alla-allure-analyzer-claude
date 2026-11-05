@@ -29,7 +29,16 @@ from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib import flaky, rerun
 from alla_skill_lib import workspace as ws
-from alla_skill_lib.kb import MAX_RECORD_TESTS, README, kb_label, secret_lines
+from alla_skill_lib.kb import (
+    MAX_RECORD_TESTS,
+    README,
+    ProjectKB,
+    entry_tests,
+    kb_label,
+    normalize_fp,
+    record_matches,
+    secret_lines,
+)
 from alla_skill_lib.sources import Registry, check_entry_analysis, example_blocks
 from alla_skill_lib.proposals import (
     Proposal,
@@ -172,6 +181,8 @@ def record_checked(
                 for test in state.plan.get("tests") or []}
     sources = {int(test["test_result_id"]): str(test.get("source") or "")
                for test in state.plan.get("tests") or []}
+    planned_fix = {int(test["test_result_id"]): str(test.get("fix_sha") or "")
+                   for test in state.plan.get("tests") or []}
     lines: list[str] = []
     folders: set[str] = set()
     for entry in run["clusters"]:
@@ -187,9 +198,16 @@ def record_checked(
         # исходники тестов проблемы не изменены (``changed`` о них молчит, когда есть правка
         # агента — ревью Codex).
         others = {sources.get(int(item["test_result_id"]), "") for item in own} - {proposal.file}
-        if not _as_applied(paths, file_id, project_root) \
+        record = _record(paths, file_id)
+        if record is None or not _as_applied(record, project_root) \
+                or any(planned_fix.get(int(item["test_result_id"])) != record["sha_after"]
+                       for item in own) \
+                or rerun.git_head_digest(project_root, str(record["file"])) != record["sha_before"] \
                 or any(not source or rerun.git_dirty(project_root, Path(source))
                        for source in others):
+            # Перезапуск шёл на другой версии правки (её откатили и применили другую), до apply
+            # в файле уже была ручная правка (её не запомнить), или менялись другие исходники
+            # тестов — тест мог пройти не из-за этой правки (ревью Codex).
             continue
         covered = {test_id for item in own
                    for test_id in (int(item["test_result_id"]),
@@ -217,13 +235,21 @@ def _checked(item: dict[str, Any]) -> bool:
             and not item.get("edited"))
 
 
-def _as_applied(paths: ws.RunPaths, file_id: str, project_root: Path) -> bool:
+def _record(paths: ws.RunPaths, file_id: str) -> dict[str, str] | None:
+    """Отметка ``apply`` проблемы: файл и хэши до и после."""
+    try:
+        data = json.loads(paths.proposal_record(file_id).read_text(encoding="utf-8"))
+        return {key: str(data[key]) for key in ("file", "sha_before", "sha_after")}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _as_applied(record: dict[str, str], project_root: Path) -> bool:
     """Файл правки сейчас ровно тот, что записал ``apply`` (``sha_after`` отметки)."""
     try:
-        record = json.loads(paths.proposal_record(file_id).read_text(encoding="utf-8"))
-        target = project_root / str(record["file"])
-        return hashlib.sha256(target.read_bytes()).hexdigest() == str(record["sha_after"])
-    except (OSError, ValueError, KeyError, TypeError):
+        target = project_root / record["file"]
+        return hashlib.sha256(target.read_bytes()).hexdigest() == record["sha_after"]
+    except OSError:
         return False
 
 
@@ -428,6 +454,45 @@ def _text(entry: dict[str, Any], auto: dict[str, Any]) -> str:
                          kb_offered=bool(entry.get("kb")))
 
 
+def current_text(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> str | None:
+    """Текст разбора по факту сейчас, без изменения файлов; не действует — ``None``.
+
+    Одно правило для ``next`` (``sync``) и чтения состояния (``problem_state``, снимок
+    расширений): факт есть, место правки в коде однозначно (совет — по текущему файлу), и
+    слова инженера не появились — запись базы знаний не узнаёт проблему точно, вывод
+    расширения не подтверждён (ревью Codex: иначе отчёт показывал бы и подтверждённую причину
+    инженера, и старое предложение правки).
+    """
+    auto = entry.get("fix_auto")
+    fact = current_fact(entry) if auto else None
+    if not auto or fact is None:
+        return None
+    where = location_state(fact.proposal(), Path(run["project_root"]))
+    if where not in ("applied", "pending") or _engineer_said(paths, run, entry):
+        return None
+    return _text(entry, {**auto, "state": where})
+
+
+def _engineer_said(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> bool:
+    if paths.confirmed(entry["file_id"]).is_file():
+        return True
+    try:
+        records, _warnings = ProjectKB(Path(str(entry["kb_dir"]))).load()
+    except OSError:
+        return False
+    evidence = paths.evidence(entry["file_id"])
+    haystack = normalize_fp(ws.read_text(evidence) if evidence.is_file() else "")
+    tests = entry_tests(run, entry)
+    return any(record_matches(record, str(entry.get("signature") or ""), haystack, tests)
+               == "exact" for record in records)
+
+
+def fix_auto_written(state: dict[str, Any], file_id: str, text: str) -> bool:
+    """Разбор проблемы — тот, что записал скрипт по факту (``sync``)."""
+    ours = (state.get(FIX_AUTO_STATE) or {}).get(file_id)
+    return bool(text.strip()) and isinstance(ours, dict) and ours.get("analysis") == digest(text)
+
+
 def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[str]:
     """Разборы и предложения по фактам проверенных правок: записать или снять (``next``).
 
@@ -454,16 +519,15 @@ def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[
         proposal = ws.read_text(proposal_path) if proposal_path.is_file() else ""
         own_proposal = not proposal.strip() or digest(proposal) == ours.get("proposal")
         fact = current_fact(entry)
-        # Место правки — по текущему файлу: после apply или отката совет менять (ревью Codex).
-        where = location_state(fact.proposal(), Path(run["project_root"])) if fact else ""
-        if fact is None or where not in ("applied", "pending"):
+        # Место правки — по текущему файлу: после apply или отката совет меняется (ревью Codex).
+        text = current_text(paths, run, entry)
+        if fact is None or text is None:
             if current.strip():
                 analysis_path.unlink(missing_ok=True)
             if proposal.strip() and own_proposal and not paths.proposal_record(file_id).is_file():
                 proposal_path.unlink(missing_ok=True)
             written.pop(file_id, None)
             continue
-        text = _text(entry, {**auto, "state": where})
         if current != text:
             ws.write_text(analysis_path, text)
         ours = {"analysis": digest(text)}

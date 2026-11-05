@@ -86,6 +86,9 @@ class PlannedTest:
     other_messages: list[str] = field(default_factory=list)
     # Результаты TestOps других вариантов: метод прошёл — passed нужен и им (``resolve.py``).
     other_ids: list[int] = field(default_factory=list)
+    # Файл правки агента на момент плана (``source_digest``): итог проверяет ровно эту правку
+    # (``fix_facts``), а не применённую после плана другую.
+    fix_sha: str = ""
 
 
 @dataclass(frozen=True)
@@ -219,6 +222,7 @@ def build_plan(
             changed=changed,
             signals=list((signals or {}).get(int(test["test_result_id"]), [])),
             source_sha=source_digest(project_root, jvm.source.as_posix()),
+            fix_sha=fix_digest(paths, project_root, file_id),
         )
         seen[key] = planned
         plan.tests.append(planned)
@@ -291,6 +295,28 @@ def _changed(
     if source not in dirty:
         dirty[source] = _git_dirty(project_root, source)
     return "код теста изменён" if dirty[source] else ""
+
+
+def fix_digest(paths: ws.RunPaths, project_root: Path, file_id: str) -> str:
+    """Хэш файла, который правил ``apply`` проблемы (по отметке применения); нет — ``""``."""
+    try:
+        record = json.loads(paths.proposal_record(file_id).read_text(encoding="utf-8"))
+        return source_digest(project_root, str(record["file"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+
+
+def git_head_digest(project_root: Path, source: str) -> str:
+    """Хэш версии файла в ``HEAD`` git; файла нет в git или git недоступен — ``""``."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_root), "show", f"HEAD:./{source}"],
+            capture_output=True, timeout=10, stdin=subprocess.DEVNULL,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return hashlib.sha256(result.stdout).hexdigest() if result.returncode == 0 else ""
 
 
 def git_dirty(project_root: Path, source: PurePath) -> bool:

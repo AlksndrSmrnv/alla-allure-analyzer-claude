@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from alla_skill_lib import fix_facts
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.analysis_format import ClusterAnalysis
 from alla_skill_lib.confirmed import FEEDBACK_SOURCE, load_confirmed
@@ -119,6 +120,10 @@ def current_state(
                 text = current_auto_text(entry, paths, project) or ""
                 if text:
                     current_auto.add(file_id)
+            elif entry.get("fix_auto") and fix_facts.fix_auto_written(state, file_id, text):
+                # Разбор по проверенной правке — по текущему факту, коду и словам инженера, как
+                # сделал бы next (ревью Codex: снимок расширений видел снятый разбор).
+                text = fix_facts.current_text(paths, run, entry) or ""
             if text.strip():
                 analyses[file_id], errors[file_id] = check_entry_analysis(
                     text, entry, project, paths)

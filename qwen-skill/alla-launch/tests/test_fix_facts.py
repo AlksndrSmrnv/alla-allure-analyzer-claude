@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -22,11 +24,24 @@ from alla_skill_lib.kb import ProjectKB
 SOURCE = "autotests/src/test/java/ru/company/orders/OrderTest.java"
 
 
+def _git(project: Path) -> None:
+    """Настоящий git: факт пишется, только если файл до apply был как в HEAD."""
+    shutil.rmtree(project / ".git", ignore_errors=True)
+    for args in (["init", "-q"], ["add", "-A"],
+                 ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]):
+        subprocess.run(["git", "-C", str(project), *args], check=True, capture_output=True)
+
+
 def _checked_fix(project: Path, capsys: pytest.CaptureFixture[str],
-                 outcomes: dict[str, list[str]] | None = None) -> tuple[Path, str, str]:
+                 outcomes: dict[str, list[str]] | None = None,
+                 before_apply: str = "") -> tuple[Path, str, str]:
     """Правка применена, тесты проблемы перезапущены; итог ``rerun_done``."""
     skill_fake_maven.install(project / "autotests", outcomes or {
         f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
+    _git(project)
+    if before_apply:
+        source = project / SOURCE
+        source.write_text(source.read_text(encoding="utf-8") + before_apply, encoding="utf-8")
     run_dir, order, out = _applied(project, capsys, SOURCE)
     command = out.splitlines()[-1].split("выполни: ", 1)[1].split(" — дальше", 1)[0]
     done = _run(["rerun", *command.split(" rerun ", 1)[1].split()], capsys)[1]
@@ -228,6 +243,7 @@ def test_fix_with_other_edits_is_not_remembered(
     """Тест мог пройти благодаря чужой правке: файл не тот, что оставил apply (ревью Codex)."""
     skill_fake_maven.install(nested_project / "autotests", {
         f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
+    _git(nested_project)
     run_dir, order, out = _applied(nested_project, capsys, SOURCE)
     source = nested_project / SOURCE
     source.write_text(source.read_text(encoding="utf-8") + "// ещё правка\n", encoding="utf-8")
@@ -244,3 +260,78 @@ def test_test_edited_during_the_rerun_is_not_a_checked_fix() -> None:
     assert fix_facts._checked(passed)
     assert not fix_facts._checked({**passed, "edited": True})  # воркер: исходник изменился
     assert not fix_facts._checked({**passed, "surefire_flaky": True})
+
+
+def test_manual_edit_before_apply_is_not_remembered(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """В файле до apply уже была ручная правка: её факт не повторит (ревью Codex)."""
+    _, _, done = _checked_fix(nested_project, capsys, before_apply="// ручная правка\n")
+
+    assert "Запомнена проверенная правка" not in done and _facts(nested_project) == []
+
+
+def test_fact_is_bound_to_the_fix_the_rerun_ran(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Итог прочитан после того, как правку откатили и применили другую: та не проверена."""
+    from test_skill_flow import PROPOSAL
+
+    run_dir, order, _ = _checked_fix(nested_project, capsys)
+    for path in (nested_project / "alla-kb" / "fixes").glob("*.json"):
+        path.unlink()
+    (run_dir / "rerun" / "learned.json").unlink()  # итог ещё не показывали
+    assert _run(["revert", order, "--run", str(run_dir)], capsys)[1].startswith("STATUS: reverted")
+    plain = "src/test/java/ru/company/orders/OrderTest.java"
+    (run_dir / "proposals" / f"{order}.md").write_text(
+        PROPOSAL.replace(plain, SOURCE).replace("(201,", "(202,"), encoding="utf-8")
+    diff = _run(["apply", order, "--run", str(run_dir)], capsys)[1]
+    assert _run(["apply", order, "--run", str(run_dir), "--yes", "--diff",
+                 diff.split("--yes --diff ")[1].split()[0]], capsys)[1].startswith("STATUS: applied")
+
+    shown = _run(["rerun", "--wait", "--run", str(run_dir)], capsys)[1]
+
+    assert shown.startswith("STATUS: rerun_done") and "Запомнена проверенная правка" not in shown
+    assert _facts(nested_project) == []
+
+
+def test_engineer_cause_wins_over_the_checked_fix(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Инженер назвал другую причину после разбора по факту: разбор и предложение снимаются,
+    снимок до next уже их не видит (ревью Codex)."""
+    from test_skill_flow import FEEDBACK
+
+    from alla_skill_lib import workspace as ws
+    from alla_skill_lib.problem_state import current_state
+
+    _checked_fix(nested_project, capsys)
+    run_dir, _, order, login = _next_launch(nested_project, capsys, monkeypatch)
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    (run_dir / "feedback" / f"{order}.md").write_text(FEEDBACK, encoding="utf-8")
+    assert _run(["remember", order, "--run", str(run_dir)], capsys)[1].startswith("STATUS: saved")
+
+    paths = ws.resolve_run(str(run_dir), nested_project / "alla-reports")
+    assert order not in current_state(paths).analyses
+    again = _run(["next", str(run_dir)], capsys)[1]
+    assert again.startswith("STATUS: analyze") and f"clusters/{order}.md" in again
+    assert not (run_dir / "proposals" / f"{order}.md").exists()
+
+
+def test_removed_fact_is_not_in_the_snapshot_before_next(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alla_skill_lib import workspace as ws
+    from alla_skill_lib.problem_state import current_state
+
+    _checked_fix(nested_project, capsys)
+    run_dir, _, order, login = _next_launch(nested_project, capsys, monkeypatch)
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    paths = ws.resolve_run(str(run_dir), nested_project / "alla-reports")
+    assert order in current_state(paths).analyses
+    for path in (nested_project / "alla-kb" / "fixes").glob("*.json"):
+        path.unlink()
+
+    assert order not in current_state(paths).analyses
