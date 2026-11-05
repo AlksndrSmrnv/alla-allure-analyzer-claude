@@ -730,3 +730,30 @@ def test_incomplete_rollback_names_what_is_left(tmp_path: Path,
     monkeypatch.setattr(ws, "write_atomic_bytes", broken)
     assert learn._restore([(kept, "до".encode()), (new, None)]) == [kept]
     assert not new.exists()
+
+
+def test_fact_merge_is_serialized_across_runs(tmp_path: Path) -> None:
+    """Объединение тестов факта — под общей блокировкой проекта (ревью Codex)."""
+    import threading
+    import time
+
+    from alla_skill_lib import workspace as ws
+
+    paths = ws.RunPaths(tmp_path / "alla-reports" / "1-run")
+    events: list[str] = []
+
+    def hold(name: str) -> None:
+        with fix_facts._fixes_lock(paths):
+            events.append(f"{name}+")
+            time.sleep(0.2)
+            events.append(f"{name}-")
+
+    first = threading.Thread(target=hold, args=("a",))
+    first.start()
+    time.sleep(0.05)
+    second = threading.Thread(target=hold, args=("b",))
+    second.start()
+    first.join()
+    second.join()
+    assert events == ["a+", "a-", "b+", "b-"]
+    assert not (tmp_path / "alla-kb").exists()  # блокировка — не в базе знаний

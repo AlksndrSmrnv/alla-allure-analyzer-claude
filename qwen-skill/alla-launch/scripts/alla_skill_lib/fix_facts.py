@@ -17,13 +17,14 @@ Grok: прохождение после правки — факт экспери
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 from alla_core.models.clustering import FailureCluster
@@ -241,22 +242,39 @@ def record_checked(
                        proposal.line, list(proposal.before), list(proposal.after),
                        run.get("launch_id"), today, datetime.now().isoformat(timespec="seconds"))
         store = FixStore(Path(entry["kb_dir"]))
-        known = store.get(fact.id)
-        if known is not None:
-            # Та же правка, проверенная заново на части тестов: прежнее покрытие не теряется
-            # (ревью Grok). Новые важнее старых, не больше MAX_RECORD_TESTS.
-            merged = list(dict.fromkeys([*names, *known.tests]))[:MAX_RECORD_TESTS]
-            fact = replace(fact, tests=sorted(merged))
-        target = store.path_for(fact)
-        previous = target.read_bytes() if target.is_file() else None
-        if saved is not None:
-            saved.append((target, previous))  # до записи: упавшая запись тоже откатится
-        store.save(fact)
+        # Чтение, объединение и запись — под одной блокировкой проекта: итоги двух разборов
+        # иначе затирали бы тесты друг друга (ревью Codex).
+        with _fixes_lock(paths):
+            known = store.get(fact.id)
+            if known is not None:
+                # Та же правка, проверенная заново на части тестов: прежнее покрытие не
+                # теряется (ревью Grok). Новые важнее старых, не больше MAX_RECORD_TESTS.
+                merged = list(dict.fromkeys([*names, *known.tests]))[:MAX_RECORD_TESTS]
+                fact = replace(fact, tests=sorted(merged))
+            target = store.path_for(fact)
+            previous = target.read_bytes() if target.is_file() else None
+            if saved is not None:
+                saved.append((target, previous))  # до записи: упавшая запись тоже откатится
+            store.save(fact)
         folders.add(kb_label(project_root, Path(entry["kb_dir"])))
         lines.append(f"Запомнена проверенная правка проблемы {int(file_id)} ({fact.file}:"
                      f"{fact.line}): в следующих прогонах эта же ошибка этих тестов разберётся "
                      "без агента.")
     return lines, sorted(folders)
+
+
+@contextlib.contextmanager
+def _fixes_lock(paths: ws.RunPaths) -> Iterator[None]:
+    """Блокировка записи фактов на весь проект (файл в ``alla-reports/``, не в базе знаний)."""
+    import fcntl
+
+    paths.reports_dir.mkdir(parents=True, exist_ok=True)
+    with open(paths.reports_dir / ".fixes.lock", "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def _checked(item: dict[str, Any]) -> bool:
