@@ -690,3 +690,43 @@ def test_failed_proposal_write_keeps_the_analysis_owned_by_the_script(
     _run(["next", str(run_dir)], capsys)  # следующий next дописывает предложение
     assert (run_dir / "proposals" / f"{order}.md").read_text(encoding="utf-8").startswith(
         "РЕШЕНИЕ: исправить")
+
+
+def test_checked_fix_problem_is_not_offered_as_flaky(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Проблема проверенной правки не идёт в перезапуск как флаки (ревью Grok)."""
+    from alla_skill_lib import cli
+
+    _checked_fix(nested_project, capsys)
+    run_dir, _, order, login = _next_launch(nested_project, capsys, monkeypatch)
+    excluded: list[set[str]] = []
+    original = cli._rerun_offer
+
+    def spy(paths, run, analyses, flagged, confirmed, states):  # type: ignore[no-untyped-def]
+        excluded.append(set(confirmed))
+        return original(paths, run, analyses, flagged, confirmed, states)
+
+    monkeypatch.setattr(cli, "_rerun_offer", spy)
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+
+    assert excluded and order in excluded[-1]
+
+
+def test_incomplete_rollback_names_what_is_left(tmp_path: Path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    """Вернуть прежний файл не удалось — ответ не говорит «ничего не записано» (ревью Grok)."""
+    from alla_skill_lib import learn
+    from alla_skill_lib import workspace as ws
+
+    kept, new = tmp_path / "kept.json", tmp_path / "new.json"
+    kept.write_text("после", encoding="utf-8")
+    new.write_text("новый", encoding="utf-8")
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise OSError("диск заполнен")
+
+    monkeypatch.setattr(ws, "write_atomic_bytes", broken)
+    assert learn._restore([(kept, "до".encode()), (new, None)]) == [kept]
+    assert not new.exists()

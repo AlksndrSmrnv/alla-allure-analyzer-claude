@@ -54,7 +54,13 @@ def learn_from_rerun(paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobSt
         # Факты этой попытки откатываются к прежним: к следующему показу условия могут уже не
         # выполняться (ревью Grok), а факт прошлых прогонов терять нельзя (ревью Codex);
         # отметки «нестабильный» — тоже (снятая иначе пропала бы без уведомления, ревью Codex).
-        _restore(saved)
+        left = _restore(saved)
+        if left:
+            # Откат не дошёл до конца: молчать о том, что в базе осталось, нельзя (ревью Grok).
+            return Learned([f"В базу знаний итог записан не полностью: {exc}. Изменены и не "
+                            "возвращены: " + "; ".join(str(path) for path in left)
+                            + ". Скажи это пользователю: эти файлы стоит проверить перед "
+                            "коммитом."])
         return Learned([f"В базу знаний итог не записан: {exc}. Скажи это пользователю."])
     lines += fix_lines
     folders = sorted({*folders, *fix_folders})
@@ -65,15 +71,18 @@ def learn_from_rerun(paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobSt
     return Learned(lines, folders, changed=bool(folders))
 
 
-def _restore(saved: list[tuple[Path, bytes | None]]) -> None:
+def _restore(saved: list[tuple[Path, bytes | None]]) -> list[Path]:
+    """Вернуть прежнее содержимое; файлы, которые вернуть не удалось."""
+    left: list[Path] = []
     for path, previous in reversed(saved):
         try:
             if previous is None:
                 path.unlink(missing_ok=True)
-            else:
+            elif not path.is_file() or path.read_bytes() != previous:
                 ws.write_atomic_bytes(path, previous)
         except OSError:
-            continue
+            left.append(path)
+    return sorted(set(left))
 
 
 def _flaky(run: dict[str, Any], state: rerun.JobState, today: str,

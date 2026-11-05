@@ -1335,7 +1335,9 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     ws.write_text(paths.report, full)
     # Уже применённую или неоднозначную правку повторно не предлагаем.
     offered = {file_id: p for file_id, p in fixes.items() if states[file_id] == "not_applied"}
-    offer = _rerun_offer(paths, run, analyses, flagged, set(confirmed), states)
+    # Проблему проверенной правки (fix_facts) перезапуск как флаки не берёт и без файла
+    # предложения: тесты прошли бы без правки и дали ложную отметку (ревью Grok).
+    offer = _rerun_offer(paths, run, analyses, flagged, set(confirmed) | fix_auto, states)
     kb_offer = _kb_offer(paths, run, analyses, flagged, known, set(confirmed), related, separate,
                          fix_auto)
     return "done", _done_body(console, paths, offered, feedback=True, rerun_offer=offer,
