@@ -112,7 +112,8 @@ def fact_id(signature: str, log_digest: str, file: str, line: int, after: list[s
     """Свой у каждой пары сигнатура + лог (сигнатура, которая сама называет причину, лог не
     берёт, и разные причины за ней — разные факты) и у каждой правки (другая проверенная правка
     той же строки — другой эксперимент, а не перезапись прежнего) — ревью Grok."""
-    key = "|".join([signature, log_digest, file, str(line), *after])
+    # JSON, а не склейка через «|»: строка СТАЛО с «|» иначе совпала бы с двумя строками (ревью Grok).
+    key = json.dumps([signature, log_digest, file, line, after], ensure_ascii=False)
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 

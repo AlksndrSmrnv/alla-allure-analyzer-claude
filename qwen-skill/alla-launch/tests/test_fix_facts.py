@@ -568,3 +568,50 @@ def test_result_shows_the_write_that_the_report_refresh_retried(
 
     assert "Запомнена проверенная правка" in done and "итог не записан" not in done
     assert len(_facts(nested_project)) == 1
+
+
+def test_fact_id_does_not_glue_fix_lines() -> None:
+    """«a|b» одной строкой и «a», «b» двумя — разные правки (ревью Grok)."""
+    assert (fix_facts.fact_id("s", "l", "F.java", 1, ["flags = a|b;"])
+            != fix_facts.fact_id("s", "l", "F.java", 1, ["flags = a", "b;"]))
+
+
+def test_script_analysis_of_a_checked_fix_is_not_confirmed_from_analysis(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """«Да, запомни» о разборе по проверенной правке не делает шаблон скрипта словами инженера."""
+    _checked_fix(nested_project, capsys)
+    run_dir, _, order, login = _next_launch(nested_project, capsys, monkeypatch)
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+
+    out = _run(["remember", order, "--run", str(run_dir), "--from-analysis"], capsys)[1]
+
+    assert out.startswith("STATUS: error") and "написал скрипт по проверенной правке" in out
+    assert ProjectKB(nested_project / "alla-kb").load() == ([], [])
+
+
+def test_mark_is_kept_when_another_variant_of_the_method_reproduces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Один вариант метода прошёл, другой (в другой проблеме) воспроизвёлся: отметка на метод
+    остаётся, а не снимается сразу после записи (ревью Grok)."""
+    from alla_skill_lib import flaky, learn, rerun
+
+    kb_dir = tmp_path / "alla-kb"
+    passed = {"test_result_id": 1, "file_id": "01", "full_name": "a.B.m[usd]", "attempt": 2,
+              "signals": ["kb"]}
+    reproduced = {"test_result_id": 2, "file_id": "02", "full_name": "a.B.m[eur]"}
+    monkeypatch.setattr(flaky, "remember_plan",
+                        lambda *args: flaky.RememberPlan([passed], [reproduced]))
+    monkeypatch.setattr(flaky, "keys_of_tests", lambda run: {1: "a.B.m", 2: "a.B.m"})
+    monkeypatch.setattr(flaky, "marks_for_run", lambda run: {})
+    run = {"project_root": str(tmp_path), "launch_id": 1,
+           "clusters": [{"file_id": "01", "kb_dir": str(kb_dir)},
+                        {"file_id": "02", "kb_dir": str(kb_dir)}]}
+    state = rerun.JobState("done", {"tests": []}, result={"job": "j", "attempts": 3, "tests": []})
+
+    lines, _ = learn._flaky(run, state, "2026-11-05", [])
+
+    assert lines == ["Отмечены в базе знаний нестабильными: a.B.m[usd]."]
+    assert len(list((kb_dir / "flaky").glob("*.json"))) == 1

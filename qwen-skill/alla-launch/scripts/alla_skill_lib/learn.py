@@ -88,6 +88,12 @@ def _flaky(run: dict[str, Any], state: rerun.JobState, today: str,
         return [], []
     keys = flaky.keys_of_tests(run)
     entries = {entry["file_id"]: entry for entry in run["clusters"]}
+    # Отметка — на метод (параметры в ключ не входят): прошёл один вариант метода, а другой в
+    # другой проблеме воспроизвёлся — отметка остаётся, снимать её сразу после записи нельзя
+    # (ревью Grok).
+    marked_keys = {keys.get(int(item["test_result_id"])) for item in keep.mark}
+    keep = flaky.RememberPlan(keep.mark, [item for item in keep.unmark
+                                          if keys.get(int(item["test_result_id"])) not in marked_keys])
     project_root = Path(run["project_root"])
     marked: list[str] = []
     unmarked: list[str] = []

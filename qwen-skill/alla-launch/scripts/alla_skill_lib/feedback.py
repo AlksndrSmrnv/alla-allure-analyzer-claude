@@ -385,6 +385,14 @@ def _remember(
             # Разбор ещё не написан: подтверждать нечего (и пакет remember не обрывается).
             return "error", (f"У проблемы №{int(file_id)} ещё нет разбора агента — подтверждать "
                              "нечего. Скажи это пользователю.")
+        if not from_feedback and _scripted_fix(paths, entry, source):
+            # Разбор по проверенной правке — шаблон скрипта, а не слова инженера: записью базы
+            # знаний он стал бы «подтверждённой причиной» (ревью Grok).
+            return "error", (
+                f"Разбор проблемы №{int(file_id)} написал скрипт по проверенной правке — "
+                "подтверждать его в базе знаний не нужно: правка уже запомнена. Скажи это "
+                "пользователю; если он называет причину своими словами — файл обратной связи и "
+                "remember N без --from-analysis.")
         project_root = Path(run["project_root"])
         if from_feedback:
             # Обратная связь — слова пользователя: наблюдения и «НЕ ХВАТАЕТ» в ней необязательны.
@@ -722,6 +730,13 @@ def _report_refresh(
         "проблему (её разбирали по этой записи) — разбери, как в цикле; ответит done — выведи "
         "пользователю новый краткий разбор."
     )]
+
+
+def _scripted_fix(paths: ws.RunPaths, entry: dict[str, Any], source: Path) -> bool:
+    from alla_skill_lib import fix_facts  # fix_facts тянет proposals и rerun
+
+    return bool(entry.get("fix_auto")) and fix_facts.fix_auto_written(
+        _feedback_state(paths), entry["file_id"], ws.read_text(source))
 
 
 def _blocked(paths: ws.RunPaths, entry: dict[str, Any]) -> str | None:
