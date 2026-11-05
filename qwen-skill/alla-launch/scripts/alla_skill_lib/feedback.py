@@ -613,10 +613,15 @@ def reject(
     entry: dict[str, Any],
     entry_id: str,
 ) -> tuple[str, str]:
-    """Запомнить, что запись базы знаний к ошибке этого кластера не относится."""
+    """Запомнить, что запись базы знаний к ошибке этого кластера не относится.
+
+    ``fix:<id>`` — проверенная правка (``fix_facts``): факт удаляется, проблему разберёт модель.
+    """
     blocked = _blocked(paths, entry)
     if blocked:
         return "error", blocked
+    if entry_id.startswith(FIX_PREFIX):
+        return _forget_fix(paths, run, entry, entry_id[len(FIX_PREFIX):])
     kb = project_kb(run, entry)
     try:
         record = kb.get(entry_id)
@@ -648,6 +653,31 @@ def _confirmed_dropped(paths: ws.RunPaths, file_id: str) -> str:
         "сводку — напиши её заново, ответит done — выведи пользователю новый краткий разбор "
         "дословно."
     )
+
+
+FIX_PREFIX = "fix:"
+
+
+def _forget_fix(
+    paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any], wanted: str,
+) -> tuple[str, str]:
+    """Инженер сказал, что проверенная правка не та: удалить факт из ``fixes/``."""
+    from alla_skill_lib import fix_facts  # fix_facts тянет proposals и rerun
+
+    kb_dir = Path(str(entry.get("kb_dir") or ""))
+    removed = fix_facts.FixStore(kb_dir).forget(wanted) if entry.get("kb_dir") else []
+    if not removed:
+        return "error", (f"В {kb_dir / fix_facts.FIXES_DIRNAME} нет проверенной правки "
+                         f"«{FIX_PREFIX}{wanted}». Скажи это пользователю.")
+    label = kb_label(Path(run["project_root"]), kb_dir)
+    return "saved", "\n".join([
+        f"Проверенная правка {FIX_PREFIX}{wanted} больше не будет разбирать эту ошибку.",
+        *(f"Удалён файл: {path}" for path in removed),
+        f"Напомни пользователю закоммитить папку {label}/.",
+        f"Выполни {paths.next_command()} и дальше как обычно: попросит разобрать проблему "
+        f"{int(entry['file_id'])} — разбери её, как в цикле; ответит done — выведи пользователю "
+        "новый краткий разбор.",
+    ])
 
 
 def _report_refresh(

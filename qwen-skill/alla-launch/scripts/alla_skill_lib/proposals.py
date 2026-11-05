@@ -399,6 +399,11 @@ def _owner(prefix: str) -> str:
     return assigned.group(1).lower() if assigned else ""
 
 
+def timeouts_increased(before: list[str], after: list[str]) -> bool:
+    """Правка увеличивает ожидание или таймаут (повод «Проверь:»)."""
+    return _timeouts_increased(before, after)
+
+
 def _timeouts_increased(before: list[str], after: list[str]) -> bool:
     """Какое-то ожидание заменено большим (с учётом единиц).
 
@@ -495,6 +500,23 @@ def _locate(lines: list[str], proposal: Proposal) -> _Location:
     if states == {"pending"} and len(candidates) == 1:
         return _Location("pending", candidates[0][0])
     return _Location("ambiguous")
+
+
+def location_state(proposal: Proposal, project_root: Path) -> str:
+    """Где правка в текущем файле: ``pending`` (стоит БЫЛО), ``applied`` (стоит СТАЛО),
+    ``missing`` (файла или места нет), ``ambiguous`` (несколько мест или не UTF-8).
+
+    То же правило места, что у ``apply`` (``_locate``): по нему факт проверенной правки
+    (``fix_facts``) решает, есть ли она уже в коде этой копии проекта.
+    """
+    target = _resolve(proposal, project_root, [])
+    if target is None or not proposal.before or not proposal.after:
+        return "missing"
+    try:
+        lines = _normalize(_read_source(target)).split("\n")
+    except (OSError, SourceEncodingError):
+        return "ambiguous"
+    return _locate(lines, proposal).state
 
 
 def _resolve(proposal: Proposal, project_root: Path, errors: list[str]) -> Path | None:

@@ -10,7 +10,8 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 закрыт); писать туда может только статус passed тестов, прошедших при локальном перезапуске,
 через REST, после «да» пользователя и только с `ALLURE_RERUN_RESOLVE=true` (`resolve.py`,
 по умолчанию выключено). База знаний — проектная (`alla-kb/` в репозитории
-автотестов), наполняется обратной связью пользователя.
+автотестов), наполняется обратной связью пользователя и сама — проверенными фактами разбора
+(отметки перезапуска, проверенные правки; `learn.py`).
 
 ## Состояние репозитория
 
@@ -30,7 +31,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | `commands/alla/` | слэш-команды Qwen `/alla:run`, `/alla:apply`…; `install-files` ставит их в `.qwen/commands/alla/` проекта после согласия пользователя (`setup`, `update`, `prepare` в `.qwen/` не пишут) |
 | `extensions/` | расширения скилла: `README.md` (контракт для авторов), встроенные `git-publish/` (ветка git), `sut-code/` (`/alla:code N` — разбор по коду приложения) и `tickets/` (`/alla:ticket N [N…]` — просмотр и отправка тикетов через пользовательский адаптер); свои — `<проект>/alla-extensions/` |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` проекта автотестов |
-| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `learn`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files`, `jobs`, `retries`, `images`, `extension_data` |
+| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `learn`, `fix_facts`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files`, `jobs`, `retries`, `images`, `extension_data` |
 | `scripts/alla_core/` | ядро: клиент MCP TestOps (`clients/mcp_client.py`), триаж, логи, кластеризация, блок «Данные» |
 | `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
 | `tests/eval/` | эталон точности: кассеты прогонов (`record.py` пишет у команды), размеченный корпус dev/holdout, метрики склеек, дробления, скрытых групп и потери доказательств (`run_eval.py`), см. `README.md` там же |
@@ -143,7 +144,7 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 | `skill-analysis-confirmed.md` | подтверждённые выводы расширений в отчёте | `confirmed.py`, `report.py`, `related.py` |
 | `skill-analysis-known.md` | известные проблемы из базы знаний в отчёте | `known_issues.py`, `report.py` |
 | `skill-analysis-related.md` | похожие проблемы: кандидаты, задание, показ | `related.py`, `report.py`, `references/related-format.md`, `known_issues.py` |
-| `skill-memory.md` | база знаний: место, узнавание, тесты записи; отметки flaky | `kb.py`, `signature.py`, `modules.py`, `feedback.py`, `history.py`, `flaky.py`, `references/feedback.md` |
+| `skill-memory.md` | база знаний: место, узнавание, тесты записи; отметки flaky, проверенные правки | `kb.py`, `signature.py`, `modules.py`, `feedback.py`, `history.py`, `flaky.py`, `fix_facts.py`, `learn.py`, `references/feedback.md` |
 | `skill-memory-kb-auto.md` | разбор точно узнанной проблемы без модели | `kb.py`, `known_issues.py`, `signature.py`, `feedback.py` |
 | `skill-memory-signature.md` | сигнатура: материал, нормализация, версии | `signature.py` |
 | `skill-memory-modules.md` | модули и база знаний модуля | `modules.py`, `feedback.py` |

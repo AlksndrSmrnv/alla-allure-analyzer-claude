@@ -52,7 +52,7 @@ from alla_core.exceptions import AllaError, ConfigurationError
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib import extensions as ext
-from alla_skill_lib import flaky, jobs, rerun, resolve
+from alla_skill_lib import fix_facts, flaky, jobs, rerun, resolve
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.agent_rules import (
     ANALYSIS_FORMAT_REF,
@@ -926,6 +926,13 @@ def _write_run(
                     **task_args,
                     kb_matches=[match for match in kb_matches if match["id"] != known_auto["id"]],
                 )
+            else:
+                # Проверенная правка (fix_facts): разбор и предложение пишет скрипт (next), задание
+                # то же — запасной путь, если инженер скажет, что правка не та.
+                fix_auto = fix_facts.prepared(entry, cluster_tests(cluster, tests_by_id), sources,
+                                              project_root, paths)
+                if fix_auto is not None:
+                    entry["fix_auto"] = fix_auto
             shown_paths = {image.path for image in task.images.values()}
             for path in placed.values():  # скачанный, но не показанный — не нужен
                 if path not in shown_paths:
@@ -951,6 +958,7 @@ def _write_run(
                 auto=True, signature=None, fingerprint="", kb=[], history=None
             )
             entry.pop("kb_auto", None)
+            entry.pop("fix_auto", None)
             entry.pop("log_digest", None)
             paths.evidence(file_id).unlink(missing_ok=True)
             paths.sources(file_id).unlink(missing_ok=True)
@@ -1138,12 +1146,15 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     total = len(entries)
     # Точно узнанные проблемы разбирает скрипт по текущим записям базы знаний — до подсчёта
     # неразобранных: после reject такая проблема становится обычной и ждёт разбора модели.
-    before = state.get(KB_AUTO_STATE)
+    before = state.get(KB_AUTO_STATE), state.get(fix_facts.FIX_AUTO_STATE)
     known_auto, auto_notes = sync_known_auto(paths, run, state)
-    if state.get(KB_AUTO_STATE) != before:
+    # Проверенные правки (fix_facts) — так же: разбор и предложение пишет скрипт.
+    fix_auto = fix_facts.sync(paths, run, state)
+    if (state.get(KB_AUTO_STATE), state.get(fix_facts.FIX_AUTO_STATE)) != before:
         ws.write_json(paths.state_json, state)
+    scripted = known_auto | fix_auto
     manual_total = sum(1 for item in entries
-                       if not item["auto"] and item["file_id"] not in known_auto)
+                       if not item["auto"] and item["file_id"] not in scripted)
     pending = [
         item["file_id"] for item in entries
         if not item["auto"] and not _has_text(paths.analysis(item["file_id"]))
@@ -1174,11 +1185,11 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
         if not text.strip():
             done = sum(
                 1 for item in entries
-                if not item["auto"] and item["file_id"] not in known_auto
+                if not item["auto"] and item["file_id"] not in scripted
                 and _has_text(paths.analysis(item["file_id"]))
             )
             return "analyze", _analyze_body(paths, entry, position, total, done, manual_total,
-                                            len(known_auto))
+                                            len(scripted))
 
         analysis, errors = _check_analysis(text, entry, project_root, paths)
         if errors:
@@ -1308,7 +1319,8 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     # Уже применённую или неоднозначную правку повторно не предлагаем.
     offered = {file_id: p for file_id, p in fixes.items() if states[file_id] == "not_applied"}
     offer = _rerun_offer(paths, run, analyses, flagged, set(confirmed), states)
-    kb_offer = _kb_offer(paths, run, analyses, flagged, known, set(confirmed), related, separate)
+    kb_offer = _kb_offer(paths, run, analyses, flagged, known, set(confirmed), related, separate,
+                         fix_auto)
     return "done", _done_body(console, paths, offered, feedback=True, rerun_offer=offer,
                               kb_offer=kb_offer)
 
@@ -1755,6 +1767,7 @@ def _kb_offer(
     confirmed: set[str],
     related: Related,
     separate: set[str],
+    fix_auto: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[list[str], list[list[str]]]:
     """Разборы для вопроса после отчёта «какие верны — сохраню в базу знаний».
 
@@ -1774,6 +1787,7 @@ def _kb_offer(
         file_id = entry["file_id"]
         analysis = analyses.get(file_id)
         if (analysis is None or file_id in flagged or entry["auto"] or file_id in known.auto
+                or file_id in fix_auto
                 or analysis.category in (None, "неизвестно")
                 or analysis.consistency_kind == "different"
                 or file_id in known.rejected or file_id in known.mismatched

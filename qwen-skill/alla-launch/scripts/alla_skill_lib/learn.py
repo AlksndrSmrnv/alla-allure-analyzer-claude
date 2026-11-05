@@ -4,7 +4,9 @@
 об этом из ответа и из diff ``alla-kb/`` при коммите. Проверено фактами:
 
 - отметка «нестабильный тест» (``flaky.remember_plan``: прошёл на коде как в CI при признаке
-  из CI; снять — отмеченный тест упал все попытки той же ошибкой).
+  из CI; снять — отмеченный тест упал все попытки той же ошибкой);
+- проверенная правка агента (``fix_facts``): «да» на diff и тесты проблемы прошли с первого
+  запуска.
 
 Догадки модели сюда не попадают: молчание — не согласие. Статус в TestOps — по-прежнему только
 после «да» (``rerun --testops``). Запоминается один раз на задание: повторный ``--wait`` или
@@ -18,7 +20,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from alla_skill_lib import flaky, rerun
+from alla_skill_lib import fix_facts, flaky, rerun
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.kb import kb_label
 
@@ -44,9 +46,12 @@ def learn_from_rerun(paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobSt
     today = date.today().isoformat()
     try:
         lines, folders = _flaky(run, state, today)
+        fix_lines, fix_folders = fix_facts.record_checked(paths, run, state, today)
     except OSError as exc:
         # Итог перезапуска важнее: ошибка записи его не прячет, а следующий показ повторит запись.
         return Learned([f"В базу знаний итог не записан: {exc}. Скажи это пользователю."])
+    lines += fix_lines
+    folders = sorted({*folders, *fix_folders})
     rerun.write_learned(files, job, lines, folders)
     return Learned(lines, folders, changed=bool(folders))
 
@@ -101,5 +106,5 @@ def render(learned: Learned) -> str:
         *(f"- {line}" for line in learned.lines),
         f"Скажи это пользователю одной-двумя фразами и напомни закоммитить папку базы знаний "
         f"{shown}. Спрашивать, сохранять ли это, не нужно: уже сохранено. Не согласен — "
-        "файл отметки можно удалить.",
+        "файл отметки или правки можно удалить.",
     ])

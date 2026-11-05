@@ -383,6 +383,15 @@ def _quote(record: KBRecord, sources: Registry) -> tuple[str, str] | None:
             for line in str(source.get("text") or "").splitlines():
                 if wanted and wanted in normalize_fp(line) and _significant(line):
                     return source_id, _quote_text(line)
+    return first_quote(sources)
+
+
+def first_quote(sources: Registry) -> tuple[str, str] | None:
+    """Первая значимая строка сообщения или трейса — цитата разбора, который пишет скрипт."""
+    ordered = sorted(
+        ((source_id, source) for source_id, source in sources.items()
+         if source.get("kind") != IMAGE_KIND),
+        key=lambda item: int(item[0][1:]) if item[0][1:].isdigit() else 0)
     for source_id, source in ordered:
         if source.get("kind") in ("message", "trace"):
             line = next((line for line in str(source.get("text") or "").splitlines()

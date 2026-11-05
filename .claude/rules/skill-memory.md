@@ -6,6 +6,8 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/history.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/signature.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/flaky.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/fix_facts.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/learn.py"
   - "qwen-skill/alla-launch/references/feedback.md"
   - "qwen-skill/alla-launch/tests/test_skill_memory.py"
 ---
@@ -15,7 +17,8 @@ paths:
 Подробности — в файлах подобластей: `skill-memory-kb-auto.md` (разбор без модели), `skill-memory-signature.md` (сигнатура), `skill-memory-modules.md` (модули), `skill-memory-feedback.md` (обратная связь и история).
 
 База знаний проектная: `alla-kb/` в репозитории автотестов, наполняется обратной связью
-пользователя и проверенными фактами разбора без вопроса (отметки перезапуска, `learn.py`).
+пользователя и проверенными фактами разбора без вопроса (отметки перезапуска и проверенные
+правки, `learn.py`).
 
 ## База знаний (`kb`)
 
@@ -69,4 +72,40 @@ paths:
 - Читают при сборке отчёта и отборе (`marks_for_run`: база модуля каждой проблемы, как
   `known_issues`). В `run.json` не пишется. Как отметка влияет на отбор и отчёт —
   `skill-rerun-candidates.md`, «База знаний (без вопроса, `learn.py`)».
-- `README.md` базы (`kb.README`) говорит про `flaky/`; создаётся и первой отметкой.
+- `README.md` базы (`kb.README`) говорит про `flaky/` и `fixes/`; создаётся и первой отметкой.
+
+### Проверенные правки (`fix_facts.py`, `<kb_dir>/fixes/`)
+
+Решение пользователя (2026-11-05): правку, на которую инженер сказал «да» и после которой
+тесты проблемы прошли с первого перезапуска, скилл запоминает сам. Второе мнение (Codex,
+Grok): это факт эксперимента, а не подтверждённая причина, поэтому **не `KBRecord`**:
+`record_matches`, `confirm()`, `confirmed_*`, `accepted_feedback` его не видят.
+
+- Пишет `learn.learn_from_rerun` → `fix_facts.record_checked`, все условия сразу: у проблемы
+  предложение `fix`, `applied_state == applied`; каждый упавший тест проблемы
+  (`rerun.failed_tests_of`, с вариантами `other_ids`) в итоге — `passed`, `attempt == 1`, без
+  `surefire_flaky`, `changed == "правка агента применена"`; правка не растит таймаут
+  (`proposals.timeouts_increased`; смену ожидаемого значения инженер видел «Проверь:» и
+  принял — она запоминается); `secret_lines` по БЫЛО/СТАЛО/файлу пуст; есть `signature`,
+  `log_digest`; ключей тестов не больше `MAX_RECORD_TESTS`. Файл
+  `<имя файла>_<строка>_<id>.json`, `id` — sha1(сигнатура|файл|строка)[:12]: поля
+  `signature`, `log_digest`, `tests`, `file`, `line`, `before`, `after`, `launch_id`, `date` —
+  без текста разбора модели.
+- Узнаёт `prepare` (`fix_facts.prepared`, только если нет `kb_auto`): та же сигнатура **и**
+  отпечаток лога, все тесты кластера (`cluster_tests`) — из `tests` факта, факт не старше
+  `MAX_AGE_DAYS` (14), нет записи с `origin == "exact"` (слова инженера важнее), место правки
+  однозначно (`proposals.location_state`: `applied` — СТАЛО в коде, `pending` — БЫЛО; иначе
+  факт не подходит), цитата — `known_issues.first_quote`, текст проходит
+  `check_entry_analysis`. Итог — `entry["fix_auto"]` (`id`, `state`, `file`, `line`, `date`,
+  `launch_id`, `quote`); задание строится как обычно — запасной путь.
+- `next` (`fix_facts.sync`, сразу после `sync_known_auto`, до подсчёта неразобранных) пишет
+  `analyses/NN.md` (`analysis_text`: категория «тест», `КОД:` — место правки, «факт
+  fix:<id>» в шаге рецепта) и `proposals/NN.md` (`proposal_text`); хэши — `state.json`
+  `fix_auto`. Чужой файл (хэш другой) не трогается. Дальше обычный путь: `_proposal_step`
+  принимает готовое предложение (`applied` — `apply` не предлагается, `pending` — обычный
+  вопрос `apply`), `_kb_offer` такие номера не спрашивает, `_rerun_offer` их не берёт (есть
+  правка). Факт удалён — свои файлы удаляются (предложение — если нет отметки `apply`), проблему
+  разбирает модель.
+- `reject N fix:<id>` (`feedback._forget_fix`) удаляет факт и просит `next`.
+- Ограничение: правка в коде, а CI всё ещё падает так же после её мержа — скрипт 14 дней
+  отвечает «дождитесь CI»; выход — «не то» → `reject N fix:<id>`.

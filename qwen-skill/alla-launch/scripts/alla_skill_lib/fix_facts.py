@@ -1,0 +1,425 @@
+"""Факты проверенных правок: ``<kb_dir>/fixes/*.json``.
+
+Решение пользователя (2026-11-05, план ``wondrous-popping-peacock``): правку автотеста, на
+которую инженер сказал «да» и после которой тесты проблемы прошли с первого перезапуска,
+скилл запоминает сам, без вопроса. В следующем прогоне та же ошибка тех же тестов (сигнатура,
+отпечаток лога, тесты) разбирается скриптом: правка уже в коде — ждать, пока она дойдёт до
+CI; правки в коде нет — готовое предложение для ``apply``, без модели.
+
+Это **не** запись базы знаний (``KBRecord``): ``record_matches`` факт не видит, ``confirm()``
+не вызывается — точное узнавание по-прежнему только из слов инженера (второе мнение Codex и
+Grok: прохождение после правки — факт эксперимента, а не подтверждённая причина). Поэтому
+факт действует ограниченно: только та же сигнатура **и** тот же лог, только тесты, на которых
+правку проверили, только ``MAX_AGE_DAYS`` дней, и запись базы знаний, узнающая проблему
+точно, важнее. В файле — место и строки правки, без текста разбора модели. ``ProjectKB.load``
+подпапки не читает, как и ``flaky/``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+from alla_skill_lib import flaky, rerun
+from alla_skill_lib import workspace as ws
+from alla_skill_lib.kb import MAX_RECORD_TESTS, README, kb_label, secret_lines
+from alla_skill_lib.sources import Registry, check_entry_analysis, example_blocks
+from alla_skill_lib.proposals import (
+    Proposal,
+    ProposalFiles,
+    applied_state,
+    location_state,
+    parse_proposal,
+    timeouts_increased,
+)
+
+FIXES_DIRNAME = "fixes"
+MAX_AGE_DAYS = 14
+FIX_CHANGED = "правка агента применена"  # ``rerun._changed``: тест шёл на коде с правкой агента
+# Ключ ``state.json``: file_id → хэши разбора и предложения, которые записал скрипт по факту.
+FIX_AUTO_STATE = "fix_auto"
+_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+_SLUG_RE = re.compile(r"[^A-Za-z0-9]+")
+
+
+@dataclass(frozen=True)
+class FixFact:
+    """Одна проверенная правка."""
+
+    id: str
+    signature: str
+    log_digest: str
+    tests: list[str]
+    file: str
+    line: int
+    before: list[str]
+    after: list[str]
+    launch_id: Any
+    date: str
+
+    def proposal(self) -> Proposal:
+        return Proposal("fix", self.file, self.line, list(self.before), list(self.after),
+                        why=fix_why(self))
+
+    def to_json(self) -> dict[str, Any]:
+        return {"id": self.id, "signature": self.signature, "log_digest": self.log_digest,
+                "tests": self.tests, "file": self.file, "line": self.line,
+                "before": self.before, "after": self.after, "launch_id": self.launch_id,
+                "date": self.date}
+
+    @classmethod
+    def from_json(cls, data: Any) -> FixFact | None:
+        if not isinstance(data, dict):
+            return None
+        try:
+            fact = cls(
+                id=str(data["id"]), signature=str(data["signature"]),
+                log_digest=str(data["log_digest"]),
+                tests=[str(test) for test in data["tests"]],
+                file=str(data["file"]), line=int(data["line"]),
+                before=[str(line) for line in data["before"]],
+                after=[str(line) for line in data["after"]],
+                launch_id=data.get("launch_id"), date=str(data["date"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not _ID_RE.match(fact.id) or not fact.tests or not fact.before or not fact.after:
+            return None
+        return fact
+
+
+def fact_id(signature: str, file: str, line: int) -> str:
+    return hashlib.sha1(f"{signature}|{file}|{line}".encode()).hexdigest()[:12]
+
+
+class FixStore:
+    """Факты в папке ``fixes/`` базы знаний; битый файл пропускается."""
+
+    def __init__(self, kb_dir: Path) -> None:
+        self.kb_dir = kb_dir
+        self.folder = kb_dir / FIXES_DIRNAME
+
+    def path_for(self, fact: FixFact) -> Path:
+        stem = Path(fact.file).stem
+        slug = _SLUG_RE.sub("_", stem).strip("_")[:60] or "fix"
+        return self.folder / f"{slug}_{fact.line}_{fact.id}.json"
+
+    def load(self) -> list[FixFact]:
+        facts: list[FixFact] = []
+        if not self.folder.is_dir():
+            return facts
+        for path in sorted(self.folder.glob("*.json")):
+            try:
+                fact = FixFact.from_json(json.loads(path.read_text(encoding="utf-8-sig")))
+            except (OSError, ValueError):
+                continue
+            if fact is not None:
+                facts.append(fact)
+        return facts
+
+    def get(self, wanted: str) -> FixFact | None:
+        return next((fact for fact in self.load() if fact.id == wanted), None)
+
+    def save(self, fact: FixFact) -> Path:
+        self.folder.mkdir(parents=True, exist_ok=True)
+        readme = self.kb_dir / "README.md"
+        if not readme.exists():
+            ws.write_atomic(readme, README)
+        path = self.path_for(fact)
+        ws.write_atomic(path, json.dumps(fact.to_json(), ensure_ascii=False, indent=2,
+                                         sort_keys=True) + "\n")
+        return path
+
+    def forget(self, wanted: str) -> list[Path]:
+        removed: list[Path] = []
+        for path in sorted(self.folder.glob("*.json")) if self.folder.is_dir() else []:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("id") == wanted:
+                path.unlink()
+                removed.append(path)
+        return removed
+
+
+# ---------------------------------------------------------------------------
+# Запись по итогу перезапуска
+# ---------------------------------------------------------------------------
+
+
+def record_checked(
+    paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, today: str,
+) -> tuple[list[str], list[str]]:
+    """Записать правки, которые итог перезапуска проверил; строки ответа и папки базы знаний.
+
+    Все условия сразу: правка применена командой ``apply`` и стоит (``applied``), не
+    увеличивает таймаут (тест пройдёт и при другой причине), в ней нет строк, похожих на секрет; каждый упавший тест проблемы прошёл с первого запуска на коде с
+    правкой, без повторов surefire.
+    """
+    assert state.result is not None and state.plan is not None
+    project_root = Path(run["project_root"])
+    keys = flaky.keys_of_tests(run)
+    items = {int(item["test_result_id"]): item for item in state.result.get("tests") or []}
+    variants = {int(test["test_result_id"]): [int(other) for other in test.get("other_ids") or []]
+                for test in state.plan.get("tests") or []}
+    lines: list[str] = []
+    folders: set[str] = set()
+    for entry in run["clusters"]:
+        file_id = entry["file_id"]
+        own = [item for item in items.values() if item.get("file_id") == file_id]
+        if not own or not entry.get("kb_dir") or not entry.get("signature") \
+                or not entry.get("log_digest"):
+            continue
+        proposal = _applied_proposal(paths, file_id, project_root)
+        if proposal is None or not all(_checked(item) for item in own):
+            continue
+        covered = {test_id for item in own
+                   for test_id in (int(item["test_result_id"]),
+                                   *variants.get(int(item["test_result_id"]), []))}
+        tests = [int(test["test_result_id"]) for test in rerun.failed_tests_of(run, entry)]
+        names = sorted({keys.get(test_id, "") for test_id in tests})
+        if not set(tests) <= covered or "" in names or len(names) > MAX_RECORD_TESTS:
+            continue
+        assert proposal.file is not None and proposal.line is not None
+        fact = FixFact(fact_id(str(entry["signature"]), proposal.file, proposal.line),
+                       str(entry["signature"]), str(entry["log_digest"]), names, proposal.file,
+                       proposal.line, list(proposal.before), list(proposal.after),
+                       run.get("launch_id"), today)
+        FixStore(Path(entry["kb_dir"])).save(fact)
+        folders.add(kb_label(project_root, Path(entry["kb_dir"])))
+        lines.append(f"Запомнена проверенная правка проблемы {int(file_id)} ({fact.file}:"
+                     f"{fact.line}): в следующих прогонах эта же ошибка этих тестов разберётся "
+                     "без агента.")
+    return lines, sorted(folders)
+
+
+def _checked(item: dict[str, Any]) -> bool:
+    return (item.get("outcome") == "passed" and int(item.get("attempt") or 0) == 1
+            and not item.get("surefire_flaky") and item.get("changed") == FIX_CHANGED)
+
+
+def _applied_proposal(paths: ws.RunPaths, file_id: str, project_root: Path) -> Proposal | None:
+    path = paths.proposal(file_id)
+    try:
+        proposal = parse_proposal(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    if not proposal.is_fix or not proposal.file or proposal.line is None \
+            or not proposal.before or not proposal.after:
+        return None
+    files = ProposalFiles(paths.proposal_record(file_id), paths.proposal_backup(file_id),
+                          paths.proposal_patch(file_id))
+    if applied_state(proposal, project_root, files) != "applied":
+        return None
+    # Рост таймаута лечит симптом: тест пройдёт и при другой причине. Смену ожидаемого значения
+    # инженер видел строкой «Проверь:» и согласился — её проверенный итог запоминается.
+    if timeouts_increased(proposal.before, proposal.after):
+        return None
+    if secret_lines("\n".join([*proposal.before, *proposal.after, proposal.file])):
+        return None
+    return proposal
+
+
+# ---------------------------------------------------------------------------
+# Узнавание в следующем прогоне
+# ---------------------------------------------------------------------------
+
+
+def match(entry: dict[str, Any], tests: list[str], project_root: Path,
+          today: date | None = None) -> dict[str, Any] | None:
+    """Факт, который разбирает кластер, — ``{"id", "state", "file", "line", "date",
+    "launch_id"}`` для ``entry["fix_auto"]``; иначе ``None``.
+
+    Сигнатура и отпечаток лога те же, все тесты кластера — из проверенных, факт не старше
+    ``MAX_AGE_DAYS``, запись базы знаний не узнаёт кластер точно (слова инженера важнее), и
+    место правки в коде однозначно: ``applied`` — правка уже стоит, ``pending`` — её нет.
+    Подходят несколько — берётся самый свежий.
+    """
+    kb_dir = str(entry.get("kb_dir") or "")
+    if not kb_dir or not entry.get("signature") or not tests:
+        return None
+    if any(item.get("origin") == "exact" for item in entry.get("kb") or []):
+        return None
+    now = today or date.today()
+    found = []
+    for fact in FixStore(Path(kb_dir)).load():
+        if fact.signature != entry["signature"] or fact.log_digest != entry.get("log_digest"):
+            continue
+        if not set(tests) <= set(fact.tests) or _age(fact, now) > MAX_AGE_DAYS:
+            continue
+        where = location_state(fact.proposal(), project_root)
+        if where in ("applied", "pending"):
+            found.append((fact.date, fact, where))
+    if not found:
+        return None
+    _, fact, where = max(found, key=lambda item: item[0])
+    return {"id": fact.id, "state": where, "file": fact.file, "line": fact.line,
+            "date": fact.date, "launch_id": fact.launch_id}
+
+
+def _age(fact: FixFact, today: date) -> int:
+    try:
+        return (today - date.fromisoformat(fact.date)).days
+    except ValueError:
+        return MAX_AGE_DAYS + 1
+
+
+def current_fact(entry: dict[str, Any]) -> FixFact | None:
+    """Факт ``entry["fix_auto"]`` по текущей папке ``fixes/``; удалён — ``None``."""
+    auto = entry.get("fix_auto") or {}
+    kb_dir = str(entry.get("kb_dir") or "")
+    if not auto or not kb_dir:
+        return None
+    return FixStore(Path(kb_dir)).get(str(auto.get("id")))
+
+
+# ---------------------------------------------------------------------------
+# Тексты разбора и предложения
+# ---------------------------------------------------------------------------
+
+
+def fix_why(fact: FixFact) -> str:
+    return (f"эта правка уже исправляла ту же ошибку этих тестов: после неё они прошли с первого "
+            f"перезапуска ({fact.date}, прогон {fact.launch_id})")
+
+
+def proposal_text(fact: FixFact) -> str:
+    """``proposals/NN.md`` из факта: обычное предложение, его показывает и применяет ``apply``."""
+    return "\n".join([
+        "РЕШЕНИЕ: исправить",
+        f"ФАЙЛ: {fact.file}:{fact.line}",
+        "БЫЛО:",
+        *fact.before,
+        "СТАЛО:",
+        *fact.after,
+        f"ПОЧЕМУ: {fix_why(fact)}.",
+    ]) + "\n"
+
+
+def analysis_text(auto: dict[str, Any], quote: tuple[str, str], *, examples: int = 1,
+                  log_not_found: bool = False, kb_offered: bool = False) -> str:
+    """Разбор проблемы по факту — в обычном формате, его проверяет ``next``."""
+    where = f"{auto['file']}:{auto['line']}"
+    checked = f"проверена перезапуском {auto['date']}, прогон {auto['launch_id']}"
+    applied = auto["state"] == "applied"
+    what = ("Эту ошибку уже исправляла правка автотеста " + where + f" ({checked}). "
+            + ("Правка уже есть в коде проекта на этой машине — CI запускал код без неё."
+               if applied else "В коде проекта на этой машине этой правки нет."))
+    steps = ([f"Дождаться, когда правка {where} попадёт в ветку, на которой идёт CI, и "
+              "перезапустить прогон."] if applied
+             else [f"Применить проверенную правку {where} — она предложена ниже."])
+    steps.append("Если с этой правкой в коде тест падает так же — она не помогла: скажите об "
+                 f"этом, и проблему разберёт агент (факт fix:{auto['id']}).")
+    source_id, line = quote
+    return "\n".join([
+        f"ЧТО СЛОМАЛОСЬ: {what}",
+        "",
+        f"ПРИЧИНА: тест — дефект кода автотеста: после правки {where} эти же тесты с этой же "
+        "ошибкой прошли с первого перезапуска.",
+        "",
+        "НАБЛЮДЕНИЯ:",
+        f"- [{source_id}] «{line}»",
+        "",
+        "НЕ ХВАТАЕТ: " + ("лога операции этого теста — в общем логе сервиса нет её записей; "
+                          "причину показала проверенная правка" if log_not_found else "нет"),
+        "",
+        *(["СОГЛАСОВАННОСТЬ: одна причина — все тесты группы прошли после этой правки", ""]
+          if examples > 1 else []),
+        "КАК ИСПРАВИТЬ:",
+        *(f"{number}. {step}" for number, step in enumerate(steps, start=1)),
+        "",
+        f"КОД: {where} — проверенная правка",
+        *(["", "БАЗА ЗНАНИЙ: нет"] if kb_offered else []),
+        "",
+        "ПРИМЕЧАНИЕ: это запись отчёта Аллы в alla-reports, а не правка кода — файлы проекта не "
+        "меняются.",
+    ]) + "\n"
+
+
+def digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# prepare и next
+# ---------------------------------------------------------------------------
+
+
+def prepared(entry: dict[str, Any], tests: list[str], sources: Registry, project_root: Path,
+             paths: ws.RunPaths) -> dict[str, Any] | None:
+    """``entry["fix_auto"]`` для ``prepare``: факт подходит и его разбор проходит проверку."""
+    from alla_skill_lib.known_issues import first_quote  # known_issues тянет весь отчёт
+
+    auto = match(entry, tests, project_root)
+    quote = first_quote(sources) if auto is not None else None
+    if auto is None or quote is None:
+        return None
+    auto["quote"] = list(quote)
+    text = _text(entry, auto)
+    if check_entry_analysis(text, entry, project_root, paths)[1]:
+        return None
+    return auto
+
+
+def _text(entry: dict[str, Any], auto: dict[str, Any]) -> str:
+    return analysis_text(auto, (str(auto["quote"][0]), str(auto["quote"][1])),
+                         examples=example_blocks(entry),
+                         log_not_found=bool(entry.get("log_not_found")),
+                         kb_offered=bool(entry.get("kb")))
+
+
+def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[str]:
+    """Разборы и предложения по фактам проверенных правок: записать или снять (``next``).
+
+    Факт есть — разбор и ``proposals/NN.md`` пишет скрипт (их хэши — в ``state.json``). Факт
+    удалили (``reject N fix:<id>``, руками) — свои файлы удаляются, и проблему разбирает модель.
+    Файл с другим хэшем — разбор или предложение модели — не трогается; применённое
+    предложение (есть отметка ``apply``) тоже. Возвращает номера разобранных так проблем;
+    ``state`` меняется на месте.
+    """
+    written: dict[str, dict[str, str]] = {
+        key: dict(value) for key, value in (state.get(FIX_AUTO_STATE) or {}).items()
+        if isinstance(value, dict)}
+    active: set[str] = set()
+    for entry in run["clusters"]:
+        auto = entry.get("fix_auto")
+        if not auto:
+            continue
+        file_id = entry["file_id"]
+        ours = written.get(file_id, {})
+        analysis_path, proposal_path = paths.analysis(file_id), paths.proposal(file_id)
+        current = ws.read_text(analysis_path) if analysis_path.is_file() else ""
+        if current.strip() and digest(current) != ours.get("analysis"):
+            continue  # разбор после отказа от факта пишет модель
+        proposal = ws.read_text(proposal_path) if proposal_path.is_file() else ""
+        own_proposal = not proposal.strip() or digest(proposal) == ours.get("proposal")
+        fact = current_fact(entry)
+        if fact is None:
+            if current.strip():
+                analysis_path.unlink(missing_ok=True)
+            if proposal.strip() and own_proposal and not paths.proposal_record(file_id).is_file():
+                proposal_path.unlink(missing_ok=True)
+            written.pop(file_id, None)
+            continue
+        text = _text(entry, auto)
+        if current != text:
+            ws.write_text(analysis_path, text)
+        ours = {"analysis": digest(text)}
+        if own_proposal:
+            wanted = proposal_text(fact)
+            if proposal != wanted:
+                ws.write_text(proposal_path, wanted)
+            ours["proposal"] = digest(wanted)
+        written[file_id] = ours
+        active.add(file_id)
+    if written:
+        state[FIX_AUTO_STATE] = written
+    else:
+        state.pop(FIX_AUTO_STATE, None)
+    return active
