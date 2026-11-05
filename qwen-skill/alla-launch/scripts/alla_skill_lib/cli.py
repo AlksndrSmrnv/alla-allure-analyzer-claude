@@ -1228,8 +1228,10 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
                 # пока причина не подтверждена. Уже применённая остаётся — её можно откатить.
                 not_proposed[file_id] = REJECTED_NOT_PROPOSED
                 continue
-            candidates += 1
-            if candidates > MAX_PROPOSALS:
+            # Предложение по проверенной правке пишет скрипт — лимит работы модели оно не занимает
+            # (ревью Grok: пять уже стоящих правок вытесняли предложение для новой ошибки).
+            candidates += file_id not in fix_auto
+            if file_id not in fix_auto and candidates > MAX_PROPOSALS:
                 not_proposed[file_id] = (
                     f"лимит — не больше {MAX_PROPOSALS} предложений правок на один разбор"
                 )

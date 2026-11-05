@@ -44,11 +44,16 @@ def learn_from_rerun(paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobSt
     if done is not None:
         return Learned(list(done.get("lines") or []), list(done.get("folders") or []))
     today = date.today().isoformat()
+    saved: list[Path] = []
     try:
         lines, folders = _flaky(run, state, today)
-        fix_lines, fix_folders = fix_facts.record_checked(paths, run, state, today)
+        fix_lines, fix_folders = fix_facts.record_checked(paths, run, state, today, saved)
     except OSError as exc:
         # Итог перезапуска важнее: ошибка записи его не прячет, а следующий показ повторит запись.
+        # Факты этой попытки снимаются: к следующему показу условия могут уже не выполняться
+        # (ревью Grok); отметки «нестабильный» запишутся заново так же.
+        for path in saved:
+            path.unlink(missing_ok=True)
         return Learned([f"В базу знаний итог не записан: {exc}. Скажи это пользователю."])
     lines += fix_lines
     folders = sorted({*folders, *fix_folders})

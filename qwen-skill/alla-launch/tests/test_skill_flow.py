@@ -995,6 +995,7 @@ def test_cause_without_a_recipe_is_remembered_and_hints_the_next_run(
 
     assert code == 0 and out.startswith("STATUS: saved"), out
     assert "Рецепта в записи нет" in out and "Рецепт сейчас не спрашивай." in out
+    assert "что причина сохранена (без рецепта)" in out and "рецепт сохранён" not in out
     [kb_file] = (project / "alla-kb").glob("*.json")
     data = json.loads(kb_file.read_text(encoding="utf-8"))
     assert data["resolution_steps"] == [] and data["category"] == "service"

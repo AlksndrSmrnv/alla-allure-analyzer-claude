@@ -108,10 +108,12 @@ class FixFact:
         return fact
 
 
-def fact_id(signature: str, log_digest: str, file: str, line: int) -> str:
-    """Свой у каждой пары сигнатура + лог: сигнатура, которая сама называет причину, лог не
-    берёт, и разные причины за ней — разные факты (ревью Grok)."""
-    return hashlib.sha1(f"{signature}|{log_digest}|{file}|{line}".encode()).hexdigest()[:12]
+def fact_id(signature: str, log_digest: str, file: str, line: int, after: list[str]) -> str:
+    """Свой у каждой пары сигнатура + лог (сигнатура, которая сама называет причину, лог не
+    берёт, и разные причины за ней — разные факты) и у каждой правки (другая проверенная правка
+    той же строки — другой эксперимент, а не перезапись прежнего) — ревью Grok."""
+    key = "|".join([signature, log_digest, file, str(line), *after])
+    return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
 class FixStore:
@@ -172,8 +174,12 @@ class FixStore:
 
 def record_checked(
     paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, today: str,
+    saved: list[Path] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Записать правки, которые итог перезапуска проверил; строки ответа и папки базы знаний.
+
+    ``saved`` — куда дописывать записанные файлы: при ошибке записи посреди итога ``learn``
+    их удаляет, и следующий показ проверяет условия заново (ревью Grok).
 
     Все условия сразу: правка применена командой ``apply`` и стоит (``applied``), не
     увеличивает таймаут (тест пройдёт и при другой причине), в ней нет строк, похожих на секрет; каждый упавший тест проблемы прошёл с первого запуска на коде с
@@ -226,11 +232,13 @@ def record_checked(
             continue
         assert proposal.file is not None and proposal.line is not None
         fact = FixFact(fact_id(str(entry["signature"]), str(entry["log_digest"]), proposal.file,
-                               proposal.line),
+                               proposal.line, list(proposal.after)),
                        str(entry["signature"]), str(entry["log_digest"]), names, proposal.file,
                        proposal.line, list(proposal.before), list(proposal.after),
                        run.get("launch_id"), today, datetime.now().isoformat(timespec="seconds"))
-        FixStore(Path(entry["kb_dir"])).save(fact)
+        path = FixStore(Path(entry["kb_dir"])).save(fact)
+        if saved is not None:
+            saved.append(path)
         folders.add(kb_label(project_root, Path(entry["kb_dir"])))
         lines.append(f"Запомнена проверенная правка проблемы {int(file_id)} ({fact.file}:"
                      f"{fact.line}): в следующих прогонах эта же ошибка этих тестов разберётся "
@@ -508,7 +516,9 @@ def current_text(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any])
     where = location_state(fact.proposal(), Path(run["project_root"]))
     if where not in ("applied", "pending") or _engineer_said(paths, run, entry):
         return None
-    return _text(entry, {**auto, "state": where})
+    # Дата и прогон — из текущего файла факта: та же правка, проверенная заново, его обновляет.
+    return _text(entry, {**auto, "state": where, "file": fact.file, "line": fact.line,
+                         "date": fact.date, "launch_id": fact.launch_id})
 
 
 def _engineer_said(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> bool:

@@ -111,10 +111,14 @@ def test_fix_missing_from_the_code_is_offered_for_apply_without_the_agent(
     nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from alla_skill_lib import cli
+
     _checked_fix(nested_project, capsys)
     source = nested_project / SOURCE
     source.write_text(source.read_text(encoding="utf-8").replace("(201,", "(200,"),
                       encoding="utf-8")  # правку откатили (другая ветка)
+    # Предложение по факту пишет скрипт — лимит предложений модели оно не занимает (ревью Grok).
+    monkeypatch.setattr(cli, "MAX_PROPOSALS", 0)
 
     run_dir, run, order, login = _next_launch(nested_project, capsys, monkeypatch)
     out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
@@ -401,7 +405,7 @@ def test_facts_of_other_logs_are_kept_apart_and_the_latest_wins(tmp_path: Path) 
     store = fix_facts.FixStore(tmp_path / "alla-kb")
 
     def fact(file: str, log: str, saved: str) -> fix_facts.FixFact:
-        return fix_facts.FixFact(fix_facts.fact_id("v1:s", log, file, 1), "v1:s", log, ["t"],
+        return fix_facts.FixFact(fix_facts.fact_id("v1:s", log, file, 1, ["x();"]), "v1:s", log, ["t"],
                                  file, 1, [f"{file[0].lower()}();"], ["x();"], 1, "2026-11-05",
                                  saved)
 
@@ -433,3 +437,25 @@ def test_proposal_rewritten_after_apply_is_not_remembered(
 
     assert "Запомнена проверенная правка" not in done and _facts(nested_project) == []
 
+
+
+def test_facts_of_a_failed_write_are_rolled_back(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Запись упала посреди итога — факты этой попытки сняты, следующий показ запишет заново."""
+    from alla_skill_lib import learn
+
+    original = fix_facts.record_checked
+
+    def broken(*args: object, **kwargs: object) -> tuple[list[str], list[str]]:
+        original(*args, **kwargs)  # type: ignore[arg-type]
+        raise OSError("диск заполнен")
+
+    monkeypatch.setattr(learn.fix_facts, "record_checked", broken)
+    run_dir, _, done = _checked_fix(nested_project, capsys)
+    assert "В базу знаний итог не записан: диск заполнен." in done
+    assert _facts(nested_project) == []
+    monkeypatch.undo()
+    again = _run(["rerun", "--wait", "--run", str(run_dir)], capsys)[1]
+    assert "Запомнена проверенная правка" in again and len(_facts(nested_project)) == 1
