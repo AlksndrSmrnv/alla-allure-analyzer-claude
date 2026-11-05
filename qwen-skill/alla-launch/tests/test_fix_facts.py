@@ -92,9 +92,9 @@ def test_checked_fix_is_remembered_and_the_next_run_needs_no_agent(
     assert "1 по базе знаний" in first
     analysis = (run_dir / "analyses" / f"{order}.md").read_text(encoding="utf-8")
     assert analysis.startswith(f"ЧТО СЛОМАЛОСЬ: Эту ошибку уже исправляла проверенная правка "
-                               f"fix:{fact['id']} (OrderTest.java:6, перезапуск ")
-    assert f"Правка — {SOURCE}:6, проверена в прогоне 777." in analysis
-    assert "Правка уже есть в коде проекта на этой машине — CI запускал код без неё." in analysis
+                               f"fix:{fact['id']} (OrderTest.java:6): после неё эти тесты прошли "
+                               "с первого перезапуска.")
+    assert f"Правка — {SOURCE}:6." in analysis and "уже есть — дождаться" in analysis
 
     out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
 
@@ -124,7 +124,7 @@ def test_fix_missing_from_the_code_is_offered_for_apply_without_the_agent(
     out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
 
     analysis = (run_dir / "analyses" / f"{order}.md").read_text(encoding="utf-8")
-    assert "В коде проекта на этой машине этой правки нет." in analysis
+    assert "в коде нет — применить её" in analysis
     assert f"- Правка автотеста для проблемы {int(order)}: покажи пользователю diff" in out
     proposal = (run_dir / "proposals" / f"{order}.md").read_text(encoding="utf-8")
     assert proposal.startswith(f"РЕШЕНИЕ: исправить\nФАЙЛ: {SOURCE}:6\n")
@@ -219,11 +219,12 @@ def test_other_error_of_another_member_is_left_to_the_model() -> None:
     assert not fix_facts._members_same(mixed, mixed_tests, signature)
 
 
-def test_advice_follows_the_code_after_apply(
+def test_report_is_refreshed_after_applying_and_rechecking_the_fix(
     nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Разбор по факту «правки нет» после apply следующим next говорит «правка уже в коде»."""
+    """Применили предложенную проверенную правку и перезапустили: разбор не меняется (сводка
+    цела), отчёт пересобран с итогом, правка в нём применена (ревью Codex)."""
     _checked_fix(nested_project, capsys)
     source = nested_project / SOURCE
     source.write_text(source.read_text(encoding="utf-8").replace("(201,", "(200,"),
@@ -234,11 +235,17 @@ def test_advice_follows_the_code_after_apply(
     applied = _run(["apply", order, "--run", str(run_dir), "--yes", "--diff",
                     diff.split("--yes --diff ")[1].split()[0]], capsys)[1]
     assert applied.startswith("STATUS: applied")
-
-    _run(["next", str(run_dir)], capsys)
-
     analysis = (run_dir / "analyses" / f"{order}.md").read_text(encoding="utf-8")
-    assert "Правка уже есть в коде проекта на этой машине" in analysis
+    command = applied.splitlines()[-1].split("выполни: ", 1)[1].split(" — дальше", 1)[0]
+    done = _run(["rerun", *command.split(" rerun ", 1)[1].split()], capsys)[1]
+    done = _wait_done(run_dir, capsys) if done.startswith("STATUS: running") else done
+
+    assert done.startswith("STATUS: rerun_done")
+    assert (run_dir / "analyses" / f"{order}.md").read_text(encoding="utf-8") == analysis
+    assert (run_dir / "summary.md").is_file()
+    report = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert "Перезапуск локально" in report
+    assert _run(["next", str(run_dir)], capsys)[1].startswith("STATUS: done")
 
 
 def test_fix_with_other_edits_is_not_remembered(
@@ -507,3 +514,17 @@ def test_crlf_working_copy_with_autocrlf_counts_as_clean(
     run_dir, order, out = _applied(nested_project, capsys, SOURCE)
     record = json.loads((run_dir / "proposals" / f"{order}.applied.json").read_text(encoding="utf-8"))
     assert record[fix_facts.CLEAN_BEFORE] is True
+
+
+def test_member_without_a_key_is_left_to_the_model() -> None:
+    """Тест без full_name и testCaseId не сверить со списком проверенных (ревью Codex)."""
+    from test_skill_kb_auto import _cluster
+
+    from alla_skill_lib.signature import cluster_signature
+
+    error = "ru.bank.payments.TransferRejectedException: transfer rejected"
+    cluster, tests = _cluster(error, error)
+    signature = cluster_signature(cluster, tests)
+    assert fix_facts._members_same(cluster, tests, signature)
+    tests[2] = tests[2].model_copy(update={"full_name": None, "test_case_id": None})
+    assert not fix_facts._members_same(cluster, tests, signature)

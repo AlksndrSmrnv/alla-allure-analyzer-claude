@@ -384,8 +384,10 @@ def current_fact(entry: dict[str, Any]) -> FixFact | None:
 
 
 def fix_why(fact: FixFact) -> str:
-    return (f"эта правка уже исправляла ту же ошибку этих тестов: после неё они прошли с первого "
-            f"перезапуска ({fact.date}, прогон {fact.launch_id})")
+    # Без даты: повторная проверка не должна переписывать уже применённое предложение (отметка
+    # apply хранит его хэш).
+    return ("эта правка уже исправляла ту же ошибку этих тестов: после неё они прошли с первого "
+            "перезапуска")
 
 
 def proposal_text(fact: FixFact) -> str:
@@ -405,18 +407,17 @@ def analysis_text(auto: dict[str, Any], quote: tuple[str, str], *, examples: int
                   log_not_found: bool = False, kb_offered: bool = False) -> str:
     """Разбор проблемы по факту — в обычном формате, его проверяет ``next``."""
     where = f"{auto['file']}:{auto['line']}"
-    applied = auto["state"] == "applied"
+    # Текст не зависит ни от того, стоит ли правка в коде, ни от даты проверки: иначе apply или
+    # повторная проверка меняли бы данные сводки, и пересборка отчёта после перезапуска
+    # останавливалась на шаге summary (ревью Codex). Стоит ли правка — показывает предложение.
     # Первое предложение — в кратком разборе: коротко, с id для ``reject N fix:<id>``.
     what = (f"Эту ошибку уже исправляла проверенная правка fix:{auto['id']} "
-            f"({Path(str(auto['file'])).name}:{auto['line']}, перезапуск {auto['date']}). "
-            + ("Правка уже есть в коде проекта на этой машине — CI запускал код без неё."
-               if applied else "В коде проекта на этой машине этой правки нет.")
-            + f" Правка — {where}, проверена в прогоне {auto['launch_id']}.")
-    steps = ([f"Дождаться, когда правка {where} попадёт в ветку, на которой идёт CI, и "
-              "перезапустить прогон."] if applied
-             else [f"Применить проверенную правку {where} — она предложена ниже."])
-    steps.append("Если с этой правкой в коде тест падает так же — она не помогла: скажите об "
-                 "этом, и проблему разберёт агент.")
+            f"({Path(str(auto['file'])).name}:{auto['line']}): после неё эти тесты прошли с "
+            f"первого перезапуска. Правка — {where}.")
+    steps = [f"Правки {where} в коде нет — применить её (она предложена); уже есть — дождаться, "
+             "когда она попадёт в ветку, на которой идёт CI, и перезапустить прогон.",
+             "Если с этой правкой в коде тест падает так же — она не помогла: скажите об этом, "
+             "и проблему разберёт агент."]
     source_id, line = quote
     return "\n".join([
         f"ЧТО СЛОМАЛОСЬ: {what}",
@@ -478,6 +479,7 @@ def _members_same(cluster: FailureCluster, tests_by_id: dict[int, FailedTestSumm
     своего лога (если он есть) — те же, что у лога кластера. Сигнатура и отпечаток лога кластера
     — представителя: другая ошибка другого участника иначе получила бы чужую правку (ревью
     Codex; то же правило, что у ``known_issues.auto_resolution``)."""
+    from alla_skill_lib.kb import key_of_test
     from alla_skill_lib.signature import (
         as_representatives,
         cluster_log_errors,
@@ -489,7 +491,10 @@ def _members_same(cluster: FailureCluster, tests_by_id: dict[int, FailedTestSumm
     for alone in as_representatives(cluster, tests_by_id):
         test = (tests_by_id.get(alone.representative_test_id)
                 if alone.representative_test_id is not None else None)
-        if test is None or cluster_signature(alone, tests_by_id) != signature:
+        # Без ключа тест не сверить со списком проверенных (``cluster_tests`` его просто
+        # пропустил бы — ревью Codex).
+        if test is None or not key_of_test(test.full_name, test.test_case_id) \
+                or cluster_signature(alone, tests_by_id) != signature:
             return False
         own = log_error_lines(test)
         if own and own != shown:
@@ -522,9 +527,7 @@ def current_text(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any])
     where = location_state(fact.proposal(), Path(run["project_root"]))
     if where not in ("applied", "pending") or _engineer_said(paths, run, entry):
         return None
-    # Дата и прогон — из текущего файла факта: та же правка, проверенная заново, его обновляет.
-    return _text(entry, {**auto, "state": where, "file": fact.file, "line": fact.line,
-                         "date": fact.date, "launch_id": fact.launch_id})
+    return _text(entry, {**auto, "file": fact.file, "line": fact.line})
 
 
 def _engineer_said(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> bool:
@@ -584,8 +587,10 @@ def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[
             continue
         if current != text:
             ws.write_text(analysis_path, text)
-        ours = {"analysis": digest(text)}
-        if own_proposal:
+        ours = {"analysis": digest(text),
+                **({"proposal": written[file_id]["proposal"]}
+                   if "proposal" in written.get(file_id, {}) else {})}
+        if own_proposal and not paths.proposal_record(file_id).is_file():
             wanted = proposal_text(fact)
             if proposal != wanted:
                 ws.write_text(proposal_path, wanted)
