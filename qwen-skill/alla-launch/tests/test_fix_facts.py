@@ -528,3 +528,21 @@ def test_member_without_a_key_is_left_to_the_model() -> None:
     assert fix_facts._members_same(cluster, tests, signature)
     tests[2] = tests[2].model_copy(update={"full_name": None, "test_case_id": None})
     assert not fix_facts._members_same(cluster, tests, signature)
+
+
+def test_script_analysis_that_no_longer_passes_the_check_is_dropped(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Разбор по факту перестал проходить проверку (код изменился) — снимается, разбирает модель,
+    а не «исправь файл» (ревью Grok)."""
+    _checked_fix(nested_project, capsys)
+    run_dir, _, order, login = _next_launch(nested_project, capsys, monkeypatch)
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    monkeypatch.setattr(fix_facts, "check_entry_analysis", lambda text, *args: (
+        None, ["строка КОД за концом файла"] if "проверенная правка" in text else []))
+
+    again = _run(["next", str(run_dir)], capsys)[1]
+
+    assert again.startswith("STATUS: analyze") and f"clusters/{order}.md" in again
+    assert not (run_dir / "analyses" / f"{order}.md").exists()

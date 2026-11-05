@@ -527,7 +527,12 @@ def current_text(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any])
     where = location_state(fact.proposal(), Path(run["project_root"]))
     if where not in ("applied", "pending") or _engineer_said(paths, run, entry):
         return None
-    return _text(entry, {**auto, "file": fact.file, "line": fact.line})
+    text = _text(entry, {**auto, "file": fact.file, "line": fact.line})
+    # Код с тех пор менялся (строка КОД за концом файла): текст, не прошедший проверку, снимается,
+    # как у разбора по базе знаний, — иначе next просил бы модель править чужой файл (ревью Grok).
+    if check_entry_analysis(text, entry, Path(run["project_root"]), paths)[1]:
+        return None
+    return text
 
 
 def _engineer_said(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> bool:
