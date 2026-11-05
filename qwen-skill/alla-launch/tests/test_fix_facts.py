@@ -459,3 +459,29 @@ def test_facts_of_a_failed_write_are_rolled_back(
     monkeypatch.undo()
     again = _run(["rerun", "--wait", "--run", str(run_dir)], capsys)[1]
     assert "Запомнена проверенная правка" in again and len(_facts(nested_project)) == 1
+
+
+def test_failed_refresh_keeps_the_fact_of_an_earlier_run(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Откат упавшей записи возвращает прежний факт, а не удаляет его (ревью Codex); ошибка
+    записи отметки learned.json итог не обрывает."""
+    from alla_skill_lib import rerun
+
+    run_dir, _, _ = _checked_fix(nested_project, capsys)
+    [before] = _facts(nested_project)
+    (run_dir / "rerun" / "learned.json").unlink()
+
+    def broken(*_args: object, **_kwargs: object) -> Path:
+        raise OSError("диск заполнен")
+
+    monkeypatch.setattr(fix_facts.FixStore, "save", broken)
+    out = _run(["rerun", "--wait", "--run", str(run_dir)], capsys)[1]
+    assert "В базу знаний итог не записан: диск заполнен." in out
+    assert _facts(nested_project) == [before]
+
+    monkeypatch.undo()
+    monkeypatch.setattr(rerun, "write_learned", broken)
+    out = _run(["rerun", "--wait", "--run", str(run_dir)], capsys)[1]
+    assert out.startswith("STATUS: rerun_done") and "Запомнена проверенная правка" in out

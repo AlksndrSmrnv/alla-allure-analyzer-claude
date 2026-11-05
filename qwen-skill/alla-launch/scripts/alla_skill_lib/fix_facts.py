@@ -174,12 +174,13 @@ class FixStore:
 
 def record_checked(
     paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, today: str,
-    saved: list[Path] | None = None,
+    saved: list[tuple[Path, bytes | None]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Записать правки, которые итог перезапуска проверил; строки ответа и папки базы знаний.
 
-    ``saved`` — куда дописывать записанные файлы: при ошибке записи посреди итога ``learn``
-    их удаляет, и следующий показ проверяет условия заново (ревью Grok).
+    ``saved`` — куда дописывать файлы с их прежним содержимым: при ошибке записи посреди итога
+    ``learn`` возвращает прежнее (новый факт удаляет, перезаписанный — восстанавливает), и
+    следующий показ проверяет условия заново (ревью Grok, Codex).
 
     Все условия сразу: правка применена командой ``apply`` и стоит (``applied``), не
     увеличивает таймаут (тест пройдёт и при другой причине), в ней нет строк, похожих на секрет; каждый упавший тест проблемы прошёл с первого запуска на коде с
@@ -236,9 +237,12 @@ def record_checked(
                        str(entry["signature"]), str(entry["log_digest"]), names, proposal.file,
                        proposal.line, list(proposal.before), list(proposal.after),
                        run.get("launch_id"), today, datetime.now().isoformat(timespec="seconds"))
-        path = FixStore(Path(entry["kb_dir"])).save(fact)
+        store = FixStore(Path(entry["kb_dir"]))
+        target = store.path_for(fact)
+        previous = target.read_bytes() if target.is_file() else None
         if saved is not None:
-            saved.append(path)
+            saved.append((target, previous))  # до записи: упавшая запись тоже откатится
+        store.save(fact)
         folders.add(kb_label(project_root, Path(entry["kb_dir"])))
         lines.append(f"Запомнена проверенная правка проблемы {int(file_id)} ({fact.file}:"
                      f"{fact.line}): в следующих прогонах эта же ошибка этих тестов разберётся "

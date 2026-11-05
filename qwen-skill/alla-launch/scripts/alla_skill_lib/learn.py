@@ -44,21 +44,35 @@ def learn_from_rerun(paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobSt
     if done is not None:
         return Learned(list(done.get("lines") or []), list(done.get("folders") or []))
     today = date.today().isoformat()
-    saved: list[Path] = []
+    saved: list[tuple[Path, bytes | None]] = []
     try:
         lines, folders = _flaky(run, state, today)
         fix_lines, fix_folders = fix_facts.record_checked(paths, run, state, today, saved)
     except OSError as exc:
         # Итог перезапуска важнее: ошибка записи его не прячет, а следующий показ повторит запись.
-        # Факты этой попытки снимаются: к следующему показу условия могут уже не выполняться
-        # (ревью Grok); отметки «нестабильный» запишутся заново так же.
-        for path in saved:
-            path.unlink(missing_ok=True)
+        # Факты этой попытки откатываются к прежним: к следующему показу условия могут уже не
+        # выполняться (ревью Grok), а факт прошлых прогонов терять нельзя (ревью Codex);
+        # отметки «нестабильный» запишутся заново так же.
+        _restore(saved)
         return Learned([f"В базу знаний итог не записан: {exc}. Скажи это пользователю."])
     lines += fix_lines
     folders = sorted({*folders, *fix_folders})
-    rerun.write_learned(files, job, lines, folders)
+    try:
+        rerun.write_learned(files, job, lines, folders)
+    except OSError:
+        pass  # записанное в базе знаний есть; следующий показ запишет его заново (то же)
     return Learned(lines, folders, changed=bool(folders))
+
+
+def _restore(saved: list[tuple[Path, bytes | None]]) -> None:
+    for path, previous in reversed(saved):
+        try:
+            if previous is None:
+                path.unlink(missing_ok=True)
+            else:
+                ws.write_atomic_bytes(path, previous)
+        except OSError:
+            continue
 
 
 def _flaky(run: dict[str, Any], state: rerun.JobState, today: str) -> tuple[list[str], list[str]]:
