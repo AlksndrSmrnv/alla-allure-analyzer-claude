@@ -485,3 +485,25 @@ def test_failed_refresh_keeps_the_fact_of_an_earlier_run(
     monkeypatch.setattr(rerun, "write_learned", broken)
     out = _run(["rerun", "--wait", "--run", str(run_dir)], capsys)[1]
     assert out.startswith("STATUS: rerun_done") and "Запомнена проверенная правка" in out
+
+
+def test_crlf_working_copy_with_autocrlf_counts_as_clean(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """CRLF в рабочей копии, LF в git (autocrlf): файл чистый, правка запоминается (ревью Grok)."""
+    source = nested_project / SOURCE
+    source.write_bytes(source.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    skill_fake_maven.install(nested_project / "autotests", {
+        f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
+    shutil.rmtree(nested_project / ".git", ignore_errors=True)
+    git = ["git", "-C", str(nested_project)]
+    subprocess.run([*git, "init", "-q"], check=True, capture_output=True)
+    subprocess.run([*git, "config", "core.autocrlf", "true"], check=True, capture_output=True)
+    subprocess.run([*git, "add", "-A"], check=True, capture_output=True)
+    subprocess.run([*git, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "i"],
+                   check=True, capture_output=True)
+    assert subprocess.run([*git, "status", "--porcelain", "--", SOURCE], capture_output=True,
+                          text=True, check=True).stdout == ""
+    run_dir, order, out = _applied(nested_project, capsys, SOURCE)
+    record = json.loads((run_dir / "proposals" / f"{order}.applied.json").read_text(encoding="utf-8"))
+    assert record[fix_facts.CLEAN_BEFORE] is True

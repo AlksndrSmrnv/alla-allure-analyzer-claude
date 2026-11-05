@@ -322,6 +322,24 @@ def fix_file(paths: ws.RunPaths, file_id: str) -> str:
         return ""
 
 
+def git_head_matches(project_root: Path, source: str, data: bytes) -> bool:
+    """Содержимое ``data`` — то же, что версия файла в ``HEAD`` git, с фильтрами и концами строк
+    git (``hash-object --path`` применяет autocrlf и clean-фильтры пути — ревью Grok); git не
+    ответил — ``False``."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        stored = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "--verify", "-q", f"HEAD:./{source}"],
+            capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL, env=env)
+        given = subprocess.run(
+            ["git", "-C", str(project_root), "hash-object", f"--path={source}", "--stdin"],
+            input=data, capture_output=True, timeout=10, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return (stored.returncode == 0 and given.returncode == 0
+            and stored.stdout.strip() == given.stdout.decode("ascii", "replace").strip() != "")
+
+
 def git_head_digest(project_root: Path, source: str) -> str:
     """Хэш версии файла в ``HEAD`` git; файла нет в git или git недоступен — ``""``."""
     try:

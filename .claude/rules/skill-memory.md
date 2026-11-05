@@ -91,7 +91,9 @@ Grok): это факт эксперимента, а не подтверждён�
   (`PlannedTest.fix_sha` = `sha_after`: правку могли откатить и применить другую до чтения
   итога; воркер ставит `edited` и при смене `fix_file` — файла правки, если это не исходник
   теста, ревью Grok), до `apply` файл был как в `HEAD` git (`clean_before` в отметке `apply` —
-  `fix_facts.note_clean_before` сразу после `apply`, а не при записи факта: коммит правки до
+  `fix_facts.note_clean_before` сразу после `apply` по `NN.orig` через `rerun.git_head_matches`
+  (`git hash-object --path` — с autocrlf и фильтрами, а не побайтно: CRLF в рабочей копии при LF
+  в git — тоже чисто, ревью Grok), а не при записи факта: коммит правки до
   показа итога иначе отменял запоминание, ревью Grok; ручную правку того же файла факт не
   повторит; нет git — факта нет), другие исходники тестов проблемы
   были чисты в git на момент плана (`PlannedTest.source_clean`, `rerun.git_clean`: git не

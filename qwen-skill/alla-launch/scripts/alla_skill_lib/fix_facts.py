@@ -269,7 +269,9 @@ def note_clean_before(paths: ws.RunPaths, file_id: str, project_root: Path) -> N
     path = paths.proposal_record(file_id)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        clean = rerun.git_head_digest(project_root, str(data["file"])) == str(data["sha_before"])
+        before = paths.proposal_backup(file_id).read_bytes()  # файл до правки (``NN.orig``)
+        clean = (hashlib.sha256(before).hexdigest() == str(data["sha_before"])
+                 and rerun.git_head_matches(project_root, str(data["file"]), before))
         ws.write_atomic(path, json.dumps({**data, CLEAN_BEFORE: clean}, ensure_ascii=False,
                                          indent=2) + "\n")
     except (OSError, ValueError, KeyError, TypeError):
