@@ -91,9 +91,14 @@ def _flaky(run: dict[str, Any], state: rerun.JobState, today: str,
     # Отметка — на метод (параметры в ключ не входят): прошёл один вариант метода, а другой в
     # другой проблеме воспроизвёлся — отметка остаётся, снимать её сразу после записи нельзя
     # (ревью Grok).
-    marked_keys = {keys.get(int(item["test_result_id"])) for item in keep.mark}
+    # Своя база знаний у модуля: одинаковое имя теста в другом модуле — другой тест (ревью Grok).
+    def place(item: dict[str, Any]) -> tuple[str, str | None]:
+        entry = entries.get(str(item.get("file_id"))) or {}
+        return str(entry.get("kb_dir") or ""), keys.get(int(item["test_result_id"]))
+
+    marked_keys = {place(item) for item in keep.mark}
     keep = flaky.RememberPlan(keep.mark, [item for item in keep.unmark
-                                          if keys.get(int(item["test_result_id"])) not in marked_keys])
+                                          if place(item) not in marked_keys])
     project_root = Path(run["project_root"])
     marked: list[str] = []
     unmarked: list[str] = []

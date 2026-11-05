@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 from collections.abc import Mapping
@@ -241,6 +241,12 @@ def record_checked(
                        proposal.line, list(proposal.before), list(proposal.after),
                        run.get("launch_id"), today, datetime.now().isoformat(timespec="seconds"))
         store = FixStore(Path(entry["kb_dir"]))
+        known = store.get(fact.id)
+        if known is not None:
+            # Та же правка, проверенная заново на части тестов: прежнее покрытие не теряется
+            # (ревью Grok). Новые важнее старых, не больше MAX_RECORD_TESTS.
+            merged = list(dict.fromkeys([*names, *known.tests]))[:MAX_RECORD_TESTS]
+            fact = replace(fact, tests=sorted(merged))
         target = store.path_for(fact)
         previous = target.read_bytes() if target.is_file() else None
         if saved is not None:
@@ -593,17 +599,24 @@ def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[
                 proposal_path.unlink(missing_ok=True)
             written.pop(file_id, None)
             continue
-        if current != text:
-            ws.write_text(analysis_path, text)
         ours = {"analysis": digest(text),
                 **({"proposal": written[file_id]["proposal"]}
                    if "proposal" in written.get(file_id, {}) else {})}
-        if own_proposal and not paths.proposal_record(file_id).is_file():
-            wanted = proposal_text(fact)
-            if proposal != wanted:
-                ws.write_text(proposal_path, wanted)
-            ours["proposal"] = digest(wanted)
-        written[file_id] = ours
+        try:
+            # Атомарно и с отметкой владельца сразу: сбой записи следующей проблемы не должен
+            # оставить шаблон скрипта «чужим» разбором (ревью Grok).
+            if current != text:
+                analysis_path.parent.mkdir(parents=True, exist_ok=True)
+                ws.write_atomic(analysis_path, text)
+            written[file_id] = dict(ours)
+            if own_proposal and not paths.proposal_record(file_id).is_file():
+                wanted = proposal_text(fact)
+                if proposal != wanted:
+                    proposal_path.parent.mkdir(parents=True, exist_ok=True)
+                    ws.write_atomic(proposal_path, wanted)
+                written[file_id]["proposal"] = digest(wanted)
+        except OSError:
+            continue  # следующий next попробует снова; записанное уже числится за скриптом
         active.add(file_id)
     if written:
         state[FIX_AUTO_STATE] = written

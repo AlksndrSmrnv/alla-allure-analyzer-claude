@@ -616,6 +616,14 @@ def test_mark_is_kept_when_another_variant_of_the_method_reproduces(
     assert lines == ["Отмечены в базе знаний нестабильными: a.B.m[usd]."]
     assert len(list((kb_dir / "flaky").glob("*.json"))) == 1
 
+    # Тот же метод в другом модуле (своя база знаний) — другой тест: отметка там снимается.
+    other = tmp_path / "other" / "alla-kb"
+    flaky.FlakyStore(other).mark("a.B.m", {}, "2026-11-01")
+    run["clusters"][1]["kb_dir"] = str(other)
+    lines, _ = learn._flaky(run, state, "2026-11-05", [])
+    assert not list((other / "flaky").glob("*.json"))
+    assert lines[-1].startswith("Сняты в базе знаний отметки")
+
 
 def test_dot_slash_path_of_the_fix_is_the_test_source(
     nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
@@ -631,3 +639,49 @@ def test_dot_slash_path_of_the_fix_is_the_test_source(
 
     assert "Запомнена проверенная правка" in done
     assert [fact["file"] for fact in _facts(nested_project)] == [SOURCE]
+
+
+def test_recheck_keeps_the_tests_checked_before(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Та же правка, проверенная заново, дополняет список тестов факта, а не сужает его
+    (ревью Grok)."""
+    run_dir, _, _ = _checked_fix(nested_project, capsys)
+    [path] = (nested_project / "alla-kb" / "fixes").glob("*.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**data, "tests": [f"{ORDER}.earlier"]}), encoding="utf-8")
+    (run_dir / "rerun" / "learned.json").unlink()
+
+    _run(["rerun", "--wait", "--run", str(run_dir)], capsys)
+
+    [fact] = _facts(nested_project)
+    assert fact["tests"] == sorted([f"{ORDER}.createOrder", f"{ORDER}.earlier",
+                                    f"{ORDER}.updateOrder"])
+
+
+def test_failed_proposal_write_keeps_the_analysis_owned_by_the_script(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Запись предложения упала: разбор уже числится за скриптом — «верны все» его не
+    подтвердит (ревью Grok)."""
+    from alla_skill_lib import workspace as ws
+
+    _checked_fix(nested_project, capsys)
+    source = nested_project / SOURCE
+    source.write_text(source.read_text(encoding="utf-8").replace("(201,", "(200,"),
+                      encoding="utf-8")
+    run_dir, _, order, _ = _next_launch(nested_project, capsys, monkeypatch)
+    original = ws.write_atomic
+
+    def broken(path: Path, text: str) -> None:
+        if path.name == f"{order}.md" and path.parent.name == "proposals":
+            raise OSError("диск заполнен")
+        original(path, text)
+
+    monkeypatch.setattr(ws, "write_atomic", broken)
+    _run(["next", str(run_dir)], capsys)
+    monkeypatch.undo()
+
+    out = _run(["remember", order, "--run", str(run_dir), "--from-analysis"], capsys)[1]
+    assert out.startswith("STATUS: error") and "написал скрипт по проверенной правке" in out
