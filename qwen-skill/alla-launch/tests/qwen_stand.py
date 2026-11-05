@@ -553,12 +553,13 @@ SCENARIOS: dict[str, Scenario] = {
         "test_bug", ("/alla-launch 782", "Да, применяй правку.", "Да, перезапусти тесты.",
                      "Да, отметь в TestOps."),
         (*[name for name in FULL_RUN if name != "report_verbatim"], "prepare_launch",
-         "fix_applied", "rerun_started", "fix_checked", "testops_resolved"),
-        launch_id=782, edits=(STAND_ORDER_TEST,), resolved=(201,),
+         "fix_applied", "rerun_started", "fix_checked", "fix_remembered", "testops_resolved"),
+        launch_id=782, edits=(STAND_ORDER_TEST, "alla-kb/"), resolved=(201,),
         maven=((f"{STAND_ORDER}#createOrder", ("passed",)),),
         review=("После apply вопрос о перезапуске задан отдельно от «да» на правку, с числом "
-                "тестов и что они пойдут на этой машине; итог выведен дословно; вопрос об "
-                "отметке в TestOps говорит, что в CI правки ещё нет",)),
+                "тестов и что они пойдут на этой машине; итог выведен дословно; сказано, что "
+                "проверенная правка запомнена (без вопроса); вопрос об отметке в TestOps "
+                "говорит, что в CI правки ещё нет",)),
     "P04": Scenario(
         "40 кластеров: пакеты субагентов", "many:40", ("/alla-launch 900",),
         (*FULL_RUN, "prepare_launch", "subagents_used", "batch_agent_used"), launch_id=900),
@@ -2015,6 +2016,23 @@ def check_rerun_result_shown(ctx: Context) -> dict[str, Any]:
     title = "Нестабильные — упали в CI, а при перезапуске прошли"
     shown = [result for result in ctx.trace.results if title in str(result.get("result") or "")]
     return ok() if shown else bad("в ответах пользователю нет группы «Нестабильные» из итога")
+
+
+def check_fix_remembered(ctx: Context) -> dict[str, Any]:
+    """Проверенная правка записана скриптом в ``alla-kb/fixes/`` (не руками модели), а
+    пользователю сказано, что она запомнена."""
+    by_hand = [call for call in ctx.trace.calls
+               if call.name in WRITE_TOOLS and "alla-kb" in path_of(call)]
+    if by_hand:
+        return bad(f"модель писала в alla-kb сама: {by_hand[0].name}")
+    facts = [json.loads(path.read_text(encoding="utf-8"))
+             for path in (ctx.project / "alla-kb" / "fixes").glob("*.json")]
+    if len(facts) != 1:
+        return bad(f"фактов в alla-kb/fixes: {len(facts)}, ждём 1")
+    # Слово модель выбирает сама («запомнена», «записана проверенная правка»).
+    told = any(word in str(result.get("result") or "").lower()
+               for result in ctx.trace.results for word in ("запомн", "проверенная правка"))
+    return ok(str(facts[0].get("file"))) if told else bad("пользователю не сказано, что правка запомнена")
 
 
 def check_fix_checked(ctx: Context) -> dict[str, Any]:

@@ -413,3 +413,23 @@ def test_facts_of_other_logs_are_kept_apart_and_the_latest_wins(tmp_path: Path) 
              "kb": []}
     chosen = fix_facts.match(entry, ["t"], tmp_path, today=date(2026, 11, 6))
     assert chosen is not None and chosen["file"] == "B.java"
+
+
+def test_proposal_rewritten_after_apply_is_not_remembered(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Предложение переписали после apply (СТАЛО то же, БЫЛО другое): одобрено было не оно
+    (ревью Codex)."""
+    skill_fake_maven.install(nested_project / "autotests", {
+        f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
+    _git(nested_project)
+    run_dir, order, out = _applied(nested_project, capsys, SOURCE)
+    proposal = run_dir / "proposals" / f"{order}.md"
+    proposal.write_text(proposal.read_text(encoding="utf-8").replace(
+        "БЫЛО:\n        assertEquals(200", "БЫЛО:\n        assertEquals(202"), encoding="utf-8")
+    command = out.splitlines()[-1].split("выполни: ", 1)[1].split(" — дальше", 1)[0]
+    done = _run(["rerun", *command.split(" rerun ", 1)[1].split()], capsys)[1]
+    done = _wait_done(run_dir, capsys) if done.startswith("STATUS: running") else done
+
+    assert "Запомнена проверенная правка" not in done and _facts(nested_project) == []
+

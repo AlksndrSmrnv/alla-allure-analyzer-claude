@@ -47,6 +47,7 @@ from alla_skill_lib.proposals import (
     applied_state,
     location_state,
     parse_proposal,
+    proposal_hash,
     timeouts_increased,
 )
 
@@ -186,6 +187,8 @@ def record_checked(
                 for test in state.plan.get("tests") or []}
     sources = {int(test["test_result_id"]): str(test.get("source") or "")
                for test in state.plan.get("tests") or []}
+    clean = {int(test["test_result_id"]): bool(test.get("source_clean"))
+             for test in state.plan.get("tests") or []}
     planned_fix = {int(test["test_result_id"]): str(test.get("fix_sha") or "")
                    for test in state.plan.get("tests") or []}
     lines: list[str] = []
@@ -202,14 +205,15 @@ def record_checked(
         # Тест прошёл ровно на этой правке: файл правки — как его оставил apply, а другие
         # исходники тестов проблемы не изменены (``changed`` о них молчит, когда есть правка
         # агента — ревью Codex).
-        others = {sources.get(int(item["test_result_id"]), "") for item in own} - {proposal.file}
         record = _record(paths, file_id)
-        if record is None or not _as_applied(record, project_root) \
+        if record is None or record["proposal"] != proposal_hash(proposal) \
+                or not _as_applied(record, project_root) \
                 or any(planned_fix.get(int(item["test_result_id"])) != record["sha_after"]
                        for item in own) \
-                or any(not source or not rerun.git_clean(project_root, Path(source))
-                       for source in others):
-            # Перезапуск шёл на другой версии правки (её откатили и применили другую), до apply
+                or any(sources.get(int(item["test_result_id"])) != proposal.file
+                       and not clean.get(int(item["test_result_id"])) for item in own):
+            # Предложение переписали после apply (отметка — о другом), перезапуск шёл на другой
+            # версии правки (её откатили и применили другую), до apply
             # в файле уже была ручная правка (её не запомнить, ``CLEAN_BEFORE``), или менялись другие исходники
             # тестов — тест мог пройти не из-за этой правки (ревью Codex).
             continue
@@ -266,7 +270,7 @@ def _record(paths: ws.RunPaths, file_id: str) -> dict[str, str] | None:
         data = json.loads(paths.proposal_record(file_id).read_text(encoding="utf-8"))
         if data.get(CLEAN_BEFORE) is not True:
             return None  # ручная правка до apply или git не ответил
-        return {key: str(data[key]) for key in ("file", "sha_before", "sha_after")}
+        return {key: str(data[key]) for key in ("proposal", "file", "sha_before", "sha_after")}
     except (OSError, ValueError, KeyError, TypeError):
         return None
 

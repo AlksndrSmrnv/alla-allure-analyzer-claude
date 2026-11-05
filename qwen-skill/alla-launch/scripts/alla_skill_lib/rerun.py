@@ -90,6 +90,9 @@ class PlannedTest:
     # (``fix_facts``), а не применённую после плана другую.
     fix_sha: str = ""
     fix_file: str = ""  # путь файла правки от корня проекта: воркер следит и за ним
+    # Исходник теста чист в git на момент плана (нужно, когда правка в другом файле: тест мог
+    # пройти и благодаря ручной правке теста — ``fix_facts``).
+    source_clean: bool = False
 
 
 @dataclass(frozen=True)
@@ -225,6 +228,9 @@ def build_plan(
             source_sha=source_digest(project_root, jvm.source.as_posix()),
             fix_sha=fix_digest(paths, project_root, file_id),
             fix_file=fix_file(paths, file_id),
+            source_clean=(changed == "правка агента применена"
+                          and fix_file(paths, file_id) != jvm.source.as_posix()
+                          and git_clean(project_root, jvm.source)),
         )
         seen[key] = planned
         plan.tests.append(planned)

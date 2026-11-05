@@ -764,6 +764,11 @@ def is_applied(
     return applied_state(proposal, project_root, files) == "applied"
 
 
+def proposal_hash(proposal: Proposal) -> str:
+    """Хэш предложения, как его пишет отметка ``apply`` (поле ``proposal``)."""
+    return _proposal_hash(proposal)
+
+
 def _proposal_hash(proposal: Proposal) -> str:
     material = "\n".join([
         proposal.decision, str(proposal.file), str(proposal.line),
