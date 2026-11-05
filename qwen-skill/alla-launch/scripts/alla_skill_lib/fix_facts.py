@@ -264,14 +264,16 @@ def record_checked(
 
 
 @contextlib.contextmanager
-def kb_write_lock(paths: ws.RunPaths) -> Iterator[None]:
-    """Блокировка записи скрипта в ``flaky/`` и ``fixes/`` на весь проект (файл в
-    ``alla-reports/``, не в базе знаний): итог перезапуска с откатом и ``reject N fix:<id>``.
-    Не вкладывается сама в себя (``flock`` на втором дескрипторе ждал бы вечно)."""
+def kb_write_lock(project_root: Path) -> Iterator[None]:
+    """Блокировка записи скрипта в ``flaky/`` и ``fixes/`` на весь проект: итог перезапуска с
+    откатом и ``reject N fix:<id>``. Файл — в папке отчётов по умолчанию проекта, рядом с
+    блокировкой перезапуска (``rerun.project_lock``), а не в ``--reports-dir``: разборы одного
+    проекта с разными папками отчётов пишут одну базу знаний (ревью Codex). Не вкладывается сама
+    в себя (``flock`` на втором дескрипторе ждал бы вечно)."""
     import fcntl
 
-    paths.reports_dir.mkdir(parents=True, exist_ok=True)
-    with open(paths.reports_dir / ".fixes.lock", "a+", encoding="utf-8") as handle:
+    lock = rerun.project_lock(project_root).with_name(".kb-write.lock")
+    with open(lock, "a+", encoding="utf-8") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             yield

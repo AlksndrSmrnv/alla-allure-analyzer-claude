@@ -45,7 +45,7 @@ def learn_from_rerun(paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobSt
     if done is not None:
         return Learned(list(done.get("lines") or []), list(done.get("folders") or []))
     today = date.today().isoformat()
-    with fix_facts.kb_write_lock(paths):
+    with fix_facts.kb_write_lock(Path(run["project_root"])):
         return _learn(paths, run, state, files, job, today)
 
 

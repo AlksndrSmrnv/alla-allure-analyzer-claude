@@ -733,17 +733,15 @@ def test_incomplete_rollback_names_what_is_left(tmp_path: Path,
 
 
 def test_fact_merge_is_serialized_across_runs(tmp_path: Path) -> None:
-    """Объединение тестов факта — под общей блокировкой проекта (ревью Codex)."""
+    """Объединение тестов факта — под общей блокировкой проекта, не папки отчётов (ревью
+    Codex)."""
     import threading
     import time
 
-    from alla_skill_lib import workspace as ws
-
-    paths = ws.RunPaths(tmp_path / "alla-reports" / "1-run")
     events: list[str] = []
 
     def hold(name: str) -> None:
-        with fix_facts.kb_write_lock(paths):
+        with fix_facts.kb_write_lock(tmp_path):
             events.append(f"{name}+")
             time.sleep(0.2)
             events.append(f"{name}-")

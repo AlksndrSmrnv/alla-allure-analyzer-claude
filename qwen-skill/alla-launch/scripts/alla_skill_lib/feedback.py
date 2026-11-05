@@ -686,7 +686,8 @@ def _forget_fix(
     from alla_skill_lib import fix_facts  # fix_facts тянет proposals и rerun
 
     kb_dir = Path(str(entry.get("kb_dir") or ""))
-    with fix_facts.kb_write_lock(paths):  # итог перезапуска не запишет факт обратно (ревью Grok)
+    # Итог перезапуска не запишет факт обратно (ревью Grok).
+    with fix_facts.kb_write_lock(Path(run["project_root"])):
         removed = fix_facts.FixStore(kb_dir).forget(wanted) if entry.get("kb_dir") else []
     if not removed:
         return "error", (f"В {kb_dir / fix_facts.FIXES_DIRNAME} нет проверенной правки "
