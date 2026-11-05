@@ -978,3 +978,40 @@ def test_same_class_in_two_modules_goes_to_the_root_knowledge_base(
 def _write_module_file(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("<project/>\n" if path.suffix == ".xml" else "class OrderTest {}\n", encoding="utf-8")
+
+
+def test_cause_without_a_recipe_is_remembered_and_hints_the_next_run(
+    project: Path, testops: FakeTestOps, monkeypatch, capsys
+) -> None:
+    """Инженер назвал только причину: запись без рецепта, модель не переспрашивает; следующий
+    прогон узнаёт ошибку точно, но разбирает её модель (без рецепта разбора без модели нет)."""
+    run_dir, run, _ = _prepare(project, capsys)
+    order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
+    _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    cause_only = FEEDBACK.split("КАК ИСПРАВИТЬ:", 1)[0]
+    (run_dir / "feedback" / f"{order}.md").write_text(cause_only, encoding="utf-8")
+
+    code, out = _run(["remember", "1", "--run", str(run_dir)], capsys)
+
+    assert code == 0 and out.startswith("STATUS: saved"), out
+    assert "Рецепта в записи нет" in out and "Рецепт сейчас не спрашивай." in out
+    [kb_file] = (project / "alla-kb").glob("*.json")
+    data = json.loads(kb_file.read_text(encoding="utf-8"))
+    assert data["resolution_steps"] == [] and data["category"] == "service"
+    # Уточнение той же записи без рецепта прежний рецепт не стирает.
+    data["resolution_steps"] = ["Передавать customer"]
+    kb_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    code, out = _run(["remember", "1", "--entry", kb_file.stem, "--run", str(run_dir)], capsys)
+    assert out.startswith("STATUS: saved"), out
+    assert json.loads(kb_file.read_text(encoding="utf-8"))["resolution_steps"] == [
+        "Передавать customer"]
+    data["resolution_steps"] = []
+    kb_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    FakeTestOps(default_launch(778)).install(monkeypatch)
+    run_dir2, run2, out = _prepare(project, capsys, launch_id=778)
+    order2 = next(e for e in run2["clusters"] if e["file_id"] == order)
+    assert order2["kb"][0]["origin"] == "exact" and "kb_auto" not in order2
+    assert out.startswith("STATUS: analyze") and f"clusters/{order}.md" in out
+    task = (run_dir2 / "clusters" / f"{order}.md").read_text(encoding="utf-8")
+    assert "ТОЧНОЕ" in task and kb_file.stem in task

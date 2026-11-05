@@ -90,7 +90,14 @@ from alla_skill_lib.cluster_task import (
 )
 from alla_skill_lib.code_hints import ProjectIndex, hints_for_cluster
 from alla_skill_lib.errors import USER_ACTION_NOTE, fetch_error_hint
-from alla_skill_lib.feedback import FEEDBACK_FORMAT, find_entry, remember, remember_many, reject
+from alla_skill_lib.feedback import (
+    FEEDBACK_FORMAT,
+    NO_RECIPE_RULE,
+    find_entry,
+    remember,
+    remember_many,
+    reject,
+)
 from alla_skill_lib.history import append_changed_run, load_history, recurrence, run_records
 from alla_skill_lib.images import place_images
 from alla_skill_lib.learn import learn_from_rerun
@@ -1855,6 +1862,7 @@ def _done_body(
             "разбор) — сохрани их. Файл обратной связи пиши со слов пользователя, не додумывай; "
             "формат:",
             *(f"    {line}" for line in FEEDBACK_FORMAT.splitlines()),
+            f"  {NO_RECIPE_RULE}",
             reference_line(FEEDBACK_FORMAT_REF, "  Правила и пример"),
             "  Команды для ЭТОГО разбора (всегда с этим --run):",
             f"  файл обратной связи: {paths.root / 'feedback'}/NN.md (NN — номер, как в именах "

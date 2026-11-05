@@ -45,6 +45,15 @@ FEEDBACK_FORMAT = """\
 КАК ИСПРАВИТЬ:
 1. <шаг рецепта>
 ПРИЗНАК: <1–3 строки дословно из сообщения об ошибке или лога>   (необязательно)"""
+NO_RECIPE_RULE = ("Пользователь назвал только причину — КАК ИСПРАВИТЬ не пиши и рецепт не "
+                  "переспрашивай: запись сохранится без него.")
+
+
+NO_RECIPE_NOTE = (
+    "Рецепта в записи нет: в следующих прогонах эту ошибку агент разберёт с подсказкой — "
+    "причиной со слов пользователя; без агента она разберётся, когда пользователь назовёт, что "
+    "делать. Рецепт сейчас не спрашивай."
+)
 
 
 def find_entry(run: dict[str, Any], cluster: str) -> dict[str, Any] | None:
@@ -250,6 +259,7 @@ def remember(
         f"Запомнено в базе знаний ({outcome.action}): {outcome.record.id} — "
         f"«{outcome.record.title}»",
         *([outcome.note] if outcome.note else []),
+        *([NO_RECIPE_NOTE] if not outcome.record.resolution_steps else []),
         "Изменены файлы:",
         *(f"- {path}" for path in outcome.changed),
         "Скажи пользователю, что рецепт сохранён, и напомни закоммитить папку "
@@ -436,9 +446,10 @@ def _remember(
                 "в «ПРИЧИНА:» первым словом нужна категория тест / приложение / окружение / "
                 "данные («неизвестно» запоминать нельзя)"
             )
+        # Рецепт необязателен (решение пользователя 2026-11-05): инженер назвал только причину —
+        # модель не переспрашивает. Запись без шагов узнаётся и подсказывает модели причину, но
+        # без модели проблему не разбирает (``auto_resolution`` требует шаги).
         steps = given.steps
-        if not steps:
-            errors.append("нет «КАК ИСПРАВИТЬ:» — рецепт обязателен")
         if record is None or given.fingerprint:
             # Признак проверяется, только когда он сохраняется: у обновляемой
             # записи без нового ПРИЗНАКА эту ошибку узнает подтверждённая сигнатура.
@@ -525,7 +536,7 @@ def _remember(
             record.title = title
         record.category = CATEGORY_TO_KB[given.category]
         record.description = description
-        record.resolution_steps = steps
+        record.resolution_steps = steps or record.resolution_steps  # без рецепта — прежний
         if given.fingerprint:
             record.error_example = store_fingerprint(given.fingerprint)
         action = "запись обновлена"
