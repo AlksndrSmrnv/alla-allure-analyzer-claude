@@ -608,16 +608,19 @@ def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[
             if current != text:
                 analysis_path.parent.mkdir(parents=True, exist_ok=True)
                 ws.write_atomic(analysis_path, text)
-            written[file_id] = dict(ours)
-            if own_proposal and not paths.proposal_record(file_id).is_file():
-                wanted = proposal_text(fact)
+        except OSError:
+            continue  # разбора нет — проблему разберёт модель; следующий next попробует снова
+        written[file_id] = dict(ours)
+        active.add(file_id)  # разбор — скрипта, даже если предложение ниже не записалось
+        if own_proposal and not paths.proposal_record(file_id).is_file():
+            wanted = proposal_text(fact)
+            try:
                 if proposal != wanted:
                     proposal_path.parent.mkdir(parents=True, exist_ok=True)
                     ws.write_atomic(proposal_path, wanted)
                 written[file_id]["proposal"] = digest(wanted)
-        except OSError:
-            continue  # следующий next попробует снова; записанное уже числится за скриптом
-        active.add(file_id)
+            except OSError:
+                continue  # предложение — следующим next; модели его не отдаём (cli)
     if written:
         state[FIX_AUTO_STATE] = written
     else:

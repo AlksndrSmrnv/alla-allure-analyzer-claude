@@ -1230,6 +1230,11 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
                 continue
             # Предложение по проверенной правке пишет скрипт — лимит работы модели оно не занимает
             # (ревью Grok: пять уже стоящих правок вытесняли предложение для новой ошибки).
+            if file_id in fix_auto and not _has_text(paths.proposal(file_id)):
+                # Предложение проверенной правки не записалось (диск): модели его не отдаём —
+                # она написала бы свою правку вместо проверенной (ревью Grok).
+                not_proposed[file_id] = FIX_NOT_WRITTEN
+                continue
             candidates += file_id not in fix_auto
             if file_id not in fix_auto and candidates > MAX_PROPOSALS:
                 not_proposed[file_id] = (
@@ -1340,6 +1345,9 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
 REJECTED_NOT_PROPOSED = (
     "разбор опирался на запись базы знаний, которую пользователь отверг для этой проблемы, — "
     "правка снята, пока причина не подтверждена"
+)
+FIX_NOT_WRITTEN = (
+    "предложение проверенной правки не удалось записать — его запишет следующий next"
 )
 MIXED_GROUP_NOT_PROPOSED = (
     "в группе, похоже, несколько проблем — одна правка на все тесты не предлагается"

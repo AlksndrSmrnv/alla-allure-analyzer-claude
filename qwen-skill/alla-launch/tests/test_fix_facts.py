@@ -680,8 +680,13 @@ def test_failed_proposal_write_keeps_the_analysis_owned_by_the_script(
         original(path, text)
 
     monkeypatch.setattr(ws, "write_atomic", broken)
-    _run(["next", str(run_dir)], capsys)
+    first = _run(["next", str(run_dir)], capsys)[1]
+    # Модели предложение проверенной правки не отдаётся — она написала бы свою (ревью Grok).
+    assert not first.startswith("STATUS: propose"), first
     monkeypatch.undo()
 
     out = _run(["remember", order, "--run", str(run_dir), "--from-analysis"], capsys)[1]
     assert out.startswith("STATUS: error") and "написал скрипт по проверенной правке" in out
+    _run(["next", str(run_dir)], capsys)  # следующий next дописывает предложение
+    assert (run_dir / "proposals" / f"{order}.md").read_text(encoding="utf-8").startswith(
+        "РЕШЕНИЕ: исправить")
