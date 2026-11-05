@@ -319,6 +319,9 @@ def test_feedback_example_parses_into_a_savable_recipe() -> None:
     parsed = parse_analysis(text)
     assert parsed.category in {"тест", "приложение", "окружение", "данные"}
     assert parsed.title and parsed.fix.strip() and parsed.fingerprint
+    (_, text), = _examples("feedback.md", "feedback-cause-only")
+    parsed = parse_analysis(text)
+    assert parsed.category == "окружение" and parsed.title and not parsed.fix.strip()
 
 
 def _example_groups() -> list[CandidateGroup]:

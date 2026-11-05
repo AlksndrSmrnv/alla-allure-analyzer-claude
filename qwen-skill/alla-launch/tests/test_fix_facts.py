@@ -76,14 +76,16 @@ def test_checked_fix_is_remembered_and_the_next_run_needs_no_agent(
     assert first.startswith("STATUS: analyze") and f"clusters/{login}.md" in first
     assert "1 по базе знаний" in first
     analysis = (run_dir / "analyses" / f"{order}.md").read_text(encoding="utf-8")
-    assert analysis.startswith(f"ЧТО СЛОМАЛОСЬ: Эту ошибку уже исправляла правка автотеста "
-                               f"{SOURCE}:6 (проверена перезапуском ")
+    assert analysis.startswith(f"ЧТО СЛОМАЛОСЬ: Эту ошибку уже исправляла проверенная правка "
+                               f"fix:{fact['id']} (OrderTest.java:6, перезапуск ")
+    assert f"Правка — {SOURCE}:6, проверена в прогоне 777." in analysis
     assert "Правка уже есть в коде проекта на этой машине — CI запускал код без неё." in analysis
-    assert f"факт fix:{fact['id']}" in analysis
 
     out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
 
-    assert "Эту ошибку уже исправляла правка автотеста" in out
+    brief = out.split("===ОТЧЁТ===", 1)[1].split("===КОНЕЦ===", 1)[0]
+    assert "Эту ошибку уже исправляла проверенная правка" in brief
+    assert f"fix:{fact['id']}" in brief  # id для reject N fix:<id> — в кратком разборе
     assert f"apply {int(order)}" not in out  # правка уже стоит — применять нечего
     kb_question = next((line for line in out.splitlines() if "Какие разборы верны" in line), "")
     assert f"Проблемы: {int(login)}." in kb_question  # о разобранной по факту не спрашиваем

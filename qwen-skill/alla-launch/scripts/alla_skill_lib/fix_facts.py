@@ -306,16 +306,18 @@ def analysis_text(auto: dict[str, Any], quote: tuple[str, str], *, examples: int
                   log_not_found: bool = False, kb_offered: bool = False) -> str:
     """Разбор проблемы по факту — в обычном формате, его проверяет ``next``."""
     where = f"{auto['file']}:{auto['line']}"
-    checked = f"проверена перезапуском {auto['date']}, прогон {auto['launch_id']}"
     applied = auto["state"] == "applied"
-    what = ("Эту ошибку уже исправляла правка автотеста " + where + f" ({checked}). "
+    # Первое предложение — в кратком разборе: коротко, с id для ``reject N fix:<id>``.
+    what = (f"Эту ошибку уже исправляла проверенная правка fix:{auto['id']} "
+            f"({Path(str(auto['file'])).name}:{auto['line']}, перезапуск {auto['date']}). "
             + ("Правка уже есть в коде проекта на этой машине — CI запускал код без неё."
-               if applied else "В коде проекта на этой машине этой правки нет."))
+               if applied else "В коде проекта на этой машине этой правки нет.")
+            + f" Правка — {where}, проверена в прогоне {auto['launch_id']}.")
     steps = ([f"Дождаться, когда правка {where} попадёт в ветку, на которой идёт CI, и "
               "перезапустить прогон."] if applied
              else [f"Применить проверенную правку {where} — она предложена ниже."])
     steps.append("Если с этой правкой в коде тест падает так же — она не помогла: скажите об "
-                 f"этом, и проблему разберёт агент (факт fix:{auto['id']}).")
+                 "этом, и проблему разберёт агент.")
     source_id, line = quote
     return "\n".join([
         f"ЧТО СЛОМАЛОСЬ: {what}",

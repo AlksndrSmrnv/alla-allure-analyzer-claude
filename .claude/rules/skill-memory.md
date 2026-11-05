@@ -99,8 +99,9 @@ Grok): это факт эксперимента, а не подтверждён�
   `check_entry_analysis`. Итог — `entry["fix_auto"]` (`id`, `state`, `file`, `line`, `date`,
   `launch_id`, `quote`); задание строится как обычно — запасной путь.
 - `next` (`fix_facts.sync`, сразу после `sync_known_auto`, до подсчёта неразобранных) пишет
-  `analyses/NN.md` (`analysis_text`: категория «тест», `КОД:` — место правки, «факт
-  fix:<id>» в шаге рецепта) и `proposals/NN.md` (`proposal_text`); хэши — `state.json`
+  `analyses/NN.md` (`analysis_text`: категория «тест», `КОД:` — место правки; первое
+  предложение — «…проверенная правка fix:<id> (<файл>:<строка>, перезапуск <дата>)»: оно в
+  кратком разборе, и id для `reject` модель берёт оттуда — ревью исполнителя) и `proposals/NN.md` (`proposal_text`); хэши — `state.json`
   `fix_auto`. Чужой файл (хэш другой) не трогается. Дальше обычный путь: `_proposal_step`
   принимает готовое предложение (`applied` — `apply` не предлагается, `pending` — обычный
   вопрос `apply`), `_kb_offer` такие номера не спрашивает, `_rerun_offer` их не берёт (есть
