@@ -216,6 +216,10 @@ def build_plan(
                 file_id, name, f"сверх лимита ALLURE_RERUN_MAX_TESTS ({max_tests} за раз)"))
             continue
         changed = _changed(paths, project_root, file_id, jvm.source, dirty)
+        if not changed and entry.get("fix_auto"):
+            # Проблему разобрала проверенная правка: код с ней — не код CI, прошедший тест —
+            # проверка правки, а не нестабильность (ревью Codex).
+            changed = FIX_IN_CODE
         if auto and changed:
             plan.skipped.append(SkippedTest(
                 file_id, name, f"{changed} — перезапуск не скажет о нестабильности"))
@@ -302,6 +306,7 @@ def maven_tool(project_root: Path, reactor: PurePath) -> list[str] | None:
 
 
 GIT_UNKNOWN = "git не ответил, совпадает ли код теста с CI"
+FIX_IN_CODE = "проблему разобрала проверенная правка — код может отличаться от CI"
 
 
 def _changed(

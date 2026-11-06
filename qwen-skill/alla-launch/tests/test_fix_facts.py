@@ -965,3 +965,41 @@ def test_rejected_fix_proposal_is_dropped_after_a_hand_edit_of_the_analysis(
 
     assert path.read_text(encoding="utf-8") == edited
     assert not (run_dir / "proposals" / f"{order}.md").exists()
+
+
+def test_rejected_fix_is_not_offered_again_in_the_run_that_checked_it(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """apply → перезапуск → revert → reject N fix:<id>: та же правка не предлагается и не
+    применяется (ревью Codex)."""
+    run_dir, order, _ = _checked_fix(nested_project, capsys)
+    [fact] = _facts(nested_project)
+    assert _run(["revert", order, "--run", str(run_dir)], capsys)[1].startswith("STATUS: reverted")
+    _run(["reject", order, f"fix:{fact['id']}", "--run", str(run_dir)], capsys)
+
+    done = _run(["next", str(run_dir)], capsys)[1]
+
+    assert done.startswith("STATUS: done") and f"apply {order} " not in done
+    applied = _run(["apply", order, "--run", str(run_dir)], capsys)[1]
+    assert applied.startswith("STATUS: error") and "отверг как проверенную" in applied
+
+
+def test_explicit_rerun_of_a_checked_fix_problem_is_not_flaky(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Проблема разобрана проверенной правкой (она в коде) — её перезапуск не «код как в CI»
+    (ревью Codex)."""
+    from alla_skill_lib import rerun
+    from alla_skill_lib import workspace as ws
+
+    _checked_fix(nested_project, capsys)
+    subprocess.run(["git", "-C", str(nested_project), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "commit", "-qam", "fix"], check=True, capture_output=True)  # правка в коде
+    run_dir, run, order, _ = _next_launch(nested_project, capsys, monkeypatch)
+    entry = next(item for item in run["clusters"] if item["file_id"] == order)
+    plan = rerun.build_plan(ws.RunPaths(run_dir), run,
+                            [(entry, test) for test in rerun.failed_tests_of(run, entry)],
+                            attempts=3, max_tests=5)
+
+    assert {test.changed for test in plan.tests} == {rerun.FIX_IN_CODE}

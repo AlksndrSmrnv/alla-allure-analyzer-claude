@@ -455,6 +455,23 @@ def current_fact(entry: dict[str, Any]) -> FixFact | None:
 # ---------------------------------------------------------------------------
 
 
+def rejected_proposal(paths: ws.RunPaths, entry: dict[str, Any]) -> bool:
+    """Предложение проблемы — правка, которую инженер отверг как проверенную (``reject N
+    fix:<id>``), в этом разборе или в любом другом: её больше не предлагают и не применяют
+    (ревью Codex — в разборе, где факт записан, ``fix_auto`` нет)."""
+    if not entry.get("kb_dir") or not entry.get("signature") or not entry.get("log_digest"):
+        return False
+    try:
+        proposal = parse_proposal(paths.proposal(entry["file_id"]).read_text(encoding="utf-8"))
+    except OSError:
+        return False
+    if not proposal.is_fix or not proposal.file or proposal.line is None:
+        return False
+    wanted = fact_id(str(entry["signature"]), str(entry["log_digest"]),
+                     rerun.project_path(proposal.file), proposal.line, list(proposal.after))
+    return FixStore(Path(str(entry["kb_dir"]))).rejected(wanted)
+
+
 def fix_why(fact: FixFact) -> str:
     # Без даты: повторная проверка не должна переписывать уже применённое предложение (отметка
     # apply хранит его хэш).

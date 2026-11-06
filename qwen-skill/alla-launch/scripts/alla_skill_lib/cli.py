@@ -1232,6 +1232,13 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
                 # пока причина не подтверждена. Уже применённая остаётся — её можно откатить.
                 not_proposed[file_id] = REJECTED_NOT_PROPOSED
                 continue
+            if file_id not in fix_auto and fix_facts.rejected_proposal(paths, entry) and \
+                    applied_state(parse_proposal(ws.read_text(paths.proposal(file_id))),
+                                  project_root, _proposal_files(paths, file_id)) != "applied":
+                # Инженер отверг эту правку как проверенную (reject N fix:<id>) — та же правка
+                # не предлагается снова, в том числе в разборе, где её проверили (ревью Codex).
+                not_proposed[file_id] = REJECTED_FIX_NOT_PROPOSED
+                continue
             # Предложение по проверенной правке пишет скрипт — лимит работы модели оно не занимает
             # (ревью Grok: пять уже стоящих правок вытесняли предложение для новой ошибки).
             if file_id in fix_auto and not _has_text(paths.proposal(file_id)):
@@ -1356,6 +1363,9 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
                               kb_offer=kb_offer, learned=learned_note)
 
 
+REJECTED_FIX_NOT_PROPOSED = (
+    "эту правку пользователь отверг как проверенную (reject N fix:<id>) — она не предлагается"
+)
 REJECTED_NOT_PROPOSED = (
     "разбор опирался на запись базы знаний, которую пользователь отверг для этой проблемы, — "
     "правка снята, пока причина не подтверждена"
@@ -2412,6 +2422,12 @@ def _apply(
     rejected = _rejected_record(paths, run, entry)
     # Отказ раньше любого применения, и повторного (--repeat при состоянии unknown) тоже:
     # причина правки не подтверждена. Уже стоящую правку apply и так не пишет заново.
+    if fix_facts.rejected_proposal(paths, entry) \
+            and applied_state(proposal, project_root, files) != "applied":
+        return "error", (
+            f"Правку для проблемы №{int(file_id)} пользователь отверг как проверенную "
+            "(reject N fix:<id>) — её не применяй; если он назовёт настоящую причину — сохрани "
+            "её в базу знаний.")
     if rejected is not None and applied_state(proposal, project_root, files) != "applied":
         return "error", (
             f"Правка для проблемы №{int(file_id)} снята: разбор опирался на запись базы знаний "
