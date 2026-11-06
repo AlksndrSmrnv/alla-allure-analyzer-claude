@@ -658,8 +658,8 @@ def test_recheck_keeps_the_tests_checked_before(
     _run(["rerun", "--wait", "--run", str(run_dir)], capsys)
 
     [fact] = _facts(nested_project)
-    assert fact["tests"] == sorted([f"{ORDER}.createOrder", f"{ORDER}.earlier",
-                                    f"{ORDER}.updateOrder"])
+    # От новых к старым: следующее объединение вытеснит самые старые (ревью Grok).
+    assert fact["tests"] == [f"{ORDER}.createOrder", f"{ORDER}.updateOrder", f"{ORDER}.earlier"]
 
 
 def test_failed_proposal_write_keeps_the_analysis_owned_by_the_script(

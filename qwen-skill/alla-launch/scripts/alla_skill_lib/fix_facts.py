@@ -269,8 +269,10 @@ def record_checked(
         if known is not None:
             # Та же правка, проверенная заново на части тестов: прежнее покрытие не теряется
             # (ревью Grok). Новые важнее старых, не больше MAX_RECORD_TESTS.
+            # Порядок — от новых к старым, без сортировки: иначе следующее объединение уже не
+            # отличило бы новые от старых и вытесняло бы новые (ревью Grok).
             merged = list(dict.fromkeys([*names, *known.tests]))[:MAX_RECORD_TESTS]
-            fact = replace(fact, tests=sorted(merged))
+            fact = replace(fact, tests=merged)
         target = store.path_for(fact)
         previous = target.read_bytes() if target.is_file() else None
         if saved is not None:
