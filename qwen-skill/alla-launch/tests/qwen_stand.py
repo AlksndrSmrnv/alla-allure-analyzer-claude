@@ -2029,9 +2029,9 @@ def check_fix_remembered(ctx: Context) -> dict[str, Any]:
              for path in (ctx.project / "alla-kb" / "fixes").glob("*.json")]
     if len(facts) != 1:
         return bad(f"фактов в alla-kb/fixes: {len(facts)}, ждём 1")
-    # Слово модель выбирает сама («запомнена», «записана проверенная правка»).
+    # Слово модель выбирает сама («запомнена», «записала как проверенную», «fix:<id>»).
     told = any(word in str(result.get("result") or "").lower()
-               for result in ctx.trace.results for word in ("запомн", "проверенная правка"))
+               for result in ctx.trace.results for word in ("запомн", "проверенн", "fix:"))
     return ok(str(facts[0].get("file"))) if told else bad("пользователю не сказано, что правка запомнена")
 
 
