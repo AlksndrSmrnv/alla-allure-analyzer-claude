@@ -941,3 +941,27 @@ def test_rejected_fix_proposal_is_dropped_without_its_state_mark(
     _run(["next", str(run_dir)], capsys)
 
     assert not (run_dir / "proposals" / f"{order}.md").exists()
+
+
+def test_rejected_fix_proposal_is_dropped_after_a_hand_edit_of_the_analysis(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Разбор поправили руками, потом reject: правка руками остаётся, предложение скрипта —
+    нет (ревью Grok)."""
+    _checked_fix(nested_project, capsys)
+    source = nested_project / SOURCE
+    source.write_text(source.read_text(encoding="utf-8").replace("(201,", "(200,"),
+                      encoding="utf-8")
+    run_dir, _, order, login = _next_launch(nested_project, capsys, monkeypatch)
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    path = run_dir / "analyses" / f"{order}.md"
+    edited = path.read_text(encoding="utf-8").replace("ПРИЧИНА: тест —", "ПРИЧИНА: тест — (правка) ")
+    path.write_text(edited, encoding="utf-8")
+    [fact] = _facts(nested_project)
+    _run(["reject", order, f"fix:{fact['id']}", "--run", str(run_dir)], capsys)
+
+    _run(["next", str(run_dir)], capsys)
+
+    assert path.read_text(encoding="utf-8") == edited
+    assert not (run_dir / "proposals" / f"{order}.md").exists()

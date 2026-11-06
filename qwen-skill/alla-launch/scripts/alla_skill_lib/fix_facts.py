@@ -671,8 +671,6 @@ def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[
         ours = written.get(file_id, {})
         analysis_path, proposal_path = paths.analysis(file_id), paths.proposal(file_id)
         current = ws.read_text(analysis_path) if analysis_path.is_file() else ""
-        if current.strip() and not fix_auto_written(state, file_id, current, entry):
-            continue  # разбор после отказа от факта пишет модель
         proposal = ws.read_text(proposal_path) if proposal_path.is_file() else ""
         fact = current_fact(entry)
         # Своё предложение — по отметке или по тексту факта, и отвергнутого тоже: после reject
@@ -683,6 +681,15 @@ def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[
                         or (known is not None and proposal == proposal_text(known)))
         # Место правки — по текущему файлу: после apply или отката совет меняется (ревью Codex).
         text = current_text(paths, run, entry)
+        if current.strip() and not fix_auto_written(state, file_id, current, entry):
+            # Разбор чужой (модели или поправлен руками) — его не трогаем. Но если факт больше
+            # не действует, своё неприменённое предложение снимаем: иначе отвергнутая правка
+            # ушла бы в вопрос apply (ревью Grok).
+            if (fact is None or text is None) and proposal.strip() and own_proposal \
+                    and not paths.proposal_record(file_id).is_file():
+                proposal_path.unlink(missing_ok=True)
+                written.pop(file_id, None)
+            continue
         if fact is None or text is None:
             if current.strip():
                 analysis_path.unlink(missing_ok=True)
