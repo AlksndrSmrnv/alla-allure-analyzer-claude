@@ -89,7 +89,8 @@ class FixFact:
                 "date": self.date, "saved_at": self.saved_at}
 
     @classmethod
-    def from_json(cls, data: Any) -> FixFact | None:
+    def from_json(cls, data: Any, *, rejected: bool = False) -> FixFact | None:
+        """Факт из JSON; отвергнутый (``rejected``) — только с ``rejected=True``."""
         if not isinstance(data, dict):
             return None
         try:
@@ -106,7 +107,7 @@ class FixFact:
         except (KeyError, TypeError, ValueError):
             return None
         if not _ID_RE.match(fact.id) or not fact.tests or not fact.before or not fact.after \
-                or data.get(REJECTED):
+                or (data.get(REJECTED) and not rejected):
             return None
         return fact
 
@@ -147,6 +148,18 @@ class FixStore:
 
     def get(self, wanted: str) -> FixFact | None:
         return next((fact for fact in self.load() if fact.id == wanted), None)
+
+    def get_any(self, wanted: str) -> FixFact | None:
+        """Факт ``wanted`` и отвергнутый: чтобы узнать своё предложение и после ``reject``."""
+        for path in sorted(self.folder.glob("*.json")) if self.folder.is_dir() else []:
+            try:
+                fact = FixFact.from_json(json.loads(path.read_text(encoding="utf-8-sig")),
+                                         rejected=True)
+            except (OSError, ValueError):
+                continue
+            if fact is not None and fact.id == wanted:
+                return fact
+        return None
 
     def save(self, fact: FixFact) -> Path:
         self.folder.mkdir(parents=True, exist_ok=True)
@@ -662,8 +675,12 @@ def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[
             continue  # разбор после отказа от факта пишет модель
         proposal = ws.read_text(proposal_path) if proposal_path.is_file() else ""
         fact = current_fact(entry)
+        # Своё предложение — по отметке или по тексту факта, и отвергнутого тоже: после reject
+        # без отметки в state.json оно иначе осталось бы и прошло как правка модели (ревью Codex).
+        known = FixStore(Path(str(entry["kb_dir"]))).get_any(str(auto.get("id"))) \
+            if entry.get("kb_dir") else None
         own_proposal = (not proposal.strip() or digest(proposal) == ours.get("proposal")
-                        or (fact is not None and proposal == proposal_text(fact)))
+                        or (known is not None and proposal == proposal_text(known)))
         # Место правки — по текущему файлу: после apply или отката совет меняется (ревью Codex).
         text = current_text(paths, run, entry)
         if fact is None or text is None:

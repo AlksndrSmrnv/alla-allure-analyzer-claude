@@ -916,3 +916,28 @@ def test_lock_without_fcntl_does_not_fail(tmp_path: Path, monkeypatch: pytest.Mo
     with fix_facts.kb_write_lock(tmp_path):
         entered = True
     assert entered
+
+
+def test_rejected_fix_proposal_is_dropped_without_its_state_mark(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Отметка в state.json потерялась, факт отвергли: своё предложение всё равно снимается
+    (ревью Codex)."""
+    _checked_fix(nested_project, capsys)
+    source = nested_project / SOURCE
+    source.write_text(source.read_text(encoding="utf-8").replace("(201,", "(200,"),
+                      encoding="utf-8")
+    run_dir, _, order, login = _next_launch(nested_project, capsys, monkeypatch)
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    assert (run_dir / "proposals" / f"{order}.md").is_file()
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.pop(fix_facts.FIX_AUTO_STATE)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    [fact] = _facts(nested_project)
+    _run(["reject", order, f"fix:{fact['id']}", "--run", str(run_dir)], capsys)
+
+    _run(["next", str(run_dir)], capsys)
+
+    assert not (run_dir / "proposals" / f"{order}.md").exists()
