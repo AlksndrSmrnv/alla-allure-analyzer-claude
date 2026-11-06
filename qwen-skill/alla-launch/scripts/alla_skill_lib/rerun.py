@@ -311,12 +311,13 @@ FIX_IN_CODE = "проблему разобрала проверенная пра
 
 
 def _fix_active(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> bool:
-    """Проверенная правка (``fix_facts``) разбирает проблему сейчас, а не только в ``prepare``."""
+    """Проверенная правка (``fix_facts``) разбирает проблему сейчас (а не только в ``prepare``)
+    и стоит в коде."""
     if not entry.get("fix_auto"):
         return False
     from alla_skill_lib import fix_facts  # fix_facts сам зависит от rerun
 
-    return fix_facts.current_text(paths, run, entry) is not None
+    return fix_facts.fix_in_code(paths, run, entry)
 
 
 def _changed(

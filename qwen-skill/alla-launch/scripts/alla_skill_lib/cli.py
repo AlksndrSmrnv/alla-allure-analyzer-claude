@@ -1233,8 +1233,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
                 not_proposed[file_id] = REJECTED_NOT_PROPOSED
                 continue
             if file_id not in fix_auto and fix_facts.rejected_proposal(paths, entry) and \
-                    applied_state(parse_proposal(ws.read_text(paths.proposal(file_id))),
-                                  project_root, _proposal_files(paths, file_id)) != "applied":
+                    not _applied_now(paths, file_id, project_root):
                 # Инженер отверг эту правку как проверенную (reject N fix:<id>) — та же правка
                 # не предлагается снова, в том числе в разборе, где её проверили (ревью Codex).
                 not_proposed[file_id] = REJECTED_FIX_NOT_PROPOSED
@@ -1585,6 +1584,15 @@ def _relate_body(paths: ws.RunPaths, groups: int) -> str:
         reference_line(RELATED_FORMAT_REF, "   Формат с примером"),
         f"3. Выполни: {paths.next_command()}",
     ])
+
+
+def _applied_now(paths: ws.RunPaths, file_id: str, project_root: Path) -> bool:
+    """Предложение проблемы уже стоит в коде; исходник не прочитался — нет (ревью Grok)."""
+    try:
+        proposal = parse_proposal(ws.read_text(paths.proposal(file_id)))
+        return applied_state(proposal, project_root, _proposal_files(paths, file_id)) == "applied"
+    except OSError:
+        return False
 
 
 def _proposal_files(paths: ws.RunPaths, file_id: str) -> ProposalFiles:
@@ -2422,8 +2430,7 @@ def _apply(
     rejected = _rejected_record(paths, run, entry)
     # Отказ раньше любого применения, и повторного (--repeat при состоянии unknown) тоже:
     # причина правки не подтверждена. Уже стоящую правку apply и так не пишет заново.
-    if fix_facts.rejected_proposal(paths, entry) \
-            and applied_state(proposal, project_root, files) != "applied":
+    if fix_facts.rejected_proposal(paths, entry) and not _applied_now(paths, file_id, project_root):
         return "error", (
             f"Правку для проблемы №{int(file_id)} пользователь отверг как проверенную "
             "(reject N fix:<id>) — её не применяй; если он назовёт настоящую причину — сохрани "

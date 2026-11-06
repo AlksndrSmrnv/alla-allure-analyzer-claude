@@ -1013,3 +1013,70 @@ def test_explicit_rerun_of_a_checked_fix_problem_is_not_flaky(
                             [(entry, test) for test in rerun.failed_tests_of(run, entry)],
                             attempts=3, max_tests=5)
     assert {test.changed for test in plan.tests} == {""}
+
+
+def test_fact_keeps_the_line_where_apply_put_the_fix(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Предложение назвало строку в пределах окна, но не ту: в факт — строка из отметки apply
+    (ревью Grok)."""
+    from test_skill_flow import PROPOSAL
+
+    plain = "src/test/java/ru/company/orders/OrderTest.java"
+    skill_fake_maven.install(nested_project / "autotests", {
+        f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
+    _git(nested_project)
+    monkey = PROPOSAL.replace(f"{plain}:6", f"{plain}:20")
+    import test_skill_flow
+
+    original = test_skill_flow.PROPOSAL
+    test_skill_flow.PROPOSAL = monkey
+    try:
+        run_dir, order, out = _applied(nested_project, capsys, SOURCE)
+    finally:
+        test_skill_flow.PROPOSAL = original
+    command = out.splitlines()[-1].split("выполни: ", 1)[1].split(" — дальше", 1)[0]
+    done = _run(["rerun", *command.split(" rerun ", 1)[1].split()], capsys)[1]
+    _wait_done(run_dir, capsys) if done.startswith("STATUS: running") else done
+
+    assert [fact["line"] for fact in _facts(nested_project)] == [6]
+
+
+def test_pending_checked_fix_rerun_is_code_as_in_ci(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Правки в коде нет (pending) — перезапуск на коде CI, отметка возможна (ревью Grok)."""
+    from alla_skill_lib import rerun
+    from alla_skill_lib import workspace as ws
+
+    _checked_fix(nested_project, capsys)
+    _run(["revert", "1", "--run", str(sorted((nested_project / "alla-reports").glob("777-*"))[0])],
+         capsys)
+    run_dir, run, order, _ = _next_launch(nested_project, capsys, monkeypatch)
+    entry = next(item for item in run["clusters"] if item["file_id"] == order)
+    assert entry["fix_auto"]["state"] == "pending"
+    plan = rerun.build_plan(ws.RunPaths(run_dir), run,
+                            [(entry, test) for test in rerun.failed_tests_of(run, entry)],
+                            attempts=3, max_tests=5)
+
+    assert {test.changed for test in plan.tests} == {""}
+
+
+def test_unreadable_source_of_a_rejected_fix_does_not_break_next_or_apply(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir, order, _ = _checked_fix(nested_project, capsys)
+    [fact] = _facts(nested_project)
+    _run(["revert", order, "--run", str(run_dir)], capsys)
+    _run(["reject", order, f"fix:{fact['id']}", "--run", str(run_dir)], capsys)
+    source = nested_project / SOURCE
+    source.chmod(0)
+    try:
+        done = _run(["next", str(run_dir)], capsys)[1]
+        applied = _run(["apply", order, "--run", str(run_dir)], capsys)[1]
+    finally:
+        source.chmod(0o644)
+
+    assert done.startswith("STATUS: done"), done
+    assert applied.startswith("STATUS: error"), applied

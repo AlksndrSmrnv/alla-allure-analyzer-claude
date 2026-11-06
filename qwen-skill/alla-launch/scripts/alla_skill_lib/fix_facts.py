@@ -267,10 +267,14 @@ def record_checked(
             continue
         assert proposal.file is not None and proposal.line is not None
         file = rerun.project_path(proposal.file)
+        # Строка — где apply правку и поставил (отметка), а не названная в предложении: та
+        # могла быть в пределах окна и за концом файла, и «КОД:» разбора не прошёл бы проверку
+        # (ревью Grok).
+        line = int(record["line"]) if str(record.get("line") or "").isdigit() else proposal.line
         fact = FixFact(fact_id(str(entry["signature"]), str(entry["log_digest"]), file,
-                               proposal.line, list(proposal.after)),
+                               line, list(proposal.after)),
                        str(entry["signature"]), str(entry["log_digest"]), names, file,
-                       proposal.line, list(proposal.before), list(proposal.after),
+                       line, list(proposal.before), list(proposal.after),
                        run.get("launch_id"), today, datetime.now().isoformat(timespec="seconds"))
         store = FixStore(Path(entry["kb_dir"]))
         if store.rejected(fact.id):
@@ -356,7 +360,8 @@ def _record(paths: ws.RunPaths, file_id: str) -> dict[str, str] | None:
         data = json.loads(paths.proposal_record(file_id).read_text(encoding="utf-8"))
         if data.get(CLEAN_BEFORE) is not True:
             return None  # ручная правка до apply или git не ответил
-        return {key: str(data[key]) for key in ("proposal", "file", "sha_before", "sha_after")}
+        return {key: str(data[key])
+                for key in ("proposal", "file", "line", "sha_before", "sha_after")}
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
@@ -625,6 +630,16 @@ def current_text(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any])
     if check_entry_analysis(text, entry, Path(run["project_root"]), paths)[1]:
         return None
     return text
+
+
+def fix_in_code(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> bool:
+    """Проверенная правка разбирает проблему сейчас и стоит в коде (``applied``): тогда
+    перезапуск идёт не на коде CI. Правки в файле нет (``pending``) или он не прочитался —
+    код как в CI, перезапуск — обычный (ревью Grok)."""
+    fact = current_fact(entry)
+    if fact is None or current_text(paths, run, entry) is None:
+        return False
+    return location_state(fact.proposal(), Path(run["project_root"])) == "applied"
 
 
 def _engineer_said(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> bool:
