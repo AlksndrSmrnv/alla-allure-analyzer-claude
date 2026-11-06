@@ -890,3 +890,20 @@ def test_empty_ci_message_does_not_unmark() -> None:
     assert flaky.remember_plan(result, with_text, marks).unmark == [item]
     assert flaky.remember_plan(result, empty, marks).unmark == []
     assert flaky.remember_plan(result, variant_empty, marks).unmark == []
+
+
+def test_lock_without_fcntl_does_not_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows (нет fcntl): reject N fix:<id> не падает на блокировке (ревью Codex)."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_fcntl(name: str, *args: object, **kwargs: object) -> object:
+        if name == "fcntl":
+            raise ImportError("нет fcntl")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", no_fcntl)
+    with fix_facts.kb_write_lock(tmp_path):
+        entered = True
+    assert entered

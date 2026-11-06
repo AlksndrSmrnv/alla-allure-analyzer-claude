@@ -290,7 +290,11 @@ def kb_write_lock(project_root: Path) -> Iterator[None]:
     блокировкой перезапуска (``rerun.project_lock``), а не в ``--reports-dir``: разборы одного
     проекта с разными папками отчётов пишут одну базу знаний (ревью Codex). Не вкладывается сама
     в себя (``flock`` на втором дескрипторе ждал бы вечно)."""
-    import fcntl
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover — Windows: перезапуска (и записи итогов) там нет,
+        yield            # а reject N fix:<id> должен работать (ревью Codex), как rerun.py
+        return
 
     lock = rerun.project_lock(project_root).with_name(".kb-write.lock")
     with open(lock, "a+", encoding="utf-8") as handle:
