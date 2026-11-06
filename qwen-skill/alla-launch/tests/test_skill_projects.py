@@ -45,6 +45,7 @@ def _settings(raw: str) -> Settings:
     (MODULES, None, 99, ProjectChoice(99)),
     (MODULES, "orders", 7, ProjectChoice(7, "orders")),
     ("orders=5,smoke=5", None, 5, ProjectChoice(5)),  # номер у двух модулей — модуль не назван
+    ("orders=5,smoke=5", None, None, ProjectChoice(5)),  # один проект на всех — не спрашиваем
 ])
 def test_project_choice(raw: str, module: str | None, project: int | None,
                         expected: ProjectChoice) -> None:

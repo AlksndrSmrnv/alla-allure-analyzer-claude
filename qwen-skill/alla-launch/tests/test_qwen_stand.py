@@ -1202,6 +1202,7 @@ def _skill_call(arguments: str) -> ToolCall:
 @pytest.mark.parametrize(("first", "second", "passed"), [
     (["prepare 777"], ["prepare 777 --module orders"], True),
     (["prepare 777", "prepare 777 --module orders"], [], False),  # модуль угадан
+    (["prepare 777", "prepare 777 --project 5"], ["prepare 777 --module orders"], False),
     (["prepare 777"], ["prepare 777 --module payments"], False),
     ([], ["prepare 777 --module orders"], False),
 ])

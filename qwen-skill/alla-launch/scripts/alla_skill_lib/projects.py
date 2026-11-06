@@ -45,8 +45,8 @@ def choose_project(
     ``project`` — он (модуль — названный или единственный модуль с этим номером в настройках);
     ``module`` — проект этого модуля (точное имя, иначе единственный модуль с таким последним
     сегментом пути: «orders» для ``services/orders``). Без них: проектов нет — без проекта,
-    один — он, несколько — ``ProjectNotChosen``. Один номер без модуля (``ALLURE_PROJECT_ID=5``)
-    подходит любому модулю.
+    один номер (у одного или у всех модулей) — он, разные — ``ProjectNotChosen``. Один номер
+    без модуля (``ALLURE_PROJECT_ID=5``) подходит любому модулю.
     """
     projects = settings.projects
     named = _normalize(module) if module is not None else None
@@ -63,8 +63,9 @@ def choose_project(
         return ProjectChoice(found.id, found.module)
     if not projects:
         return ProjectChoice(None)
-    if len(projects) == 1:
-        return ProjectChoice(projects[0].id, projects[0].module or None)
+    if len({item.id for item in projects}) == 1:
+        # Все модули в одном проекте: ответ пользователя запроса не изменит.
+        return ProjectChoice(projects[0].id, (projects[0].module or None) if len(projects) == 1 else None)
     raise ProjectNotChosen(projects)
 
 

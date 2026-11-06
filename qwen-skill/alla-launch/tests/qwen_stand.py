@@ -1229,7 +1229,8 @@ def check_module_asked(ctx: Context) -> dict[str, Any]:
              if re.search(r"\bprepare\b", command_of(call))]
     if not first:
         return bad("в первой реплике prepare не вызывался")
-    guessed = next((command for command in first if "--module" in command), None)
+    guessed = next((command for command in first
+                    if "--module" in command or "--project" in command), None)
     if guessed is not None:
         return bad(f"модуль выбран до ответа пользователя: {guessed}")
     second = [command_of(call) for call in rules.skill_commands(turns[1])
