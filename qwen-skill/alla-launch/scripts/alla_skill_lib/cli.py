@@ -1245,7 +1245,15 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
                     f"лимит — не больше {MAX_PROPOSALS} предложений правок на один разбор"
                 )
                 continue
-            outcome = _proposal_step(paths, state, entry, position, total, project_root)
+            try:
+                outcome = _proposal_step(paths, state, entry, position, total, project_root)
+            except OSError:
+                if file_id not in fix_auto:
+                    raise
+                # Файл проверенной правки на миг не прочитался: разбор остаётся (fix_facts),
+                # отчёт собирается, предложение — со следующим next (ревью Grok).
+                not_proposed[file_id] = FIX_UNREADABLE
+                continue
             if isinstance(outcome, tuple):
                 return outcome
             if outcome is None:
@@ -1352,6 +1360,7 @@ REJECTED_NOT_PROPOSED = (
     "разбор опирался на запись базы знаний, которую пользователь отверг для этой проблемы, — "
     "правка снята, пока причина не подтверждена"
 )
+FIX_UNREADABLE = "файл проверенной правки не прочитался — предложение покажет следующий next"
 FIX_NOT_WRITTEN = (
     "предложение проверенной правки не удалось записать — его запишет следующий next"
 )

@@ -869,10 +869,15 @@ def test_unreadable_fix_file_keeps_the_script_analysis(
     run_dir, _, order, login = _next_launch(nested_project, capsys, monkeypatch)
     _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
     monkeypatch.setattr(fix_facts, "location_state", lambda *args: "unreadable")
+    # Файл правки и правда не читается: проверка предложения не роняет next (ревью Grok).
+    source = nested_project / SOURCE
+    source.chmod(0)
+    try:
+        out = _run(["next", str(run_dir)], capsys)[1]
+    finally:
+        source.chmod(0o644)
 
-    out = _run(["next", str(run_dir)], capsys)[1]
-
-    assert out.startswith("STATUS: done")
+    assert out.startswith("STATUS: done"), out
     assert (run_dir / "analyses" / f"{order}.md").is_file()
 
 
