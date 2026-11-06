@@ -57,6 +57,7 @@ MAX_AGE_DAYS = 14
 FIX_CHANGED = "правка агента применена"  # ``rerun._changed``: тест шёл на коде с правкой агента
 # Ключ ``state.json``: file_id → хэши разбора и предложения, которые записал скрипт по факту.
 FIX_AUTO_STATE = "fix_auto"
+REJECTED = "rejected"  # поле файла факта: инженер отверг (``reject N fix:<id>``), дата
 _ID_RE = re.compile(r"^[0-9a-f]{12}$")
 _SLUG_RE = re.compile(r"[^A-Za-z0-9]+")
 
@@ -104,7 +105,8 @@ class FixFact:
             )
         except (KeyError, TypeError, ValueError):
             return None
-        if not _ID_RE.match(fact.id) or not fact.tests or not fact.before or not fact.after:
+        if not _ID_RE.match(fact.id) or not fact.tests or not fact.before or not fact.after \
+                or data.get(REJECTED):
             return None
         return fact
 
@@ -156,17 +158,33 @@ class FixStore:
                                          sort_keys=True) + "\n")
         return path
 
-    def forget(self, wanted: str) -> list[Path]:
+    def forget(self, wanted: str, today: str = "") -> list[Path]:
+        """Отвергнуть факт: файл остаётся с полем ``rejected`` (дата). Удаление вернул бы
+        параллельный итог перезапуска той же правки; отвергнутый он не перезапишет (ревью
+        Grok). Вернуть факт — удалить файл руками."""
         removed: list[Path] = []
         for path in sorted(self.folder.glob("*.json")) if self.folder.is_dir() else []:
             try:
                 data = json.loads(path.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
                 continue
-            if isinstance(data, dict) and data.get("id") == wanted:
-                path.unlink()
+            if isinstance(data, dict) and data.get("id") == wanted and not data.get(REJECTED):
+                ws.write_atomic(path, json.dumps({**data, REJECTED: today or date.today().isoformat()},
+                                                 ensure_ascii=False, indent=2, sort_keys=True)
+                                + "\n")
                 removed.append(path)
         return removed
+
+    def rejected(self, wanted: str) -> bool:
+        """Факт ``wanted`` инженер отверг (``reject N fix:<id>``)."""
+        for path in sorted(self.folder.glob("*.json")) if self.folder.is_dir() else []:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("id") == wanted and data.get(REJECTED):
+                return True
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +260,8 @@ def record_checked(
                        proposal.line, list(proposal.before), list(proposal.after),
                        run.get("launch_id"), today, datetime.now().isoformat(timespec="seconds"))
         store = FixStore(Path(entry["kb_dir"]))
+        if store.rejected(fact.id):
+            continue  # инженер отверг эту правку: проверка заново её не возвращает
         # Чтение, объединение, запись и откат — под блокировкой проекта ``kb_write_lock``,
         # которую держит вызывающий (``learn``): итоги двух разборов иначе затирали бы тесты
         # и откат друг друга (ревью Codex, Grok).
@@ -600,6 +620,10 @@ def fix_auto_written(state: Mapping[str, Any], file_id: str, text: str,
     return bool(auto) and text.startswith(f"{SCRIPT_START}{auto.get('id')} ")
 
 
+class SyncError(OSError):
+    """Разбор по проверенной правке не записался: модели проблему не отдаём (``next`` — error)."""
+
+
 def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[str]:
     """Разборы и предложения по фактам проверенных правок: записать или снять (``next``).
 
@@ -645,8 +669,11 @@ def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[
             if current != text:
                 analysis_path.parent.mkdir(parents=True, exist_ok=True)
                 ws.write_atomic(analysis_path, text)
-        except OSError:
-            continue  # разбора нет — проблему разберёт модель; следующий next попробует снова
+        except OSError as exc:
+            # Отдать проблему модели нельзя: её разбор стал бы «чужим», а «верны все» сохранил
+            # бы его записью базы знаний вместо проверенной правки (ревью Grok).
+            raise SyncError(f"разбор проблемы {int(file_id)} по проверенной правке не "
+                            f"записан: {exc}") from exc
         written[file_id] = dict(ours)
         active.add(file_id)  # разбор — скрипта, даже если предложение ниже не записалось
         if own_proposal and not paths.proposal_record(file_id).is_file():

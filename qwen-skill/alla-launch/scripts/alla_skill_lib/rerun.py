@@ -182,7 +182,7 @@ def build_plan(
     # Параметры одного метода в одной проблеме — один запуск, но с ошибками CI всех вариантов;
     # тот же метод в другой проблеме — свой тест плана (итог нужен каждой проблеме).
     seen: dict[tuple[str, str, str], PlannedTest] = {}
-    dirty: dict[PurePath, bool] = {}  # git status исходника — один раз на файл
+    dirty: dict[PurePath, str] = {}  # git status исходника — один раз на файл
     for entry, test in picks:
         file_id = entry["file_id"]
         name = str(test.get("full_name") or test.get("name") or test.get("test_result_id"))
@@ -294,16 +294,24 @@ def maven_tool(project_root: Path, reactor: PurePath) -> list[str] | None:
     return [mvn] if mvn else None
 
 
+GIT_UNKNOWN = "git не ответил, совпадает ли код теста с CI"
+
+
 def _changed(
     paths: ws.RunPaths, project_root: Path, file_id: str, source: PurePath,
-    dirty: dict[PurePath, bool],
+    dirty: dict[PurePath, str],
 ) -> str:
-    """Код теста не тот, что в CI: прошедший тест тогда — проверка правки, а не нестабильность."""
+    """Код теста не тот, что в CI: прошедший тест тогда — проверка правки, а не нестабильность.
+
+    git не ответил (таймаут, dubious ownership) — тоже не «код как в CI»: иначе прошедший тест
+    без вопроса получил бы отметку «нестабильный» (ревью Grok). Проект не в git — как раньше,
+    сверять не с чем.
+    """
     if paths.proposal_record(file_id).is_file():
         return "правка агента применена"
     if source not in dirty:
-        dirty[source] = _git_dirty(project_root, source)
-    return "код теста изменён" if dirty[source] else ""
+        dirty[source] = _git_status(project_root, source)
+    return {"dirty": "код теста изменён", "unknown": GIT_UNKNOWN}.get(dirty[source], "")
 
 
 def fix_digest(paths: ws.RunPaths, project_root: Path, file_id: str) -> str:
@@ -379,15 +387,24 @@ def git_clean(project_root: Path, source: PurePath) -> bool:
 
 
 def _git_dirty(project_root: Path, source: PurePath) -> bool:
+    return _git_status(project_root, source) == "dirty"
+
+
+def _git_status(project_root: Path, source: PurePath) -> str:
+    """``clean`` | ``dirty`` | ``none`` (проект не в git) | ``unknown`` (git не ответил)."""
     try:
         result = subprocess.run(
             ["git", "-C", str(project_root), "status", "--porcelain", "--", source.as_posix()],
             capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
+    except FileNotFoundError:
+        return "none"  # git не установлен — сверять не с чем
     except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0 and bool(result.stdout.strip())
+        return "unknown"
+    if result.returncode != 0:
+        return "none" if "not a git repository" in result.stderr else "unknown"
+    return "dirty" if result.stdout.strip() else "clean"
 
 
 def surefire_filter(tests: Iterable[PlannedTest]) -> str:

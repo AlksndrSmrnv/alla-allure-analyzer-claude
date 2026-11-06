@@ -1231,7 +1231,8 @@ def test_plan_limit_is_checked_before_git_status(
     run_dir, run, _ = _prepare(nested_project, capsys)
     entry = next(item for item in run["clusters"] if str(int(item["file_id"])) == _problem_of(run, 101))
     calls: list[str] = []
-    monkeypatch.setattr(rerun, "_git_dirty", lambda root, source: calls.append(str(source)) or False)
+    monkeypatch.setattr(rerun, "_git_status",
+                        lambda root, source: calls.append(str(source)) or "clean")
 
     plan = rerun.build_plan(rerun.ws.RunPaths(run_dir), run,
                             [(entry, test) for test in rerun.failed_tests_of(run, entry)],
@@ -1241,6 +1242,24 @@ def test_plan_limit_is_checked_before_git_status(
     assert [item.reason for item in plan.skipped] == [
         "сверх лимита ALLURE_RERUN_MAX_TESTS (1 за раз)"]
     assert len(calls) == 1  # сверх лимита git status не вызывается
+
+
+def test_unanswered_git_is_not_code_as_in_ci(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """git не ответил — прошедший тест не «код как в CI»: отметки без вопроса нет (ревью Grok)."""
+    skill_fake_maven.install(nested_project / "autotests", {})
+    run_dir, run, _ = _prepare(nested_project, capsys)
+    entry = next(item for item in run["clusters"] if str(int(item["file_id"])) == _problem_of(run, 101))
+    assert rerun._git_status(nested_project, Path("x.java")) == "none"  # не репозиторий
+    monkeypatch.setattr(rerun, "_git_status", lambda root, source: "unknown")
+
+    plan = rerun.build_plan(rerun.ws.RunPaths(run_dir), run,
+                            [(entry, test) for test in rerun.failed_tests_of(run, entry)],
+                            attempts=3, max_tests=5)
+
+    assert {test.changed for test in plan.tests} == {rerun.GIT_UNKNOWN}
 
 
 def test_variants_of_a_method_keep_every_ci_error_and_each_problem_its_own_test(

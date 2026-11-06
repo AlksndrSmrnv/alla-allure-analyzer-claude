@@ -695,7 +695,7 @@ def _forget_fix(
     label = kb_label(Path(run["project_root"]), kb_dir)
     return "saved", "\n".join([
         f"Проверенная правка {FIX_PREFIX}{wanted} больше не будет разбирать эту ошибку.",
-        *(f"Удалён файл: {path}" for path in removed),
+        *(f"Отмечен отвергнутым: {path}" for path in removed),
         f"Напомни пользователю закоммитить папку {label}/.",
         f"Выполни {paths.next_command()} и дальше как обычно: попросит разобрать проблему "
         f"{int(entry['file_id'])} — разбери её, как в цикле; ответит done — выведи пользователю "

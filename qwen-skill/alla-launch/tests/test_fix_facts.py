@@ -144,7 +144,9 @@ def test_rejected_fix_goes_back_to_the_agent(
     saved = _run(["reject", order, f"fix:{fact['id']}", "--run", str(run_dir)], capsys)[1]
 
     assert saved.startswith(f"STATUS: saved\nПроверенная правка fix:{fact['id']} больше не будет")
-    assert _facts(nested_project) == []
+    # Файл остаётся с пометкой «отвергнута»: параллельный итог перезапуска его не вернёт.
+    [rejected] = _facts(nested_project)
+    assert rejected["rejected"] and fix_facts.FixStore(nested_project / "alla-kb").load() == []
     again = _run(["next", str(run_dir)], capsys)[1]
     assert again.startswith("STATUS: analyze") and f"clusters/{order}.md" in again
     assert not (run_dir / "analyses" / f"{order}.md").exists()
@@ -777,3 +779,43 @@ def test_script_analysis_is_recognised_without_its_state_mark(
     assert done.startswith("STATUS: done")
     kb_question = next((line for line in done.splitlines() if "Какие разборы верны" in line), "")
     assert f"Проблемы: {int(login)}." in kb_question
+
+
+def test_rejected_fix_is_not_written_back_by_a_rerun(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Итог перезапуска той же правки после reject её не возвращает (ревью Grok)."""
+    run_dir, order, _ = _checked_fix(nested_project, capsys)
+    [fact] = _facts(nested_project)
+    store = fix_facts.FixStore(nested_project / "alla-kb")
+    assert store.forget(fact["id"])
+    (run_dir / "rerun" / "learned.json").unlink()
+
+    shown = _run(["rerun", "--wait", "--run", str(run_dir)], capsys)[1]
+
+    assert "Запомнена проверенная правка" not in shown and store.load() == []
+
+
+def test_failed_analysis_write_is_an_error_not_a_task_for_the_model(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Разбор по факту не записался — next отвечает error, а не просит модель разобрать (ревью
+    Grok)."""
+    from alla_skill_lib import workspace as ws
+
+    _checked_fix(nested_project, capsys)
+    run_dir, _, order, _ = _next_launch(nested_project, capsys, monkeypatch)
+    original = ws.write_atomic
+
+    def broken(path: Path, text: str) -> None:
+        if path.parent.name == "analyses":
+            raise OSError("диск заполнен")
+        original(path, text)
+
+    (run_dir / "analyses" / f"{order}.md").unlink()  # разбор нужно записать заново
+    monkeypatch.setattr(ws, "write_atomic", broken)
+    out = _run(["next", str(run_dir)], capsys)[1]
+
+    assert out.startswith("STATUS: error") and "по проверенной правке не записан" in out
+    assert not (run_dir / "analyses" / f"{order}.md").exists()

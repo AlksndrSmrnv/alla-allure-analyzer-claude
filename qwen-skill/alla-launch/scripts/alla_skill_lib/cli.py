@@ -1156,7 +1156,11 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     before = state.get(KB_AUTO_STATE), state.get(fix_facts.FIX_AUTO_STATE)
     known_auto, auto_notes = sync_known_auto(paths, run, state)
     # Проверенные правки (fix_facts) — так же: разбор и предложение пишет скрипт.
-    fix_auto = fix_facts.sync(paths, run, state)
+    try:
+        fix_auto = fix_facts.sync(paths, run, state)
+    except fix_facts.SyncError as exc:
+        return "error", (f"{exc}. Скажи это пользователю: повторить можно той же командой "
+                         f"{paths.next_command()}, когда место на диске или права будут в порядке.")
     if (state.get(KB_AUTO_STATE), state.get(fix_facts.FIX_AUTO_STATE)) != before:
         ws.write_json(paths.state_json, state)
     scripted = known_auto | fix_auto
