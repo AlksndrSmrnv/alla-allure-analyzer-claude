@@ -161,3 +161,21 @@ def test_wrong_project_setting_stops_prepare(project: Path, monkeypatch: pytest.
 
     code, out = _run(["prepare", "777", "--project-root", str(project)], capsys)
     assert code == 2 and out.startswith("STATUS: error") and "ALLURE_PROJECT_ID" in out
+
+
+def test_module_commands_keep_the_project_and_reports_folders(
+    project: Path, testops: FakeTestOps, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys,
+) -> None:
+    monkeypatch.setenv("ALLURE_PROJECT_ID", MODULES)
+    reports = tmp_path / "elsewhere"
+
+    code, out = _run(["prepare", "777", "--project-root", str(project), "--reports-dir",
+                      str(reports)], capsys)
+
+    assert code == 1, out
+    line = next(item for item in out.splitlines() if "--module orders" in item)
+    assert f"--project-root {project}" in line and f"--reports-dir {reports}" in line
+    command = line.split("): ", 1)[1].split("alla_skill.py ", 1)[1].split()
+    code, out = _run(command, capsys)
+    assert code == 0, out
+    assert str(reports) in out and _run_json(out)["project_root"] == str(project)

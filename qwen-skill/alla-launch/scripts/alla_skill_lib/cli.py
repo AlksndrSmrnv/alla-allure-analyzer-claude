@@ -687,7 +687,8 @@ def cmd_prepare(
                 settings = _prepare_settings()
                 if isinstance(settings, int):
                     return 2
-                choice = _prepare_project(settings, launch_id, module, project, fresh=fresh)
+                choice = _prepare_project(settings, launch_id, module, project, fresh=fresh,
+                                          paths=(project_root, reports_dir))
                 if isinstance(choice, int):
                     return choice
                 files = jobs.start(slot, ["prepare", str(launch_id), "--fresh",
@@ -707,7 +708,8 @@ def cmd_prepare(
     settings = _prepare_settings()
     if isinstance(settings, int):
         return settings
-    choice = _prepare_project(settings, launch_id, module, project, fresh=fresh)
+    choice = _prepare_project(settings, launch_id, module, project, fresh=fresh,
+                              paths=(project_root, reports_dir))
     if isinstance(choice, int):
         return choice
 
@@ -777,13 +779,24 @@ def _prepare_settings() -> Settings | int:
 
 def _prepare_project(
     settings: Settings, launch_id: int, module: str | None, project: int | None, *, fresh: bool,
+    paths: tuple[Path, Path] | None = None,
 ) -> ProjectChoice | int:
-    """Проект прогона; не выбран — ответ ``error`` с командами по модулям напечатан, код."""
+    """Проект прогона; не выбран — ответ ``error`` с командами по модулям напечатан, код.
+
+    ``paths`` — корень проекта и папка отчётов команды: в команды модулей они идут, если не
+    совпадают с умолчаниями (иначе разбор после ответа ушёл бы в другую папку — ревью Codex).
+    """
     try:
         return choose_project(settings, module=module, project=project)
     except ProjectNotChosen as exc:
         modules = [item for item in exc.projects if item.module]
-        extra = ("--fresh",) if fresh else ()
+        extra = ["--fresh"] if fresh else []
+        if paths is not None:
+            root, reports = paths
+            if root != ws.detect_project_root():
+                extra += ["--project-root", str(root)]
+            if reports != root / ws.REPORTS_DIRNAME:
+                extra += ["--reports-dir", str(reports)]
         print("STATUS: error")
         if exc.unknown is not None:
             print(f"Модуля «{exc.unknown}» нет в ALLURE_PROJECT_ID: там модули "
