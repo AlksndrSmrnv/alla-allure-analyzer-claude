@@ -216,9 +216,10 @@ def build_plan(
                 file_id, name, f"сверх лимита ALLURE_RERUN_MAX_TESTS ({max_tests} за раз)"))
             continue
         changed = _changed(paths, project_root, file_id, jvm.source, dirty)
-        if not changed and entry.get("fix_auto"):
-            # Проблему разобрала проверенная правка: код с ней — не код CI, прошедший тест —
-            # проверка правки, а не нестабильность (ревью Codex).
+        if not changed and _fix_active(paths, run, entry):
+            # Проблему разбирает проверенная правка: код с ней — не код CI, прошедший тест —
+            # проверка правки, а не нестабильность (ревью Codex). Только пока факт действует:
+            # после reject или слов инженера флаг в run.json остаётся, а правки нет (ревью Grok).
             changed = FIX_IN_CODE
         if auto and changed:
             plan.skipped.append(SkippedTest(
@@ -307,6 +308,15 @@ def maven_tool(project_root: Path, reactor: PurePath) -> list[str] | None:
 
 GIT_UNKNOWN = "git не ответил, совпадает ли код теста с CI"
 FIX_IN_CODE = "проблему разобрала проверенная правка — код может отличаться от CI"
+
+
+def _fix_active(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any]) -> bool:
+    """Проверенная правка (``fix_facts``) разбирает проблему сейчас, а не только в ``prepare``."""
+    if not entry.get("fix_auto"):
+        return False
+    from alla_skill_lib import fix_facts  # fix_facts сам зависит от rerun
+
+    return fix_facts.current_text(paths, run, entry) is not None
 
 
 def _changed(

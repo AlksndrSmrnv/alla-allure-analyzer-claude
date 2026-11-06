@@ -1004,3 +1004,12 @@ def test_explicit_rerun_of_a_checked_fix_problem_is_not_flaky(
                             attempts=3, max_tests=5)
 
     assert {test.changed for test in plan.tests} == {rerun.FIX_IN_CODE}
+
+    # Факт отвергли — флаг fix_auto в run.json остался, но правки нет: обычный перезапуск
+    # (ревью Grok).
+    [fact] = _facts(nested_project)
+    _run(["reject", order, f"fix:{fact['id']}", "--run", str(run_dir)], capsys)
+    plan = rerun.build_plan(ws.RunPaths(run_dir), run,
+                            [(entry, test) for test in rerun.failed_tests_of(run, entry)],
+                            attempts=3, max_tests=5)
+    assert {test.changed for test in plan.tests} == {""}
