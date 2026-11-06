@@ -71,8 +71,9 @@ def test_checked_fix_is_remembered_and_the_next_run_needs_no_agent(
     run_dir, order, done = _checked_fix(nested_project, capsys)
 
     told = done.split("===КОНЕЦ===", 1)[1]
-    assert (f"Запомнена проверенная правка проблемы {int(order)} ({SOURCE}:6): в следующих "
-            "прогонах эта же ошибка этих тестов разберётся без агента.") in told
+    assert f"Запомнена проверенная правка проблемы {int(order)} ({SOURCE}:6, fix:" in told
+    assert "в следующих прогонах эта же ошибка этих тестов разберётся без агента." in told
+    assert f"reject {order} fix:" in told and "удаление файла её не отвергает" in told
     assert "напомни закоммитить папку базы знаний alla-kb" in told
     [fact] = _facts(nested_project)
     assert fact["file"] == SOURCE and fact["line"] == 6
@@ -890,6 +891,9 @@ def test_empty_ci_message_does_not_unmark() -> None:
     assert flaky.remember_plan(result, with_text, marks).unmark == [item]
     assert flaky.remember_plan(result, empty, marks).unmark == []
     assert flaky.remember_plan(result, variant_empty, marks).unmark == []
+    # План склеил вариант без текста ошибки — его пустое сообщение помечено флагом.
+    missing = {"tests": [{"test_result_id": 1, "message": "boom", "ci_message_missing": True}]}
+    assert flaky.remember_plan(result, missing, marks).unmark == []
 
 
 def test_lock_without_fcntl_does_not_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

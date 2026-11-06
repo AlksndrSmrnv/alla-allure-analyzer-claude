@@ -278,8 +278,10 @@ def record_checked(
         store.save(fact)
         folders.add(kb_label(project_root, Path(entry["kb_dir"])))
         lines.append(f"Запомнена проверенная правка проблемы {int(file_id)} ({fact.file}:"
-                     f"{fact.line}): в следующих прогонах эта же ошибка этих тестов разберётся "
-                     "без агента.")
+                     f"{fact.line}, fix:{fact.id}): в следующих прогонах эта же ошибка этих тестов "
+                     "разберётся без агента. Пользователь скажет, что правка не та, — "
+                     + ws.skill_command("reject", file_id, f"fix:{fact.id}", "--run", str(paths.root))
+                     + " (удаление файла её не отвергает: та же правка запишется снова).")
     return lines, sorted(folders)
 
 

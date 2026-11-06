@@ -29,7 +29,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePath
 from typing import Any
 
@@ -94,6 +94,9 @@ class PlannedTest:
     # Исходник теста чист в git на момент плана (нужно, когда правка в другом файле: тест мог
     # пройти и благодаря ручной правке теста — ``fix_facts``).
     source_clean: bool = False
+    # У какого-то варианта метода в CI не было текста ошибки: «та же ошибка» для него не
+    # доказуема, отметку «нестабильный» по такому итогу не снимают (ревью Grok).
+    ci_message_missing: bool = False
 
 
 @dataclass(frozen=True)
@@ -196,8 +199,12 @@ def build_plan(
             merged = seen[key]
             merged.other_ids.append(int(test["test_result_id"]))
             message = str(test.get("status_message") or "")[:MESSAGE_KEEP_CHARS]
-            if message.strip() and not any(same_error(message, known)
-                                           for known in ci_messages(merged)):
+            if not message.strip() and not merged.ci_message_missing:
+                # PlannedTest неизменяемый: заменяем его и в плане, и в seen.
+                updated = replace(merged, ci_message_missing=True)
+                plan.tests[plan.tests.index(merged)] = updated
+                seen[key] = merged = updated
+            elif message.strip() and not any(same_error(message, known) for known in ci_messages(merged)):
                 merged.other_messages.append(message)
             for code in (signals or {}).get(int(test["test_result_id"]), []):
                 if code not in merged.signals:  # признак CI любого варианта — признак метода

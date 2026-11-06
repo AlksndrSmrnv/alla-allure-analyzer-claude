@@ -222,6 +222,7 @@ def remember_plan(
     # пустое сообщение совпадает с любой локальной ошибкой (ревью Grok).
     known_error = {int(test["test_result_id"]): bool(str(test.get("message") or "").strip())
                    and all(str(other).strip() for other in test.get("other_messages") or [])
+                   and not test.get("ci_message_missing")
                    for test in plan["tests"]}
     attempts = int(result.get("attempts") or 0)
     mark, unmark = [], []
