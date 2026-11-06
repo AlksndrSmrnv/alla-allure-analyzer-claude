@@ -705,7 +705,10 @@ def sync(paths: ws.RunPaths, run: dict[str, Any], state: dict[str, Any]) -> set[
             if (fact is None or text is None) and proposal.strip() and own_proposal \
                     and not paths.proposal_record(file_id).is_file():
                 proposal_path.unlink(missing_ok=True)
-                written.pop(file_id, None)
+                # Отметку разбора оставляем: без неё правку руками узнали бы по началу текста
+                # как шаблон скрипта и стёрли следующим next (ревью Grok).
+                if file_id in written:
+                    written[file_id].pop("proposal", None)
             continue
         if fact is None or text is None:
             if current.strip():

@@ -962,6 +962,7 @@ def test_rejected_fix_proposal_is_dropped_after_a_hand_edit_of_the_analysis(
     _run(["reject", order, f"fix:{fact['id']}", "--run", str(run_dir)], capsys)
 
     _run(["next", str(run_dir)], capsys)
+    _run(["next", str(run_dir)], capsys)  # и второй next правку руками не стирает (ревью Grok)
 
     assert path.read_text(encoding="utf-8") == edited
     assert not (run_dir / "proposals" / f"{order}.md").exists()
