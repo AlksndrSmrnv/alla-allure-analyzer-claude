@@ -1040,6 +1040,12 @@ def test_fact_keeps_the_line_where_apply_put_the_fix(
     _wait_done(run_dir, capsys) if done.startswith("STATUS: running") else done
 
     assert [fact["line"] for fact in _facts(nested_project)] == [6]
+    # Отказ узнаёт эту правку и по предложению со строкой 20 (ревью Codex).
+    [fact] = _facts(nested_project)
+    _run(["revert", order, "--run", str(run_dir)], capsys)
+    _run(["reject", order, f"fix:{fact['id']}", "--run", str(run_dir)], capsys)
+    applied = _run(["apply", order, "--run", str(run_dir)], capsys)[1]
+    assert applied.startswith("STATUS: error") and "отверг как проверенную" in applied
 
 
 def test_pending_checked_fix_rerun_is_code_as_in_ci(

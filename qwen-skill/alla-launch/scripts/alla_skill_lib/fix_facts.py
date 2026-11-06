@@ -472,9 +472,21 @@ def rejected_proposal(paths: ws.RunPaths, entry: dict[str, Any]) -> bool:
         return False
     if not proposal.is_fix or not proposal.file or proposal.line is None:
         return False
-    wanted = fact_id(str(entry["signature"]), str(entry["log_digest"]),
-                     rerun.project_path(proposal.file), proposal.line, list(proposal.after))
-    return FixStore(Path(str(entry["kb_dir"]))).rejected(wanted)
+    # Без номера строки: в факте — строка, где apply правку поставил, а в предложении — та, что
+    # назвала модель (в пределах окна они расходятся — ревью Codex).
+    file = rerun.project_path(proposal.file)
+    store = FixStore(Path(str(entry["kb_dir"])))
+    for path in sorted(store.folder.glob("*.json")) if store.folder.is_dir() else []:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if (isinstance(data, dict) and data.get(REJECTED)
+                and data.get("signature") == entry["signature"]
+                and data.get("log_digest") == entry["log_digest"]
+                and data.get("file") == file and data.get("after") == list(proposal.after)):
+            return True
+    return False
 
 
 def fix_why(fact: FixFact) -> str:
