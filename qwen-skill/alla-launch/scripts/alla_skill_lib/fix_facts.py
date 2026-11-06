@@ -576,7 +576,10 @@ def current_text(paths: ws.RunPaths, run: dict[str, Any], entry: dict[str, Any])
     if not auto or fact is None or not _fits(fact, entry, entry_tests(run, entry), date.today()):
         return None
     where = location_state(fact.proposal(), Path(run["project_root"]))
-    if where not in ("applied", "pending") or _engineer_said(paths, run, entry):
+    # Файл не прочитался — о месте ничего не известно, разбор (от места он не зависит) остаётся;
+    # снимать его по временному сбою нельзя: модель написала бы свой, и факт больше не
+    # подставился бы (ревью Grok).
+    if where not in ("applied", "pending", "unreadable") or _engineer_said(paths, run, entry):
         return None
     text = _text(entry, {**auto, "file": fact.file, "line": fact.line})
     # Код с тех пор менялся (строка КОД за концом файла): текст, не прошедший проверку, снимается,

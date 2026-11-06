@@ -504,7 +504,8 @@ def _locate(lines: list[str], proposal: Proposal) -> _Location:
 
 def location_state(proposal: Proposal, project_root: Path) -> str:
     """Где правка в текущем файле: ``pending`` (стоит БЫЛО), ``applied`` (стоит СТАЛО),
-    ``missing`` (файла или места нет), ``ambiguous`` (несколько мест или не UTF-8).
+    ``missing`` (файла или места нет), ``ambiguous`` (несколько мест или не UTF-8),
+    ``unreadable`` (файл не прочитался — временный сбой, о месте ничего не известно).
 
     То же правило места, что у ``apply`` (``_locate``): по нему факт проверенной правки
     (``fix_facts``) решает, есть ли она уже в коде этой копии проекта.
@@ -514,8 +515,10 @@ def location_state(proposal: Proposal, project_root: Path) -> str:
         return "missing"
     try:
         lines = _normalize(_read_source(target)).split("\n")
-    except (OSError, SourceEncodingError):
+    except SourceEncodingError:
         return "ambiguous"
+    except OSError:
+        return "unreadable"
     return _locate(lines, proposal).state
 
 

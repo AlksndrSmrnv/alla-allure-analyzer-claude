@@ -218,6 +218,11 @@ def remember_plan(
     CI лежал стенд, а теперь поднялся, тест пройдёт, но нестабильным не станет.
     """
     signals = {int(test["test_result_id"]): test.get("signals") or [] for test in plan["tests"]}
+    # «Та же ошибка, что в CI» доказуема, только если в CI текст ошибки был у каждого варианта:
+    # пустое сообщение совпадает с любой локальной ошибкой (ревью Grok).
+    known_error = {int(test["test_result_id"]): bool(str(test.get("message") or "").strip())
+                   and all(str(other).strip() for other in test.get("other_messages") or [])
+                   for test in plan["tests"]}
     attempts = int(result.get("attempts") or 0)
     mark, unmark = [], []
     for item in result.get("tests") or []:
@@ -225,6 +230,7 @@ def remember_plan(
         if item.get("outcome") == "passed" and not item.get("changed") and signals.get(test_id):
             mark.append({**item, "signals": signals[test_id]})
         elif (item.get("outcome") == "reproduced" and not item.get("cut")
-              and int(item.get("runs") or 0) >= attempts and test_id in marks):
+              and int(item.get("runs") or 0) >= attempts and test_id in marks
+              and known_error.get(test_id)):
             unmark.append(item)
     return RememberPlan(mark, unmark)

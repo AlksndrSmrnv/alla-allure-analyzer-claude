@@ -857,3 +857,36 @@ def test_unopenable_lock_keeps_the_result(
     out = _run(["rerun", "--wait", "--run", str(run_dir)], capsys)[1]
 
     assert out.startswith("STATUS: rerun_done") and "итог не записан: нет прав" in out
+
+
+def test_unreadable_fix_file_keeps_the_script_analysis(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Файл правки на миг не прочитался — разбор скрипта не снимается (ревью Grok)."""
+    _checked_fix(nested_project, capsys)
+    run_dir, _, order, login = _next_launch(nested_project, capsys, monkeypatch)
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    monkeypatch.setattr(fix_facts, "location_state", lambda *args: "unreadable")
+
+    out = _run(["next", str(run_dir)], capsys)[1]
+
+    assert out.startswith("STATUS: done")
+    assert (run_dir / "analyses" / f"{order}.md").is_file()
+
+
+def test_empty_ci_message_does_not_unmark() -> None:
+    """Пустое сообщение CI совпадает с любой ошибкой — снимать отметку по нему нельзя (ревью
+    Grok)."""
+    from alla_skill_lib import flaky
+
+    item = {"test_result_id": 1, "outcome": "reproduced", "runs": 3}
+    result = {"attempts": 3, "tests": [item]}
+    marks = {1: {"test": "a.B.m"}}
+    with_text = {"tests": [{"test_result_id": 1, "message": "boom"}]}
+    empty = {"tests": [{"test_result_id": 1, "message": ""}]}
+    variant_empty = {"tests": [{"test_result_id": 1, "message": "boom", "other_messages": [""]}]}
+
+    assert flaky.remember_plan(result, with_text, marks).unmark == [item]
+    assert flaky.remember_plan(result, empty, marks).unmark == []
+    assert flaky.remember_plan(result, variant_empty, marks).unmark == []
