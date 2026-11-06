@@ -24,10 +24,13 @@ from qwen_stand import (
     SCENARIOS,
     STAND_SUT,
     Context,
+    Trace,
     build_project,
+    check_module_asked,
     parse_traces,
 )
 from alla_skill_lib.cli import PARALLEL_MIN_PENDING
+from alla_skill_lib.session_rules import ToolCall
 from alla_skill_lib.workspace import RUN_SCHEMA
 from skill_fake_testops import (
     INJECTED_INSTRUCTION,
@@ -57,8 +60,9 @@ def test_server_serves_fixture_and_logs_requests(tmp_path: Path) -> None:
                 "params": {"name": "testops_find_testresults", "arguments": arguments}}).json()
             return json.loads(reply["result"]["content"][0]["text"])
 
-        page = find(2, {"aql": "launch = 780", "page": 0, "size": 100})
-        full = find(3, {"aql": "id = 101", "expand": ["scenario", "fixtures", "attachments"]})
+        page = find(2, {"aql": "launch = 780", "page": 0, "size": 100, "projectId": 5})
+        full = find(3, {"aql": "id = 101", "expand": ["scenario", "fixtures", "attachments"],
+                        "projectId": 5})
     assert INJECTED_INSTRUCTION in page["content"][0]["statusDetails"]["message"]
     assert INJECTED_INSTRUCTION in full["content"][0]["attachments"]["9001"]["content"]
     entries = [json.loads(line) for line in log.read_text().splitlines()]
@@ -1188,3 +1192,22 @@ def test_flaky_checks_need_the_commands_and_the_mark(tmp_path: Path) -> None:
     (marks / "OrderTest_createOrder_1.json").write_text(
         json.dumps({"test": "ru.company.orders.OrderTest.createOrder"}))
     assert CHECKS["flaky_saved"](ctx)["status"] == "pass"
+
+
+def _skill_call(arguments: str) -> ToolCall:
+    return ToolCall(0, "run_shell_command", {
+        "command": f"python3 .qwen/skills/alla-launch/scripts/alla_skill.py {arguments}"}, False)
+
+
+@pytest.mark.parametrize(("first", "second", "passed"), [
+    (["prepare 777"], ["prepare 777 --module orders"], True),
+    (["prepare 777", "prepare 777 --module orders"], [], False),  # модуль угадан
+    (["prepare 777"], ["prepare 777 --module payments"], False),
+    ([], ["prepare 777 --module orders"], False),
+])
+def test_module_asked_check(tmp_path: Path, first: list[str], second: list[str],
+                            passed: bool) -> None:
+    trace = Trace(turn_calls=[[_skill_call(item) for item in first],
+                              [_skill_call(item) for item in second]])
+    result = check_module_asked(Context(SCENARIOS["M01"], trace, tmp_path, []))
+    assert (result["status"] == "pass") is passed, result

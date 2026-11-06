@@ -25,7 +25,7 @@ from skill_fake_testops import (
 )
 
 from alla_core.clients.mcp_client import TestOpsMcpClient, _decode
-from alla_core.config import Settings
+from alla_core.config import ProjectRef, Settings
 from alla_core.exceptions import AllureApiError, ConfigurationError, McpError
 from alla_core.services.triage_service import TriageService
 from alla_skill_lib.errors import fetch_error_hint
@@ -38,9 +38,10 @@ def _settings(**overrides: Any) -> Settings:
     return Settings(**{**values, **overrides})
 
 
-def _run(settings: Settings, action: Callable[[TestOpsMcpClient], Any]) -> Any:
+def _run(settings: Settings, action: Callable[[TestOpsMcpClient], Any], *,
+         project_id: int | None = 5) -> Any:
     async def main() -> Any:
-        async with TestOpsMcpClient(settings) as client:
+        async with TestOpsMcpClient(settings, project_id=project_id) as client:
             client._sleep = _no_sleep  # type: ignore[assignment]
             return await action(client)
     return asyncio.run(main())
@@ -127,10 +128,10 @@ def test_launch_and_full_result_over_json_and_sse(monkeypatch: pytest.MonkeyPatc
     assert content == APP_LOG.encode("utf-8")
     # Страницы по 3 и один полный запрос: шаги, вложения и содержимое — из одного ответа.
     assert fake.calls == [
-        {"aql": "launch = 777", "page": 0, "size": 3},
-        {"aql": "launch = 777", "page": 1, "size": 3},
-        {"aql": "launch = 777", "page": 2, "size": 3},
-        {"aql": "id = 101", "expand": FULL_EXPAND},
+        {"aql": "launch = 777", "projectId": 5, "page": 0, "size": 3},
+        {"aql": "launch = 777", "projectId": 5, "page": 1, "size": 3},
+        {"aql": "launch = 777", "projectId": 5, "page": 2, "size": 3},
+        {"aql": "id = 101", "projectId": 5, "expand": FULL_EXPAND},
     ]
 
 
@@ -279,7 +280,7 @@ def test_forgotten_session_is_reopened_once(monkeypatch: pytest.MonkeyPatch) -> 
     _install(monkeypatch, handler)
     page = _run(_settings(), lambda client: client.get_test_results_for_launch(777))
     assert [result.id for result in page.content] == [101, 102, 103]
-    assert fake.calls == [{"aql": "launch = 777", "page": 0, "size": 3}]
+    assert fake.calls == [{"aql": "launch = 777", "projectId": 5, "page": 0, "size": 3}]
 
 
 def test_parallel_requests_share_one_new_session(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -321,7 +322,8 @@ def test_tool_error_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     fake.install(monkeypatch)
 
     async def action(client: TestOpsMcpClient) -> Any:
-        return await client._call_tool({"aql": "launch = 777", "expand": FULL_EXPAND})
+        return await client._call_tool({"aql": "launch = 777", "projectId": 5,
+                                       "expand": FULL_EXPAND})
 
     with pytest.raises(McpError) as exc_info:
         _run(_settings(), action)
@@ -402,7 +404,7 @@ def test_tool_without_page_parameter_gets_one_page(monkeypatch: pytest.MonkeyPat
 
     results = _run(_settings(), lambda client: client.get_all_test_results_for_launch(777))
     assert [result.id for result in results] == [101, 102, 103]  # первая страница — один раз
-    assert fake.calls == [{"aql": "launch = 777", "size": 3}]
+    assert fake.calls == [{"aql": "launch = 777", "size": 3}]  # в схеме нет и проекта
 
 
 def test_short_pages_without_totals_continue_until_nothing_new(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -586,7 +588,7 @@ def test_content_is_capped_and_evicted_content_is_fetched_again(monkeypatch: pyt
     capped, default, again = _run(_settings(logs_max_attachment_bytes=2048), action)
     assert (len(capped), len(default), again) == (1024, 2048, b"x" * 10)
     assert [call for call in fake.calls if call.get("expand")] == [
-        {"aql": "id = 101", "expand": FULL_EXPAND}] * 2
+        {"aql": "id = 101", "projectId": 5, "expand": FULL_EXPAND}] * 2
 
 
 def test_attachments_of_one_result_larger_than_the_budget_are_all_readable(
@@ -611,7 +613,7 @@ def test_detail_without_expand_for_attempts(monkeypatch: pytest.MonkeyPatch) -> 
     fake = FakeTestOps(default_launch())
     fake.install(monkeypatch)
     detail = _run(_settings(), lambda client: client.get_test_result_detail(106))
-    assert detail.hidden and fake.calls == [{"aql": "id = 106"}]
+    assert detail.hidden and fake.calls == [{"aql": "id = 106", "projectId": 5}]
 
 
 def test_unknown_attachment_is_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -645,3 +647,79 @@ def test_mcp_url_setting() -> None:
     assert own.mcp_endpoint == "https://mcp.example/x"
     with pytest.raises(ConfigurationError, match="ALLURE_MCP_URL"):
         Settings.load(environ={**base, "ALLURE_MCP_URL": "mcp.example"})
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    ("", ()),
+    (" 5 ", (ProjectRef("", 5),)),
+    ("orders=5, payments/api=7,", (ProjectRef("orders", 5), ProjectRef("payments/api", 7))),
+    ("\\services\\orders\\=5,smoke=5", (ProjectRef("services/orders", 5), ProjectRef("smoke", 5))),
+])
+def test_project_id_setting(raw: str, expected: tuple[ProjectRef, ...]) -> None:
+    base = {"ALLURE_ENDPOINT": "https://testops.example", "ALLURE_TOKEN": "t"}
+    assert Settings.load(environ={**base, "ALLURE_PROJECT_ID": raw}).projects == expected
+
+
+@pytest.mark.parametrize("raw", ["x", "0", "orders=", "=5", "orders=x", "a=1,a=2", "../x=1",
+                                 "a/../b=1", "5,orders=6", "²", ","])
+def test_wrong_project_id_setting_is_named(raw: str) -> None:
+    base = {"ALLURE_ENDPOINT": "https://testops.example", "ALLURE_TOKEN": "t"}
+    with pytest.raises(ConfigurationError, match="ALLURE_PROJECT_ID"):
+        Settings.load(environ={**base, "ALLURE_PROJECT_ID": raw})
+
+
+# --- проект TestOps --------------------------------------------------------------------------
+
+
+def test_project_parameter_name_comes_from_the_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeTestOps(default_launch())
+    properties = {**FIND_TOOL_SCHEMA["inputSchema"]["properties"]}
+    properties["project_id"] = properties.pop("projectId")
+    fake.tools = [{**FIND_TOOL_SCHEMA, "inputSchema": {"type": "object", "properties": properties,
+                                                       "required": ["aql", "project_id"]}}]
+    fake.install(monkeypatch)
+
+    _run(_settings(), lambda client: client.get_test_result_detail(101))
+    assert fake.calls == [{"aql": "id = 101", "project_id": 5}]
+
+
+def test_tool_that_needs_a_project_without_one_is_explained(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeTestOps(default_launch())
+    fake.install(monkeypatch)
+
+    with pytest.raises(McpError) as exc_info:
+        _run(_settings(), lambda client: client.get_launch(777), project_id=None)
+    assert exc_info.value.reason == "no_project" and fake.calls == []
+    hint = fetch_error_hint(exc_info.value, _settings(), Path("/skill/.env"))
+    assert "ALLURE_PROJECT_ID" in hint and "orders=5" in hint
+
+
+def test_project_is_sent_only_if_the_tool_knows_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Схема без проекта (старый сервер): проект не шлётся; схемы нет — шлётся projectId."""
+    fake = FakeTestOps(default_launch())
+    fake.tools = [{"name": FIND_TOOL_SCHEMA["name"]}]
+    fake.install(monkeypatch)
+
+    async def action(client: TestOpsMcpClient) -> Any:
+        await client.connect()
+        return client.project_param, client.project_required, await client.get_test_result_detail(101)
+
+    known, required, _ = _run(_settings(), action)
+    assert (known, required) == (True, False) and fake.calls == [{"aql": "id = 101", "projectId": 5}]
+
+
+def test_launch_project_falls_back_to_the_client_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture = default_launch()
+    fixture.launch["projectId"] = None  # сервер не прислал проект в результатах
+    FakeTestOps(fixture).install(monkeypatch)
+
+    launch = _run(_settings(), lambda client: client.get_launch(777), project_id=12)
+    assert launch.project_id == 12
+
+
+def test_other_project_has_no_such_launch(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeTestOps(default_launch()).install(monkeypatch)
+
+    results = _run(_settings(), lambda client: client.get_all_test_results_for_launch(777),
+                   project_id=7)
+    assert results == []

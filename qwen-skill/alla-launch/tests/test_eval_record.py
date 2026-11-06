@@ -19,6 +19,7 @@ ENVIRON = {
     "ALLURE_ENDPOINT": "https://testops.example",
     "ALLURE_TOKEN": TOKEN,
     "ALLURE_PAGE_SIZE": "3",
+    "ALLURE_PROJECT_ID": "5",
 }
 
 
@@ -75,7 +76,7 @@ def test_record_under_an_endpoint_prefix(tmp_path: Path) -> None:
            inner=lambda verify: httpx.MockTransport(behind_proxy))
     cassette = load_cassette(tmp_path / "cassette")
 
-    assert cassette.launch == {"id": 777, "name": fixture.launch["name"]}
+    assert cassette.launch == {"id": 777, "name": fixture.launch["name"], "projectId": 5}
     assert [item["id"] for item in cassette.results] == [item["id"] for item in fixture.results]
     assert cassette.details[101]["scenario"] == {"steps": fixture.executions[101]}
 

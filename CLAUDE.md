@@ -31,7 +31,7 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | `commands/alla/` | слэш-команды Qwen `/alla:run`, `/alla:apply`…; `install-files` ставит их в `.qwen/commands/alla/` проекта после согласия пользователя (`setup`, `update`, `prepare` в `.qwen/` не пишут) |
 | `extensions/` | расширения скилла: `README.md` (контракт для авторов), встроенные `git-publish/` (ветка git), `sut-code/` (`/alla:code N` — разбор по коду приложения) и `tickets/` (`/alla:ticket N [N…]` — просмотр и отправка тикетов через пользовательский адаптер); свои — `<проект>/alla-extensions/` |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` проекта автотестов |
-| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `learn`, `fix_facts`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files`, `jobs`, `retries`, `images`, `extension_data` |
+| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `learn`, `fix_facts`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `projects`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files`, `jobs`, `retries`, `images`, `extension_data` |
 | `scripts/alla_core/` | ядро: клиент MCP TestOps (`clients/mcp_client.py`), триаж, логи, кластеризация, блок «Данные» |
 | `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
 | `tests/eval/` | эталон точности: кассеты прогонов (`record.py` пишет у команды), размеченный корпус dev/holdout, метрики склеек, дробления, скрытых групп и потери доказательств (`run_eval.py`), см. `README.md` там же |
@@ -72,8 +72,9 @@ pytest (`-rs`; на Linux пропускаются только 4 проверк
 проверяет протокол; выполняет ли модель инструкции — видно только на стенде. Запускай его
 после правки `SKILL.md`, справочников, текстов заданий и правил исполнителя.
 
-- Сценарии — `qwen_stand.py list`; короткие (A03, A04, P01, E03, E07, I01) — до минуты, A01/C01/C02/E06/E08/E09/E10/E11/E12/F01/F02/K01/L01/N01/V01/X01–X04 — 2–3
-  минуты (K01 — три реплики: отчёт, «все разборы верны», следующий прогон по базе знаний), P04 (40 кластеров, субагенты) — 8–10 минут и 3–4 млн токенов: только когда
+- Сценарии — `qwen_stand.py list`; короткие (A03, A04, P01, E03, E07, I01) — до минуты, A01/C01/C02/E06/E08/E09/E10/E11/E12/F01/F02/K01/L01/M01/N01/V01/X01–X04 — 2–3
+  минуты (K01 — три реплики: отчёт, «все разборы верны», следующий прогон по базе знаний; M01 —
+  несколько проектов TestOps по модулям: модуль спрашивается у пользователя), P04 (40 кластеров, субагенты) — 8–10 минут и 3–4 млн токенов: только когда
   меняются пакеты или правила субагентов; P05 (9 кластеров по одному, код размера пилота) —
   8–12 минут: когда меняются размер заданий или порог пакетов; L02 (медленный TestOps, ответ
   `running`) — ~4 минуты: когда меняются фоновые задания или тексты `running`. Окно модели стенд ставит как
@@ -133,7 +134,7 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 |---|---|---|
 | `skill-protocol.md` | команды, статусы и коды возврата, правила исполнителя и справочники | `SKILL.md`, `references/`, `alla_skill.py`, `cli.py`, `agent_rules.py`, `errors.py`, `session_rules.py` |
 | `skill-protocol-setup.md` | точка входа, `setup`, `update`, слэш-команды `/alla:*` | `alla_skill.py`, `qwen_files.py`, `commands/`, `workspace.py` |
-| `skill-protocol-workspace.md` | `prepare` фоновым заданием, папка разбора, `run.json`/`state.json` | `cli.py`, `workspace.py`, `jobs.py` |
+| `skill-protocol-workspace.md` | `prepare` фоновым заданием, выбор проекта TestOps, папка разбора, `run.json`/`state.json` | `cli.py`, `workspace.py`, `jobs.py`, `projects.py` |
 | `skill-protocol-batch.md` | пакетный разбор, субагент `alla-batch`, шаг `relate` | `cli.py`, `batch_task.py`, `qwen_files.py` |
 | `skill-protocol-review.md` | проверка разбора для пилота (`review`), журнал сеанса Qwen | `review.py`, `review_model.py`, `session_log.py`, `qwen_stand.py`, `session_rules.py` |
 | `skill-analysis.md` | `problem_state.current_state` — общий источник диагнозов для `next`, отчёта и снимка | `problem_state.py`, `report.py`, `related.py`, `known_issues.py`, `confirmed.py` |

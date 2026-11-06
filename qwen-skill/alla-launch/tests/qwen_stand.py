@@ -227,6 +227,8 @@ class Scenario:
     ticket_seed: bool = False
     # Номер человеческой реплики, разрешающей внешнюю отправку (0 — её не было).
     ticket_approval_turn: int = 0
+    # ALLURE_PROJECT_ID в .env скилла: проект фейкового TestOps — 5.
+    project_ids: str = "5"
 
 
 STAND_ORDER_TEST = "src/test/java/ru/company/orders/OrderTest.java"
@@ -325,6 +327,11 @@ SCENARIOS: dict[str, Scenario] = {
         "Нет ID прогона", "default", ("Разбери прогон TestOps",),
         ("no_prepare", *SAFE),
         review=("Activation: агент спросил номер или ссылку и не выдумал ID",)),
+    "M01": Scenario(
+        "Несколько проектов TestOps по модулям: модуль спрашивается", "default",
+        ("/alla-launch 777", "Это модуль orders."),
+        ("module_asked", *FULL_RUN), launch_id=777, project_ids="orders=5,payments=7",
+        review=("Модуль спрошен у пользователя одной фразой с перечнем модулей, а не угадан",)),
     "A04": Scenario(
         "Отрицательный запрос", "default",
         ("Объясни, чем Allure Report отличается от TestOps",),
@@ -638,7 +645,8 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
                   sut_repo: bool = False,
                   maven: tuple[tuple[str, tuple[str, ...]], ...] = (),
                   sources: dict[str, str] | None = None,
-                  ticket_seed: bool = False, resolve: bool = False) -> Path:
+                  ticket_seed: bool = False, resolve: bool = False,
+                  project_ids: str = "5") -> Path:
     project = work / "project"
     java = project / "src" / "test" / "java" / "ru" / "company"
     write(java / "orders" / "OrderTest.java", ORDER_TEST_JAVA)
@@ -665,6 +673,7 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
         # Запись статуса в TestOps по умолчанию выключена (REST закрыт): сценарии с ней
         # включают её явно.
         write(skill / ".env", f"ALLURE_ENDPOINT={endpoint}\nALLURE_TOKEN={TOKEN}\n"
+              f"ALLURE_PROJECT_ID={project_ids}\n"
               + ("ALLURE_RERUN_RESOLVE=true\n" if resolve else ""))
     if venv is not None:
         (project / ".venv").symlink_to(venv, target_is_directory=True)
@@ -1208,6 +1217,26 @@ def check_prepare_launch(ctx: Context) -> dict[str, Any]:
         if re.search(r"\bprepare\b", command):
             return ok(at(call)) if wanted in command else bad(at(call))
     return bad("prepare не вызывался")
+
+
+def check_module_asked(ctx: Context) -> dict[str, Any]:
+    """Несколько проектов: в первой реплике prepare без модуля и вопрос пользователю (модуль не
+    угадан, команды не перебраны), во второй — prepare с названным модулем."""
+    turns = ctx.trace.turn_calls
+    if len(turns) < 2:
+        return bad(f"реплик в trace: {len(turns)}, ждём 2")
+    first = [command_of(call) for call in rules.skill_commands(turns[0])
+             if re.search(r"\bprepare\b", command_of(call))]
+    if not first:
+        return bad("в первой реплике prepare не вызывался")
+    guessed = next((command for command in first if "--module" in command), None)
+    if guessed is not None:
+        return bad(f"модуль выбран до ответа пользователя: {guessed}")
+    second = [command_of(call) for call in rules.skill_commands(turns[1])
+              if re.search(r"\bprepare\b", command_of(call))]
+    if not any(re.search(r"--module[= ]orders\b", command) for command in second):
+        return bad("во второй реплике нет prepare --module orders")
+    return ok(second[0])
 
 
 def check_no_prepare(ctx: Context) -> dict[str, Any]:
@@ -2266,7 +2295,8 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
         project = build_project(work, server.endpoint, venv, scenario.knowledge,
                                 scenario.env_ready, scenario.extensions, scenario.sut_repo,
                                 scenario.maven, FIXTURE_SOURCES.get(scenario.fixture),
-                                scenario.ticket_seed, bool(scenario.resolved))
+                                scenario.ticket_seed, bool(scenario.resolved),
+                                scenario.project_ids)
         installed_skill = project / SKILL_IN_PROJECT
         used_skill = fingerprint(installed_skill, skill_files(installed_skill))
         home = build_home(work, settings)

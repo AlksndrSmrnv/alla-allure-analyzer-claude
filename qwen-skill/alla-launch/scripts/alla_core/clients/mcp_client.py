@@ -1,7 +1,8 @@
 """Клиент встроенного MCP-сервера Allure TestOps (``<endpoint>/api/mcp``).
 
 REST API TestOps у пользователей скилла закрыт, открыт только MCP. Нужен один инструмент —
-``testops_find_testresults`` (поиск результатов по AQL):
+``testops_find_testresults`` (поиск результатов по AQL в проекте ``projectId``: номер прогона
+проекта не называет, проект — из ``ALLURE_PROJECT_ID``, выбор модуля — в ``prepare``):
 
 - список результатов прогона — ``aql: "launch = <id>"`` со страницами, без expand;
 - результат целиком — ``aql: "id = <id>"`` (строго один id: со списком expand не работает),
@@ -59,6 +60,7 @@ _PARAM_CANDIDATES = {
     "page": ("page", "pageNumber"),
     "size": ("size", "pageSize", "limit"),
     "expand": ("expand", "expansion", "expands"),
+    "project": ("projectId", "project_id", "project"),
 }
 
 
@@ -86,8 +88,14 @@ class TestOpsMcpClient:
 
     __test__ = False  # имя начинается с Test: pytest не должен собирать класс
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, project_id: int | None = None) -> None:
         self._url = settings.mcp_endpoint
+        # Проект TestOps всех запросов (``projectId``); ``None`` — не слать.
+        self.project_id = project_id
+        # Схема инструмента требует проект (известно после ``connect``).
+        self.project_required = False
+        # В схеме инструмента есть параметр проекта (известно после ``connect``).
+        self.project_param = False
         self._token = settings.token
         self._page_size = settings.page_size
         self._max_pages = settings.max_pages
@@ -168,7 +176,19 @@ class TestOpsMcpClient:
                 f"на сервере нет инструмента {FIND_RESULTS_TOOL} — нужен TestOps 26.2.1.8 "
                 "или новее с включённым MCP",
             )
-        self._params = _tool_params(tool)
+        params = _tool_params(tool)
+        schema = tool.get("inputSchema")
+        required = schema.get("required") if isinstance(schema, dict) else None
+        self.project_param = params["project"] is not None
+        self.project_required = bool(params["project"]) and isinstance(required, list) \
+            and params["project"] in required
+        if self.project_required and self.project_id is None:
+            raise McpError(
+                "no_project",
+                f"инструмент {FIND_RESULTS_TOOL} требует проект TestOps ({params['project']}), "
+                "а он не задан: нужен ALLURE_PROJECT_ID",
+            )
+        self._params = params
         return tools
 
     async def _ensure_ready(self) -> dict[str, str | None]:
@@ -198,7 +218,7 @@ class TestOpsMcpClient:
         launch_raw = extra.get("launch")
         launch: dict[str, Any] = launch_raw if isinstance(launch_raw, dict) else {}
         name = extra.get("launchName") or launch.get("name")
-        project = extra.get("projectId") or launch.get("projectId")
+        project = extra.get("projectId") or launch.get("projectId") or self.project_id
         closed = launch.get("closed")
         return LaunchResponse.model_validate({
             "id": launch_id,
@@ -216,7 +236,7 @@ class TestOpsMcpClient:
         """Одна страница результатов прогона: ``aql: "launch = <id>"``."""
         size = size or self._page_size
         params = await self._ensure_ready()
-        arguments: dict[str, Any] = {params["aql"] or "aql": f"launch = {launch_id}"}
+        arguments = self._arguments(params, f"launch = {launch_id}")
         if params["page"]:
             arguments[params["page"]] = page
         if params["size"]:
@@ -343,7 +363,7 @@ class TestOpsMcpClient:
 
     async def _find_one(self, test_result_id: int, *, expand: bool) -> dict[str, Any]:
         params = await self._ensure_ready()
-        arguments: dict[str, Any] = {params["aql"] or "aql": f"id = {test_result_id}"}
+        arguments = self._arguments(params, f"id = {test_result_id}")
         if expand:
             arguments[params["expand"] or "expand"] = list(FULL_EXPAND)
         page = _items(await self._call_tool(arguments))
@@ -408,6 +428,13 @@ class TestOpsMcpClient:
         while self._contents_size > self.content_budget and len(self._contents) > 1:
             _, evicted = self._contents.popitem(last=False)
             self._contents_size -= len(evicted)
+
+    def _arguments(self, params: dict[str, str | None], aql: str) -> dict[str, Any]:
+        """AQL и проект (если задан и есть в схеме инструмента)."""
+        arguments: dict[str, Any] = {params["aql"] or "aql": aql}
+        if self.project_id is not None and params["project"]:
+            arguments[params["project"]] = self.project_id
+        return arguments
 
     # --- JSON-RPC ---
 
@@ -583,7 +610,8 @@ def _tool_params(tool: dict[str, Any]) -> dict[str, str | None]:
     schema = tool.get("inputSchema")
     properties = schema.get("properties") if isinstance(schema, dict) else None
     if not isinstance(properties, dict) or not properties:
-        return {"aql": "aql", "page": "page", "size": "size", "expand": "expand"}
+        return {"aql": "aql", "page": "page", "size": "size", "expand": "expand",
+                "project": "projectId"}
     return {
         role: next((name for name in names if name in properties), None)
         for role, names in _PARAM_CANDIDATES.items()

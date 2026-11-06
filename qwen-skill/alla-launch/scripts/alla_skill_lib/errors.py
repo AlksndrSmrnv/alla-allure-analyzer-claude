@@ -80,6 +80,12 @@ def fetch_error_hint(exc: BaseException, settings: Settings, env_file: Path) -> 
             "поиска результатов. Нужен TestOps 26.2.1.8 или новее с включённым MCP; если "
             f"сервер по другому адресу, задай ALLURE_MCP_URL в {env_file}."
         )
+    if mcp is not None and mcp.reason == "no_project":
+        return (
+            f"Поиску результатов TestOps нужен номер проекта. Задай ALLURE_PROJECT_ID в {env_file}: "
+            "номер проекта TestOps (5), а в многомодульном проекте автотестов — по модулю, "
+            "папка модуля от корня проекта = номер (orders=5,payments/api=7)."
+        )
     if mcp is not None and mcp.reason == "transport":
         return (
             f"Сервер {settings.mcp_endpoint} не принимает Streamable HTTP. Проверь "

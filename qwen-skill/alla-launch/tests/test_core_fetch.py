@@ -62,7 +62,7 @@ def test_page_limit_fails_after_the_first_page(monkeypatch) -> None:
     settings = Settings(endpoint="https://testops.example", token="t", page_size=3, max_pages=2)
 
     async def fetch() -> None:
-        async with TestOpsMcpClient(settings) as client:
+        async with TestOpsMcpClient(settings, project_id=5) as client:
             await client.get_all_test_results_for_launch(LAUNCH)
 
     with pytest.raises(PaginationLimitError) as exc_info:

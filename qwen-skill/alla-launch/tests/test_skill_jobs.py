@@ -47,6 +47,7 @@ def autotests_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for name in ("QWEN_CODE_SESSION_ID", "QWEN_CODE_PROJECT_DIR", "QWEN_HOME"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ALLURE_TOKEN", TOKEN)
+    monkeypatch.setenv("ALLURE_PROJECT_ID", "5")
     monkeypatch.setattr(cli, "RUN_IN_BACKGROUND", True)
     return root
 
@@ -94,6 +95,24 @@ def test_quick_prepare_answers_with_the_job_output(
     assert _job(autotests).delivered.is_file()  # итог показан один раз
     code, out = _prepare(autotests, capsys)  # повтор — продолжение того же разбора
     assert code == 0 and "Продолжаю неоконченный разбор" in out and str(run_dir) in out
+
+
+def test_background_prepare_gets_the_chosen_project(
+    autotests: Path, server: FakeTestOpsServer, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Модуль выбирается до задания: без него задания нет, с ним — проект доходит до выгрузки."""
+    monkeypatch.setenv("ALLURE_PROJECT_ID", "orders=5,payments=7")
+    code, out = _prepare(autotests, capsys)
+    assert code == 1 and out.startswith("STATUS: error") and "--module orders" in out
+    assert _slot(autotests).current() is None
+
+    code, out = _prepare(autotests, capsys, "--module", "orders")
+    assert code == 0 and out.startswith("STATUS: analyze"), out
+    run_dir = Path(next(line for line in out.splitlines()
+                        if line.startswith("Папка разбора:")).split(":", 1)[1].strip())
+    run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert (run["project_id"], run["project_module"]) == (5, "orders")
 
 
 def test_slow_prepare_answers_running_and_the_repeat_attaches(

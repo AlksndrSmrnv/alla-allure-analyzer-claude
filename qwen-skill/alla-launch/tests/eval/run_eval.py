@@ -114,6 +114,8 @@ def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
                 monkeypatch.delenv(key)
         monkeypatch.setenv("ALLURE_ENDPOINT", "https://testops.example")
         monkeypatch.setenv("ALLURE_TOKEN", TOKEN)
+        # Проект кассеты; не записан — любой: фейк сверяет проект, только если знает свой.
+        monkeypatch.setenv("ALLURE_PROJECT_ID", str(fixture.launch.get("projectId") or 1))
         monkeypatch.setattr(workspace, "SKILL_DIR", skill_dir)
         monkeypatch.setattr(pipeline, "collect_launch", collect)
         # Кассета подменяет TestOps в памяти процесса: выгрузка — здесь, не фоновым заданием.

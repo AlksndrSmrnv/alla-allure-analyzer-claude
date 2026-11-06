@@ -6,6 +6,7 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_core/models/testops.py"
   - "qwen-skill/alla-launch/tests/test_core_testops_client.py"
   - "qwen-skill/alla-launch/tests/test_core_mcp_client.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/projects.py"
   - "qwen-skill/alla-launch/tests/test_core_auth.py"
 ---
 
@@ -20,7 +21,15 @@ REST API TestOps у пользователей закрыт (решение по
 от прежнего REST-клиента. Схемы инструментов Qameta не публикует; что известно — проверено
 пользователем на настоящем TestOps:
 
-- Один инструмент — `testops_find_testresults`. Список прогона — `aql: "launch = <id>"` со
+- Один инструмент — `testops_find_testresults`, он ищет **в проекте**: настоящий TestOps
+  требует `projectId` (пользователь, 2026-11-06). Проект — `TestOpsMcpClient(settings,
+  project_id=…)` (выбирает `cli`/`projects.py` по `ALLURE_PROJECT_ID`, `skill-protocol-workspace.md`)
+  и идёт в каждый вызов (`_arguments`): список прогона, полный результат, результат без expand.
+  Имя параметра — из схемы (`projectId`/`project_id`/`project`; схемы нет — `projectId`); в
+  схеме параметра нет — не шлётся (старый сервер). Параметр в `required`, а проекта нет —
+  `McpError(no_project)` при открытии сеанса (`errors.fetch_error_hint` объясняет формат
+  `ALLURE_PROJECT_ID`); `project_param`/`project_required` клиента читает `check`. Фейковый
+  TestOps требует `projectId` так же, а на чужой проект отвечает пустой страницей. Список прогона — `aql: "launch = <id>"` со
   страницами, без expand. Полный результат — `aql: "id = <id>"` строго с **одним** id (со
   списком expand не работает) и `expand: ["scenario", "fixtures", "attachments"]`; ответ —
   результат с `scenario` (дерево шагов, вложения в `steps[]`), `fixtures` и словарём
@@ -89,7 +98,7 @@ REST API TestOps у пользователей закрыт (решение по
   требует: фейковые провайдеры логов его не знают.
 - **Прогон** (`get_launch`): инструмента нет — из первой страницы результатов (кешируется для
   `get_all_test_results_for_launch`): имя — `launchName` или `launch.name`, проект —
-  `projectId`, `closed` — `launch.closed`, если сервер их прислал; иначе `None`. Время прогона
+  `projectId` (иначе проект клиента), `closed` — `launch.closed`, если сервер их прислал; иначе `None`. Время прогона
   `None` — триаж берёт самый ранний `createdDate` результатов (`_earliest_created`). Пустой и
   несуществующий прогон не различить: `prepare` говорит «нет ни одного результата».
 - API-модели принимают неизвестные поля (`extra="allow"`) и оба стиля имён
@@ -116,6 +125,7 @@ REST API TestOps у пользователей закрыт (решение по
 | `ALLURE_ENDPOINT` | да | — | URL Allure TestOps без `/api` |
 | `ALLURE_TOKEN` | да | `""` | API token |
 | `ALLURE_MCP_URL` | нет | `""` | Адрес MCP-сервера TestOps; пусто — `<ALLURE_ENDPOINT>/api/mcp`; иначе `http(s)://` |
+| `ALLURE_PROJECT_ID` | нет | `""` | Проект TestOps поиска результатов: `5` или по модулям `orders=5,payments/api=7` (`Settings.projects` → `ProjectRef`; номер > 0, модуль — папка без `..`, `\` → `/`, не повторяется; число вместе с парами — `ConfigurationError`) |
 | `ALLURE_REQUEST_TIMEOUT` | нет | `30` | HTTP timeout к TestOps |
 | `ALLURE_HTTP_RETRIES` | нет | `3` | Повторы вызовов MCP при 429/502/503/504 и сбоях сети (0–10) |
 | `ALLURE_PAGE_SIZE` | нет | `100` | Размер страницы TestOps API |

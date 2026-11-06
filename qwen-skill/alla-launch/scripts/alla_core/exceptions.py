@@ -26,8 +26,9 @@ class McpError(AllaError):
     """MCP-сервер TestOps ответил не так, как ждёт скилл.
 
     ``reason``: ``not_found`` — по адресу нет MCP (404); ``transport`` — сервер не принимает
-    Streamable HTTP (405, старый SSE); ``no_tool`` — нет нужного инструмента; ``tool`` —
-    инструмент вернул ошибку; ``protocol`` — ответ не разобрать.
+    Streamable HTTP (405, старый SSE); ``no_tool`` — нет нужного инструмента; ``no_project`` —
+    инструмент требует проект, а ``ALLURE_PROJECT_ID`` не задан; ``tool`` — инструмент вернул
+    ошибку; ``protocol`` — ответ не разобрать.
     """
 
     def __init__(self, reason: str, message: str) -> None:

@@ -127,6 +127,7 @@ from alla_skill_lib.kb import (
     match_cluster,
 )
 from alla_skill_lib.modules import ModuleResolver, resolve_run_modules
+from alla_skill_lib.projects import ProjectChoice, ProjectNotChosen, choose_project
 from alla_skill_lib.signature import cluster_log_errors, log_errors_digest
 from alla_skill_lib.proposals import (
     ApplyResult,
@@ -339,7 +340,8 @@ def _dispatch(argv: list[str] | None) -> int:
     )
     if args.command == "prepare":
         return cmd_prepare(args.launch_id, project_root, reports_dir, fresh=args.fresh,
-                           in_job=_JOB_DIR is not None, repeat=_same_command(argv))
+                           in_job=_JOB_DIR is not None, repeat=_same_command(argv),
+                           module=args.module, project=args.project)
     if args.command == "next":
         return cmd_next(
             args.run_dir or args.run, reports_dir, workers=1 if args.serial else args.workers
@@ -409,6 +411,13 @@ def _launch_id(text: str) -> int:
     )
 
 
+def _positive_int(text: str) -> int:
+    value = text.strip()
+    if not (value.isascii() and value.isdigit()) or int(value) <= 0:
+        raise argparse.ArgumentTypeError(f"нужен номер проекта TestOps числом, получено «{text}»")
+    return int(value)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     common = _Parser(add_help=False)
     common.add_argument(
@@ -433,6 +442,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--fresh",
         action="store_true",
         help="начать разбор заново, даже если есть неоконченный разбор этого прогона",
+    )
+    prepare.add_argument(
+        "--module",
+        help="модуль проекта автотестов, чей проект TestOps взять из ALLURE_PROJECT_ID "
+             "(нужен, если там несколько проектов)",
+    )
+    prepare.add_argument(
+        "--project", type=_positive_int, help="номер проекта TestOps прогона (вместо --module)"
     )
     step = commands.add_parser("next", parents=[common], help="следующий шаг разбора")
     step.add_argument("run_dir", nargs="?", help="папка разбора (по умолчанию последняя)")
@@ -640,6 +657,8 @@ def cmd_prepare(
     fresh: bool = False,
     in_job: bool = False,
     repeat: str | None = None,
+    module: str | None = None,
+    project: int | None = None,
 ) -> int:
     """Выгрузить прогон и подготовить задания.
 
@@ -647,6 +666,10 @@ def cmd_prepare(
     фоновым заданием (:mod:`alla_skill_lib.jobs`): команда ждёт до ``jobs.WAIT_BUDGET`` и
     отвечает ``running``, а повтор подключается к идущей выгрузке. ``in_job`` — это и есть
     фоновое задание: выгрузка здесь, синхронно (как и при ``RUN_IN_BACKGROUND = False``).
+
+    Проект TestOps (``projects.choose_project``) выбирается до задания: несколько проектов в
+    ``ALLURE_PROJECT_ID`` без ``--module`` — ``error`` с командами по модулям; заданию идёт
+    уже выбранный ``--project``. Неоконченный разбор продолжается без выбора.
     """
     started = time.monotonic()
     if RUN_IN_BACKGROUND and not in_job:
@@ -661,9 +684,14 @@ def cmd_prepare(
                     unfinished = ws.find_unfinished_run(reports_dir, launch_id)
                     if unfinished is not None:
                         return _resume(unfinished, launch_id, reports_dir)
-                if isinstance(_prepare_settings(), int):
+                settings = _prepare_settings()
+                if isinstance(settings, int):
                     return 2
+                choice = _prepare_project(settings, launch_id, module, project, fresh=fresh)
+                if isinstance(choice, int):
+                    return choice
                 files = jobs.start(slot, ["prepare", str(launch_id), "--fresh",
+                                          *_project_args(choice),
                                           "--project-root", str(project_root),
                                           "--reports-dir", str(reports_dir)])
         return _finish_job(files, started,
@@ -679,6 +707,9 @@ def cmd_prepare(
     settings = _prepare_settings()
     if isinstance(settings, int):
         return settings
+    choice = _prepare_project(settings, launch_id, module, project, fresh=fresh)
+    if isinstance(choice, int):
+        return choice
 
     # Кластеризация тянет numpy/scipy/sklearn (~0,5 с) — грузим только здесь, а не в каждом next.
     from alla_skill_lib.pipeline import collect_launch
@@ -688,7 +719,7 @@ def cmd_prepare(
     with tempfile.TemporaryDirectory(prefix="alla-images-") as staging:
         try:
             data = asyncio.run(collect_launch(launch_id, settings, progress=_progress,
-                                              images_dir=Path(staging)))
+                                              images_dir=Path(staging), project_id=choice.id))
         except (AllaError, httpx.HTTPError) as exc:
             return _fetch_failed(launch_id, exc, settings, env_file)
         except Exception as exc:  # неожиданный ответ API и т.п. — traceback в stderr
@@ -700,13 +731,15 @@ def cmd_prepare(
         if data.triage.total_results == 0:
             print("STATUS: error")
             print(
-                f"В прогоне #{launch_id} нет ни одного результата: он пуст или ещё не начался. "
-                "Проверь номер запуска и проект."
+                f"В прогоне #{launch_id}{_project_label(choice)} нет ни одного результата: "
+                "он пуст, ещё не начался или он из другого проекта TestOps. Проверь номер "
+                "запуска" + (" и модуль (ALLURE_PROJECT_ID)." if len(settings.projects) > 1
+                             else " и проект (ALLURE_PROJECT_ID).")
             )
             return 1
 
         paths = ws.create_run_dir(reports_dir, launch_id, datetime.now())
-        run = _write_run(paths, data, settings, project_root)
+        run = _write_run(paths, data, settings, project_root, choice)
     ws.remember_last_run(reports_dir, paths)
     _note_session(paths)
 
@@ -740,6 +773,42 @@ def _prepare_settings() -> Settings | int:
             "переменные окружения ALLURE_ENDPOINT и ALLURE_TOKEN. " + USER_ACTION_NOTE
         )
         return 2
+
+
+def _prepare_project(
+    settings: Settings, launch_id: int, module: str | None, project: int | None, *, fresh: bool,
+) -> ProjectChoice | int:
+    """Проект прогона; не выбран — ответ ``error`` с командами по модулям напечатан, код."""
+    try:
+        return choose_project(settings, module=module, project=project)
+    except ProjectNotChosen as exc:
+        modules = [item for item in exc.projects if item.module]
+        extra = ("--fresh",) if fresh else ()
+        print("STATUS: error")
+        if exc.unknown is not None:
+            print(f"Модуля «{exc.unknown}» нет в ALLURE_PROJECT_ID: там модули "
+                  + ", ".join(item.module for item in modules) + ".")
+        else:
+            print(f"В ALLURE_PROJECT_ID несколько проектов TestOps — по модулям проекта "
+                  f"автотестов, а номер прогона #{launch_id} проекта не называет.")
+        print("Спроси пользователя, из какого модуля прогон, и только после его ответа выполни "
+              "команду этого модуля (модуль сам не выбирай и команды по очереди не пробуй):")
+        for item in modules:
+            print(f"- {item.module} (проект {item.id}): "
+                  + ws.skill_command("prepare", str(launch_id), "--module", item.module, *extra))
+        return 1
+
+
+def _project_args(choice: ProjectChoice) -> list[str]:
+    """Аргументы выбранного проекта для фонового задания ``prepare``."""
+    args = [] if choice.id is None else ["--project", str(choice.id)]
+    return [*args, "--module", choice.module] if choice.module else args
+
+
+def _project_label(choice: ProjectChoice) -> str:
+    if choice.id is None:
+        return ""
+    return f" (проект TestOps {choice.id}" + (f", модуль {choice.module})" if choice.module else ")")
 
 
 def _prepare_running(launch_id: int, state: jobs.JobState, repeat: str) -> str:
@@ -795,6 +864,7 @@ def _write_run(
     data: LaunchData,
     settings: Settings,
     project_root: Path,
+    project: ProjectChoice | None = None,
 ) -> dict[str, Any]:
     triage = data.triage
     clusters = data.clustering.clusters if data.clustering else []
@@ -982,6 +1052,10 @@ def _write_run(
         "launch_created": _launch_created(triage.launch_created_ms),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "project_root": str(project_root),
+        # Проект TestOps прогона и модуль из ALLURE_PROJECT_ID, по которому он выбран.
+        "project_id": project.id if project is not None and project.id is not None
+        else triage.project_id,
+        "project_module": project.module if project is not None else None,
         "kb_dir": str(kb_dir),
         "counts": {
             "total": triage.total_results,
@@ -2941,6 +3015,8 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
         f"ALLURE_ENDPOINT: {settings.endpoint}",
         f"MCP TestOps: {settings.mcp_endpoint}",
         "ALLURE_TOKEN: задан (значение не показывается)",
+        _projects_line(settings),
+        *_project_warnings(settings, project_root),
         _qwen_files_line(project_root),
     ]
     # Корневая база показывается всегда; модульные (<модуль>/alla-kb) — если они есть.
@@ -2953,7 +3029,7 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
         lines.append("Расширения: " + ", ".join(item.name for item, _ in extensions.extensions))
     lines += [f"Внимание: {problem}" for problem in extensions.problems]
     try:
-        asyncio.run(_ping_testops(settings))
+        project_param = asyncio.run(_ping_testops(settings))
     except (AllaError, httpx.HTTPError) as exc:
         print("STATUS: error")
         print(*lines, sep="\n")
@@ -2963,18 +3039,43 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
             print(hint)
             print(USER_ACTION_NOTE)
         return 1
+    if settings.projects and not project_param:
+        lines.append("Внимание: у поиска результатов TestOps нет параметра проекта — "
+                     "ALLURE_PROJECT_ID не используется.")
     print("STATUS: ready")
     print(*lines, sep="\n")
     print("Доступ к TestOps: MCP-сервер ответил, токен принят.")
     return 0
 
 
-async def _ping_testops(settings: Settings) -> None:
-    """Открыть сеанс MCP TestOps и убедиться, что инструмент поиска результатов есть."""
+def _projects_line(settings: Settings) -> str:
+    projects = settings.projects
+    if not projects:
+        return "ALLURE_PROJECT_ID: не задан"
+    if len(projects) == 1 and not projects[0].module:
+        return f"ALLURE_PROJECT_ID: проект TestOps {projects[0].id}"
+    return "ALLURE_PROJECT_ID: проекты TestOps по модулям — " + ", ".join(
+        f"{item.module} → {item.id}" for item in projects)
+
+
+def _project_warnings(settings: Settings, project_root: Path) -> list[str]:
+    """Модули из ``ALLURE_PROJECT_ID``, которых нет папкой в проекте (опечатка в имени)."""
+    return [
+        f"Внимание: модуль «{item.module}» из ALLURE_PROJECT_ID — нет папки {project_root / item.module}."
+        for item in settings.projects
+        if item.module and not (project_root / item.module).is_dir()
+    ]
+
+
+async def _ping_testops(settings: Settings) -> bool:
+    """Открыть сеанс MCP TestOps и убедиться, что инструмент поиска результатов есть (и что
+    проект задан, если инструмент его требует); есть ли у инструмента параметр проекта."""
     from alla_core.clients.mcp_client import TestOpsMcpClient
 
-    async with TestOpsMcpClient(settings) as client:
+    projects = settings.projects
+    async with TestOpsMcpClient(settings, project_id=projects[0].id if projects else None) as client:
         await client.connect()
+        return client.project_param
 
 
 def cmd_clean(reports_dir: Path, older_than_days: int, *, dry_run: bool) -> int:

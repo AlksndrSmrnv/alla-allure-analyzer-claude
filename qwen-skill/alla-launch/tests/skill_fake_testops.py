@@ -610,8 +610,10 @@ FIND_TOOL_SCHEMA: dict[str, Any] = {
             "page": {"type": "integer"},
             "size": {"type": "integer"},
             "expand": {"type": "array", "items": {"type": "string"}},
+            "projectId": {"type": "integer"},
         },
-        "required": ["aql"],
+        # Как у настоящего TestOps: без проекта поиск не работает.
+        "required": ["projectId", "aql"],
     },
 }
 _TEXT_MIME = ("text/", "application/json", "application/xml", "application/x-ndjson")
@@ -747,9 +749,20 @@ class FakeTestOps:
                  "launchName": launch.get("name"), "createdDate": launch.get("createdDate")}
         return {**{key: value for key, value in extra.items() if value is not None}, **result}
 
+    def _project_required(self) -> bool:
+        tool = next((item for item in self.tools if item.get("name") == FIND_TOOL), {})
+        return "projectId" in (tool.get("inputSchema") or {}).get("required", [])
+
     def _find(self, arguments: dict[str, Any]) -> dict[str, Any]:
         aql = str(arguments.get("aql", "")).strip()
         expand = arguments.get("expand") or []
+        project = arguments.get("projectId")
+        if project is None and self._project_required():
+            raise ValueError("projectId is required")
+        own = self.fixture.launch.get("projectId")
+        if project is not None and own is not None and project != own:
+            # Чужой проект: прогона и результатов в нём нет.
+            return {"content": [], "totalElements": 0, "totalPages": 1, "size": 0, "number": 0}
         if match := re.fullmatch(r"launch = (\d+)", aql):
             if expand:
                 raise ValueError("expand работает только с одним id")

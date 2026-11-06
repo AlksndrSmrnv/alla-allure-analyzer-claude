@@ -31,6 +31,9 @@ class Settings:
     token: str = field(default="", repr=False)
     # Адрес MCP-сервера TestOps; пусто — встроенный ``<endpoint>/api/mcp``.
     mcp_url: str = ""
+    # Проект TestOps (``projectId`` поиска результатов MCP): ``5`` или по модулям
+    # многомодульного проекта автотестов — ``orders=5,payments/api=7`` (см. ``projects``).
+    project_id: str = ""
     request_timeout: int = 30
     # Повторы запросов при 429/502/503/504 и сетевых сбоях (пауза 1, 2, 4… с или Retry-After).
     http_retries: int = 3
@@ -99,6 +102,14 @@ class Settings:
         return self.mcp_url.strip() or self.endpoint.strip().rstrip("/") + "/api/mcp"
 
     @property
+    def projects(self) -> tuple[ProjectRef, ...]:
+        """Проекты TestOps из ``project_id``: одно число — ``("", id)``, иначе ``модуль=id``.
+
+        Неверная строка — ``ConfigurationError`` (её же даёт ``validate`` при загрузке).
+        """
+        return parse_projects(self.project_id)
+
+    @property
     def operation_keys(self) -> tuple[str, ...]:
         """Ключи ``operation_id_keys`` без пустых и повторов (регистр не важен), как написаны."""
         keys: dict[str, str] = {}
@@ -111,6 +122,7 @@ class Settings:
     def validate(self, *, require_testops: bool = True) -> None:
         if require_testops:
             self._validate_testops()
+        parse_projects(self.project_id)
         for key in self.operation_keys:
             if not _OPERATION_KEY_RE.fullmatch(key):
                 raise ConfigurationError(
@@ -146,6 +158,61 @@ class Settings:
 
 
 _OPERATION_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
+_PROJECT_EXAMPLE = "например 5 или orders=5,payments/api=7"
+
+
+@dataclass(frozen=True)
+class ProjectRef:
+    """Проект TestOps модуля автотестов; ``module`` ``""`` — проект без модуля (одно число)."""
+
+    module: str
+    id: int
+
+
+def parse_projects(raw: str) -> tuple[ProjectRef, ...]:
+    """``ALLURE_PROJECT_ID``: пусто, одно число или пары ``модуль=id`` через запятую.
+
+    Модуль — папка от корня проекта автотестов (``/``, как у базы знаний модуля); один id
+    может стоять у нескольких модулей, модуль — только у одного id.
+    """
+    env_name = f"{ENV_PREFIX}PROJECT_ID"
+    value = raw.strip()
+    if not value:
+        return ()
+    if value.isascii() and value.isdigit():
+        return (ProjectRef("", _project_number(value, value, env_name)),)
+    projects: list[ProjectRef] = []
+    seen: set[str] = set()
+    for part in value.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        module, sep, number = item.partition("=")
+        module = module.strip().replace("\\", "/").strip("/")
+        if not sep or not module:
+            raise ConfigurationError(
+                f"{env_name}: «{item}» — нужен номер проекта или пары модуль=номер через "
+                f"запятую ({_PROJECT_EXAMPLE})"
+            )
+        if any(piece in ("", ".", "..") for piece in module.split("/")):
+            raise ConfigurationError(
+                f"{env_name}: «{module}» — не папка модуля от корня проекта ({_PROJECT_EXAMPLE})"
+            )
+        if module in seen:
+            raise ConfigurationError(f"{env_name}: модуль «{module}» указан дважды")
+        seen.add(module)
+        projects.append(ProjectRef(module, _project_number(number.strip(), item, env_name)))
+    if not projects:
+        raise ConfigurationError(f"{env_name}: нет ни одного проекта ({_PROJECT_EXAMPLE})")
+    return tuple(projects)
+
+
+def _project_number(raw: str, shown: str, env_name: str) -> int:
+    if not (raw.isascii() and raw.isdigit()) or int(raw) <= 0:
+        raise ConfigurationError(
+            f"{env_name}: «{shown}» — нужен номер проекта TestOps ({_PROJECT_EXAMPLE})"
+        )
+    return int(raw)
 
 # Допустимые границы (ge, le) значений настроек.
 # Например, параллелизм 0 навсегда подвесит asyncio.Semaphore в триаже и логах.

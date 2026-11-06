@@ -122,7 +122,7 @@ def test_prepare_is_read_only_and_hides_token(project: Path, testops: FakeTestOp
 
     # Только MCP: REST TestOps у пользователей закрыт; вызывается лишь поиск результатов.
     assert {(method, path) for method, path in testops.requests} == {("POST", "/api/mcp")}
-    assert testops.calls and all(set(call) <= {"aql", "page", "size", "expand"}
+    assert testops.calls and all(set(call) <= {"aql", "page", "size", "expand", "projectId"}
                                  for call in testops.calls)
     assert TOKEN not in out
     for path in run_dir.rglob("*"):
@@ -139,7 +139,7 @@ def test_log_without_errors_stays_out_of_the_task(project: Path, testops: FakeTe
     testops.fixture = test_bug_launch()
     run_dir, _, out = _prepare(project, capsys, launch_id=782)
     assert out.startswith("STATUS: analyze"), out
-    assert {"aql": "id = 201", "expand": FULL_EXPAND} in testops.calls  # с app.log
+    assert {"aql": "id = 201", "projectId": 5, "expand": FULL_EXPAND} in testops.calls  # с app.log
 
     task = (run_dir / "clusters" / "01.md").read_text(encoding="utf-8")
     assert "--- [S1 · сообщение об ошибке] ---\nexpected: <200> but was: <201>" in task

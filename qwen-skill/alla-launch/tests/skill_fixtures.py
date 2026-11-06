@@ -56,6 +56,7 @@ def _isolate_skill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "RUN_IN_BACKGROUND", False)
     monkeypatch.setenv("ALLURE_ENDPOINT", "https://testops.example")
     monkeypatch.setenv("ALLURE_TOKEN", TOKEN)
+    monkeypatch.setenv("ALLURE_PROJECT_ID", "5")
     monkeypatch.setenv("ALLURE_PAGE_SIZE", "3")
     # Сеанс Qwen того, кто запускает тесты, в папки разборов тестов не пишется.
     for name in ("QWEN_CODE_SESSION_ID", "QWEN_CODE_PROJECT_DIR", "QWEN_HOME"):

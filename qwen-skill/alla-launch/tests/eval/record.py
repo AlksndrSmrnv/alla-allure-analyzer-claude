@@ -1,9 +1,10 @@
 """Запись прогона TestOps в кассету — для команды, локально.
 
-    python tests/eval/record.py <launch_id> <out_dir>
+    python tests/eval/record.py <launch_id> <out_dir> [--module МОДУЛЬ | --project ID]
 
 Сбор — обычный ``pipeline.collect_launch`` скилла с настройками из ``<skill>/.env`` и
-окружения ``ALLURE_*``; ответы инструмента ``testops_find_testresults`` MCP-сервера TestOps
+окружения ``ALLURE_*`` (проект TestOps — как у ``prepare``: из ``ALLURE_PROJECT_ID``, при
+нескольких проектах — ``--module`` или ``--project``); ответы инструмента ``testops_find_testresults`` MCP-сервера TestOps
 раскладываются в кассету (``eval/cassette.py``): страницы прогона — в ``results.json``,
 полные ответы (дерево шагов, фикстуры, вложения с содержимым) — в ``details/<id>.json``,
 как есть. Заголовки запросов (токен) на диск не попадают. Каталог кассеты — данные команды:
@@ -39,6 +40,7 @@ class Recording:
     """Ответы инструмента MCP TestOps, разложенные по частям кассеты."""
 
     launch_id: int | None = None
+    project_id: int | None = None
     pages: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
     details: dict[int, dict[str, Any]] = field(default_factory=dict)
 
@@ -50,6 +52,9 @@ class Recording:
         items = tool_items({"structuredContent": payload})
         if match := _LAUNCH_AQL.match(aql):
             self.launch_id = int(match[1])
+            self.project_id = next((value for key, value in arguments.items()
+                                    if key in ("projectId", "project_id", "project")
+                                    and isinstance(value, int)), self.project_id)
             page = next((value for key, value in arguments.items()
                          if key in ("page", "pageNumber") and isinstance(value, int)), 0)
             totals = isinstance(payload, dict) and any(
@@ -75,6 +80,8 @@ class Recording:
         launch: dict[str, Any] = {"id": self.launch_id}
         if results and isinstance(results[0].get("launchName"), str):
             launch["name"] = results[0]["launchName"]
+        if self.project_id is not None:
+            launch["projectId"] = self.project_id
         return LaunchFixture(launch=launch, results=results, details=self.details)
 
 
@@ -119,6 +126,7 @@ def record(
     out_dir: Path,
     settings: Any,
     inner: Callable[[bool], httpx.AsyncBaseTransport] | None = None,
+    project_id: int | None = None,
 ) -> Any:
     """Получить прогон обычным сбором скилла и сохранить кассету; вернуть ``LaunchData``."""
     from alla_skill_lib.pipeline import collect_launch
@@ -129,7 +137,7 @@ def record(
         raise FileExistsError(f"Каталог кассеты {out_dir} не пуст: укажите новый каталог.")
     recording = Recording()
     with recording_tool_calls(recording, inner):
-        data = asyncio.run(collect_launch(launch_id, settings))
+        data = asyncio.run(collect_launch(launch_id, settings, project_id=project_id))
     save_cassette(recording.fixture(), out_dir)
     return data
 
@@ -139,14 +147,23 @@ def main(argv: list[str] | None = None) -> int:
 
     from alla_core.config import Settings
     from alla_skill_lib import workspace
+    from alla_skill_lib.projects import ProjectNotChosen, choose_project
 
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("launch_id", type=int)
     parser.add_argument("out_dir", type=Path)
+    parser.add_argument("--module", help="модуль из ALLURE_PROJECT_ID, чей проект TestOps взять")
+    parser.add_argument("--project", type=int, help="номер проекта TestOps прогона")
     args = parser.parse_args(argv)
     settings = Settings.load(env_file=workspace.SKILL_DIR / ".env")
     try:
-        data = record(args.launch_id, args.out_dir, settings)
+        choice = choose_project(settings, module=args.module, project=args.project)
+    except ProjectNotChosen as exc:
+        modules = ", ".join(item.module for item in exc.projects if item.module)
+        print(f"{exc}: укажите --module (модули: {modules}) или --project.", file=sys.stderr)
+        return 2
+    try:
+        data = record(args.launch_id, args.out_dir, settings, project_id=choice.id)
     except FileExistsError as exc:
         print(exc, file=sys.stderr)
         return 2

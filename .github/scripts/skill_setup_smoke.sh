@@ -91,7 +91,7 @@ for _ in $(seq 50); do
 done
 token=$(.venv/bin/python -c "import sys; sys.path.insert(0, sys.argv[1]); import skill_fake_testops as f; print(f.TOKEN)" \
   "$repo/qwen-skill/alla-launch/tests")
-printf 'ALLURE_ENDPOINT=http://127.0.0.1:%s\nALLURE_TOKEN=%s\n' "$port" "$token" > "$skill/.env"
+printf 'ALLURE_ENDPOINT=http://127.0.0.1:%s\nALLURE_TOKEN=%s\nALLURE_PROJECT_ID=5\n' "$port" "$token" > "$skill/.env"
 python3 "$entry" check | tee "$work/check.log"
 expect_status ready "$work/check.log"
 

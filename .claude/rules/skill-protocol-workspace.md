@@ -3,6 +3,8 @@ paths:
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/cli.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/workspace.py"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/jobs.py"
+  - "qwen-skill/alla-launch/scripts/alla_skill_lib/projects.py"
+  - "qwen-skill/alla-launch/tests/test_skill_projects.py"
   - "qwen-skill/alla-launch/tests/test_skill_protocol.py"
   - "qwen-skill/alla-launch/tests/test_skill_flow.py"
 ---
@@ -49,6 +51,25 @@ paths:
   `fake_testops_server.py --delay`.
 - Продолжает свежий (<24 ч) незавершённый разбор того же прогона без обращения к TestOps;
   `--fresh` — начать заново.
+- **Проект TestOps** (`projects.choose_project`, решение пользователя 2026-11-06). Поиск
+  результатов MCP ищет в одном проекте (`projectId`), а номер прогона и ссылка `…/launch/<id>`
+  проекта не называют. `ALLURE_PROJECT_ID` — одно число или пары `модуль=номер` (модуль — папка
+  от корня проекта, как у базы знаний; один номер у нескольких модулей можно). Выбор: `--project
+  ID` — он; `--module` — проект модуля (точное имя, иначе единственный модуль с таким последним
+  сегментом пути); без них — единственный проект, а при нескольких — `error`: «Спроси
+  пользователя, из какого модуля прогон», и по команде `prepare <id> --module <модуль>` на модуль
+  (с `--fresh`, если он был). Неизвестный модуль — то же со строкой «Модуля … нет». Перебором
+  проектов скилл прогон не ищет: выбор за пользователем. Один номер без модуля подходит любому
+  `--module`; проектов нет — запросы без проекта (если инструмент его требует —
+  `McpError(no_project)`, `core-client.md`). Порядок в `cmd_prepare`: продолжение неоконченного
+  разбора (без вопроса о модуле: номер прогона общий для проектов) → настройки → выбор → задание;
+  заданию идут `--project` и `--module` (`_project_args`), так что вопрос задаётся до фоновой
+  выгрузки, а `.jobs/` не появляется. В `run.json` — `project_id` и `project_module` (только для
+  человека и расширений; модуль кластера и база знаний от выбора не зависят, `modules.py`).
+  Пустой прогон с проектом — `error` «он из другого проекта TestOps» с проектом и модулем.
+  `check`: строка `ALLURE_PROJECT_ID`, `Внимание:` — папки модуля нет в проекте, у инструмента
+  нет параметра проекта; сеанс открывается с первым проектом. Запись кассет эталона
+  (`tests/eval/record.py`) выбирает проект тем же `choose_project` (`--module`/`--project`).
 - Папку с пустым или оборванным `run.json` (`ws.read_run`) или с другой версией
   (`schema` ≠ `RUN_SCHEMA`, сейчас 7: `other_ids` в `rerun/plan.json`; 6 — скриншоты `images/` и `images` в записи кластера) пропускает: берёт другую свежую либо начинает новую.
   Остальные команды на такой папке дают `error` с готовой командой `prepare <id> --fresh`.

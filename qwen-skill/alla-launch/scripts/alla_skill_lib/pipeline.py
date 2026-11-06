@@ -45,6 +45,8 @@ async def collect_launch(
     settings: Settings,
     progress: Callable[[str], None] | None = None,
     images_dir: Path | None = None,
+    *,
+    project_id: int | None = None,
 ) -> LaunchData:
     """Получить результаты прогона из TestOps, обогатить логами и кластеризовать.
 
@@ -52,10 +54,14 @@ async def collect_launch(
     идёт минуты, и без них не понять, что скрипт жив. ``images_dir`` — временная папка
     для скриншотов тестов-примеров (они скачиваются после кластеризации: нужны только
     тестам, чьи данные увидит модель); ``None`` — скриншоты не скачиваются.
+    ``project_id`` — проект TestOps запросов (выбор модуля — ``cli``); ``None`` — единственный
+    проект из ``ALLURE_PROJECT_ID``, если он один, иначе запросы без проекта.
     """
     say = progress or (lambda message: None)
     warnings: list[str] = []
-    async with TestOpsMcpClient(settings) as client:
+    if project_id is None and len(settings.projects) == 1:
+        project_id = settings.projects[0].id
+    async with TestOpsMcpClient(settings, project_id=project_id) as client:
         say(f"Получаю результаты прогона #{launch_id} из TestOps…")
         triage = await TriageService(client, settings).analyze_launch(launch_id)
         warnings.extend(fetch_warnings(triage.fetch, launch_id))
