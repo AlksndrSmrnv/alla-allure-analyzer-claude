@@ -819,3 +819,41 @@ def test_failed_analysis_write_is_an_error_not_a_task_for_the_model(
 
     assert out.startswith("STATUS: error") and "по проверенной правке не записан" in out
     assert not (run_dir / "analyses" / f"{order}.md").exists()
+
+
+def test_hand_edited_script_analysis_is_kept(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Разбор скрипта поправили руками (начало то же): next его не затирает (ревью Codex)."""
+    _checked_fix(nested_project, capsys)
+    run_dir, _, order, login = _next_launch(nested_project, capsys, monkeypatch)
+    _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
+    path = run_dir / "analyses" / f"{order}.md"
+    edited = path.read_text(encoding="utf-8").replace("ПРИЧИНА: тест —", "ПРИЧИНА: тест — (правка) ")
+    path.write_text(edited, encoding="utf-8")
+
+    _run(["next", str(run_dir)], capsys)
+
+    assert path.read_text(encoding="utf-8") == edited
+
+
+def test_unopenable_lock_keeps_the_result(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Блокировку базы знаний не открыть — итог перезапуска всё равно показан (ревью Codex)."""
+    import contextlib
+
+    run_dir, _, _ = _checked_fix(nested_project, capsys)
+    (run_dir / "rerun" / "learned.json").unlink()
+
+    @contextlib.contextmanager
+    def broken(_root: Path):  # type: ignore[no-untyped-def]
+        raise PermissionError("нет прав на alla-reports")
+        yield
+
+    monkeypatch.setattr(fix_facts, "kb_write_lock", broken)
+    out = _run(["rerun", "--wait", "--run", str(run_dir)], capsys)[1]
+
+    assert out.startswith("STATUS: rerun_done") and "итог не записан: нет прав" in out

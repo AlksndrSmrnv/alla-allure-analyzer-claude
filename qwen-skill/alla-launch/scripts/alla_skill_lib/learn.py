@@ -45,8 +45,11 @@ def learn_from_rerun(paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobSt
     if done is not None:
         return Learned(list(done.get("lines") or []), list(done.get("folders") or []))
     today = date.today().isoformat()
-    with fix_facts.kb_write_lock(Path(run["project_root"])):
-        return _learn(paths, run, state, files, job, today)
+    try:
+        with fix_facts.kb_write_lock(Path(run["project_root"])):
+            return _learn(paths, run, state, files, job, today)
+    except OSError as exc:  # блокировку не открыть (права, диск) — итог всё равно показываем
+        return Learned([f"В базу знаний итог не записан: {exc}. Скажи это пользователю."])
 
 
 def _learn(paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState,

@@ -614,8 +614,10 @@ def fix_auto_written(state: Mapping[str, Any], file_id: str, text: str,
     if not text.strip():
         return False
     ours = (state.get(FIX_AUTO_STATE) or {}).get(file_id)
-    if isinstance(ours, dict) and ours.get("analysis") == digest(text):
-        return True
+    if isinstance(ours, dict) and ours.get("analysis"):
+        # Отметка есть — решает она: текст с нашим началом, но другой — правка руками, её не
+        # затираем (ревью Codex). По началу текста — только когда отметки нет.
+        return bool(ours["analysis"] == digest(text))
     auto = (entry or {}).get("fix_auto") or {}
     return bool(auto) and text.startswith(f"{SCRIPT_START}{auto.get('id')} ")
 
