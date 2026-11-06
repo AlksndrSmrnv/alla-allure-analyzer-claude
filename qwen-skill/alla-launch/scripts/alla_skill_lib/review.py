@@ -31,6 +31,7 @@ from alla_skill_lib.proposals import parse_proposal
 from alla_skill_lib.session_log import (
     SessionLog,
     load_session,
+    qwen_home,
     read_skill_problems,
     skill_status,
     skill_subcommand,
@@ -240,7 +241,8 @@ def _process_facts(
 def _journal_facts(log: SessionLog, project_root: Path, paths: ws.RunPaths) -> dict[str, Any]:
     if not log.calls:
         return {"found": False, "note": log.note}
-    ctx = RuleContext(project_root, Path.home(), log.calls, log.final, [paths.root])
+    ctx = RuleContext(project_root, Path.home(), log.calls, log.final, [paths.root],
+                      qwen_home())
     rules = {name: check(ctx) for name, check in RULES.items()}
     if not log.reached_done:
         # Без done нечего сверять: отчёт агент и не должен был выводить.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -571,6 +572,42 @@ def test_tilde_path_is_read_in_the_stand_home(tmp_path: Path) -> None:
     ctx.home = tmp_path / "home"
     (ctx.home / ".qwen").mkdir(parents=True)
     (ctx.home / ".qwen/settings.json").write_text("{}")
+    result = CHECKS["allowed_reads"](ctx)
+    assert result["status"] == "fail" and "вне проекта" in result["evidence"]
+
+
+def _saved_output(tmp_path: Path, root: Path) -> Path:
+    """Файл, куда Qwen Code сохранил длинный вывод инструмента проекта ``root``."""
+    digest = hashlib.sha256(str(root).encode()).hexdigest()
+    return tmp_path / "home/.qwen/tmp" / digest / "tool-results/call_1.txt"
+
+
+def _with_saved_output(ctx: Context, saved: Path) -> Context:
+    ctx.home = saved.parents[4]
+    saved.parent.mkdir(parents=True)
+    saved.write_text("---\nname: alla-launch\n---\n")
+    return ctx
+
+
+def test_reading_saved_tool_output_of_the_project_passes(tmp_path: Path) -> None:
+    # Qwen 0.26 сохраняет тело SKILL.md от `skill` в tool-results и отдаёт 2 тыс. символов:
+    # дочитать — не чтение вне проекта (A03).
+    saved = _saved_output(tmp_path, tmp_path / "p")
+    ctx = _with_saved_output(context(tmp_path, events(
+        ("read_file", {"file_path": str(saved), "offset": 0, "limit": 600}, "…"))), saved)
+    assert CHECKS["allowed_reads"](ctx)["status"] == "pass"
+
+
+@pytest.mark.parametrize("tool,project", [
+    ("read_file", "other"),  # tool-results другого проекта
+    ("grep_search", "p"),  # поиск по сохранённому выводу — не дочитывание
+])
+def test_saved_tool_output_is_allowed_only_to_read_and_only_own(
+        tmp_path: Path, tool: str, project: str) -> None:
+    saved = _saved_output(tmp_path, tmp_path / project)
+    tool_input = ({"file_path": str(saved)} if tool == "read_file"
+                  else {"pattern": "x", "path": str(saved.parent)})
+    ctx = _with_saved_output(context(tmp_path, events((tool, tool_input, ""))), saved)
     result = CHECKS["allowed_reads"](ctx)
     assert result["status"] == "fail" and "вне проекта" in result["evidence"]
 
