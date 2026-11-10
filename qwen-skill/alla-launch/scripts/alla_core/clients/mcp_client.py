@@ -39,6 +39,7 @@ from alla_core.config import Settings
 from alla_core.exceptions import AllureApiError, McpError, PaginationLimitError
 from alla_core.models.common import PageResponse
 from alla_core.models.testops import AttachmentMeta, ExecutionStep, LaunchResponse, TestResultResponse
+from alla_core.origins import require_allowed_origin
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,8 @@ class TestOpsMcpClient:
     __test__ = False  # имя начинается с Test: pytest не должен собирать класс
 
     def __init__(self, settings: Settings, *, project_id: int | None = None) -> None:
+        settings.validate_testops_origins()
+        self._allowed_origins = settings.allowed_origins
         self._url = settings.mcp_endpoint
         # Проект TestOps всех запросов (``projectId``); ``None`` — не слать.
         self.project_id = project_id
@@ -105,7 +108,7 @@ class TestOpsMcpClient:
         self._retries = settings.http_retries
         self.last_total_elements: int | None = None
         self._sleep = asyncio.sleep  # подменяется в тестах
-        self._http = httpx.AsyncClient(timeout=settings.request_timeout)
+        self._http = httpx.AsyncClient(timeout=settings.request_timeout, follow_redirects=False)
         self._session_id: str | None = None
         self._protocol: str | None = None
         self._params: dict[str, str | None] | None = None
@@ -475,6 +478,8 @@ class TestOpsMcpClient:
 
     def _check_status(self, exchange: _Exchange, *, had_session: bool) -> None:
         status = exchange.status
+        if 300 <= status < 400:
+            raise AllureApiError(status, "перенаправление TestOps запрещено", "mcp")
         if status < 400:
             return
         if status == 404 and had_session:
@@ -528,12 +533,13 @@ class TestOpsMcpClient:
         """Один POST. Ответ JSON читается целиком; поток SSE — до своего ответа, после чего
         закрывается (сервер не обязан закрывать его сам); запросы сервера в потоке получают
         ответ отдельным POST."""
+        require_allowed_origin(self._url, self._allowed_origins)
         async with self._http.stream("POST", self._url, json=message, headers=headers) as resp:
             content_type = (resp.headers.get("content-type") or "").lower()
-            if resp.status_code >= 400 or not content_type.startswith("text/event-stream"):
+            if resp.status_code >= 300 or not content_type.startswith("text/event-stream"):
                 text = (await resp.aread()).decode("utf-8", errors="replace")
                 reply = None
-                if resp.status_code < 400 and request_id is not None and text.strip():
+                if resp.status_code < 300 and request_id is not None and text.strip():
                     reply = _json_reply(text, request_id)
                 return _Exchange(resp.status_code, resp.headers, text, reply)
             reply = await self._read_sse(resp, request_id, headers)
@@ -582,8 +588,11 @@ class TestOpsMcpClient:
             body["result"] = {}
         else:
             body["error"] = {"code": -32601, "message": "Method not found"}
+        require_allowed_origin(self._url, self._allowed_origins)
         try:
-            await self._http.post(self._url, json=body, headers=headers)
+            response = await self._http.post(self._url, json=body, headers=headers)
+            if 300 <= response.status_code < 400:
+                raise AllureApiError(response.status_code, "перенаправление TestOps запрещено", "mcp")
         except httpx.HTTPError as exc:
             logger.warning("MCP TestOps: ответ на %s не отправлен: %s", message.get("method"), exc)
 

@@ -30,6 +30,7 @@ from alla_skill_lib.rerun import (
     build_errors,
     hold_lock,
     maven_command,
+    maven_config_error,
     method_result,
     read_reports,
     repeats_ci,
@@ -174,8 +175,16 @@ def _maven(
     fallback: bool,
 ) -> tuple[int, bool]:
     """Код выхода Maven и «обрезан по времени»; вывод — в ``log``."""
-    command = maven_command(group, tests, suffix, extra, fallback=fallback)
     cwd = group.fallback_cwd if fallback else group.cwd
+    try:
+        command = maven_command(group, tests, suffix, extra, fallback=fallback)
+        error = maven_config_error(Path(cwd))
+    except ValueError:
+        command, error = [], "небезопасные параметры или неназванные тесты Maven"
+    if error:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(f"[ERROR] {error}\n", encoding="utf-8")
+        return 126, False
     shown = command[: len(command) - len(extra)]
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "ab") as out:

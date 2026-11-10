@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from alla_core.exceptions import ConfigurationError
+from alla_core.origins import load_allowed_origins, origin, require_allowed_origin
 
 ENV_PREFIX = "ALLURE_"
 _SECRET_FIELDS = {"token"}
@@ -29,6 +30,7 @@ class Settings:
 
     endpoint: str = ""
     token: str = field(default="", repr=False)
+    allowed_origins: tuple[str, ...] = ()
     # Адрес MCP-сервера TestOps; пусто — встроенный ``<endpoint>/api/mcp``.
     mcp_url: str = ""
     # Проект TestOps (``projectId`` поиска результатов MCP): ``5`` или по модулям
@@ -75,6 +77,7 @@ class Settings:
         environ: Mapping[str, str] | None = None,
         *,
         require_testops: bool = True,
+        project_root: Path | None = None,
     ) -> Settings:
         """Собрать настройки из ``env_file`` и окружения и проверить обязательные.
 
@@ -88,10 +91,14 @@ class Settings:
 
         kwargs: dict[str, object] = {}
         for item in dataclasses.fields(cls):
+            if item.name == "allowed_origins":
+                continue
             raw = values.get(ENV_PREFIX + item.name.upper())
             if raw is None:
                 continue
             kwargs[item.name] = _coerce(item.name, type(item.default), raw.strip())
+        if require_testops:
+            kwargs["allowed_origins"] = load_allowed_origins(project_root)
         settings = cls(**kwargs)  # type: ignore[arg-type]
         settings.validate(require_testops=require_testops)
         return settings
@@ -136,6 +143,13 @@ class Settings:
                 raise ConfigurationError(
                     f"{ENV_PREFIX}{name.upper()}: допустимо {allowed}, получено {value}"
                 )
+        if require_testops:
+            self.validate_testops_origins()
+
+    def validate_testops_origins(self) -> None:
+        """Also called by clients accepting directly constructed Settings."""
+        require_allowed_origin(self.endpoint.strip(), self.allowed_origins)
+        require_allowed_origin(self.mcp_endpoint, self.allowed_origins)
 
     def _validate_testops(self) -> None:
         endpoint = self.endpoint.strip()
@@ -144,15 +158,16 @@ class Settings:
                 "Не задан ALLURE_ENDPOINT — URL сервера Allure TestOps "
                 "(например https://allure.company.com)"
             )
-        if not endpoint.startswith(("http://", "https://")):
-            raise ConfigurationError(
-                f"ALLURE_ENDPOINT должен начинаться с http:// или https://, получено: {endpoint!r}"
-            )
+        try:
+            origin(endpoint)
+        except ConfigurationError as exc:
+            raise ConfigurationError(f"ALLURE_ENDPOINT: {exc}") from None
         mcp_url = self.mcp_url.strip()
-        if mcp_url and not mcp_url.startswith(("http://", "https://")):
-            raise ConfigurationError(
-                f"ALLURE_MCP_URL должен начинаться с http:// или https://, получено: {mcp_url!r}"
-            )
+        if mcp_url:
+            try:
+                origin(mcp_url)
+            except ConfigurationError as exc:
+                raise ConfigurationError(f"ALLURE_MCP_URL: {exc}") from None
         if not self.token.strip():
             raise ConfigurationError("Не задан ALLURE_TOKEN — API-токен Allure TestOps")
 

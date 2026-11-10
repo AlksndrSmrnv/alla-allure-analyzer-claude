@@ -392,10 +392,19 @@ def set_enabled(project_root: Path, name: str, on: bool) -> bool:
 
     Переписывается только строка ``enabled = [...]``: комментарии и настройки остаются.
     """
+    updated = enabled_text(project_root, name, on)
+    if updated is None:
+        return False
+    ws.write_atomic(config_path(project_root), updated)
+    return True
+
+
+def enabled_text(project_root: Path, name: str, on: bool) -> str | None:
+    """Preview the root enabled setting without writing config or agent files."""
     config = load_config(project_root)
     names = [item for item in config.enabled if item != name] + ([name] if on else [])
     if list(config.enabled) == names:
-        return False
+        return None
     line = "enabled = [" + ", ".join(json.dumps(item) for item in names) + "]"
     path = config_path(project_root)
     text = path.read_text(encoding="utf-8") if path.is_file() else CONFIG_HEADER
@@ -417,8 +426,7 @@ def set_enabled(project_root: Path, name: str, on: bool) -> bool:
         head += line + "\n" + ("\n" if tail else "")
     updated = head + tail
     _check_rewrite(path, text, updated, names)
-    ws.write_atomic(path, updated)
-    return True
+    return updated
 
 
 def _check_rewrite(path: Path, before: str, after: str, names: list[str]) -> None:

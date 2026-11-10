@@ -168,12 +168,12 @@ def test_install_files_lists_without_writing_and_installs_after_yes(
     code, out = _run(["install-files", "--project-root", str(project)], capsys)
     assert code == 0, out
     assert out.splitlines()[0] == "STATUS: install_files"
-    assert "alla-batch.md" in out and "/alla:run" in out and str(qwen_dir) in out
+    assert "alla-batch.md" in out and "commands/alla/run.md" in out and "+++" in out
     assert "install-files --yes" in out and "«да»" in out
     assert f"--project-root {shlex.quote(str(project))}" in out  # подтверждение — для того же проекта
     assert not qwen_dir.exists()  # без --yes ничего не записано
 
-    code, out = _run(["install-files", "--yes", "--project-root", str(project)], capsys)
+    code, out = _run(["install-files", "--yes", "--diff", _install_hash(project, capsys), "--project-root", str(project)], capsys)
     assert code == 0, out
     assert out.splitlines()[0] == "STATUS: ok"
     assert (qwen_dir / "agents" / "alla-batch.md").is_file()
@@ -185,7 +185,7 @@ def test_install_files_lists_without_writing_and_installs_after_yes(
     (qwen_dir / "commands" / "alla" / "apply.md").write_text("старая версия", encoding="utf-8")
     code, out = _run(["install-files", "--project-root", str(project)], capsys)
     assert out.splitlines()[0] == "STATUS: install_files"
-    assert "обновить" in out and "apply.md" in out and "run.md" not in out
+    assert "--- a/.qwen/commands/alla/apply.md" in out and "run.md" not in out
 
 
 def test_prepare_and_check_do_not_write_into_qwen_dir(
@@ -200,3 +200,12 @@ def test_prepare_and_check_do_not_write_into_qwen_dir(
     assert not (project / ".qwen").exists()
     assert "не установлены или устарели" in out and "install-files" in out
     assert f"--project-root {shlex.quote(str(project))}" in out
+
+
+def _install_hash(project: Path, capsys: pytest.CaptureFixture[str]) -> str:
+    import re
+
+    code, output = _run(["install-files", "--project-root", str(project)], capsys)
+    assert code == 0, output
+    match = re.search(r"--diff ([0-9a-f]{64})", output)
+    return match.group(1) if match else "unchanged"

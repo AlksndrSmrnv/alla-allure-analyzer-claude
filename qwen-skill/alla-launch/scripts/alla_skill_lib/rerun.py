@@ -35,6 +35,7 @@ from typing import Any
 
 from alla_core.utils.text_normalization import message_key
 from alla_skill_lib import workspace as ws
+from alla_skill_lib.child_env import inherited_env
 from alla_skill_lib.code_hints import JvmTest, ProjectIndex, jvm_test_of
 from alla_skill_lib.kb import secret_lines
 from alla_skill_lib.modules import build_dir, build_tool, maven_reactor
@@ -47,9 +48,6 @@ ERROR_LINES = 5
 LOCK_NAME = ".rerun.lock"
 KILL_GRACE_S = 10
 STALE_MARGIN_S = 300  # задание дольше своего потолка времени — процесс уже не наш
-# Окружение Maven без настроек скилла (токен TestOps) и переменных сеанса Qwen.
-DROPPED_ENV_PREFIXES = ("ALLURE_", "QWEN_CODE_")
-DROPPED_ENV = frozenset({"PYTHONPATH"})
 NOT_IN_REACTOR = "Could not find the selected project in the reactor"
 # surefire: тесты выключены (skipTests, maven.test.skip) — отчётов не будет, код выхода 0.
 TESTS_SKIPPED = "Tests are skipped."
@@ -249,8 +247,8 @@ def build_plan(
         plan.tests.append(planned)
     plan.groups = _groups(project_root, plan)
     if plan.tests and not plan.groups:
-        plan.note = ("Maven не найден: нет ни mvnw в проекте, ни mvn в PATH. Пользователю нужно "
-                     "установить Maven или добавить Maven Wrapper")
+        plan.note = ("Maven не найден: нет mvn в PATH. Пользователю нужно "
+                     "установить Maven")
         plan.tests = []
     return plan
 
@@ -297,11 +295,7 @@ def _groups(project_root: Path, plan: Plan) -> list[MavenGroup]:
 
 
 def maven_tool(project_root: Path, reactor: PurePath) -> list[str] | None:
-    """``mvnw`` реактора, затем корня проекта (без права запуска — через ``sh``), иначе ``mvn``."""
-    for folder in dict.fromkeys((project_root / reactor, project_root)):
-        wrapper = folder / "mvnw"
-        if wrapper.is_file():
-            return [str(wrapper)] if os.access(wrapper, os.X_OK) else ["sh", str(wrapper)]
+    """Only an installed Maven executable; wrappers may download their runtime."""
     mvn = shutil.which("mvn")
     return [mvn] if mvn else None
 
@@ -434,16 +428,23 @@ def surefire_filter(tests: Iterable[PlannedTest]) -> str:
     """``-Dtest`` surefire: ``pkg.A#m1+m2,pkg.B#m3``."""
     methods: dict[str, list[str]] = {}
     for test in tests:
+        if not all(_IDENT_RE.fullmatch(part) for part in [*test.class_name.split("."), test.method]):
+            raise ValueError("Maven: требуется точное имя класса и метода без шаблонов")
         methods.setdefault(test.class_name, [])
         if test.method not in methods[test.class_name]:
             methods[test.class_name].append(test.method)
+    if not methods:
+        raise ValueError("Maven: список названных тестов пуст")
     return ",".join(f"{cls}#{'+'.join(names)}" for cls, names in methods.items())
 
 
 def maven_command(group: MavenGroup, tests: Iterable[PlannedTest], suffix: str,
                   extra: list[str], *, fallback: bool = False) -> list[str]:
+    validate_maven_args(extra)
+    if len(group.tool) != 1 or Path(group.tool[0]).name != "mvn":
+        raise ValueError("Maven: разрешён только установленный mvn из PATH")
     return [
-        *group.tool, "-B", *([] if fallback else group.select), "test",
+        *group.tool, "-o", "-B", *([] if fallback else group.select), "test",
         f"-Dtest={surefire_filter(tests)}",
         "-Dsurefire.failIfNoSpecifiedTests=false",
         "-DfailIfNoTests=false",
@@ -457,8 +458,66 @@ def maven_command(group: MavenGroup, tests: Iterable[PlannedTest], suffix: str,
 
 
 def maven_args(raw: str) -> list[str]:
-    """``ALLURE_RERUN_MAVEN_ARGS`` (профили, свойства стенда) — как в shell, без shell."""
-    return shlex.split(raw) if raw.strip() else []
+    """Only profiles and non-runner properties, without shell evaluation."""
+    args = shlex.split(raw) if raw.strip() else []
+    validate_maven_args(args)
+    return args
+
+
+def validate_maven_args(args: list[str], *, config: bool = False) -> None:
+    for arg in args:
+        if config and arg in {"-o", "--offline", "-B", "--batch-mode"}:
+            continue
+        if re.fullmatch(r"-P[A-Za-z0-9_.!,+\-]+", arg):
+            continue
+        if arg.startswith("-D"):
+            key = arg[2:].split("=", 1)[0]
+            if config and key in {"skipTests", "maven.test.skip"}:
+                continue  # command-line false overrides these established build defaults
+            if (re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", key)
+                    and key not in {"test", "it.test", "skipTests", "skipITs", "failIfNoTests"}
+                    and not key.startswith(("surefire.", "failsafe.", "maven."))):
+                continue
+        raise ValueError("Maven: разрешены только -Pпрофиль и -Dсвойство без изменения набора тестов")
+
+
+def maven_config_error(cwd: Path) -> str:
+    """Validate effective project defaults before every attempt, including fallback."""
+    for folder in (cwd, *cwd.parents):
+        config_dir = folder / ".mvn"
+        # The launcher stops at the nearest .mvn directory, even without a config file.
+        if config_dir.is_dir():
+            path = config_dir / "maven.config"
+            try:
+                if path.exists():
+                    validate_maven_args(_config_options(path.read_bytes().decode("utf-8")),
+                                        config=True)
+            except (OSError, UnicodeError, ValueError):
+                return "небезопасные или неподдерживаемые параметры .mvn/maven.config"
+            break
+    return ""
+
+
+def _config_options(text: str) -> list[str]:
+    """Accept one simple option per line, without shell quoting or continuations.
+
+    Maven 3.8 splits whitespace; 3.9+ takes separate lines. A single whitespace-free
+    option works with both. shlex would hide subsequent native options behind an
+    escaped newline or an inline comment, so never use it for maven.config.
+    """
+    text = text.replace("\r\n", "\n")
+    if "\r" in text:
+        raise ValueError("Maven: неподдерживаемый перенос строки в maven.config")
+    options = []
+    for raw in text.split("\n"):
+        line = raw.strip(" ")
+        if not line or line.startswith("#"):
+            continue
+        if any(char.isspace() or ord(char) < 32 or ord(char) == 127 or char in "\\\"'"
+               for char in line):
+            raise ValueError("Maven: в maven.config нужна одна опция на строку без quoting")
+        options.append(line)
+    return options
 
 
 # ---------------------------------------------------------------------------
@@ -824,10 +883,8 @@ def _start(paths: ws.RunPaths, files: JobFiles, plan: Plan, timeout: int, extra:
 
 
 def worker_env(environ: dict[str, str] | None = None) -> dict[str, str]:
-    """Окружение фонового процесса и Maven: без ``ALLURE_*``, ``QWEN_CODE_*`` и ``PYTHONPATH``."""
-    source = dict(os.environ if environ is None else environ)
-    return {key: value for key, value in source.items()
-            if key not in DROPPED_ENV and not key.startswith(DROPPED_ENV_PREFIXES)}
+    """Test environment without CLI secrets or Maven/JVM argument injection."""
+    return inherited_env(environ, maven=True)
 
 
 def wait_job(files: JobFiles, budget: float) -> JobState:

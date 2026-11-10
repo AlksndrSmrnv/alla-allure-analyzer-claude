@@ -55,6 +55,7 @@ def _make_auth(mock_http) -> AllureAuthManager:
     auth = AllureAuthManager(
         endpoint="https://allure.test",
         api_token="test-api-token",
+        allowed_origins=("https://allure.test",),
     )
     auth._http = mock_http
     return auth
@@ -282,6 +283,7 @@ def test_constructor_strips_trailing_slash() -> None:
     auth = AllureAuthManager(
         endpoint="https://allure.test/",
         api_token="token",
+        allowed_origins=("https://allure.test",),
     )
     assert auth._endpoint == "https://allure.test"
 
@@ -309,6 +311,7 @@ class _ScriptedPost:
 def _retrying_auth(items: list[object], retries: int = 3) -> tuple[AllureAuthManager, list[float]]:
     auth = AllureAuthManager(
         endpoint="https://allure.test", api_token="test-api-token", retries=retries,
+        allowed_origins=("https://allure.test",),
     )
     auth._http = _ScriptedPost(items)
     delays: list[float] = []

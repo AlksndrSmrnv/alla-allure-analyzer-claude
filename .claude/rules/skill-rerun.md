@@ -66,14 +66,14 @@ paths:
 
 ## Проверка
 
-- `tests/test_skill_rerun.py` — фейковый `mvnw` (`skill_fake_maven.py`: сценарий итогов по
+- `tests/test_skill_rerun.py` — фейковый `mvn` (`skill_fake_maven.py`: сценарий итогов по
   `класс#метод`, `-pl`, суффикс, «нет в реакторе», сломанная сборка, пауза).
 - Настоящий Maven вручную (2026-10-24, Maven 3.10, JDK 27, JUnit 5.11, surefire 3.2.5, `-o`):
   нестабильный тест прошёл на запуске 2 из 3, сломанный — 3 из 3, в третий запуск ушёл
   только он. В CI Maven не гоняется.
 - Стенд Qwen — сценарий F01 (фикстура `flaky`: у createOrder повтор упал иначе, у updateOrder
-  — прошёл; `pom.xml` и фейковый `mvnw` в корне проекта, его Python и скрипт — от папки
-  `mvnw`: песочница не даёт JDK и `~/.m2`; `target/` и счётчик запусков в `.gitignore`).
+  — прошёл; `pom.xml` и фейковый `mvn` в корне проекта, его Python и скрипт — от папки
+  `mvn`: песочница не даёт JDK и `~/.m2`; `target/` и счётчик запусков в `.gitignore`).
   Реплики «/alla-launch 793» → «Да, перезапусти.» → «Да, отметь их в базе знаний.» (до отметки
   в TestOps);
   проверки `rerun_started`, `rerun_result_shown`, `flaky_saved`. Прогоны (qwen3.8-flash,

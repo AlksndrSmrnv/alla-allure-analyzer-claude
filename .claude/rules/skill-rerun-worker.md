@@ -17,7 +17,7 @@ paths:
   «нет файла сборки». Причина попадает в «Запустить нельзя».
 - Группа на модуль (`MavenGroup`): корень реактора — `modules.maven_reactor`; модуль не
   корень реактора — `-pl <модуль> -am`, запасной `fallback_cwd` — папка модуля. Инструмент —
-  `mvnw` реактора, затем корня проекта (без права запуска — `sh mvnw`), иначе `mvn` из PATH,
+  только `mvn` из PATH (тот же executable для attempts/fallback, wrapper запрещён),
   иначе `ok` «Maven не найден». Windows — не поддерживается (killpg, `.cmd`).
 - `changed` («правка агента применена» — есть `proposals/NN.applied.json`; «код теста
   изменён» — `git status --porcelain` исходника): прошедший тест — «проверка правки», в
@@ -47,7 +47,7 @@ paths:
   иначе гоняли Maven одновременно — ревью Codex); `--yes` проверяет её заранее (`lock_busy`). Состояние (`job_state`): `result.json` того же
   `job` — done; `failed` — причина; живой `pid` (не старше потолка + `STALE_MARGIN_S`, зомби
   своей команды — `waitpid`) — running; иначе «прервался».
-- Команда Maven: `-B test -Dtest=A#m1+m2,B#m3 -Dsurefire.failIfNoSpecifiedTests=false
+- Команда Maven: `-o -B test -Dtest=A#m1+m2,B#m3 -Dsurefire.failIfNoSpecifiedTests=false
   -DfailIfNoTests=false -Dmaven.test.failure.ignore=true -DskipTests=false
   -Dmaven.test.skip=false -Dsurefire.reportNameSuffix=alla-<job>-<k>`
   + `shlex.split(ALLURE_RERUN_MAVEN_ARGS)`. Без `-ntp` (Maven < 3.6.1). `skipTests=false` и
@@ -57,7 +57,7 @@ paths:
   в настройке surefire) так не отменить: отчётов нет, код 0, в логе `TESTS_SKIPPED` —
   причина `SKIPPED_BY_BUILD_REASON` («Maven пропустил тесты…», совет про
   `ALLURE_RERUN_MAVEN_ARGS`) вместо «нет в отчётах surefire» (`rerun_worker._missing_reason`).
-  Фейковый `mvnw` читает ближайший `.mvn/maven.config` с тем же порядком, `pom_skip` — пропуск
+  Фейковый `mvn` читает ближайший `.mvn/maven.config` с тем же порядком, `pom_skip` — пропуск
   из pom. На настоящем Maven (ревью Codex, `-o`, surefire 3.2.5): `maven.config` с
   `-DskipTests` и `-Dmaven.test.skip=true` — тест выполнен; `<skipTests>true` в pom — «Tests
   are skipped.», код 0. Ненулевой код —
@@ -88,3 +88,19 @@ paths:
   не теряет. Потолок `ALLURE_RERUN_TIMEOUT` — общий; по нему `killpg` SIGTERM, ждём, пока
   опустеет вся группа (не только Maven: форк surefire может игнорировать SIGTERM), через
   `KILL_GRACE_S` — SIGKILL группе.
+
+## Offline и ограничение команды
+
+Каждая команда — `mvn -o -B ... test -Dtest=<точные методы>`. Пустой/шаблонный selector
+отклоняется на границе запуска. Дополнительные аргументы — только безопасные -P/-D;
+цели/POM/settings/reactor и test/it.test/skipTests/skipITs/surefire.*/failsafe.*/maven.* запрещены.
+Перед каждым запуском проверяется применимый `.mvn/maven.config`; конфликт — not_run.
+Поиск останавливается на ближайшем каталоге `.mvn`, даже без config. Грамматика config —
+одна whitespace-free опция на строку, без кавычек/обратной косой черты/управляющих символов;
+LF/CRLF и full-line # comments поддерживаются. Shlex для config запрещён: его экранирование
+и inline comments скрывают отдельные нативные опции Maven (например --settings). Фейк
+моделирует разбиение Maven3.9+ отдельно от production parser, чтобы не маскировать обход.
+MAVEN_ARGS/OPTS/BASEDIR/PROJECTBASEDIR/CONFIG, JVM injection и credentials моделей/сервисов
+удаляются из окружения. MAVEN_SKIP_RC всегда устанавливается в 1: startup rc не может
+вернуть MAVEN_ARGS после очистки. Нет кэша зависимостей — not_run без online retry; уже наблюдённый
+результат теста сохраняется. Offline Maven не ограничивает сеть самого автотеста.

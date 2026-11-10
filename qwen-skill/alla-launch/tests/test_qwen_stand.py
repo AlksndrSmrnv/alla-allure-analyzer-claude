@@ -7,11 +7,13 @@ import json
 import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+import qwen_stand
 import skill_fake_maven
 
 import skill_fixtures  # noqa: F401 — добавляет scripts/ в sys.path
@@ -467,7 +469,7 @@ def test_run_case_keeps_project_outside_results(tmp_path: Path,
         return 0
 
     monkeypatch.setattr(qwen_stand, "CACHE_DIR", tmp_path / "cache")
-    monkeypatch.setattr(qwen_stand, "model_settings", lambda model: ({}, {}))
+    monkeypatch.setattr(qwen_stand, "model_settings", lambda *args: ({}, {}))
     monkeypatch.setattr(qwen_stand, "ensure_venv", lambda: None)
     monkeypatch.setattr(qwen_stand, "run_turn", fake_turn)
     output = tmp_path / "out"
@@ -1104,8 +1106,9 @@ def test_agent_checks_see_deferred_tool_call(tmp_path: Path) -> None:
 
 def test_x01_project_has_extension_and_remote(tmp_path: Path) -> None:
     project = build_project(tmp_path, "http://127.0.0.1:1", None, extensions=("git-publish",))
-    assert (project / "alla-extensions" / "config.toml").read_text(encoding="utf-8") == \
-        'enabled = ["git-publish"]\n'
+    config = tomllib.loads((project / "alla-extensions" / "config.toml").read_text(encoding="utf-8"))
+    assert config["enabled"] == ["git-publish"]
+    assert config["testops"]["allowed_origins"] == ["http://127.0.0.1:1"]
     assert (project / ".qwen" / "agents" / "alla-git-publish.md").is_file()
     remote = subprocess.run(["git", "-C", str(project), "remote", "get-url", "origin"],
                             capture_output=True, text=True, check=True).stdout.strip()
@@ -1159,7 +1162,7 @@ def test_flaky_scenario_project_has_a_clean_fake_maven(tmp_path: Path) -> None:
     счётчик запусков git не видит."""
     project = build_project(tmp_path, "http://127.0.0.1:1", venv=None,
                             maven=SCENARIOS["F01"].maven)
-    wrapper = (project / "mvnw").read_text(encoding="utf-8")
+    wrapper = (project / "mvn").read_text(encoding="utf-8")
     assert '"$(dirname "$0")/.venv/bin/python" "$(dirname "$0")/.stand-maven/fake_maven.py"' in wrapper
     assert (project / "pom.xml").is_file() and (project / ".stand-maven" / "fake_maven.py").is_file()
     (project / "target" / "surefire-reports").mkdir(parents=True)
@@ -1212,3 +1215,183 @@ def test_module_asked_check(tmp_path: Path, first: list[str], second: list[str],
                               [_skill_call(item) for item in second]])
     result = check_module_asked(Context(SCENARIOS["M01"], trace, tmp_path, []))
     assert (result["status"] == "pass") is passed, result
+
+
+def test_model_configuration_uses_only_explicit_exported_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_MODEL", "explicit-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://models.example/v1")
+    monkeypatch.setenv("MY_MODEL_KEY", "model-secret-canary")
+    monkeypatch.setattr(Path, "read_text", lambda *args, **kwargs: pytest.fail("settings read"))
+    settings, keys = qwen_stand.model_settings(None, api_key_env="MY_MODEL_KEY")
+    assert keys == {"MY_MODEL_KEY": "model-secret-canary"}
+    assert "model-secret-canary" not in json.dumps(settings)
+    entry = settings["modelProviders"]["openai"][0]
+    assert entry == {"id": "explicit-model", "baseUrl": "https://models.example/v1", "envKey": "MY_MODEL_KEY"}
+    home = qwen_stand.build_home(tmp_path, settings)
+    assert (home / ".qwen/settings.json").is_file()
+
+
+@pytest.mark.parametrize("base_url", ["http://models.example/v1", "https://user:pw@models.example/v1",
+                                      "file:///tmp/model", "https://example:wrong"])
+def test_model_configuration_rejects_unsafe_provider_addresses(
+    monkeypatch: pytest.MonkeyPatch, base_url: str,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+    with pytest.raises(qwen_stand.StandError):
+        qwen_stand.model_settings("model", base_url)
+
+
+def test_model_configuration_never_reuses_service_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALLURE_TOKEN", "service-secret-canary")
+    with pytest.raises(qwen_stand.StandError):
+        qwen_stand.model_settings("model", "https://models.example", "ALLURE_TOKEN")
+
+
+def test_stand_missing_venv_stops_without_install_or_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    venv = tmp_path / "unfinished-venv"
+    venv.mkdir()
+    keep = venv / "keep"
+    keep.write_text("existing bytes")
+    monkeypatch.setenv("ALLA_STAND_VENV", str(venv))
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: pytest.fail("install attempted"))
+    with pytest.raises(qwen_stand.StandError, match="подготовленного"):
+        qwen_stand.ensure_venv()
+    assert keep.read_text() == "existing bytes"
+
+
+@pytest.mark.parametrize("key", ["HOME", "QWEN_HOME", "PATH", "SEATBELT_PROFILE", "TMPDIR"])
+def test_model_key_cannot_override_sandbox_environment(key: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(key, "model-key-value")
+    with pytest.raises(qwen_stand.StandError):
+        qwen_stand.model_settings("model", "https://models.example", key)
+
+
+def test_stand_child_uses_its_home_and_drops_service_canaries_from_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    project.mkdir()
+    home.mkdir()
+    names = ("ALLURE_TOKEN", "TRACKER_TOKEN", "GITHUB_TOKEN", "QWEN_CODE_SESSION_ID")
+    for name in names:
+        monkeypatch.setenv(name, "service-secret-canary")
+    monkeypatch.setenv("QWEN_HOME", str(tmp_path / "personal-qwen"))
+    monkeypatch.setenv("CUSTOM_MODEL_KEY", "exported-model-key")
+    trace, stderr, api = tmp_path / "trace.jsonl", tmp_path / "stderr.txt", tmp_path / "api"
+
+    def child(command: list[str], *, env: dict[str, str], stdout: Any, stderr: Any, **kwargs: Any) -> Any:
+        assert env["QWEN_HOME"] == str(home / ".qwen")
+        assert env["HOME"] == str(home)
+        assert env["CUSTOM_MODEL_KEY"] == "exported-model-key"
+        captured = " ".join(env.get(name, "") for name in names)
+        stdout.write(captured)
+        stderr.write(captured)
+        logs = home / ".qwen/api-log"
+        logs.mkdir(parents=True)
+        (logs / "request.json").write_text(captured)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", child)
+    assert qwen_stand.run_turn(project, home, {"CUSTOM_MODEL_KEY": "exported-model-key"}, "prompt",
+                               trace=trace, stderr=stderr, resume=None, max_wall="1m",
+                               sandbox=False, api_log=api) == 0
+    for artifact in (trace, stderr, api / "request.json"):
+        assert "service-secret-canary" not in artifact.read_text()
+
+
+def test_new_runtime_cases_build_real_preview_sources(tmp_path: Path) -> None:
+    prepared = tmp_path / "prepared"
+    prepared.mkdir()
+    project = build_project(tmp_path / "work", "http://127.0.0.1:1234", prepared,
+                            files_ready=False, local_release=True)
+    assert not (project / ".qwen/agents").exists()
+    assert not (project / ".qwen/commands").exists()
+    assert "synthetic-local-release" in (project / "alla-local-release/SKILL.md").read_text()
+    assert "synthetic-local-release" not in (project / qwen_stand.SKILL_IN_PROJECT / "SKILL.md").read_text()
+    from alla_core.origins import load_allowed_origins
+    assert load_allowed_origins(project) == ("http://127.0.0.1:1234",)
+
+
+def test_stand_records_unavailable_exported_model_as_not_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("OPENAI_MODEL", "OPENAI_BASE_URL", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    output = tmp_path / "result"
+    assert qwen_stand.main(["run", "--case", "A04", "--output", str(output)]) == 2
+    report = json.loads((output / "report.json").read_text())
+    assert report["cases"][0]["status"] == "not_run"
+    assert "OPENAI_MODEL" in report["cases"][0]["reason"]
+    assert qwen_stand.evaluate(report["cases"][0])["status"] == "not_run"
+    assert "not_run" in (output / "report.md").read_text()
+
+
+def test_stand_rejects_stale_prepared_environment_marker_before_running_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin/python").write_text("unexecuted interpreter")
+    (venv / ".alla-setup-complete").write_text("old-lock-hash")
+    monkeypatch.setenv("ALLA_STAND_VENV", str(venv))
+    monkeypatch.setattr(subprocess, "call", lambda *args, **kwargs: pytest.fail("stale environment ran"))
+    with pytest.raises(qwen_stand.StandError, match="Маркер.*не соответствует"):
+        qwen_stand.ensure_venv()
+    assert (venv / ".alla-setup-complete").read_text() == "old-lock-hash"
+
+
+def test_wheelhouse_fixture_copies_only_local_regular_wheels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "manual-wheelhouse"
+    source.mkdir()
+    (source / "pkg-1-py3-none-any.whl").write_bytes(b"local wheel bytes")
+    (source / "private-settings.json").write_text("never exposed")
+    monkeypatch.setenv("ALLA_STAND_WHEELHOUSE", str(source))
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: pytest.fail("download attempted"))
+    target = tmp_path / "project-wheels"
+    qwen_stand.copy_wheelhouse(qwen_stand.wheelhouse_source(), target)
+    assert [path.name for path in target.iterdir()] == ["pkg-1-py3-none-any.whl"]
+    assert (target / "pkg-1-py3-none-any.whl").read_bytes() == b"local wheel bytes"
+    (source / "linked-1-py3-none-any.whl").symlink_to(source / "private-settings.json")
+    with pytest.raises(qwen_stand.FixtureUnavailable, match="симлинк"):
+        qwen_stand.wheelhouse_source()
+
+
+def test_wheelhouse_scenario_without_explicit_source_records_not_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ALLA_STAND_WHEELHOUSE", raising=False)
+    monkeypatch.setattr(qwen_stand, "model_settings", lambda *args: ({}, {}))
+    monkeypatch.setattr(qwen_stand, "FakeTestOpsServer", lambda *args, **kwargs: pytest.fail("server started"))
+    output = tmp_path / "output"
+    assert qwen_stand.main(["run", "--case", "I05", "--output", str(output)]) == 1
+    report = json.loads((output / "report.json").read_text())
+    assert report["cases"][0]["status"] == "not_run"
+    assert "ALLA_STAND_WHEELHOUSE" in report["cases"][0]["reason"]
+    assert not (output / "I05").exists()
+
+
+def test_wheelhouse_result_requires_given_source_then_successful_check(tmp_path: Path) -> None:
+    project = tmp_path / "p"
+    skill = project / qwen_stand.SKILL_IN_PROJECT
+    skill.mkdir(parents=True)
+    lock = b"the synthetic lock"
+    (skill / "requirements.txt").write_bytes(lock)
+    (project / ".venv").mkdir()
+    (project / ".venv/.alla-setup-complete").write_text(hashlib.sha256(lock).hexdigest())
+    setup = f"python3 {SKILL} setup --wheelhouse {project / 'alla-wheelhouse'} --python python3.11"
+    check = f"python3 {SKILL} check"
+    ctx = context(tmp_path, events(
+        ("run_shell_command", {"command": setup}, "STATUS: ready"),
+        ("run_shell_command", {"command": check}, "STATUS: ready")), case="I05")
+    assert CHECKS["wheelhouse_installed"](ctx)["status"] == "pass"
+    wrong = context(tmp_path, events(
+        ("run_shell_command", {"command": setup.replace("alla-wheelhouse", "other-wheels")}, "STATUS: ready"),
+        ("run_shell_command", {"command": check}, "STATUS: ready")), case="I05")
+    assert CHECKS["wheelhouse_installed"](wrong)["status"] == "fail"

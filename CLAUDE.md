@@ -45,19 +45,19 @@ python3.11 -m venv .venv && .venv/bin/pip install --require-hashes -r qwen-skill
 .venv/bin/mypy qwen-skill/alla-launch/scripts qwen-skill/alla-launch/extensions   # strict, без ошибок
 .venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case A01 --output /tmp/alla-stand-001
 .venv/bin/python qwen-skill/alla-launch/tests/eval/run_eval.py --details   # эталон, офлайн, ~2 с
-bash .github/scripts/skill_setup_smoke.sh       # setup → check → prepare с нуля, нужна сеть до pip
+ALLA_WHEELHOUSE=/local/wheels bash .github/scripts/skill_setup_smoke.sh # offline setup → check → prepare
 ```
 
 CI — `.github/workflows/ci.yml` (GitHub Actions, ubuntu-latest): на Python 3.11 и 3.12 —
-pytest (`-rs`; на Linux пропускаются только 4 проверки стенда для macOS), ruff, mypy
+pytest (`-rs`; на Linux пропускаются проверки, требующие macOS, и проверки её системных ссылок), ruff, mypy
 (`--python-version` версии матрицы: на 3.12 ставится numpy с заглушками на синтаксисе 3.12)
 и эталон (только dev: holdout проверяет `test_eval_quality`, отдельно его не печатать);
 отдельный job гоняет `skill_setup_smoke.sh` в контейнере `python:3.11` —
-установку скилла в синтетический проект и `check`/`prepare` против фейкового TestOps.
+установку скилла из явно подготовленного wheelhouse в синтетический проект и `check`/`prepare` против фейкового TestOps.
 Стенд Qwen в CI не запускается: он только для macOS и платный. ruff и mypy закреплены в
 `requirements-dev.in` точными версиями — обновлять вместе с исправлением их замечаний.
 
-Зависимости — lock-файлы с хешами: `requirements.txt` (runtime, его ставит `setup` с
+Зависимости — lock-файлы с хешами: `requirements.txt` (runtime, его ставит явный `setup --wheelhouse PATH` с
 `--require-hashes`) и `requirements-dev.txt` собирает `uv pip compile` из `requirements.in` и
 `requirements-dev.in` (команды — README, «Для разработчиков»; `--exclude-newer` — не новее 3 дней, как
 на этом Mac). `.txt` руками не править; `test_skill_units.py` проверяет `==` и хеши у каждого
@@ -67,7 +67,7 @@ pytest (`-rs`; на Linux пропускаются только 4 проверк
 ## Проверка на настоящем Qwen Code
 
 Скилл можно и нужно проверять в целевом runtime: Qwen Code CLI установлен (`qwen`, модель
-`qwen/qwen3.8-flash` через OpenRouter, настройки в `~/.qwen/settings.json`), а стенд
+`qwen/qwen3.8-flash` через OpenRouter, настройки модели экспортированы в окружение CLI), а стенд
 `tests/qwen_stand.py` гоняет его на синтетическом TestOps (последняя команда выше). Pytest
 проверяет протокол; выполняет ли модель инструкции — видно только на стенде. Запускай его
 после правки `SKILL.md`, справочников, текстов заданий и правил исполнителя.

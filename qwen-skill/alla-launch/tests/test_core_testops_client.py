@@ -16,7 +16,8 @@ from alla_core.exceptions import AllureApiError
 
 
 async def _make_client(*, fresh_only: bool = False) -> tuple[AllureTestOpsClient, MagicMock]:
-    settings = Settings(endpoint="https://allure.test", token="test-token")
+    settings = Settings(endpoint="https://allure.test", token="test-token",
+                        allowed_origins=("https://allure.test",))
     auth = MagicMock(spec=AllureAuthManager)
     if fresh_only:
         auth.get_auth_header = AsyncMock(return_value={"Authorization": "Bearer fresh"})
@@ -152,7 +153,7 @@ def test_http_retries_setting_bounds() -> None:
     from alla_core.exceptions import ConfigurationError
 
     base = {"ALLURE_ENDPOINT": "https://allure.test", "ALLURE_TOKEN": "t"}
-    assert Settings.load(environ=base).http_retries == 3
-    assert Settings.load(environ={**base, "ALLURE_HTTP_RETRIES": "0"}).http_retries == 0
+    assert Settings.load(require_testops=False, environ=base).http_retries == 3
+    assert Settings.load(require_testops=False, environ={**base, "ALLURE_HTTP_RETRIES": "0"}).http_retries == 0
     with pytest.raises(ConfigurationError, match="ALLURE_HTTP_RETRIES"):
-        Settings.load(environ={**base, "ALLURE_HTTP_RETRIES": "11"})
+        Settings.load(require_testops=False, environ={**base, "ALLURE_HTTP_RETRIES": "11"})

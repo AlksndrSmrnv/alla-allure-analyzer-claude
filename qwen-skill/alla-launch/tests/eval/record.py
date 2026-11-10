@@ -152,10 +152,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("launch_id", type=int)
     parser.add_argument("out_dir", type=Path)
+    parser.add_argument("--project-root", type=Path, default=Path.cwd(),
+                        help="корень проекта с alla-extensions/config.toml")
     parser.add_argument("--module", help="модуль из ALLURE_PROJECT_ID, чей проект TestOps взять")
     parser.add_argument("--project", type=int, help="номер проекта TestOps прогона")
     args = parser.parse_args(argv)
-    settings = Settings.load(env_file=workspace.SKILL_DIR / ".env")
+    settings = Settings.load(env_file=workspace.SKILL_DIR / ".env",
+                             project_root=args.project_root)
     try:
         choice = choose_project(settings, module=args.module, project=args.project)
     except ProjectNotChosen as exc:

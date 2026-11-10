@@ -39,7 +39,7 @@ paths:
 ## Статусы и коды возврата
 
 - Первая строка вывода — `STATUS: analyze|analyze_batch|fix|propose|relate|summary|done|diff|
-  applied|reverted|saved|rerun|running|rerun_done|ok|ready|reviewed|setup_required|updated|error`.
+  applied|reverted|saved|rerun|running|rerun_done|ok|ready|reviewed|setup_required|update_ready|error`.
 - Ошибка аргументов и любое необработанное исключение тоже дают `STATUS: error`.
 - Код возврата 0 у всех статусов, кроме `error`: статус с инструкцией — не авария.
 

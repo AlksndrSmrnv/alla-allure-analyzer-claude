@@ -31,7 +31,7 @@ def _roles(failures: list[FailedTestSummary]) -> list[tuple[str, int]]:
     return [(example.role, example.test_result_id) for example in cluster.examples]
 
 
-def test_same_assertion_with_different_server_errors_gets_both_shown() -> None:
+def test_same_assertion_with_different_server_errors_gets_both_shown(tmp_path) -> None:
     import asyncio
 
     from alla_core.config import Settings
@@ -41,7 +41,9 @@ def test_same_assertion_with_different_server_errors_gets_both_shown() -> None:
 
     case = same_assertion_two_npes()
     group = {test: g["id"] for g in case.labels["groups"] for test in g["tests"]}
-    settings = Settings.load(environ={"ALLURE_ENDPOINT": "https://testops.example",
+    from skill_fixtures import allow_testops
+
+    settings = Settings.load(project_root=allow_testops(tmp_path, "https://testops.example"), environ={"ALLURE_ENDPOINT": "https://testops.example",
                                       "ALLURE_TOKEN": "token", "ALLURE_PROJECT_ID": "5"})
     with replay(case.fixture):
         data = asyncio.run(collect_launch(case.fixture.launch["id"], settings))

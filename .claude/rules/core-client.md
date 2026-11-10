@@ -151,3 +151,12 @@ REST API TestOps у пользователей закрыт (решение по
 | `ALLURE_RERUN_MAVEN_ARGS` | нет | `""` | Свои аргументы Maven (`shlex`), значения не печатаются |
 | `ALLURE_RERUN_RESOLVE` | нет | `false` | Статус passed в TestOps прошедшим при перезапуске (после «да»), через REST; по умолчанию выключен: REST закрыт, в MCP записи нет |
 | `ALLURE_OPERATION_ID_KEYS` | нет | `""` | Ключи id операции проекта через запятую (`businessId`), к реестру; имя — `[A-Za-z][A-Za-z0-9_.-]{0,63}`, иначе `ConfigurationError` |
+
+## Политика адресов TestOps
+
+`Settings.load(project_root=...)` читает `[testops].allowed_origins` только из проектного
+`alla-extensions/config.toml`. Exact scheme+IDNA/lowercase host+effective port; IP canonical.
+Missing/empty/malformed deny. Env не расширяет policy. REST/MCP/auth проверяют origin на
+границе клиента даже для direct Settings, follow_redirects=False, 3xx — ошибка.
+`require_testops=False` (локальный rerun) policy не требует. Расширения сохраняют [testops]
+при изменении enabled. Recorder принимает --project-root для той же политики.

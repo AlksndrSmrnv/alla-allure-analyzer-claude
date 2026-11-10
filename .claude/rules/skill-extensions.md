@@ -22,8 +22,8 @@ paths:
 - Расширение — папка с `extension.toml`: встроенные `<скилл>/extensions/<имя>/` (выключены),
   свои `<проект>/alla-extensions/<имя>/`; своё с тем же именем заменяет встроенное
   (`overrides_bundled`). Включение — `enabled = [...]` в `<проект>/alla-extensions/config.toml`
-  (общее для команды, в git; таблица `[update]` в нём — не расширение, а адрес репозитория для
-  `alla_skill.py update`, `skill-protocol-setup.md`); `enable`/`disable` переписывают только эту строку и только в корне
+  (общее для команды, в git; таблицы `[testops]` и `[update]` — политика адресов и локальный источник релиза для
+  `alla_skill.py update`, `skill-protocol-setup.md`); `enabled_text` готовит diff только этой строки и только в корне
   (до первой таблицы: в `[<имя>]` может быть своя настройка `enabled`); многострочный
   список — отказ; новый текст перед записью разбирается `tomllib` и должен отличаться только
   корневым `enabled`, иначе файл не пишется (`_check_rewrite`), настройки `[<имя>]` переопределяют `[settings]` манифеста того же типа,
@@ -78,7 +78,7 @@ paths:
   неисправная: удалённый манифест не возвращает встроенное.
 - Хук `task` — не больше одного на событие: задание пишется в `<событие>-NN.md`, второе
   затёрло бы первое. Хуков `script` на событие может быть несколько.
-- Агенты включённых расширений ставит `enable` (явная просьба) и `install-files --yes`
+- Агенты включённых расширений ставят `enable --yes --diff ХЭШ` и `install-files --yes --diff ХЭШ`
   (обновить после `update`; `prepare` в `.qwen/` не пишет, `qwen_files.install_extension_agent`); `disable` убирает файл, только если он совпадает с
   нашим.
 - Слэш-команды расширения — `commands = ["commands/<имя>.md"]` в манифесте
@@ -86,7 +86,7 @@ paths:
   `disable-model-invocation: true`, не пустой текст). Имена команд скилла заняты
   (`skill_command_names` — из папки рядом с модулем, не из `ws.SKILL_DIR`), одна команда у двух
   включённых расширений — второе в `Active.problems`. Ставятся тем же путём, что агенты:
-  `enable`/`install-files --yes` → `.qwen/commands/alla/<имя>.md`, `disable` — убрать, если файл наш.
+  `enable --yes --diff ХЭШ`/`install-files --yes --diff ХЭШ` → `.qwen/commands/alla/<имя>.md`, `disable` — убрать, если файл наш.
   Цикл по командам в `_extensions_toggle` — своей переменной (`command`): `name` там — имя
   расширения, по нему подсказка называет таблицу настроек `[<имя>]`.
   `enable` поверх занятой команды отказывает (`command_conflict`) до записи `config.toml` и
@@ -103,3 +103,8 @@ paths:
 Вызов `ext.fire` в команде, поля — в `extensions/README.md`, событие — в `EVENTS`, тест в
 `test_skill_extensions.py`; если модель должна что-то сделать иначе — `SKILL.md` раздел 7 и
 `references/protocol.md`.
+
+Enable/disable не пишут конфигурацию или файлы до просмотра diff и согласия
+`--yes --diff SHA256`. Config enabled и agent/commands — общая транзакция file_transaction,
+config коммитится последним, при ошибке все байты откатываются. Install-files использует
+тот же механизм, включает config в snapshot. Прямой записи из CLI toggle больше нет.

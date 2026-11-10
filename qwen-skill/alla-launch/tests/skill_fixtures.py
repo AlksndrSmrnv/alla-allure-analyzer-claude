@@ -44,6 +44,15 @@ def _write(path: Path, text: str = "") -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def allow_testops(root: Path, *origins: str) -> Path:
+    """Explicit policy for a synthetic project; never grants production origins."""
+    import json
+
+    _write(root / "alla-extensions" / "config.toml",
+           "[testops]\nallowed_origins = " + json.dumps(list(origins)) + "\n")
+    return root
+
+
 def _isolate_skill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Изолированная папка скилла и настройки TestOps из окружения."""
     from alla_skill_lib import cli, workspace
@@ -72,6 +81,7 @@ def project_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _write(java / "orders" / "OrderTest.java", ORDER_TEST_JAVA)
     _write(java / "auth" / "LoginTest.java", LOGIN_TEST_JAVA)
     _isolate_skill(tmp_path, monkeypatch)
+    allow_testops(root, "https://testops.example")
     return root
 
 
@@ -85,6 +95,7 @@ def nested_project_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     _write(java / "orders" / "OrderTest.java", ORDER_TEST_JAVA)
     _write(java / "auth" / "LoginTest.java", LOGIN_TEST_JAVA)
     _isolate_skill(tmp_path, monkeypatch)
+    allow_testops(root, "https://testops.example")
     return root
 
 
@@ -100,6 +111,7 @@ def multimodule_project_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     _write(root / "orders" / java / "orders" / "OrderTest.java", ORDER_TEST_JAVA)
     _write(root / "auth" / java / "auth" / "LoginTest.java", LOGIN_TEST_JAVA)
     _isolate_skill(tmp_path, monkeypatch)
+    allow_testops(root, "https://testops.example")
     return root
 
 

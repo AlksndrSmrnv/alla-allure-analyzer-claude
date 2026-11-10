@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-import json
 import logging
 import os
 import re
@@ -142,15 +141,11 @@ from alla_skill_lib.proposals import (
     validate_proposal,
 )
 from alla_skill_lib.problem_state import CurrentState, confirmations, current_state
+from alla_skill_lib import file_transaction as ft
 from alla_skill_lib.qwen_files import (
     SAME,
     PlannedFile,
-    install_extension_agent,
-    install_extension_command,
-    install_planned,
     planned_files,
-    remove_extension_agent,
-    remove_extension_command,
 )
 from alla_skill_lib.related import (
     RELATED_FORMAT,
@@ -354,7 +349,7 @@ def _dispatch(argv: list[str] | None) -> int:
     if args.command == "check":
         return cmd_check(project_root, reports_dir)
     if args.command == "install-files":
-        return cmd_install_files(project_root, confirm=args.yes)
+        return cmd_install_files(project_root, confirm=args.yes, diff_hash=args.diff_hash)
     if args.command == "clean":
         return cmd_clean(reports_dir, args.older_than_days, dry_run=args.dry_run)
     if args.command == "remember":
@@ -480,6 +475,7 @@ def _build_parser() -> argparse.ArgumentParser:
     installer.add_argument(
         "--yes", action="store_true", help="поставить файлы; только после согласия пользователя"
     )
+    installer.add_argument("--diff", dest="diff_hash", help="хэш показанного diff")
     review = commands.add_parser(
         "review", parents=[common],
         help="проверить законченный разбор (пилот): отчёт о ходе и качестве и сводка без данных",
@@ -584,6 +580,8 @@ def _build_parser() -> argparse.ArgumentParser:
     for verb, text in (("enable", "включить"), ("disable", "выключить")):
         toggle = ext_commands.add_parser(verb, parents=[common], help=f"{text} расширение в проекте")
         toggle.add_argument("name", help="имя расширения")
+        toggle.add_argument("--yes", action="store_true", help="применить показанный diff после согласия")
+        toggle.add_argument("--diff", dest="diff_hash", help="хэш показанного diff")
     again = ext_commands.add_parser(
         "run", parents=[common],
         help="запустить расширение по просьбе пользователя (on_request) или повторить его хук: "
@@ -684,7 +682,7 @@ def cmd_prepare(
                     unfinished = ws.find_unfinished_run(reports_dir, launch_id)
                     if unfinished is not None:
                         return _resume(unfinished, launch_id, reports_dir)
-                settings = _prepare_settings()
+                settings = _prepare_settings(project_root)
                 if isinstance(settings, int):
                     return 2
                 choice = _prepare_project(settings, launch_id, module, project, fresh=fresh,
@@ -705,7 +703,7 @@ def cmd_prepare(
             return _resume(unfinished, launch_id, reports_dir)
 
     env_file = ws.SKILL_DIR / ".env"
-    settings = _prepare_settings()
+    settings = _prepare_settings(project_root)
     if isinstance(settings, int):
         return settings
     choice = _prepare_project(settings, launch_id, module, project, fresh=fresh,
@@ -762,11 +760,11 @@ def cmd_prepare(
     return 0
 
 
-def _prepare_settings() -> Settings | int:
+def _prepare_settings(project_root: Path) -> Settings | int:
     """Настройки TestOps; неверные — ответ ``error`` напечатан, код возврата."""
     env_file = ws.SKILL_DIR / ".env"
     try:
-        return Settings.load(env_file=env_file)
+        return Settings.load(env_file=env_file, project_root=project_root)
     except ConfigurationError as exc:
         print("STATUS: error")
         print(f"Ошибка конфигурации: {exc}")
@@ -2083,7 +2081,10 @@ def _rerun(
         return "ok", rerun.render_nothing(plan)
     command = ws.skill_command("rerun", *numbers, "--run", str(paths.root), "--yes",
                                "--plan", plan.digest)
-    extra = rerun.maven_args(settings.rerun_maven_args)
+    try:
+        extra = rerun.maven_args(settings.rerun_maven_args)
+    except ValueError as exc:
+        return "error", str(exc)
     shown = rerun.render_plan(plan, command, has_extra=bool(extra))
     if not args.yes:
         return "rerun", shown
@@ -2310,7 +2311,7 @@ def _resolve_in_testops(
     assert state.result is not None
     env_file = ws.SKILL_DIR / ".env"
     try:
-        settings = Settings.load(env_file=env_file)
+        settings = Settings.load(env_file=env_file, project_root=Path(run["project_root"]))
     except ConfigurationError as exc:
         return [f"В TestOps не отмечены ({resolve.names(marks)}): настройки TestOps в {env_file} "
                 f"неверны: {exc}. {USER_ACTION_NOTE}"], False, ""
@@ -2651,7 +2652,10 @@ def cmd_extensions(args: argparse.Namespace, project_root: Path, reports_dir: Pa
         if command == "list":
             status, body = "ok", _extensions_list(project_root)
         elif command in ("enable", "disable"):
-            status, body = "ok", _extensions_toggle(project_root, args.name, command == "enable")
+            status, body = _extensions_toggle(
+                project_root, args.name, command == "enable",
+                confirm=args.yes, diff_hash=args.diff_hash,
+            )
         elif command == "run":
             status, body = "ok", _extensions_run(
                 args.name, args.clusters, args.run, reports_dir, ext.parse_params(args.param),
@@ -2719,62 +2723,64 @@ def _extensions_list(project_root: Path) -> str:
     return "\n".join(lines)
 
 
-def _extensions_toggle(project_root: Path, name: str, on: bool) -> str:
+def _extensions_toggle(
+    project_root: Path, name: str, on: bool, *, confirm: bool = False,
+    diff_hash: str | None = None,
+) -> tuple[str, str]:
+    ft.recover(project_root)
     catalog = ext.discover(project_root)
     extension = catalog.extensions.get(name)
-    settings: dict[str, Any] = {}
     if on:
         if extension is None:
-            if name in catalog.errors:
-                raise ext.ExtensionError(f"Расширение {name} не работает: {catalog.errors[name]}")
-            raise ext.ExtensionError(
-                f"Расширения {name} нет. Список: {ws.skill_command('extensions', 'list')}"
-            )
-        # Неверные настройки в config.toml видны сразу, а не при первом событии.
+            raise ext.ExtensionError(catalog.errors.get(name, f"Расширения {name} нет"))
         config = ext.load_config(project_root)
-        settings = ext.resolved_settings(extension, config)
+        ext.resolved_settings(extension, config)
         conflict = ext.command_conflict(extension, catalog, config)
-        if conflict:  # до записи config.toml и файлов команд: чужая команда не затирается
+        if conflict:
             raise ext.ExtensionError(f"Расширение {name} не включено: {conflict}")
-    changed = ext.set_enabled(project_root, name, on)
-    verb = "включено" if on else "выключено"
-    lines = [
-        f"Расширение {name} {verb} в {ext.config_path(project_root)}." if changed
-        else f"Расширение {name} уже {verb}."
-    ]
-    if extension is not None and extension.agent is not None:
-        if on:
-            install_extension_agent(project_root, extension.agent, extension.agent_name)
-            lines.append(
-                f"Субагент {extension.agent_name} установлен в .qwen/agents/: Qwen Code увидит его "
-                "после перезапуска сеанса (до того скилл запускает задание без subagent_type)."
-            )
-        elif remove_extension_agent(project_root, extension.agent, extension.agent_name) == "kept":
-            lines.append(
-                f"Файл субагента .qwen/agents/{extension.agent_name}.md изменён вручную — не удаляю."
-            )
-    if extension is not None and extension.commands:
-        names = ", ".join(f"/alla:{command}" for command in extension.commands)
-        if on:
-            for command, source in extension.commands.items():
-                install_extension_command(project_root, source, command)
-            lines.append(
-                f"Команды {names} установлены в .qwen/commands/alla/: Qwen Code увидит их после "
-                "перезапуска сеанса."
-            )
-        else:
-            kept = [f"/alla:{command}" for command, source in extension.commands.items()
-                    if remove_extension_command(project_root, source, command) == "kept"]
-            if kept:
-                lines.append(f"Команды {', '.join(kept)} изменены вручную — не удаляю.")
-    if on and settings:
-        lines.append(
-            f"Настройки (меняются в таблице [{name}] файла {ext.CONFIG_FILE}): "
-            # Как в TOML: «remote = "origin"», «confirm = false».
-            + ", ".join(f"{key} = {json.dumps(value, ensure_ascii=False)}"
-                        for key, value in settings.items())
-        )
-    return "\n".join(lines)
+    changes: list[ft.Change] = []
+    kept: list[str] = []
+    if extension is not None:
+        sources = [(project_root / ".qwen" / "commands" / "alla" / f"{command}.md", source)
+                   for command, source in extension.commands.items()]
+        if extension.agent is not None:
+            sources.append((project_root / ".qwen" / "agents" / f"{extension.agent_name}.md",
+                            extension.agent))
+        for target, source in sorted(sources):
+            data = source.read_text(encoding="utf-8")
+            content = (data if data.endswith("\n") else data + "\n").encode()
+            old = ft.read_bytes(project_root, target)
+            if on:
+                changes.append(ft.Change(target, old, content))
+            elif old == content:
+                changes.append(ft.Change(target, old, None))
+            elif old is not None:
+                kept.append(f"Изменён вручную — не удаляю: {target}")
+    # Configuration is part of the same snapshot, committed last.
+    updated = ext.enabled_text(project_root, name, on)
+    config_path = ext.config_path(project_root)
+    old_config = ft.read_bytes(project_root, config_path)
+    changes.append(ft.Change(config_path, old_config,
+                             updated.encode() if updated is not None else old_config))
+    if not any(item.before != item.after for item in changes):
+        return "ok", "Изменений нет.\n" + "\n".join(kept)
+    command = ws.skill_command("extensions", "enable" if on else "disable", name,
+                               "--project-root", str(project_root), "--yes", "--diff",
+                               ft.digest(project_root, changes))
+    if not confirm:
+        return "install_files", (ft.preview(project_root, changes) + "\n" + "\n".join(kept)
+                                  + "\nНичего не записано. Покажи diff пользователю и спроси "
+                                  "согласие. После его «да»:\n" + command)
+    ft.apply(project_root, changes, diff_hash)
+    lines = [f"Расширение {name} {'включено' if on else 'выключено'}. "
+             "Qwen Code увидит файлы после перезапуска сеанса."]
+    if on and extension is not None:
+        if extension.commands:
+            lines.append("Команды " + ", ".join(f"/alla:{command}" for command in extension.commands)
+                         + " установлены.")
+        if extension.settings:
+            lines.append(f"Настройки меняются в таблице [{name}] файла {ext.CONFIG_FILE}.")
+    return "ok", "\n".join([*lines, *kept])
 
 
 def _extensions_run(
@@ -2889,44 +2895,42 @@ def _qwen_files_plan(project_root: Path) -> list[PlannedFile]:
     return planned_files(project_root, agents, commands)
 
 
-def cmd_install_files(project_root: Path, *, confirm: bool) -> int:
-    """Показать или поставить субагентов и команды ``/alla:*`` в ``.qwen/`` проекта.
-
-    Без ``--yes`` ничего не пишет: перечисляет файлы, модель спрашивает пользователя.
-    """
-    files = _qwen_files_plan(project_root)
-    pending = [item for item in files if item.state != SAME]
-    if not pending:
-        print("STATUS: ok")
-        print("Субагенты и команды /alla:* уже установлены и совпадают с файлами скилла: ставить нечего.")
+def cmd_install_files(
+    project_root: Path, *, confirm: bool, diff_hash: str | None = None,
+) -> int:
+    """Preview actual contents; apply only the reviewed snapshot after consent."""
+    try:
+        ft.recover(project_root)
+        files = _qwen_files_plan(project_root)
+        changes = []
+        for item in sorted(files, key=lambda item: str(item.target)):
+            text = item.source.read_text(encoding="utf-8")
+            data = (text if text.endswith("\n") else text + "\n").encode()
+            changes.append(ft.change(project_root, item.target, data))
+        # Include configuration in the hash even though install-files does not edit it.
+        config = ext.config_path(project_root)
+        config_bytes = ft.read_bytes(project_root, config)
+        changes.append(ft.Change(config, config_bytes, config_bytes))
+        if not any(item.before != item.after for item in changes):
+            print("STATUS: ok")
+            print("Субагенты и команды /alla:* уже установлены: ставить нечего.")
+            return 0
+        if confirm:
+            ft.apply(project_root, changes, diff_hash)
+            print("STATUS: ok")
+            print("Записано в .qwen/ проекта. Qwen Code увидит файлы после перезапуска сеанса.")
+        else:
+            print("STATUS: install_files")
+            print(ft.preview(project_root, changes))
+            print("Ничего не записано. Покажи diff пользователю и спроси согласие. "
+                  "Только после его «да» выполни:\n" + ws.skill_command(
+                      "install-files", "--yes", "--diff", ft.digest(project_root, changes),
+                      "--project-root", str(project_root)))
         return 0
-    if confirm:
-        written = install_planned(files)
-        failed = [item for item in pending if item not in written]
-        print("STATUS: ok" if not failed else "STATUS: error")
-        print("Записано в .qwen/ проекта:")
-        print(*_file_lines(written), sep="\n")
-        if failed:
-            print("Не удалось записать (права или занятый файл):")
-            print(*_file_lines(failed), sep="\n")
-        print(
-            "Qwen Code читает эти файлы при старте сеанса: команды /alla:* и субагент пакетов "
-            "заработают после перезапуска."
-        )
-        return 1 if failed else 0
-    print("STATUS: install_files")
-    print("Скилл положит в .qwen/ проекта (общие для команды, их можно закоммитить):")
-    print(*_file_lines(pending), sep="\n")
-    print(
-        "Это слэш-команды Qwen Code (/alla:run, /alla:apply и другие) и субагент для пакетного "
-        "разбора больших прогонов. Удалить их можно, стерев файлы; скилл без них работает: "
-        "через /alla-launch, а пакеты — запасным путём без субагента. Ничего не записано."
-    )
-    print(
-        "Спроси пользователя, ставить ли эти файлы. Только после его «да» выполни:\n"
-        + ws.skill_command("install-files", "--yes", "--project-root", str(project_root))
-    )
-    return 0
+    except (OSError, ValueError) as exc:
+        print("STATUS: error")
+        print(str(exc))
+        return 1
 
 
 def _file_lines(files: Sequence[PlannedFile]) -> list[str]:
@@ -3018,7 +3022,7 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
         + ("есть" if env_file.is_file() else "нет (значения берутся из переменных окружения)"),
     ]
     try:
-        settings = Settings.load(env_file=env_file)
+        settings = Settings.load(env_file=env_file, project_root=project_root)
     except ConfigurationError as exc:
         print("STATUS: error")
         print(*lines, sep="\n")

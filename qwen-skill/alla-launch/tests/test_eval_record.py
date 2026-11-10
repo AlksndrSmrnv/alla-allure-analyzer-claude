@@ -25,7 +25,8 @@ ENVIRON = {
 
 def _record(fixture: LaunchFixture, out_dir: Path, **environ: str) -> FakeTestOps:
     fake = FakeTestOps(fixture)
-    settings = Settings.load(environ={**ENVIRON, **environ})
+    skill_fixtures.allow_testops(out_dir.parent, "https://testops.example")
+    settings = Settings.load(project_root=out_dir.parent, environ={**ENVIRON, **environ})
     record(fixture.launch["id"], out_dir, settings,
            inner=lambda verify: httpx.MockTransport(fake.handle))
     return fake
@@ -34,7 +35,7 @@ def _record(fixture: LaunchFixture, out_dir: Path, **environ: str) -> FakeTestOp
 def test_recorded_cassette_replays_the_same_triage(tmp_path: Path) -> None:
     fixture = default_launch()
     fake = _record(fixture, tmp_path / "cassette")
-    settings = Settings.load(environ=ENVIRON)
+    settings = Settings.load(project_root=skill_fixtures.allow_testops(tmp_path, "https://testops.example"), environ=ENVIRON)
 
     cassette = load_cassette(tmp_path / "cassette")
     with replay(cassette):
@@ -71,7 +72,7 @@ def test_record_under_an_endpoint_prefix(tmp_path: Path) -> None:
         return fake.handle(httpx.Request(request.method, request.url.copy_with(path=path),
                                          headers=request.headers, content=request.content))
 
-    settings = Settings.load(environ={**ENVIRON, "ALLURE_ENDPOINT": "https://testops.example/testops"})
+    settings = Settings.load(project_root=skill_fixtures.allow_testops(tmp_path, "https://testops.example"), environ={**ENVIRON, "ALLURE_ENDPOINT": "https://testops.example/testops"})
     record(777, tmp_path / "cassette", settings,
            inner=lambda verify: httpx.MockTransport(behind_proxy))
     cassette = load_cassette(tmp_path / "cassette")
@@ -95,7 +96,7 @@ def test_repeated_last_page_without_totals_is_not_recorded(tmp_path: Path) -> No
         return original(arguments)
 
     fake._find = find  # type: ignore[method-assign]
-    settings = Settings.load(environ=ENVIRON)
+    settings = Settings.load(project_root=skill_fixtures.allow_testops(tmp_path, "https://testops.example"), environ=ENVIRON)
     record(777, tmp_path / "cassette", settings,
            inner=lambda verify: httpx.MockTransport(fake.handle))
 
@@ -109,6 +110,6 @@ def test_record_refuses_a_non_empty_directory(tmp_path: Path) -> None:
     fake = FakeTestOps(default_launch())
 
     with pytest.raises(FileExistsError):
-        record(777, tmp_path / "cassette", Settings.load(environ=ENVIRON),
+        record(777, tmp_path / "cassette", Settings.load(project_root=skill_fixtures.allow_testops(tmp_path, "https://testops.example"), environ=ENVIRON),
                inner=lambda verify: httpx.MockTransport(fake.handle))
     assert fake.requests == []  # отказ до обращения к TestOps

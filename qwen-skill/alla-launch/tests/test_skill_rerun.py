@@ -1,6 +1,6 @@
 """Перезапуск тестов локально (``rerun``): план, Maven фоновым заданием, ход и итог.
 
-Maven — фейковый ``mvnw`` проекта (``skill_fake_maven``): он пишет отчёты surefire так же,
+Maven — фейковый ``mvn`` в PATH (``skill_fake_maven``): он пишет отчёты surefire так же,
 как настоящий (``TEST-<класс>-<суффикс>.xml``, ``classname`` с суффиксом в скобках).
 """
 
@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
+import subprocess
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -50,6 +52,19 @@ UNKNOWN_500 = (
     "НЕ ХВАТАЕТ: лога сервиса заказов за время теста.\n\n"
     "КАК ИСПРАВИТЬ:\n1. Посмотреть лог сервиса заказов за время теста.\n"
 )
+
+
+@pytest.fixture(autouse=True)
+def fake_maven_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install fake Maven as a PATH executable, with environment restored after each test."""
+    original = skill_fake_maven.install
+
+    def install(folder: Path, *args: Any, **kwargs: Any) -> Path:
+        result = original(folder, *args, **kwargs)
+        monkeypatch.setenv("PATH", str(folder) + os.pathsep + os.environ.get("PATH", ""))
+        return result
+
+    monkeypatch.setattr(skill_fake_maven, "install", install)
 
 
 @pytest.fixture(autouse=True)
@@ -393,7 +408,7 @@ def test_worker_env_drops_skill_settings_and_qwen_session() -> None:
     env = worker_env({"ALLURE_TOKEN": "t", "QWEN_CODE_SESSION_ID": "s", "PYTHONPATH": "p",
                       "PATH": "/bin", "MAVEN_OPTS": "-Xmx1g"})
 
-    assert env == {"PATH": "/bin", "MAVEN_OPTS": "-Xmx1g"}
+    assert env == {"PATH": "/bin", "MAVEN_SKIP_RC": "1"}
 
 
 def test_time_limit_stops_maven_and_reports_what_did_not_run(tmp_path: Path) -> None:
@@ -890,7 +905,8 @@ def test_send_reports_part_of_the_variants_and_stops_on_a_silent_testops(
     fake = FakeTestOps(default_launch(777))
     fake.resolve_status_of = {102: 404}
     fake.install(monkeypatch)
-    settings = Settings(endpoint="https://testops.example", token="t")
+    settings = Settings(endpoint="https://testops.example", token="t",
+                        allowed_origins=("https://testops.example",))
     mark = resolve.Mark([101, 102], [100, 101, 102], f"{ORDER}.createOrder", "01", "",
                         {101: "n1", 102: "n2"})  # 100 отмечен прежней командой
     done: list[int] = []
@@ -996,7 +1012,9 @@ def test_testops_refusal_can_be_repeated_by_the_same_command(
     assert not (run_dir / "rerun" / "resolved.json").exists()
     assert "в TestOps — passed" not in (run_dir / "report.md").read_text(encoding="utf-8")
 
-    # Адрес TestOps в .env сменился: id результатов чужие — запроса нет.
+    # Оба origin разрешены, но id принадлежат прежнему серверу: запроса нет.
+    from skill_fixtures import allow_testops
+    allow_testops(nested_project, "https://testops.example", "https://other.example")
     monkeypatch.setenv("ALLURE_ENDPOINT", "https://other.example")
     moved = _run(["rerun", *args], capsys)[1]
     assert "прогон разбирался на другом TestOps, чем ALLURE_ENDPOINT сейчас" in moved
@@ -1021,14 +1039,14 @@ def _job(tmp_path: Path, timeout: int, test: PlannedTest | None = None,
          ) -> tuple[JobFiles, dict[str, Any]]:
     files = JobFiles(tmp_path / "rerun")
     files.root.mkdir()
-    group = rerun.MavenGroup(module="", cwd=str(tmp_path), tool=[str(tmp_path / "mvnw")],
+    group = rerun.MavenGroup(module="", cwd=str(tmp_path), tool=[str(tmp_path / "mvn")],
                              select=[], fallback_cwd="")
     return files, {"job": "j", "attempts": 3, "timeout": timeout, "maven_args": [],
                    "project_root": str(tmp_path), "tests": [vars(test or _planned("a"))],
                    "groups": [vars(group)]}
 
 
-@pytest.mark.parametrize("config", ["-DskipTests", "-Dmaven.test.skip=true -Pci"])
+@pytest.mark.parametrize("config", ["-DskipTests", "-Dmaven.test.skip=true\n-Pci"])
 def test_skip_from_maven_config_is_overridden(tmp_path: Path, config: str) -> None:
     """``.mvn/maven.config`` проекта выключает тесты для обычной сборки — перезапуск их включает."""
     (tmp_path / ".mvn").mkdir()
@@ -1377,3 +1395,160 @@ def test_applied_fix_without_maven_asks_the_user_to_run_the_test(
     _, _, out = _applied(project, capsys, "src/test/java/ru/company/orders/OrderTest.java")
 
     assert out.splitlines()[-1] == "Тесты не запускай: предложи пользователю запустить исправленный тест."
+
+
+@pytest.mark.parametrize("raw", ["verify", "deploy", "--settings /tmp/custom.xml", "-f other.xml",
+    "-Dtest=Other#method", "-Dit.test=Other", "-DskipTests=true", "-DskipITs=true",
+    "-Dsurefire.includes=**/*", "-Dfailsafe.skip=true", "-Dmaven.test.skip=true", "-pl other"])
+def test_runner_rejects_arguments_that_change_execution(raw: str) -> None:
+    with pytest.raises(ValueError, match="Maven"):
+        rerun.maven_args(raw)
+
+
+def test_named_tests_and_offline_are_enforced_at_command_boundary(tmp_path: Path) -> None:
+    group = rerun.MavenGroup("", str(tmp_path), [str(tmp_path / "mvn")], [], "")
+    for fallback in (False, True):
+        command = rerun.maven_command(group, [_planned("a")], "run", ["-Pci"], fallback=fallback)
+        assert command[1:3] == ["-o", "-B"]
+        assert "-Dtest=" + ORDER + "#a" in command
+    for tests in ([], [replace(_planned("a"), method="*")],
+                  [replace(_planned("a"), class_name="Other,Unplanned")]):
+        with pytest.raises(ValueError, match="Maven"):
+            rerun.maven_command(group, tests, "run", [])
+
+
+def test_wrapper_does_not_substitute_for_installed_maven(tmp_path: Path,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "mvnw").write_text("#!/bin/sh\nexit 0\n")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert rerun.maven_tool(tmp_path, Path(".")) is None
+
+
+@pytest.mark.parametrize("config", ["deploy", "-Dtest=Other#method", "--settings=custom.xml"])
+def test_conflicting_maven_config_prevents_any_process(tmp_path: Path, config: str) -> None:
+    skill_fake_maven.install(tmp_path, {f"{ORDER}#a": ["passed"]})
+    (tmp_path / ".mvn").mkdir()
+    (tmp_path / ".mvn/maven.config").write_text(config)
+    files, plan = _job(tmp_path, timeout=60)
+    result = execute(files, plan)
+    assert result["tests"][0]["outcome"] == "not_run"
+    assert not (tmp_path / skill_fake_maven.CALLS_NAME).exists()
+
+
+@pytest.mark.parametrize("config", [
+    "-Dsafe=1\\\n--settings=chosen-settings.xml\n",
+    "-Dsafe=1\\\n-fchosen-pom.xml\n",
+    "-Dsafe=1\\\n-plother\n",
+    "-Dsafe=1\\\nclean\n",
+    "-Dsafe=1 # --settings=chosen-settings.xml\n",
+    "-Dsafe=1\t--settings=chosen-settings.xml\n",
+    "-Dsafe=1 --settings=chosen-settings.xml\n",
+    '-Dsafe="1 --settings=chosen-settings.xml"\n',
+    "-Dsafe='1 --settings=chosen-settings.xml'\n",
+    "-Dsafe=1\r--settings=chosen-settings.xml\n",
+    "-Dsafe=1\r-Denv=ift\n",
+    "-Dsafe=1\\\r\n--settings=chosen-settings.xml\r\n",
+    "-Dsafe=1\x00\n",
+])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_config_tokenization_bypass_is_rejected_before_popen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: str, fallback: bool,
+) -> None:
+    module = tmp_path / "module"
+    module.mkdir()
+    cwd = module if fallback else tmp_path
+    (cwd / ".mvn").mkdir()
+    (cwd / ".mvn" / "maven.config").write_bytes(config.encode())
+    group = rerun.MavenGroup("", str(tmp_path), [str(tmp_path / "mvn")], [], str(module))
+
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Unsafe maven.config reached subprocess.Popen")
+
+    monkeypatch.setattr(rerun_worker.subprocess, "Popen", forbidden)
+    log = tmp_path / "maven.log"
+    assert rerun_worker._maven(group, [_planned("a")], "j", [], log,
+                               time.monotonic() + 5, fallback) == (126, False)
+    assert "maven.config" in log.read_text()
+
+
+@pytest.mark.parametrize("config", [
+    "", "\n# complete comment, not an inline one\n-Pci\n-Denv=ift\n-o\n-B\n",
+    "-Dtag=value#literal\n-DskipTests\n-Dmaven.test.skip=true\n",
+    "-Denv=ift\r\n-Pci\r\n",
+])
+def test_safe_config_uses_single_options_without_shell_reinterpretation(
+    tmp_path: Path, config: str,
+) -> None:
+    (tmp_path / ".mvn").mkdir()
+    (tmp_path / ".mvn" / "maven.config").write_bytes(config.encode())
+    assert rerun.maven_config_error(tmp_path) == ""
+
+
+def test_maven_config_lookup_stops_at_nearest_mvn_directory(tmp_path: Path) -> None:
+    (tmp_path / ".mvn").mkdir()
+    (tmp_path / ".mvn" / "maven.config").write_text("--settings=outer.xml\n")
+    module = tmp_path / "module"
+    (module / ".mvn").mkdir(parents=True)
+    assert rerun.maven_config_error(module) == ""  # Maven never reads outer config here.
+    (module / ".mvn" / "maven.config").write_text("--settings=inner.xml\n")
+    assert rerun.maven_config_error(module)
+
+
+def test_fake_maven_config_preserves_native_line_boundaries(tmp_path: Path) -> None:
+    (tmp_path / ".mvn").mkdir()
+    (tmp_path / ".mvn" / "maven.config").write_text(
+        "# full comment\n-Dsafe=1\\\n--settings=chosen.xml\n-Dtag=a#b\n")
+    assert skill_fake_maven._maven_config(tmp_path) == [
+        "-Dsafe=1\\", "--settings=chosen.xml", "-Dtag=a#b"]
+
+
+def test_maven_environment_keeps_test_settings_and_drops_secrets_and_injection() -> None:
+    denied = {"ALLURE_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "JIRA_TOKEN",
+              "TRACKER_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
+              "QWEN_CODE_SESSION_ID", "MAVEN_ARGS", "MAVEN_OPTS", "JAVA_TOOL_OPTIONS",
+              "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "NODE_OPTIONS", "PYTHONPATH", "SSH_AUTH_SOCK",
+              "MAVEN_BASEDIR", "MAVEN_PROJECTBASEDIR", "MAVEN_CONFIG"}
+    env = worker_env({**dict.fromkeys(denied, "secret-canary"), "TEST_PASSWORD": "test-password",
+                      "PATH": "/bin", "JAVA_HOME": "/jdk"})
+    assert env == {"TEST_PASSWORD": "test-password", "PATH": "/bin", "JAVA_HOME": "/jdk",
+                   "MAVEN_SKIP_RC": "1"}
+
+
+@pytest.mark.parametrize("parent_skip", [None, "", "0"])
+def test_maven_startup_cannot_source_rc_to_restore_removed_arguments(
+    tmp_path: Path, parent_skip: str | None,
+) -> None:
+    """A real child shell models the launcher's rc loading before Maven starts."""
+    home = tmp_path / "home"
+    home.mkdir()
+    canary = tmp_path / "rc-executed"
+    capture = tmp_path / "environment.txt"
+    (home / ".mavenrc").write_text(
+        'printf sourced > "$RC_CANARY"\n'
+        'export MAVEN_ARGS="--settings=unapproved.xml"\n')
+    launcher = tmp_path / "mvn"
+    launcher.write_text(
+        'if [ -z "$MAVEN_SKIP_RC" ]; then\n'
+        '  if [ -f "$HOME/.mavenrc" ]; then . "$HOME/.mavenrc"; fi\n'
+        'fi\n'
+        'printf "%s\\n" "$MAVEN_SKIP_RC" "${MAVEN_ARGS-unset}" > "$ENV_CAPTURE"\n')
+    env = {"PATH": "/bin", "HOME": str(home), "RC_CANARY": str(canary),
+           "ENV_CAPTURE": str(capture)}
+    subprocess.run(["/bin/sh", str(launcher)], env=env, check=True, timeout=5)
+    assert canary.read_text() == "sourced"  # the fixture really executes without the guard
+    assert capture.read_text().splitlines() == ["", "--settings=unapproved.xml"]
+    canary.unlink()
+
+    if parent_skip is not None:
+        env["MAVEN_SKIP_RC"] = parent_skip
+    env["MAVEN_ARGS"] = "--settings=parent.xml"
+    subprocess.run(["/bin/sh", str(launcher)], env=worker_env(env), check=True, timeout=5)
+    assert not canary.exists()
+    assert capture.read_text().splitlines() == ["1", "unset"]
+
+
+def test_maven_rc_guard_does_not_change_reviewer_cli_environment() -> None:
+    from alla_skill_lib.child_env import inherited_env
+
+    assert inherited_env({"MAVEN_SKIP_RC": "0", "OPENAI_API_KEY": "exported-model-key"}) == {
+        "MAVEN_SKIP_RC": "0", "OPENAI_API_KEY": "exported-model-key"}

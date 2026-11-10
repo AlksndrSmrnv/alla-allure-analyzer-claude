@@ -2,7 +2,7 @@
 # Установка скилла с нуля, как у пользователя: синтетический git-проект автотестов,
 # скилл в .qwen/skills/alla-launch, `setup` создаёт .venv проекта, `check` — сначала с пустым
 # .env (ждём error), затем с адресом фейкового TestOps (ждём ready), и `prepare` прогона.
-# Нужны python3 (3.11+), git и сеть до индекса пакетов. Репозиторий не меняет.
+# Нужны python3 (3.11+), git и заранее подготовленный ALLA_WHEELHOUSE. Сеть установки не используется.
 # Унаследованные переменные ALLURE_* сбрасываются: окружение важнее .env скилла, и с ними
 # скрипт ходил бы в настоящий TestOps вместо фейкового.
 #
@@ -13,6 +13,8 @@ set -euo pipefail
 while IFS= read -r var; do unset "$var"; done < <(compgen -e | grep '^ALLURE_' || true)
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
+: "${ALLA_WHEELHOUSE:?Укажи заранее подготовленный локальный wheelhouse}"
+wheelhouse=$(cd "$ALLA_WHEELHOUSE" && pwd)
 work=$(mktemp -d)
 project="$work/project"
 port=8777
@@ -48,7 +50,7 @@ python3 "$entry" check | tee "$work/pre.log"
 expect_status setup_required "$work/pre.log"
 
 echo "== setup с нуля"
-python3 "$entry" setup | tee "$work/setup.log"
+python3 "$entry" setup --wheelhouse "$wheelhouse" | tee "$work/setup.log"
 expect_status ready "$work/setup.log"
 [ -x .venv/bin/python ] || fail "нет .venv/bin/python"
 [ -f .venv/.alla-setup-complete ] || fail "нет маркера установки"
@@ -68,7 +70,9 @@ echo "== install-files: сначала показ, запись только с 
 python3 "$entry" install-files | tee "$work/files.log"
 expect_status install_files "$work/files.log"
 [ ! -e .qwen/commands ] || fail "install-files без --yes записал файлы"
-python3 "$entry" install-files --yes | tee "$work/files-yes.log"
+diff_hash=$(sed -nE 's/.*--diff ([0-9a-f]{64}).*/\1/p' "$work/files.log" | head -n1)
+[ -n "$diff_hash" ] || fail "install-files не вернул DIFF hash"
+python3 "$entry" install-files --yes --diff "$diff_hash" | tee "$work/files-yes.log"
 expect_status ok "$work/files-yes.log"
 [ -f .qwen/commands/alla/run.md ] || fail "install-files --yes не поставил команды /alla:*"
 [ -f .qwen/agents/alla-batch.md ] || fail "install-files --yes не поставил субагента alla-batch"
@@ -92,11 +96,18 @@ done
 token=$(.venv/bin/python -c "import sys; sys.path.insert(0, sys.argv[1]); import skill_fake_testops as f; print(f.TOKEN)" \
   "$repo/qwen-skill/alla-launch/tests")
 printf 'ALLURE_ENDPOINT=http://127.0.0.1:%s\nALLURE_TOKEN=%s\nALLURE_PROJECT_ID=5\n' "$port" "$token" > "$skill/.env"
+mkdir -p alla-extensions
+printf '[testops]\nallowed_origins = ["http://127.0.0.1:%s"]\n' "$port" > alla-extensions/config.toml
 python3 "$entry" check | tee "$work/check.log"
 expect_status ready "$work/check.log"
 
 echo "== prepare прогона"
-python3 "$entry" prepare 777 | tee "$work/prepare.log"
+for attempt in 1 2 3 4 5; do
+  python3 "$entry" prepare 777 | tee "$work/prepare.log"
+  # Cold imports can exceed the CLI wait budget even on a tiny synthetic launch.
+  # Repeating attaches to the existing job, as in the normal agent protocol.
+  if ! grep -qx 'STATUS: running' "$work/prepare.log"; then break; fi
+done
 expect_status analyze "$work/prepare.log"
 compgen -G "alla-reports/777-*/clusters/01.md" > /dev/null || fail "prepare не записал задание кластера"
 

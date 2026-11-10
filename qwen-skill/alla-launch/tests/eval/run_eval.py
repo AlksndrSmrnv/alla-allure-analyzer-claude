@@ -97,6 +97,10 @@ def run_prepare(fixture: LaunchFixture, workdir: Path) -> PreparedRun:
 
     project = workdir / "project"
     (project / ".git").mkdir(parents=True)
+    policy = project / "alla-extensions" / "config.toml"
+    policy.parent.mkdir()
+    policy.write_text('[testops]\nallowed_origins = ["https://testops.example"]\n',
+                      encoding="utf-8")
     skill_dir = workdir / "skill"
     skill_dir.mkdir()
     reports = project / workspace.REPORTS_DIRNAME

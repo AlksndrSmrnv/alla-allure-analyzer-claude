@@ -64,12 +64,14 @@ paths:
   запрошенных проблем (невозвращённая оценка — не подтверждение), «хорошо» — только при полном
   ответе. Меняя пороги или причины, правь таблицу в `setup.md`.
 - Проверяющая модель — отдельный процесс `qwen` (`ALLA_REVIEW_QWEN` или PATH): временная
-  рабочая папка (в ней только копии скриншотов), `--approval-mode plan`, `--json-schema`, `--system-prompt`, окружение — только белый
-  список `CHILD_ENV` (PATH, HOME, язык, прокси, сертификаты, `OPENAI_*`, `QWEN_HOME`) и имена
-  `envKey` из `modelProviders` в `<QWEN_HOME|~/.qwen>/settings.json` (`_model_env_keys`; битый
-  файл — без них). Токены TestOps, трекера и git не передаются (ревью безопасности);
-  `QWEN_CODE_*` — тем более: запись ушла бы в журнал родителя. Новой переменной, без которой
-  `qwen` не стартует, место — в `CHILD_ENV` (`test_reviewer_gets_short_environment`). Таблица категорий берётся из
+  рабочая папка (в ней только копии скриншотов), `--approval-mode plan`, `--json-schema`, `--system-prompt`, окружение — унаследованное CLI через
+  `child_env.inherited_env`, без ALLURE_*, QWEN_CODE_*, git/tracker tokens, SSHagent/askpass
+  и Python/Node/loader injection. Экспортированные modelkeys сохраняются. Обёртка не читает
+  settings.json и не обнаруживает envKey; нативную авторизацию выбирает сам Qwen CLI.
+  Стенд тоже не читает личные настройки: --model/OPENAI_MODEL, --base-url/OPENAI_BASE_URL,
+  --api-key-env (default OPENAI_API_KEY), отдельный HOME и QWEN_HOME. Generated settings
+  содержит только имя envKey, не значение. Запрещённый sandbox read — синтетический файл.
+  Таблица категорий берётся из
   `references/analysis-format.md` (`categories_table`), а не копией. Оцениваются
   `MAX_REVIEWED` (10) крупнейших по тестам проблем, разобранных моделью; оценки
   незапрошенных номеров отбрасываются. Нет `qwen`, тайм-аут (код 55), мусор — отчёт без

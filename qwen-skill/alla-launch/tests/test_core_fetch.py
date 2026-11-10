@@ -59,7 +59,8 @@ def test_page_limit_fails_after_the_first_page(monkeypatch) -> None:
     """Лимит страниц виден по первой странице — остальные не запрашиваются."""
     fake = FakeTestOps(default_launch(LAUNCH))
     fake.install(monkeypatch)
-    settings = Settings(endpoint="https://testops.example", token="t", page_size=3, max_pages=2)
+    settings = Settings(endpoint="https://testops.example", token="t", page_size=3, max_pages=2,
+                        allowed_origins=("https://testops.example",))
 
     async def fetch() -> None:
         async with TestOpsMcpClient(settings, project_id=5) as client:

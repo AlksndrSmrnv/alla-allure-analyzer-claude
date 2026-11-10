@@ -31,7 +31,7 @@ jobs:
           cache-dependency-path: qwen-skill/alla-launch/requirements*.txt
       - name: Install dependencies
         run: python -m pip install --require-hashes -r qwen-skill/alla-launch/requirements-dev.txt
-      # -rs: причины пропусков в журнале (на Linux пропускаются только проверки стенда для macOS).
+      # -rs: причины пропусков в журнале (на Linux пропускаются проверки macOS и её системных ссылок).
       - name: pytest
         run: python -m pytest -rs
       - name: ruff
@@ -52,5 +52,9 @@ jobs:
     container: python:3.11
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare local wheelhouse explicitly
+        run: python -m pip download --require-hashes --only-binary=:all: -r qwen-skill/alla-launch/requirements.txt --dest /tmp/alla-wheelhouse
       - name: setup, check, prepare
+        env:
+          ALLA_WHEELHOUSE: /tmp/alla-wheelhouse
         run: bash .github/scripts/skill_setup_smoke.sh

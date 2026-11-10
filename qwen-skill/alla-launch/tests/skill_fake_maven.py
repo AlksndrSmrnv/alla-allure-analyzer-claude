@@ -1,6 +1,6 @@
-"""Фейковый Maven для перезапуска тестов: ``mvnw`` проекта пишет отчёты surefire по сценарию.
+"""Фейковый Maven для перезапуска тестов: ``mvn`` проекта пишет отчёты surefire по сценарию.
 
-``install`` кладёт в папку исполняемый ``mvnw`` и сценарий ``fake-maven.json``: для каждого
+``install`` кладёт в папку исполняемый ``mvn`` и сценарий ``fake-maven.json``: для каждого
 ``класс#метод`` — итоги запусков по порядку (``"failed:<сообщение>"``, ``"passed"``,
 ``"skipped"``, ``"flaky"``; последний повторяется). Скрипт разбирает ``-Dtest``, ``-pl`` и
 ``-Dsurefire.reportNameSuffix``, как настоящий surefire пишет ``TEST-<класс>-<суффикс>.xml``,
@@ -44,13 +44,13 @@ def install(
     python: str = sys.executable,
     script: str = str(Path(__file__).resolve()),
 ) -> Path:
-    """Положить ``mvnw`` и сценарий в ``folder``; вернуть путь к ``mvnw``.
+    """Положить ``mvn`` и сценарий в ``folder``; вернуть путь к ``mvn``.
 
     ``sleep`` — пауза с ``sleep_from_call``-го запуска Maven; ``orphan`` — до паузы запустить
     дочерний процесс, который не реагирует на SIGTERM (как форк surefire), его pid — в
     ``fake-maven-orphan.pid``. ``pom_skip`` — тесты выключены в pom (``<skipTests>true``
     в настройке surefire): ``-D`` это не отменяет.
-    ``python`` и ``script`` — для shell: стенд Qwen передаёт пути от папки ``mvnw``
+    ``python`` и ``script`` — для shell: стенд Qwen передаёт пути от папки ``mvn``
     (``$(dirname "$0")/…``), чтобы песочница не читала ничего вне проекта.
     """
     spec = folder / SPEC_NAME
@@ -58,7 +58,7 @@ def install(
         "results": results, "exit": exit_code, "sleep": sleep, "sleep_from_call": sleep_from_call,
         "orphan": orphan, "not_in_reactor": not_in_reactor, "pom_skip": pom_skip,
     }), encoding="utf-8")
-    wrapper = folder / "mvnw"
+    wrapper = folder / "mvn"
     wrapper.write_text(
         f'#!/bin/sh\nexec "{python}" "{script}" --spec "{spec}" "$@"\n',
         encoding="utf-8",
@@ -134,11 +134,16 @@ def main(argv: list[str]) -> int:
 
 
 def _maven_config(folder: Path) -> list[str]:
-    """Аргументы ``.mvn/maven.config``: Maven ищет ``.mvn`` от рабочей папки вверх."""
+    """Native Maven 3.9+ line boundaries, independent of the guard's validation.
+
+    Do not shell-split here: that would hide a forbidden next-line option in the
+    same way as the old guard, making the fake accept a tokenization bypass.
+    """
     for parent in (folder, *folder.parents):
         if (parent / ".mvn").is_dir():
             config = parent / ".mvn" / "maven.config"
-            return config.read_text(encoding="utf-8").split() if config.is_file() else []
+            return [line for line in config.read_text(encoding="utf-8").splitlines()
+                    if line and not line.startswith("#")] if config.is_file() else []
     return []
 
 

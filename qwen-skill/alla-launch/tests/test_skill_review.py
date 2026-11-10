@@ -356,30 +356,29 @@ def test_model_assessment_with_clean_context(project: Path, testops: FakeTestOps
 
 def test_reviewer_gets_short_environment(project: Path, testops: FakeTestOps, capsys,
                                          monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Проверяющему — только ``CHILD_ENV`` и ключ модели из настроек Qwen, без токенов
-    TestOps и трекера (ревью безопасности)."""
+    """No settings reads or credential discovery; exported model environment is inherited."""
     run_dir, _, _ = _finished_run(project, capsys, monkeypatch, tmp_path)
     script, log = _fake_qwen(tmp_path, "ok")
     monkeypatch.setenv(review_model.QWEN_ENV, str(script))
-    for name in ("ALLURE_TOKEN", "TRACKER_TOKEN", "QWEN_CODE_SESSION_ID", "MY_MODEL_KEY",
-                 "QWEN_CODE_KEY", "HTTPS_PROXY"):
-        monkeypatch.setenv(name, "x")
+    denied = ("ALLURE_TOKEN", "TRACKER_TOKEN", "QWEN_CODE_SESSION_ID", "QWEN_CODE_KEY",
+              "GH_TOKEN", "GITHUB_TOKEN", "GIT_ASKPASS", "SSH_AUTH_SOCK", "NODE_OPTIONS",
+              "PYTHONPATH")
+    for name in (*denied, "MY_MODEL_KEY", "HTTPS_PROXY", "CUSTOM_CLI_SETTING"):
+        monkeypatch.setenv(name, "canary-" + name)
     settings = Path(os.environ["QWEN_HOME"]) / "settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(json.dumps({"modelProviders": {
-        "openai": [{"id": "m", "envKey": "MY_MODEL_KEY"}, {"id": "q", "envKey": "QWEN_CODE_KEY"}],
-        "other": {"models": [{"id": "n", "envKey": 5}]}}}), encoding="utf-8")
+    settings.write_text("{not valid JSON", encoding="utf-8")
+    original_read = Path.read_text
 
+    def read(path: Path, *args, **kwargs):
+        assert path != settings, "reviewer must not read personal model settings"
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
     assert _run(["review", "--run", str(run_dir)], capsys)[0] == 0
     env = set(json.loads(log.read_text(encoding="utf-8"))["env"])
-    assert {"PATH", "MY_MODEL_KEY", "HTTPS_PROXY", "QWEN_HOME"} <= env
-    assert not env & {"ALLURE_TOKEN", "TRACKER_TOKEN", "QWEN_CODE_SESSION_ID", "QWEN_CODE_KEY"}
-    # __CF_USER_TEXT_ENCODING macOS добавляет дочернему процессу сам.
-    assert {key for key in env if not key.startswith("__CF_")} <= review_model.CHILD_ENV | {"MY_MODEL_KEY"}
-
-    settings.write_text("{битый", encoding="utf-8")  # без настроек — только CHILD_ENV, не падает
-    assert _run(["review", "--run", str(run_dir)], capsys)[0] == 0
-    assert "MY_MODEL_KEY" not in json.loads(log.read_text(encoding="utf-8"))["env"]
+    assert {"PATH", "MY_MODEL_KEY", "HTTPS_PROXY", "QWEN_HOME", "CUSTOM_CLI_SETTING"} <= env
+    assert not env & set(denied)
 
 
 def test_reviewer_gets_screenshots_of_reviewed_problems_only(

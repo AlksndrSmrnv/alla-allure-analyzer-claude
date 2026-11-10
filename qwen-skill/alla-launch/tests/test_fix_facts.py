@@ -16,7 +16,9 @@ from skill_fixtures import (  # noqa: F401
     testops_fixture,
 )
 from test_skill_flow import MARKDOWN_ANALYSIS, _finish, _prepare, _run
-from test_skill_rerun import FAILED_500, ORDER, _applied, _problem_of, _wait_done
+from test_skill_rerun import (
+    FAILED_500, ORDER, _applied, _problem_of, _wait_done, fake_maven_path,  # noqa: F401
+)
 
 from alla_skill_lib import fix_facts
 from alla_skill_lib.kb import ProjectKB

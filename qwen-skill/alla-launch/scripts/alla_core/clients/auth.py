@@ -8,6 +8,7 @@ import httpx
 
 from alla_core.clients.retry import RETRY_STATUSES, header, retry_delay
 from alla_core.exceptions import AuthenticationError
+from alla_core.origins import require_allowed_origin
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +45,18 @@ class AllureAuthManager:
         *,
         timeout: int = 30,
         retries: int = 0,
+        allowed_origins: tuple[str, ...] = (),
     ) -> None:
-        self._endpoint = endpoint.rstrip("/")
+        self._endpoint = endpoint.strip().rstrip("/")
+        self._allowed_origins = allowed_origins
+        require_allowed_origin(self._endpoint, allowed_origins)
         self._api_token = api_token
         # Повторы обмена при 429/502–504 и сбое сети — как у запросов клиента (``http_retries``).
         self._retries = retries
         self._sleep = asyncio.sleep  # подменяется в тестах
         self._token_info: _TokenInfo | None = None
         self._token_lock = asyncio.Lock()
-        self._http = httpx.AsyncClient(timeout=timeout)
+        self._http = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
 
     async def get_auth_header(self) -> dict[str, str]:
         """Вернуть заголовок ``Authorization`` с валидным JWT.
@@ -85,6 +89,8 @@ class AllureAuthManager:
 
         try:
             resp = await self._post_token(url)
+            if 300 <= resp.status_code < 400:
+                raise AuthenticationError("TestOps: перенаправление при обмене токена запрещено")
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise AuthenticationError(
@@ -117,6 +123,7 @@ class AllureAuthManager:
         запросе иначе обрывал бы выгрузку прогона. Последний сбой сети пробрасывается."""
         attempt = 0
         while True:
+            require_allowed_origin(url, self._allowed_origins)
             retry_after: object = None
             try:
                 resp = await self._http.post(

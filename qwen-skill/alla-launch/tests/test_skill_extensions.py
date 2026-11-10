@@ -161,13 +161,13 @@ def test_enable_and_disable_keep_config_and_manage_agent(project: Path, capsys) 
         "# наш проект\n\n[demo]\ngreeting = \"здравствуй\"\n", encoding="utf-8")
     code, out = ext_cli(project, capsys, "enable", "demo")
     assert code == 0 and "Расширение demo включено" in out
-    assert 'greeting = "здравствуй", confirm = false' in out and "после перезапуска сеанса" in out
+    assert 'greeting = "здравствуй"' in out and "после перезапуска сеанса" in out
     text = config.read_text(encoding="utf-8")
     assert text.startswith("# наш проект\n\nenabled = [\"demo\"]\n")
     assert "[demo]\ngreeting = \"здравствуй\"" in text
     agent = project / ".qwen" / "agents" / "alla-demo.md"
     assert agent.read_text(encoding="utf-8") == AGENT
-    assert "уже включено" in ext_cli(project, capsys, "enable", "demo")[1]
+    assert "Изменений нет" in ext_cli(project, capsys, "enable", "demo")[1]
 
     code, out = ext_cli(project, capsys, "disable", "demo")
     assert code == 0 and "выключено" in out
@@ -177,7 +177,7 @@ def test_enable_and_disable_keep_config_and_manage_agent(project: Path, capsys) 
 
     ext_cli(project, capsys, "enable", "demo")
     agent.write_text(AGENT + "\nправка команды\n", encoding="utf-8")
-    assert "изменён вручную — не удаляю" in ext_cli(project, capsys, "disable", "demo")[1]
+    assert "Изменён вручную — не удаляю" in ext_cli(project, capsys, "disable", "demo")[1]
     assert agent.is_file()
 
 
@@ -262,7 +262,7 @@ def test_task_values_are_one_line(project: Path, testops: FakeTestOps, capsys) -
 
 def test_confirm_asks_before_subagent(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project)
-    ext.config_path(project).write_text("[demo]\nconfirm = true\n", encoding="utf-8")
+    ext.config_path(project).write_text(ext.config_path(project).read_text() + "\n[demo]\nconfirm = true\n", encoding="utf-8")
     ext_cli(project, capsys, "enable", "demo")
     _, _, out = applied(project, capsys)
     assert "- Демо (demo): спроси пользователя: «Сделать демо?» Только после явного «да» запусти" in out
@@ -406,7 +406,7 @@ def test_install_files_installs_agents_of_enabled_extensions(project: Path, test
     code, out = _run(["install-files", "--project-root", str(project)], capsys)
     assert out.splitlines()[0] == "STATUS: install_files" and "alla-demo.md" in out
     assert not target.exists()
-    code, out = _run(["install-files", "--yes", "--project-root", str(project)], capsys)
+    code, out = _run(["install-files", "--yes", "--diff", _install_hash(project, capsys), "--project-root", str(project)], capsys)
     assert code == 0 and target.read_text(encoding="utf-8") == AGENT
 
 
@@ -721,19 +721,19 @@ def test_extension_commands_are_installed_and_removed(
 
     assert "Команда: /alla:demo-run." in ext_cli(project, capsys)[1]
     code, out = ext_cli(project, capsys, "enable", "demo")
-    assert code == 0 and "Команды /alla:demo-run установлены" in out
+    assert code == 0 and "Расширение demo включено" in out
     assert target.read_text(encoding="utf-8") == COMMAND
     target.unlink()
     _prepare(project, capsys)  # prepare в .qwen/ не пишет
     assert not target.is_file()
-    assert _run(["install-files", "--yes", "--project-root", str(project)], capsys)[0] == 0  # а install-files возвращает
+    assert _run(["install-files", "--yes", "--diff", _install_hash(project, capsys), "--project-root", str(project)], capsys)[0] == 0  # а install-files возвращает
     assert target.is_file()
 
     code, out = ext_cli(project, capsys, "disable", "demo")
     assert code == 0 and not target.exists()
     ext_cli(project, capsys, "enable", "demo")
     target.write_text(COMMAND + "своё\n", encoding="utf-8")
-    assert "изменены вручную — не удаляю" in ext_cli(project, capsys, "disable", "demo")[1]
+    assert "Изменён вручную — не удаляю" in ext_cli(project, capsys, "disable", "demo")[1]
     assert target.is_file()
 
 
@@ -787,3 +787,12 @@ def test_enable_refuses_a_command_of_another_enabled_extension(project: Path, ca
     assert ext.load_config(project).enabled == ("demo",)
     assert target.read_text(encoding="utf-8") == COMMAND + "demo\n"
     assert [extension.name for extension, _ in ext.active(project).extensions] == ["demo"]
+
+
+def _install_hash(project: Path, capsys: pytest.CaptureFixture[str]) -> str:
+    import re
+
+    code, output = _run(["install-files", "--project-root", str(project)], capsys)
+    assert code == 0, output
+    match = re.search(r"--diff ([0-9a-f]{64})", output)
+    return match.group(1) if match else "unchanged"

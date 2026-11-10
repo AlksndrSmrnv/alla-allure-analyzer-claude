@@ -418,14 +418,13 @@ def test_clean_removes_only_old_runs(project: Path, testops: FakeTestOps, capsys
 def test_setup_argument_split() -> None:
     import alla_skill
 
-    assert alla_skill.split_setup_args([]) == (None, [])
-    assert alla_skill.split_setup_args(["--python", "/opt/py311"]) == ("/opt/py311", [])
-    assert alla_skill.split_setup_args(
-        ["--python", "/opt/py311", "--", "--index-url", "https://mirror/simple"]
-    ) == ("/opt/py311", ["--index-url", "https://mirror/simple"])
-    assert alla_skill.split_setup_args(["--", "--proxy", "http://p:3128"]) == (
-        None, ["--proxy", "http://p:3128"],
+    assert alla_skill.split_setup_args([]) == (None, None)
+    assert alla_skill.split_setup_args(["--wheelhouse", "/local/wheels", "--python", "/opt/py311"]) == (
+        "/opt/py311", Path("/local/wheels"),
     )
+    for args in (["--python", "/opt/py311"], ["--", "--index-url", "https://mirror/simple"], ["--unknown"]):
+        with pytest.raises(ValueError):
+            alla_skill.split_setup_args(args)
 
 
 def test_setup_creates_env_from_example_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

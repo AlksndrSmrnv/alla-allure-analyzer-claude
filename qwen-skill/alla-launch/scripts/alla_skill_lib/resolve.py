@@ -142,6 +142,7 @@ async def send(
 
     auth = AllureAuthManager(
         endpoint=settings.endpoint,
+        allowed_origins=settings.allowed_origins,
         api_token=settings.token,
         timeout=settings.request_timeout,
         retries=settings.http_retries,

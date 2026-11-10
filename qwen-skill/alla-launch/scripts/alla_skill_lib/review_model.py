@@ -2,8 +2,7 @@
 
 Скрипт сам запускает отдельный процесс ``qwen`` в headless-режиме: во временной папке (без
 контекста проекта и скиллов, в ней только копии скриншотов), со своей системной подсказкой,
-режимом ``plan``, схемой ответа (``--json-schema``) и коротким списком переменных окружения
-(``CHILD_ENV`` и ключ модели из настроек Qwen) — без ``QWEN_CODE_*`` родительского сеанса и
+режимом ``plan``, схемой ответа (``--json-schema``) и унаследованным окружением CLI — без ``QWEN_CODE_*`` родительского сеанса и
 без токенов TestOps, трекера и git. Файла
 агента в ``.qwen/agents/`` нет: модель, которая вела разбор, о проверяющем не узнаёт.
 
@@ -33,8 +32,8 @@ from typing import Any
 
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.agent_rules import ANALYSIS_FORMAT_REF
+from alla_skill_lib.child_env import inherited_env
 from alla_skill_lib.images import image_type
-from alla_skill_lib.session_log import QWEN_HOME_ENV
 from alla_skill_lib.session_rules import canonical, hinted_files
 
 # Код скилла, а не ws.SKILL_DIR (его подменяют тесты папкой без справочников).
@@ -46,17 +45,6 @@ MAX_CODE_CHARS = 6000
 TIMEOUT_SECONDS = 900
 # Путь к qwen для проверки (по умолчанию — из PATH); тесты подставляют заглушку.
 QWEN_ENV = "ALLA_REVIEW_QWEN"
-# Окружение проверяющего — только эти переменные и ключи модели из настроек Qwen (envKey):
-# токены TestOps, трекера и git ему не нужны (ревью безопасности). QWEN_CODE_* здесь нет:
-# с ними запись ушла бы в журнал сеанса родителя.
-CHILD_ENV = frozenset({
-    "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TERM",
-    QWEN_HOME_ENV,
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
-    "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
-    "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL",
-})
 CAUSE_VALUES = ("подтверждена", "частично", "не подтверждена")
 CATEGORY_VALUES = ("согласен", "не согласен")
 ACTION_VALUES = ("полезны", "общие", "неверны")
@@ -265,32 +253,8 @@ def _numbered(text: str) -> str:
 
 
 def _child_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Окружение проверяющего: ``CHILD_ENV`` и переменные ключей модели из настроек Qwen."""
-    env = os.environ if environ is None else environ
-    allowed = CHILD_ENV | _model_env_keys(env)
-    return {key: value for key, value in env.items() if key in allowed}
-
-
-def _model_env_keys(environ: Mapping[str, str]) -> set[str]:
-    """Имена ``envKey`` из ``modelProviders`` в ``<QWEN_HOME или ~/.qwen>/settings.json``.
-
-    Провайдер — список моделей или ``{"models": [...]}``. Нет файла, битый JSON, не те типы —
-    пусто: ключ, записанный прямо в настройках (``env``), qwen прочитает сам."""
-    home = environ.get(QWEN_HOME_ENV)
-    base = Path(home).expanduser() if home else Path.home() / ".qwen"
-    try:
-        settings = json.loads((base / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return set()
-    providers = settings.get("modelProviders") if isinstance(settings, dict) else None
-    keys: set[str] = set()
-    for entries in providers.values() if isinstance(providers, dict) else ():
-        models = entries.get("models") if isinstance(entries, dict) else entries
-        for entry in models if isinstance(models, list) else ():
-            key = entry.get("envKey") if isinstance(entry, dict) else None
-            if isinstance(key, str) and key and not key.startswith("QWEN_CODE_"):
-                keys.add(key)
-    return keys
+    """Inherit exported CLI credentials without reading or extracting settings."""
+    return inherited_env(environ)
 
 
 def _run_qwen(qwen: str, prompt: str, review_dir: Path,

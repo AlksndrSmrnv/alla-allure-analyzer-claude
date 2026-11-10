@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
 """Точка входа скилла alla-launch.
 
-    python3 .qwen/skills/alla-launch/scripts/alla_skill.py setup [--python PATH] [-- pip-аргументы]
-    python3 .qwen/skills/alla-launch/scripts/alla_skill.py update [--source URL] [--ref REF]
+    python3 .qwen/skills/alla-launch/scripts/alla_skill.py setup [--wheelhouse PATH] [--python PATH]
+    python3 .qwen/skills/alla-launch/scripts/alla_skill.py update --source PATH
     python3 .qwen/skills/alla-launch/scripts/alla_skill.py prepare <launch_id>
-    python3 .qwen/skills/alla-launch/scripts/alla_skill.py next [run_dir]
 
-Файл совместим с Python 3.8+: основная логика выполняется в ``.venv`` в корне
-проекта автотестов (Python 3.11+), куда этот скрипт перезапускает сам себя.
-``setup`` создаёт этот ``.venv`` (или берёт существующий) и ставит в него
-зависимости из ``requirements.txt``. ``update`` заменяет папку скилла версией из
-git-репозитория (адрес — таблица ``[update]`` в ``alla-extensions/config.toml``); как и
-``setup``, он работает без ``.venv``.
+Python 3.8+ bootstrap. setup проверяет готовое окружение без установки;
+только явный --wheelhouse разрешает локальную установку. update готовит
+новый локальный релиз с diff, сохраняя активный скилл.
+
 """
 
 # Аннотации — строками (PEP 563): Python 3.8 их не вычисляет, а mypy проверяет.
 from __future__ import annotations
 
-import filecmp
 import hashlib
 import os
 import re
@@ -65,13 +61,6 @@ FILES_NOTE = (
 )
 PYTHON_CANDIDATES = ("python3.13", "python3.12", "python3.11", "python3", "python")
 CHILD_MARKER = "ALLA_SKILL_IN_VENV"
-# Коммит, из которого установлен скилл (пишет update); в .gitignore скилла.
-VERSION_MARKER = SKILL_DIR / ".alla-version"
-# Пользовательское в папке скилла: update переносит это в новую версию как есть.
-UPDATE_KEEP = (".env", ".venv")
-UPDATE_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".git", ".env", ".venv")
-UPDATE_SOURCE_PATHS = ("qwen-skill/alla-launch", "")
-GIT_TIMEOUT = 90  # Qwen Code обрывает команду shell на 120 с
 
 
 def venv_python(venv_dir: Path = VENV_DIR) -> Path:
@@ -137,17 +126,18 @@ def find_base_python(explicit: str | None = None) -> str | None:
     return None
 
 
-def split_setup_args(argv: Sequence[str]) -> tuple[str | None, list[str]]:
-    """``[--python PATH] [-- pip-аргументы]`` → (PATH или None, аргументы pip)."""
-    argv = list(argv)
-    pip_args: list[str] = []
-    if "--" in argv:
-        cut = argv.index("--")
-        argv, pip_args = argv[:cut], argv[cut + 1:]
-    explicit = None
-    if argv[:1] == ["--python"] and len(argv) > 1:
-        explicit = argv[1]
-    return explicit, pip_args
+def split_setup_args(argv: Sequence[str]) -> tuple[str | None, Path | None]:
+    """Only explicit local wheelhouse installation is supported."""
+    args = list(argv)
+    found: dict[str, str] = {}
+    while args:
+        name = args.pop(0)
+        if name not in ("--python", "--wheelhouse") or name in found or not args:
+            raise ValueError("setup [--wheelhouse PATH] [--python PATH]; pip-аргументы не принимаются")
+        found[name] = args.pop(0)
+    if "--python" in found and "--wheelhouse" not in found:
+        raise ValueError("--python используется только вместе с --wheelhouse")
+    return found.get("--python"), Path(found["--wheelhouse"]) if "--wheelhouse" in found else None
 
 
 def venv_needs_ignore(root: Path) -> bool:
@@ -172,7 +162,7 @@ def create_env_file() -> Path | None:
     """``.env`` из образца, чтобы пользователю оставалось вписать endpoint и токен."""
     env_file = SKILL_DIR / ".env"
     example = SKILL_DIR / ".env.example"
-    if env_file.exists() or not example.exists():
+    if os.path.lexists(str(env_file)) or not example.exists():
         return None
     shutil.copyfile(str(example), str(env_file))
     if os.name != "nt":
@@ -213,7 +203,7 @@ def create_venv(explicit: str | None) -> int:
         print("STATUS: error")
         print(
             "Не найден Python {}.{}+. Установи его и повтори, например: {}".format(
-                MIN_VERSION[0], MIN_VERSION[1], self_command("setup", "--python", "/path/to/python3.11")
+                MIN_VERSION[0], MIN_VERSION[1], self_command("setup", "--wheelhouse", "/local/wheels", "--python", "/path/to/python3.11")
             )
         )
         return 2
@@ -230,11 +220,11 @@ def ensure_pip(python: Path) -> bool:
 
     ``ensurepip`` ставит pip из колёс, вшитых в Python, — без сети и зеркала.
     """
-    check = [str(python), "-m", "pip", "--version"]
+    check = [str(python), "-I", "-m", "pip", "--version"]
     if subprocess.call(check, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
         return True
     print("В {} нет pip — ставлю его через ensurepip.".format(VENV_DIR), flush=True)
-    if subprocess.call([str(python), "-m", "ensurepip", "--upgrade"]) == 0:
+    if subprocess.call([str(python), "-I", "-m", "ensurepip", "--upgrade"]) == 0:
         return True
     print("STATUS: error")
     print(
@@ -247,160 +237,130 @@ def ensure_pip(python: Path) -> bool:
     return False
 
 
+def locked_requirements() -> list[tuple[str, str, str]]:
+    """Accept only exact hashed distributions and the lock's Python version markers.
+
+    A restricted grammar prevents requirements options, URLs and nested files from
+    turning the offline installation into another source of dependencies.
+    """
+    text = REQUIREMENTS.read_text(encoding="utf-8")
+    logical = re.sub(r"\\\n\s*", " ", text)
+    result = []
+    for line in logical.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        match = re.fullmatch(
+            r"([A-Za-z0-9][A-Za-z0-9_.-]*)==([A-Za-z0-9_.+!-]+)"
+            r"(?:\s*;\s*(python_full_version\s*(?:<|>=|==|<=|>|!=)\s*['\"][0-9.]+['\"]))?"
+            r"((?:\s+--hash=sha256:[a-fA-F0-9]{64})+)", line,
+        )
+        if match is None:
+            raise ValueError("requirements.txt: разрешены только точные версии с SHA256 и Python-маркеры")
+        result.append((match.group(1), match.group(2), match.group(3) or ""))
+    if not result:
+        raise ValueError("requirements.txt пуст")
+    return result
+
+
+def validate_dependencies(python: Path, entries: list[tuple[str, str, str]]) -> bool:
+    import json
+
+    # No pip and no third-party modules are needed to inspect installed versions.
+    code = r"""
+import importlib.metadata as m, json, re, sys
+entries = json.loads(sys.argv[1])
+def applies(marker):
+    if not marker:
+        return True
+    op, raw = re.fullmatch(r"python_full_version\s*(<|>=|==|<=|>|!=)\s*['\"]([0-9.]+)['\"]", marker).groups()
+    wanted = tuple(int(v) for v in raw.split('.'))
+    current = tuple(sys.version_info[:3])
+    wanted = wanted + (0,) * (3 - len(wanted))
+    return {'<': current < wanted, '>=': current >= wanted, '==': current == wanted,
+            '<=': current <= wanted, '>': current > wanted, '!=': current != wanted}[op]
+for name, version, marker in entries:
+    if applies(marker):
+        try:
+            actual = m.version(name)
+        except m.PackageNotFoundError:
+            sys.exit(1)
+        if actual != version:
+            sys.exit(1)
+"""
+    try:
+        return subprocess.call(
+            [str(python), "-I", "-c", code, json.dumps(entries)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+        ) == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def setup(argv: Sequence[str]) -> int:
-    explicit, pip_args = split_setup_args(argv)
-    if VENV_DIR.exists():
+    try:
+        explicit, wheelhouse = split_setup_args(argv)
+        entries = locked_requirements()
+        if wheelhouse is not None:
+            wheelhouse = wheelhouse.resolve(strict=True)
+            if not wheelhouse.is_dir():
+                raise ValueError("--wheelhouse должен указывать на локальный каталог")
+    except (ValueError, OSError) as error:
+        return update_error(str(error), 2)
+    if VENV_DIR.exists() or VENV_DIR.is_symlink():
         if not use_existing_venv(explicit):
             return 2
+    elif wheelhouse is None:
+        print("STATUS: setup_required")
+        print("Окружения .venv нет. Установи зависимости вручную либо явно укажи setup --wheelhouse /local/path. Автоматической установки нет.")
+        return 0
     else:
         code = create_venv(explicit)
-        if code != 0:
+        if code:
             return code
-
     target = venv_python()
-    if not ensure_pip(target):
-        return 1
-    if venv_needs_ignore(PROJECT_DIR):
-        print(
-            "git не игнорирует .venv проекта: добавь строку /.venv в {} сам (setup .gitignore "
-            "не меняет).".format(PROJECT_DIR / ".gitignore"),
-            flush=True,
-        )
+    if wheelhouse is not None:
+        from alla_wheels import local_wheels
+
+        try:
+            with local_wheels(wheelhouse) as wheels:
+                SETUP_MARKER.unlink(missing_ok=True)
+                if not ensure_pip(target):
+                    return 1
+                env = {k: v for k, v in os.environ.items() if not k.startswith("PIP_")}
+                env["PIP_CONFIG_FILE"] = os.devnull
+                code = subprocess.call([
+                    str(target), "-I", "-m", "pip", "install", "--disable-pip-version-check",
+                    "--no-index", "--find-links", str(wheels), "--only-binary=:all:", "--no-deps",
+                    "--require-hashes", "-r", str(REQUIREMENTS),
+                ], env=env)
+        except (ValueError, OSError) as error:
+            return update_error(str(error), 2)
+        if code:
+            return update_error("Не удалось установить зависимости из локального wheelhouse; сеть не используется.")
+    if not validate_dependencies(target, entries):
+        # A stale marker must not claim that a failed validation was successful.
+        SETUP_MARKER.unlink(missing_ok=True)
+        print("STATUS: setup_required")
+        print("Версии зависимостей не соответствуют requirements.txt. Установи их вручную либо явно выполни setup --wheelhouse /local/path.")
+        return 0
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=str(VENV_DIR),
+                                     prefix=".alla-setup-", delete=False) as handle:
+        handle.write(requirements_digest() + "\n")
+        marker_tmp = Path(handle.name)
     try:
-        SETUP_MARKER.unlink()
-    except FileNotFoundError:
-        pass
-    print(
-        "Ставлю зависимости скилла из {} в .venv проекта {} (numpy, scipy, scikit-learn — "
-        "это 1–3 минуты, не прерывай).".format(REQUIREMENTS, VENV_DIR),
-        flush=True,
-    )
-    code = subprocess.call([
-        str(target), "-m", "pip", "install", "--disable-pip-version-check",
-        "--require-hashes", "-r", str(REQUIREMENTS),
-    ] + pip_args)
-    if code != 0:
-        print("STATUS: error")
-        print(
-            "pip install завершился с кодом {}. Проверь доступ к индексу пакетов; для зеркала "
-            "или прокси добавь pip-аргументы: {} -- --index-url <URL> --proxy <URL>".format(
-                code, self_command("setup")
-            )
-        )
-        return 1
-    SETUP_MARKER.write_text(requirements_digest() + "\n", encoding="utf-8")
+        os.replace(str(marker_tmp), str(SETUP_MARKER))
+    finally:
+        marker_tmp.unlink(missing_ok=True)
+    if venv_needs_ignore(PROJECT_DIR):
+        print("git не игнорирует .venv: добавь /.venv в .gitignore проекта сам.", flush=True)
     print("STATUS: ready")
-    print("Зависимости скилла установлены в {}".format(VENV_DIR))
+    print("Версии зависимостей проверены: {}".format(VENV_DIR))
     created = create_env_file()
     if created is not None:
-        print(
-            "Создан {}: впиши ALLURE_ENDPOINT и ALLURE_TOKEN (токен в чат не пиши).".format(created)
-        )
+        print("Создан {}: впиши адрес и токен (токен в чат не пиши).".format(created))
     print(FILES_NOTE.format(self_command("install-files")))
     return 0
-
-
-# ---------------------------------------------------------------------------
-# update
-# ---------------------------------------------------------------------------
-
-_TABLE_RE = re.compile(r"^\s*(\[\[?)\s*([^\[\]]*?)\s*\]\]?\s*(?:#.*)?$")
-_STRING_RE = re.compile(
-    r"""^\s*([A-Za-z_][\w-]*)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\s*(?:#.*)?$"""
-)
-_REMOTE_HELPER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*::")  # транспорт::адрес
-# Пароль в userinfo любой схемы, а у http(s) — любой userinfo (токен без пароля тоже секрет).
-_URL_PASSWORD_RE = re.compile(
-    r"^(?:[A-Za-z][A-Za-z0-9+.-]*://[^/@\s]*:[^/@\s]*@|https?://[^/\s]*@)", re.IGNORECASE
-)
-_SKILL_NAME_RE = re.compile(r"^name:\s*alla-launch\s*$", re.MULTILINE)
-UPDATE_CONFIG_HINT = (
-    "Адрес репозитория вписывает в alla-extensions/config.toml проекта автотестов сам "
-    "пользователь (скилл этот файл не правит):\n\n[update]\nrepo = \"git@git.example.com:team/alla.git\"\n"
-    "ref = \"main\"                      # необязательно: ветка или тег\n"
-    "path = \"qwen-skill/alla-launch\"   # необязательно: папка скилла в репозитории\n\n"
-    "Разово адрес можно передать аргументом: update --source <URL>"
-)
-
-
-def read_update_config(project_dir: Path = PROJECT_DIR) -> dict[str, str]:
-    """Строковые ключи таблицы ``[update]`` из ``alla-extensions/config.toml``.
-
-    ``tomllib`` есть только с Python 3.11, а этот файл работает и на 3.8: читается
-    ровно то, что нужно, — ``ключ = "значение"`` в одной таблице.
-    """
-    try:
-        text = (project_dir / "alla-extensions" / "config.toml").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return {}
-    values: dict[str, str] = {}
-    in_update = False
-    for line in text.splitlines():
-        table = _TABLE_RE.match(line)
-        if table:
-            in_update = table.group(1) == "[" and table.group(2) == "update"
-            continue
-        match = _STRING_RE.match(line)
-        if in_update and match:
-            double, single = match.group(2), match.group(3)
-            if double is not None:
-                double = double.replace('\\"', '"').replace("\\\\", "\\")
-            values[match.group(1)] = double if double is not None else single
-    return values
-
-
-def split_update_args(argv: Sequence[str]) -> tuple[str | None, str | None] | None:
-    """``[--source URL] [--ref REF]`` → (URL, REF); ``None`` — неверные аргументы."""
-    found: dict[str, str] = {}
-    args = list(argv)
-    while args:
-        arg = args.pop(0)
-        name, eq, value = arg.partition("=")
-        if name not in ("--source", "--ref"):
-            return None
-        if not eq:
-            if not args:
-                return None
-            value = args.pop(0)
-        found[name] = value
-    return found.get("--source"), found.get("--ref")
-
-
-def git_env() -> dict[str, str]:
-    """Окружение git без вопросов: ключ ssh и пароль спросить некому.
-
-    Как ``git_env`` расширения ``sut-code``: его отсюда не импортировать.
-    """
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
-    env["GIT_ASKPASS"] = os.environ.get("GIT_ASKPASS", "echo")
-    if "GIT_SSH_COMMAND" not in env and "GIT_SSH" not in env:
-        try:
-            # Из папки проекта: clone локальную настройку проекта не наследует, поэтому
-            # найденную команду передаём ему через GIT_SSH_COMMAND.
-            configured = subprocess.run(
-                ["git", "-C", str(PROJECT_DIR), "config", "--get", "core.sshCommand"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, universal_newlines=True,
-                timeout=GIT_TIMEOUT,
-            ).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            configured = ""
-        env["GIT_SSH_COMMAND"] = configured or "ssh -o BatchMode=yes"
-    return env
-
-
-def run_git(args: Sequence[str]) -> tuple[int, str]:
-    """(код, вывод); 127 — git не запустился, 124 — не уложился в ``GIT_TIMEOUT``."""
-    try:
-        result = subprocess.run(
-            ["git", *args], env=git_env(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, universal_newlines=True, timeout=GIT_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        return 124, "git не ответил за {} с".format(GIT_TIMEOUT)
-    except OSError as error:
-        return 127, str(error)
-    return result.returncode, result.stdout.strip()
 
 
 def update_error(message: str, code: int = 1) -> int:
@@ -409,184 +369,21 @@ def update_error(message: str, code: int = 1) -> int:
     return code
 
 
-def find_update_source(clone: Path, configured: str | None) -> tuple[Path | None, str]:
-    """Папка скилла в клоне и текст ошибки, если её нет или это не alla-launch."""
-    candidates = (configured,) if configured else UPDATE_SOURCE_PATHS
-    for relative in candidates:
-        folder = (clone / (relative or "")).resolve()
-        if clone.resolve() not in (folder, *folder.parents):
-            return None, "path = «{}» выходит за пределы репозитория.".format(relative)
-        skill_md = folder / "SKILL.md"
-        try:
-            head = skill_md.read_text(encoding="utf-8")[:2000]
-        except (OSError, UnicodeDecodeError):
-            continue
-        if not _SKILL_NAME_RE.search(head):
-            continue
-        for required in ("scripts/alla_skill.py", "requirements.txt"):
-            if not (folder / required).is_file():
-                return None, "В папке скилла репозитория нет {}.".format(required)
-        return folder, ""
-    where = "«{}»".format(configured) if configured else "qwen-skill/alla-launch или в корне"
-    return None, "В репозитории нет скилла alla-launch (SKILL.md с name: alla-launch) в {}.".format(where)
-
-
-def tree_files(root: Path) -> set[str]:
-    found: set[str] = set()
-    for folder, dirs, names in os.walk(str(root)):
-        dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git") and d not in UPDATE_KEEP]
-        for name in names:
-            if name.endswith(".pyc") or name in UPDATE_KEEP or name == VERSION_MARKER.name:
-                continue
-            found.add(Path(folder, name).relative_to(root).as_posix())
-    return found
-
-
-def tree_changes(old: Path, new: Path) -> tuple[int, int, int]:
-    """(добавлено, изменено, удалено) файлов при замене ``old`` на ``new``."""
-    before, after = tree_files(old), tree_files(new)
-    changed = sum(
-        1 for name in before & after if not filecmp.cmp(str(old / name), str(new / name), shallow=False)
-    )
-    return len(after - before), changed, len(before - after)
-
-
-def swap_skill_dir(source: Path, version: str = "") -> str:
-    """Заменить папку скилла копией ``source``; пустая строка — готово, иначе причина.
-
-    Копия собирается рядом (одна файловая система) и ставится переименованием, старая
-    папка сохраняется до конца: при сбое она возвращается на место. Маркер версии пишется в
-    копию до замены: файлы и маркер меняются одним переименованием.
-    """
-    staging = Path(tempfile.mkdtemp(prefix=".alla-update-", dir=str(SKILL_DIR.parent)))
-    new_dir, old_dir = staging / "new", staging / "old"
-    moved: list[str] = []
-    swapped = False
-    try:
-        shutil.copytree(str(source), str(new_dir), ignore=UPDATE_IGNORE)
-        if version:
-            (new_dir / VERSION_MARKER.name).write_text(version + "\n", encoding="utf-8")
-        os.rename(str(SKILL_DIR), str(old_dir))
-        swapped = True
-        for name in UPDATE_KEEP:
-            kept = old_dir / name
-            if os.path.lexists(str(kept)):
-                os.rename(str(kept), str(new_dir / name))
-                moved.append(name)
-        os.rename(str(new_dir), str(SKILL_DIR))
-    except (OSError, shutil.Error) as error:
-        stuck: list[str] = []
-        for name in moved:
-            try:
-                os.rename(str(new_dir / name), str(old_dir / name))
-            except OSError:
-                stuck.append(name)
-        if swapped and not SKILL_DIR.exists():
-            try:
-                os.rename(str(old_dir), str(SKILL_DIR))
-            except OSError:
-                return "{}; прежняя папка скилла осталась в {}".format(error, old_dir)
-        if stuck:
-            # Единственная копия .env/.venv осталась в staging: не удалять.
-            return "{}; {} не вернулись на место, они лежат в {}".format(
-                error, ", ".join(stuck), new_dir
-            )
-        shutil.rmtree(str(staging), ignore_errors=True)
-        return str(error)
-    shutil.rmtree(str(staging), ignore_errors=True)
-    return ""
-
-
 def update(argv: Sequence[str]) -> int:
-    args = split_update_args(argv)
-    if args is None:
-        return update_error(
-            "Неверные аргументы update. Использование: {}".format(
-                self_command("update", "[--source URL] [--ref REF]")
-            ),
-            2,
-        )
-    if not (SKILL_DIR.parent.name == "skills" and SKILL_DIR.parent.parent.name == ".qwen"):
-        return update_error(
-            "Скилл лежит в {}, а не в .qwen/skills/ проекта: это рабочая копия, update её не "
-            "заменяет (пользователь обновляет такую копию через git сам).".format(SKILL_DIR),
-            2,
-        )
-    config = read_update_config()
-    source = args[0] or config.get("repo", "")
-    ref = args[1] or config.get("ref", "")
-    if not source:
-        return update_error("Не задан репозиторий скилла. " + UPDATE_CONFIG_HINT, 2)
-    if source.startswith("-") or ref.startswith("-"):
-        return update_error("Адрес и ветка репозитория не могут начинаться с «-».", 2)
-    if _REMOTE_HELPER_RE.match(source):
-        return update_error(
-            "Адрес вида транспорт::адрес (remote-helper git) не поддерживается: укажи обычный ssh- "
-            "или https-адрес без учётных данных.",
-            2,
-        )
-    if _URL_PASSWORD_RE.match(source):
-        return update_error(
-            "В адресе репозитория пароль или токен — так нельзя. Используй ssh-ключ или "
-            "сохранённый пароль git (credential helper) и адрес без учётных данных.",
-            2,
-        )
+    from alla_release import stage_release
 
-    scratch = Path(tempfile.mkdtemp(prefix="alla-update-"))
     try:
-        clone = scratch / "repo"
-        # Первая строка stdout — STATUS, поэтому стадии идут в stderr.
-        print(
-            "Получаю скилл из {}{}".format(source, " ({})".format(ref) if ref else ""),
-            file=sys.stderr, flush=True,
-        )
-        clone_args = ["-c", "protocol.ext.allow=never", "clone", "--quiet", "--depth", "1"]
-        if ref:
-            clone_args += ["--branch", ref]
-        code, output = run_git(clone_args + ["--", source, str(clone)])
-        if code != 0:
-            return update_error(
-                "Не удалось получить репозиторий {} (git, код {}):\n{}\nДоступ — ключом ssh или "
-                "сохранённым паролем git; корпоративный сертификат — в настройках git "
-                "(http.sslCAInfo).".format(source, code, "\n".join(output.splitlines()[-5:]))
-            )
-        folder, problem = find_update_source(clone, config.get("path") or None)
-        if folder is None:
-            return update_error(problem + " Скилл не изменён.")
-        code, sha = run_git(["-C", str(clone), "rev-parse", "HEAD"])
-        if code != 0 or not sha:
-            return update_error("Не удалось определить версию репозитория: {}".format(sha))
-        # Версия — коммит и папка скилла в нём: смена path при том же коммите — другая версия.
-        version = "{} {}".format(sha, folder.resolve().relative_to(clone.resolve()).as_posix())
-
-        try:
-            current = VERSION_MARKER.read_text(encoding="utf-8").strip()
-        except OSError:
-            current = ""
-        if current == version:
-            print("STATUS: ok")
-            print("Скилл уже последней версии ({}), ничего не менял.".format(sha[:8]))
-            return 0
-        added, changed, removed = tree_changes(SKILL_DIR, folder)
-        reason = swap_skill_dir(folder, version)
-        if reason:
-            return update_error("Не удалось заменить папку скилла: {}. Скилл не изменён.".format(reason))
-    finally:
-        shutil.rmtree(str(scratch), ignore_errors=True)
-
-    print("STATUS: updated")
-    print(
-        "Скилл обновлён: {} → {}. Файлов: добавлено {}, изменено {}, удалено {}.".format(
-            current[:8] or "версия не была записана", sha[:8], added, changed, removed
-        )
-    )
-    print(FILES_NOTE.format(self_command("install-files")))
-    if not setup_complete():
-        print(
-            "Зависимости нужно доустановить (изменился requirements.txt или окружения ещё нет); "
-            "команда займёт 1–3 минуты:"
-        )
-        print(self_command("setup"))
+        release, diff = stage_release(argv, PROJECT_DIR, SKILL_DIR)
+    except (ValueError, OSError) as error:
+        return update_error(str(error), 2)
+    print("STATUS: update_ready")
+    print("Релиз подготовлен: {}".format(release))
+    exclusions = (release.parent / "excluded.txt").read_text(encoding="utf-8").strip()
+    if exclusions:
+        print("Исключены из релиза (только имена):\n{}".format(exclusions))
+    print("Diff: {}".format(diff))
+    print("{}".format(diff.read_text(encoding="utf-8")))
+    print("Активируй релиз вручную после просмотра diff. Текущий скилл и его .env сохранены; каталоги .qwen не менялись.")
     return 0
 
 
@@ -612,13 +409,12 @@ def main(argv: Sequence[str]) -> int:
             state = "не установлены"
         print("STATUS: setup_required")
         print(
-            "Зависимости скилла в .venv проекта ({}) {}. Выполни один раз (займёт пару "
-            "минут):".format(VENV_DIR, state)
+            "Зависимости скилла в .venv проекта ({}) {}. Проверь уже установленное окружение:".format(VENV_DIR, state)
         )
         print(self_command("setup"))
-        print("Затем повтори команду:")
+        print("Не устанавливай пакеты автоматически. После ручной установки или явного --wheelhouse повтори команду:")
         print(self_command(*argv))
-        return 0  # статус с инструкцией, а не авария: агент должен выполнить setup
+        return 0  # агент останавливается; установка требует явного локального источника
 
     if running_in_venv() or os.environ.get(CHILD_MARKER):
         sys.path.insert(0, str(SCRIPTS_DIR))

@@ -515,7 +515,8 @@ def test_settings_env_overrides_file(tmp_path: Path) -> None:
         "ALLURE_HTTP_RETRIES=5\nDATABASE_URL=postgres://ignored\n",
         encoding="utf-8",
     )
-    settings = Settings.load(env_file, environ={"ALLURE_TOKEN": "env-token", "ALLURE_PAGE_SIZE": "7"})
+    skill_fixtures.allow_testops(tmp_path, "https://file.example")
+    settings = Settings.load(env_file, project_root=tmp_path, environ={"ALLURE_TOKEN": "env-token", "ALLURE_PAGE_SIZE": "7"})
     assert settings.endpoint == "https://file.example"
     assert settings.token == "env-token"
     assert settings.http_retries == 5
@@ -531,7 +532,7 @@ def test_clustering_gate_settings_reach_the_clustering_config(
     from alla_skill_lib import pipeline
     from skill_factories import make_failed_test_summary
 
-    settings = Settings.load(None, environ={
+    settings = Settings.load(None, require_testops=False, environ={
         "ALLURE_ENDPOINT": "https://a.example", "ALLURE_TOKEN": "t",
         "ALLURE_CLUSTERING_RESOURCE_GATE": "false",
         "ALLURE_CLUSTERING_LOG_SPLIT_THRESHOLD": "0.25"})
@@ -582,15 +583,16 @@ def test_settings_errors(environ: dict[str, str], message: str) -> None:
         Settings.load(None, environ=environ)
 
 
-def test_settings_operation_id_keys() -> None:
+def test_settings_operation_id_keys(tmp_path: Path) -> None:
+    skill_fixtures.allow_testops(tmp_path, "https://a")
     base = {"ALLURE_ENDPOINT": "https://a", "ALLURE_TOKEN": "t"}
 
-    assert Settings.load(None, environ=base).operation_keys == ()
-    settings = Settings.load(None, environ={
+    assert Settings.load(None, project_root=tmp_path, environ=base).operation_keys == ()
+    settings = Settings.load(None, project_root=tmp_path, environ={
         **base, "ALLURE_OPERATION_ID_KEYS": " businessId, ,bizRqId,BUSINESSID"})
     assert settings.operation_keys == ("businessId", "bizRqId")
     with pytest.raises(ConfigurationError, match="ALLURE_OPERATION_ID_KEYS: «biz id»"):
-        Settings.load(None, environ={**base, "ALLURE_OPERATION_ID_KEYS": "biz id"})
+        Settings.load(None, project_root=tmp_path, environ={**base, "ALLURE_OPERATION_ID_KEYS": "biz id"})
 
 
 @pytest.mark.parametrize("module", ["alla_skill_lib.workspace", "alla_skill"])
@@ -694,6 +696,7 @@ def test_entrypoint_runs_cli_after_complete_setup(tmp_path: Path) -> None:
 def test_setup_refuses_unusable_project_venv(tmp_path: Path, python_body: str, message: str) -> None:
     """Чужой .venv проекта setup не пересоздаёт и pip в него не зовёт."""
     project, stub = _install_skill_copy(tmp_path)
+    (stub.parents[1] / "requirements.txt").write_text("httpx==0.0.0 --hash=sha256:" + "0" * 64 + "\n")
     python = _fake_venv_python(project, python_body)
 
     result = _run_stub(stub, "setup")
@@ -706,40 +709,27 @@ def test_setup_refuses_unusable_project_venv(tmp_path: Path, python_body: str, m
     assert not (project / ".venv" / ".alla-setup-complete").exists()
 
 
-# «Python» .venv без pip: отвечает версией, pip появляется только после ensurepip.
-_NO_PIP_PYTHON = """case "$2" in
-  pip) [ -f "$0.pip" ] || exit 1; exit 0;;
-  ensurepip) {ensurepip};;
-esac
-echo 3.11"""
-
-
 @pytest.mark.skipif(os.name == "nt", reason="обёртка .venv/bin/python — POSIX")
-def test_setup_installs_missing_pip_with_ensurepip(tmp_path: Path) -> None:
+def test_setup_never_installs_missing_pip_implicitly(tmp_path: Path) -> None:
     project, stub = _install_skill_copy(tmp_path)
-    python = _fake_venv_python(project, _NO_PIP_PYTHON.format(ensurepip='touch "$0.pip"'))
-
+    (stub.parents[1] / "requirements.txt").write_text("httpx==0.0.0 --hash=sha256:" + "0" * 64 + "\n")
+    python = _fake_venv_python(project, 'case "$1" in -c) echo 3.11;; *) exit 1;; esac')
+    before = python.read_bytes()
     result = _run_stub(stub, "setup")
+    assert result.returncode == 0
+    assert result.stdout.startswith("STATUS: setup_required")
+    assert python.read_bytes() == before
+    assert not (project / ".venv/.alla-setup-complete").exists()
+    assert not Path(str(python) + ".pip").exists()
 
-    assert result.returncode == 0, result.stdout
-    assert "нет pip — ставлю его через ensurepip" in result.stdout
-    assert Path(f"{python}.pip").exists()
-    assert "STATUS: ready" in result.stdout
-    assert (project / ".venv" / ".alla-setup-complete").is_file()
 
-
-@pytest.mark.skipif(os.name == "nt", reason="обёртка .venv/bin/python — POSIX")
-def test_setup_explains_venv_without_pip(tmp_path: Path) -> None:
+def test_setup_without_venv_only_reports_requirement(tmp_path: Path) -> None:
     project, stub = _install_skill_copy(tmp_path)
-    python = _fake_venv_python(project, _NO_PIP_PYTHON.format(ensurepip="exit 1"))
-
+    (stub.parents[1] / "requirements.txt").write_text("httpx==0.0.0 --hash=sha256:" + "0" * 64 + "\n")
     result = _run_stub(stub, "setup")
-
-    assert result.returncode == 1
-    assert "STATUS: error" in result.stdout
-    assert f"{python} -m ensurepip --upgrade" in result.stdout
-    assert "pip install завершился" not in result.stdout
-    assert not (project / ".venv" / ".alla-setup-complete").exists()
+    assert result.returncode == 0
+    assert result.stdout.startswith("STATUS: setup_required")
+    assert not (project / ".venv").exists()
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="нужен git")

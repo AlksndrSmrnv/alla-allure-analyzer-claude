@@ -13,6 +13,7 @@ import httpx
 from alla_core.clients.auth import AllureAuthManager
 from alla_core.config import Settings
 from alla_core.exceptions import AllureApiError
+from alla_core.origins import require_allowed_origin
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +24,11 @@ class AllureTestOpsClient:
     TESTRESULT_ENDPOINT = "/api/testresult"
 
     def __init__(self, settings: Settings, auth_manager: AllureAuthManager) -> None:
-        self._endpoint = str(settings.endpoint).rstrip("/")
+        settings.validate_testops_origins()
+        self._allowed_origins = settings.allowed_origins
+        self._endpoint = str(settings.endpoint).strip().rstrip("/")
         self._auth = auth_manager
-        self._http = httpx.AsyncClient(timeout=settings.request_timeout)
+        self._http = httpx.AsyncClient(timeout=settings.request_timeout, follow_redirects=False)
 
     async def resolve_test_result(
         self, test_result_id: int, status: str, message: str,
@@ -58,6 +61,7 @@ class AllureTestOpsClient:
         ``httpx.RequestError`` — ``AllureApiError(0, ...)``.
         """
         url = f"{self._endpoint}{path}"
+        require_allowed_origin(url, self._allowed_origins)
         auth_header = await self._auth.get_auth_header()
         try:
             resp = await self._http.request(method, url, json=json, headers=auth_header)

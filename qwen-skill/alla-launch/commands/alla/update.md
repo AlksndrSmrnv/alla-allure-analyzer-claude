@@ -1,5 +1,5 @@
 ---
-description: Обновить скилл alla-launch из внутреннего git-репозитория
+description: Подготовить локальный релиз alla-launch с diff для ручной активации
 disable-model-invocation: true
 ---
 Вызови скилл alla-launch (инструмент skill): пользователь просит обновить скилл. Действуй по

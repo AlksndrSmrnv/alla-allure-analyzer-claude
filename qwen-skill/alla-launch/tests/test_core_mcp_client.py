@@ -34,7 +34,8 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
 
 def _settings(**overrides: Any) -> Settings:
-    values: dict[str, Any] = {"endpoint": "https://testops.example", "token": TOKEN, "page_size": 3}
+    values: dict[str, Any] = {"endpoint": "https://testops.example", "token": TOKEN, "page_size": 3,
+                              "allowed_origins": ("https://testops.example",)}
     return Settings(**{**values, **overrides})
 
 
@@ -102,7 +103,8 @@ def test_own_mcp_url_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
                                          headers=request.headers, content=request.content))
 
     _install(monkeypatch, handler)
-    _run(_settings(mcp_url="https://mcp.example/testops"), lambda client: client.connect())
+    _run(_settings(mcp_url="https://mcp.example/testops",
+                   allowed_origins=("https://testops.example", "https://mcp.example")), lambda client: client.connect())
     assert set(urls) == {"https://mcp.example/testops"}
 
 
@@ -640,13 +642,14 @@ def test_attachment_decoding(content: str, mime: str | None, expected: bytes) ->
 # --- настройки -----------------------------------------------------------------------------
 
 
-def test_mcp_url_setting() -> None:
+def test_mcp_url_setting(tmp_path: Path) -> None:
+    skill_fixtures.allow_testops(tmp_path, "https://testops.example", "https://mcp.example")
     base = {"ALLURE_ENDPOINT": "https://testops.example/", "ALLURE_TOKEN": "t"}
-    assert Settings.load(environ=base).mcp_endpoint == "https://testops.example/api/mcp"
-    own = Settings.load(environ={**base, "ALLURE_MCP_URL": "https://mcp.example/x"})
+    assert Settings.load(project_root=tmp_path, environ=base).mcp_endpoint == "https://testops.example/api/mcp"
+    own = Settings.load(project_root=tmp_path, environ={**base, "ALLURE_MCP_URL": "https://mcp.example/x"})
     assert own.mcp_endpoint == "https://mcp.example/x"
     with pytest.raises(ConfigurationError, match="ALLURE_MCP_URL"):
-        Settings.load(environ={**base, "ALLURE_MCP_URL": "mcp.example"})
+        Settings.load(project_root=tmp_path, environ={**base, "ALLURE_MCP_URL": "mcp.example"})
 
 
 @pytest.mark.parametrize(("raw", "expected"), [
@@ -655,17 +658,18 @@ def test_mcp_url_setting() -> None:
     ("orders=5, payments/api=7,", (ProjectRef("orders", 5), ProjectRef("payments/api", 7))),
     ("\\services\\orders\\=5,smoke=5", (ProjectRef("services/orders", 5), ProjectRef("smoke", 5))),
 ])
-def test_project_id_setting(raw: str, expected: tuple[ProjectRef, ...]) -> None:
+def test_project_id_setting(raw: str, expected: tuple[ProjectRef, ...], tmp_path: Path) -> None:
+    skill_fixtures.allow_testops(tmp_path, "https://testops.example")
     base = {"ALLURE_ENDPOINT": "https://testops.example", "ALLURE_TOKEN": "t"}
-    assert Settings.load(environ={**base, "ALLURE_PROJECT_ID": raw}).projects == expected
+    assert Settings.load(project_root=tmp_path, environ={**base, "ALLURE_PROJECT_ID": raw}).projects == expected
 
 
 @pytest.mark.parametrize("raw", ["x", "0", "orders=", "=5", "orders=x", "a=1,a=2", "../x=1",
                                  "a/../b=1", "5,orders=6", "²", ","])
-def test_wrong_project_id_setting_is_named(raw: str) -> None:
+def test_wrong_project_id_setting_is_named(raw: str, tmp_path: Path) -> None:
     base = {"ALLURE_ENDPOINT": "https://testops.example", "ALLURE_TOKEN": "t"}
     with pytest.raises(ConfigurationError, match="ALLURE_PROJECT_ID"):
-        Settings.load(environ={**base, "ALLURE_PROJECT_ID": raw})
+        Settings.load(project_root=tmp_path, environ={**base, "ALLURE_PROJECT_ID": raw})
 
 
 # --- проект TestOps --------------------------------------------------------------------------

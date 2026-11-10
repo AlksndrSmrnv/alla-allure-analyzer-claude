@@ -28,7 +28,7 @@ def _run_json(out: str) -> dict:
 
 
 def _settings(raw: str) -> Settings:
-    return Settings.load(environ={"ALLURE_ENDPOINT": "https://t.example", "ALLURE_TOKEN": "t",
+    return Settings.load(require_testops=False, environ={"ALLURE_ENDPOINT": "https://t.example", "ALLURE_TOKEN": "t",
                                   "ALLURE_PROJECT_ID": raw})
 
 

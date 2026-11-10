@@ -19,6 +19,7 @@ from fake_testops_server import FakeTestOpsServer
 from skill_fake_testops import TOKEN, FakeTestOps, default_launch
 from skill_journal import save_main
 from skill_fixtures import (  # noqa: F401
+    allow_testops,
     LOGIN_TEST_JAVA,
     ORDER_TEST_JAVA,
     project_fixture,
@@ -52,20 +53,21 @@ def autotests_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def _server(monkeypatch: pytest.MonkeyPatch, *, delay: float = 0.0) -> Iterator[FakeTestOpsServer]:
+def _server(monkeypatch: pytest.MonkeyPatch, project: Path, *, delay: float = 0.0) -> Iterator[FakeTestOpsServer]:
     with FakeTestOpsServer(default_launch(), delay=delay) as server:
         monkeypatch.setenv("ALLURE_ENDPOINT", server.endpoint)
+        allow_testops(project, server.endpoint)
         yield server
 
 
 @pytest.fixture(name="server")
-def server_fixture(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeTestOpsServer]:
-    yield from _server(monkeypatch)
+def server_fixture(monkeypatch: pytest.MonkeyPatch, autotests: Path) -> Iterator[FakeTestOpsServer]:
+    yield from _server(monkeypatch, autotests)
 
 
 @pytest.fixture(name="slow_server")
-def slow_server_fixture(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeTestOpsServer]:
-    yield from _server(monkeypatch, delay=0.3)
+def slow_server_fixture(monkeypatch: pytest.MonkeyPatch, autotests: Path) -> Iterator[FakeTestOpsServer]:
+    yield from _server(monkeypatch, autotests, delay=0.3)
 
 
 def _prepare(root: Path, capsys: pytest.CaptureFixture[str], *extra: str) -> tuple[int, str]:
