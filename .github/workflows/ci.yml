@@ -53,7 +53,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Prepare local wheelhouse explicitly
-        run: python -m pip download --require-hashes --only-binary=:all: -r qwen-skill/alla-launch/requirements.txt --dest /tmp/alla-wheelhouse
+        run: >-
+          python -m pip download --require-hashes --only-binary=:all:
+          -r qwen-skill/alla-launch/requirements.txt --dest /tmp/alla-wheelhouse
       - name: setup, check, prepare
         env:
           ALLA_WHEELHOUSE: /tmp/alla-wheelhouse
