@@ -38,6 +38,10 @@ def git(repo: Path, *args: str) -> str:
 @pytest.fixture(autouse=True)
 def isolated_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Глобальные настройки git того, кто запускает тесты (подпись коммитов, хуки), не влияют."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     for name in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"):

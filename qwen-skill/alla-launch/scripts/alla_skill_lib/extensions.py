@@ -807,17 +807,19 @@ def run_script(
     """Запустить скрипт расширения отдельным процессом; (код возврата, вывод).
 
     ``timeout`` — потолок времени, если он меньше ``timeout`` манифеста.
+    Наследуются только HOME/PATH/SSH_AUTH_SOCK, без расширения списка из манифеста.
     """
     limit = extension.timeout if timeout is None else min(extension.timeout, timeout)
-    env = {
-        **os.environ,
+    env = {name: os.environ[name] for name in ("HOME", "PATH", "SSH_AUTH_SOCK")
+           if name in os.environ}
+    env.update({
         "ALLA_CONTEXT": str(context_file),
         "ALLA_EXTENSION_DIR": str(extension.root),
         "ALLA_PROJECT_ROOT": str(project_root),
         "PYTHONIOENCODING": "utf-8",
         "PYTHONDONTWRITEBYTECODE": "1",
         "GIT_TERMINAL_PROMPT": "0",  # git не должен ждать пароль, которого никто не введёт
-    }
+    })
     try:
         result = subprocess.run(
             [sys.executable, str(script), *(args or [])],

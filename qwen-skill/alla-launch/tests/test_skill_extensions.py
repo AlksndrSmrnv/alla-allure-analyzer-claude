@@ -78,6 +78,86 @@ def make_demo(project: Path, **files: str) -> Path:
     return folder
 
 
+@pytest.mark.parametrize("missing", [(), ("HOME",), ("PATH",), ("SSH_AUTH_SOCK",),
+                                    ("HOME", "PATH", "SSH_AUTH_SOCK")])
+def test_script_inherits_only_minimal_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: tuple[str, ...],
+) -> None:
+    script = """\
+import json, os, pathlib, sys
+context = json.loads(pathlib.Path(os.environ["ALLA_CONTEXT"]).read_text(encoding="utf-8"))
+pathlib.Path(context["output"]).write_text(json.dumps({
+    "env": dict(os.environ), "cwd": str(pathlib.Path.cwd()), "args": sys.argv[1:],
+}), encoding="utf-8")
+print("STATUS: ok")
+"""
+    folder = make_demo(tmp_path, act_py=script)
+    extension = ext.load_manifest(folder, bundled=False)
+    context = tmp_path / "context.json"
+    output = tmp_path / "environment.json"
+    context.write_text(json.dumps({"output": str(output)}), encoding="utf-8")
+    inherited = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin",
+                 "SSH_AUTH_SOCK": str(tmp_path / "agent.sock")}
+    forbidden = ("CUSTOM_TOKEN", "ALLURE_TOKEN", "ALLA_SKILL_IN_VENV", "QWEN_HOME",
+                 "OPENAI_API_KEY", "OPENROUTER_API_KEY", "TRACKER_TOKEN", "JIRA_TOKEN",
+                 "YOUTRACK_TOKEN", "GITLAB_TOKEN", "GH_TOKEN", "GIT_CONFIG_GLOBAL",
+                 "PYTHONPATH", "HTTPS_PROXY", "SSL_CERT_FILE", "TMPDIR")
+    generated = {"ALLA_CONTEXT": str(context), "ALLA_EXTENSION_DIR": str(extension.root),
+                 "ALLA_PROJECT_ROOT": str(tmp_path), "PYTHONIOENCODING": "utf-8",
+                 "PYTHONDONTWRITEBYTECODE": "1", "GIT_TERMINAL_PROMPT": "0"}
+    # Use only synthetic values: the probe must never dump the developer's credentials.
+    monkeypatch.setattr(ext.os, "environ", {
+        **inherited, **dict.fromkeys(forbidden, "synthetic-secret"),
+        **dict.fromkeys(generated, "parent-value"),
+    })
+    for name in missing:
+        monkeypatch.delenv(name)
+    code, text = ext.run_script(extension, folder / "act.py", context, tmp_path, ["probe"])
+    assert (code, text) == (0, "STATUS: ok")
+    result = json.loads(output.read_text(encoding="utf-8"))
+    environment = result["env"]
+    # Runtime initialization may add locale metadata after subprocess receives env.
+    environment.pop("LC_CTYPE", None)
+    environment.pop("__CF_USER_TEXT_ENCODING", None)
+    assert environment == {**{key: value for key, value in inherited.items() if key not in missing},
+                           **generated}
+    assert result["cwd"] == str(tmp_path) and result["args"] == ["probe"]
+
+
+@pytest.mark.parametrize("parent_has_token", [False, True])
+def test_manifest_settings_do_not_export_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parent_has_token: bool,
+) -> None:
+    manifest = MANIFEST.replace('api = 1', 'api = 1\nenv = ["CUSTOM_TOKEN"]')
+    manifest = manifest.replace('[settings]', '[settings]\nCUSTOM_TOKEN = "manifest-secret"')
+    script = "import os\nprint('CUSTOM_TOKEN' in os.environ)\n"
+    folder = make_demo(tmp_path, extension_toml=manifest, act_py=script)
+    extension = ext.load_manifest(folder, bundled=False)
+    monkeypatch.setattr(ext.os, "environ", {"CUSTOM_TOKEN": "parent-secret"}
+                        if parent_has_token else {})
+    context = tmp_path / "context.json"
+    context.write_text(json.dumps({"settings": extension.settings}), encoding="utf-8")
+    assert ext.run_script(extension, folder / "act.py", context, tmp_path) == (0, "False")
+
+
+@pytest.mark.parametrize("route", ["hook", "action"])
+def test_hooks_and_actions_filter_parent_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str,
+) -> None:
+    script = "import os\nprint('STATUS: ok')\nprint('CUSTOM_TOKEN' in os.environ)\n"
+    make_demo(tmp_path, hook_py=script, act_py=script)
+    ext.set_enabled(tmp_path, "demo", True)
+    monkeypatch.setattr(ext.os, "environ", {"CUSTOM_TOKEN": "synthetic-secret"})
+    if route == "hook":
+        paths = ws.RunPaths(tmp_path / "reports" / "run")
+        paths.root.mkdir(parents=True)
+        lines = ext.fire("after_report", paths, {"project_root": str(tmp_path)}, {})
+        assert lines[-2:] == ["  STATUS: ok", "  False"]
+    else:
+        assert ext.run_action(tmp_path, tmp_path / "reports", "demo", "act", None, []) == (
+            "ok", "False")
+
+
 def ext_cli(project: Path, capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, str]:
     # --project-root до «--»: дальше — аргументы скрипта действия.
     return _run(["extensions", *args[:1], "--project-root", str(project), *args[1:]], capsys)

@@ -413,6 +413,26 @@ def test_negative_case_detects_activation(tmp_path: Path) -> None:
     assert CHECKS["no_prepare"](active)["status"] == "fail"
 
 
+@pytest.mark.parametrize("prepare", [False, True])
+def test_ticket_connection_stop_needs_no_skill_command(tmp_path: Path, prepare: bool) -> None:
+    project = build_project(tmp_path / "work", "http://127.0.0.1:1", venv=None)
+    guide = project / ".qwen/skills/alla-launch/extensions/tickets/CONNECT-MCP.md"
+    calls = [("read_file", {"file_path": str(guide)}, guide.read_text(encoding="utf-8"))]
+    if prepare:
+        calls.append(("run_shell_command", {"command": f"python3 {SKILL} prepare 777"}, ""))
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    trace = events(*calls, final="Токен из окружения Qwen не доходит до расширения. "
+                   "adapter_env его не восстанавливает; подключение остановлено.")
+    (case_dir / "trace-1.jsonl").write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False) for event in trace), encoding="utf-8")
+    result = qwen_stand.evaluate({"id": "I06", "dir": str(case_dir),
+                                 "project": str(project), "exit_codes": [0]})
+    assert result["status"] == ("fail" if prepare else "inconclusive")
+    assert result["failed_checks"] == (["no_prepare"] if prepare else [])
+    assert result["pending_review"]  # The explanation still requires human assessment.
+
+
 def test_prepare_with_wrong_launch_fails(tmp_path: Path) -> None:
     ctx = context(tmp_path, events(
         ("run_shell_command", {"command": f"python3 {SKILL} prepare 12345"}, "")))

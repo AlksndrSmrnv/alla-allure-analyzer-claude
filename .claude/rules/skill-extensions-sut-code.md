@@ -35,8 +35,9 @@ paths:
   обрывает команду на 120 с (`SHELL_COMMAND_TIMEOUT_MS`, исходники Qwen Code 0.25).
 - Ссылки (`check_url`): https/http/ssh и `git@host:path`; без пароля в URL, без `::`, без
   ведущего «-»; локальный путь — только `allow_local` (тесты, стенд). git — с
-  `protocol.ext.allow=never`, `GIT_TERMINAL_PROMPT=0`, ssh `BatchMode=yes`, если у инженера нет
-  своего `GIT_SSH_COMMAND`/`core.sshCommand`.
+  `protocol.ext.allow=never`, `GIT_TERMINAL_PROMPT=0`, ssh `BatchMode=yes`, если в процессе
+  скрипта не задан `GIT_SSH_COMMAND` и в git нет `core.sshCommand`. Родительский
+  `GIT_SSH_COMMAND` через `run_script` не наследуется; `SSH_AUTH_SOCK` сохраняется.
 - Ревизия (`prepare.choose_revision`): `--param ref=X` (или `имя=X` для одного репозитория) →
   ветка, тег `X`/`vX`, коммит; иначе приблизительно — `rev-list -1 --before=<launch_created>`
   основной ветки (`default_branch` или HEAD bare-копии). Версию из TestOps пока не читаем

@@ -19,5 +19,6 @@ paths:
 - `confirm = true` в манифесте: по умолчанию модель спрашивает `ask` хука перед субагентом
   (push — внешнее действие, ревью безопасности); выключается `[git-publish] confirm = false`.
 - `after_revert.py` только напоминает о ветке на сервере, ничего не удаляет.
-- Тесты — на настоящем git (`test_ext_git_publish.py`, изолированный `GIT_CONFIG_GLOBAL`);
+- Тесты — на настоящем git (`test_ext_git_publish.py`, отдельный временный `HOME` для
+  процесса расширения и `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM` для команд самого pytest);
   поведение модели — сценарий стенда `X01` (фикстура `test_bug`, bare-remote внутри проекта).

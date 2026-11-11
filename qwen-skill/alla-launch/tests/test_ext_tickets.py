@@ -512,6 +512,35 @@ def test_adapter_receives_only_explicit_environment(case: Any, monkeypatch: Any)
     assert b"private-token-value" not in t.canonical(store.records())
 
 
+def test_adapter_cannot_restore_parent_token_through_run_script(
+    case: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Import fixtures before skill modules so this test also works when run on its own.
+    import skill_fixtures  # noqa: F401
+    from alla_skill_lib import extensions as ext
+
+    ctx, _, _ = case
+    project = Path(ctx["project_root"])
+    adapter = project / "probe-adapter.py"
+    adapter.write_text(
+        "import json, os, sys\njson.load(sys.stdin)\n"
+        "print(json.dumps({'api': 1, 'token_present': 'TRACKER_TEST_TOKEN' in os.environ}))\n",
+        encoding="utf-8")
+    ctx["settings"].update(adapter_command=[".venv/bin/python", str(adapter)],
+                           adapter_env=["TRACKER_TEST_TOKEN"])
+    context = project / "probe-context.json"
+    context.write_bytes(t.canonical(ctx))
+    probe = project / "probe-extension.py"
+    probe.write_text(
+        f"import sys\nsys.path.insert(0, {str(SCRIPTS)!r})\n"
+        "from ticketlib import Adapter, context\nctx = context()\n"
+        "print(Adapter(ctx, ctx['settings']).call('prepare')['token_present'])\n",
+        encoding="utf-8")
+    extension = ext.load_manifest(SCRIPTS.parent, bundled=True)
+    monkeypatch.setattr(ext.os, "environ", {"TRACKER_TEST_TOKEN": "synthetic-secret"})
+    assert ext.run_script(extension, probe, context, project) == (0, "False")
+
+
 def test_reconcile_needs_no_run_or_original_context(case: Any) -> None:
     import shutil
 

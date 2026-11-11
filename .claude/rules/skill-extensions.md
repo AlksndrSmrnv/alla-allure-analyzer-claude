@@ -32,6 +32,13 @@ paths:
   `sys.executable`, cwd — корень проекта, данные — JSON-контекст (`ALLA_CONTEXT`). Поля
   контекста и переменные шаблона задания — в `extensions/README.md`; их меняют только вместе
   с ним, несовместимо — только с новым `api`.
+- `run_script` наследует только существующие `HOME`, `PATH`, `SSH_AUTH_SOCK`. Пути
+  `ALLA_CONTEXT`/`ALLA_EXTENSION_DIR`/`ALLA_PROJECT_ROOT`, `PYTHONIOENCODING=utf-8`,
+  `PYTHONDONTWRITEBYTECODE=1`, `GIT_TERMINAL_PROMPT=0` формирует сам. Другие переменные
+  (включая токены, служебные префиксы, прокси/сертификаты и `TMPDIR`) не передаются;
+  манифест и настройки список не расширяют. `[settings]` остаётся в JSON-контексте.
+  `child_env.inherited_env` здесь не подходит: он запрещает отдельные имена, а не разрешает
+  только три. Этот фильтр не меняет окружение rerun/review и не ограничивает чтение файлов.
 - События: `after_apply` (`_apply`, только `result.changed`), `after_revert` (`_revert`,
   отметка читается до отката), `after_report` (`next_step` при `done`, один раз на хэш
   `report.md` для каждого расширения: `state.json["extension_reports"]`). Там же, один раз на
