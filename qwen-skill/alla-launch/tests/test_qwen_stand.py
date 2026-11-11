@@ -1320,6 +1320,8 @@ def test_new_runtime_cases_build_real_preview_sources(tmp_path: Path) -> None:
 def test_stand_records_unavailable_exported_model_as_not_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Isolate missing model credentials from the separate missing CLI condition.
+    monkeypatch.setattr(qwen_stand.shutil, "which", lambda _: "/synthetic/qwen")
     for name in ("OPENAI_MODEL", "OPENAI_BASE_URL", "OPENAI_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     output = tmp_path / "result"
@@ -1366,6 +1368,7 @@ def test_wheelhouse_fixture_copies_only_local_regular_wheels(
 def test_wheelhouse_scenario_without_explicit_source_records_not_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(qwen_stand.shutil, "which", lambda _: "/synthetic/qwen")
     monkeypatch.delenv("ALLA_STAND_WHEELHOUSE", raising=False)
     monkeypatch.setattr(qwen_stand, "model_settings", lambda *args: ({}, {}))
     monkeypatch.setattr(qwen_stand, "FakeTestOpsServer", lambda *args, **kwargs: pytest.fail("server started"))
