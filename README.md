@@ -94,8 +94,9 @@
 ## Установка
 
 Понадобятся Qwen Code, Python 3.11+, Allure TestOps 26.2.1.8 или новее с включённым MCP и
-личный API-токен TestOps. Node.js и `mcp-remote` не нужны: скрипт скилла сам ходит в MCP
-TestOps (`<адрес TestOps>/api/mcp`).
+личный API-токен TestOps. Для чтения токена из хранилища нужны Qwen Code **0.27.0 из npm**
+и Node.js в `PATH`. Скрипт сам ходит в MCP TestOps (`<адрес TestOps>/api/mcp`);
+`mcp-remote` и настройка MCP в Qwen не нужны.
 
 **1. Скопируйте скилл в проект автотестов:** папку `qwen-skill/alla-launch/` — в
 `<проект>/.qwen/skills/alla-launch/`.
@@ -122,8 +123,21 @@ Qwen выполнить ручные действия можно вне сцен
 
 ```text
 ALLURE_ENDPOINT=https://testops.company.ru
-ALLURE_TOKEN=<ваш токен>
 ```
+
+Токен в `.env` запрещён. Из корня проекта установите расширение для хранения токена
+и введите его в скрытом приглашении Qwen:
+
+```bash
+qwen extensions install .qwen/skills/alla-launch/credentials
+qwen extensions settings set alla-launch-credentials ALLURE_TOKEN --scope workspace
+```
+
+Манифест `credentials/qwen-extension.json` объявляет `ALLURE_TOKEN` с `sensitive: true`;
+самого токена в нём нет. Qwen использует системное хранилище секретов, а при его
+недоступности — зашифрованный файл. Ограничения этого fallback описаны в
+[справочнике по хранению токена](qwen-skill/alla-launch/references/setup.md#хранение-токена).
+Для CI токен можно передать переменной окружения `ALLURE_TOKEN`.
 
 В `alla-extensions/config.toml` проекта явно разрешите origin:
 
@@ -407,12 +421,14 @@ alla-extensions/  включённые расширения и свои расш
 ## Настройки
 
 Настройки задаются в `.env` скилла или переменными окружения; переменные окружения важнее
-файла.
+файла. Исключение — токен: только хранилище Qwen или переменная окружения `ALLURE_TOKEN`
+(имеет приоритет). Непустой `ALLURE_TOKEN` в `.env` скилла отклоняется даже при заданной
+переменной окружения.
 
 | Переменная | По умолчанию | Зачем |
 |---|---|---|
 | `ALLURE_ENDPOINT` | — | Адрес TestOps, без `/api` в конце (обязательно) |
-| `ALLURE_TOKEN` | — | Личный API-токен TestOps (обязательно) |
+| `ALLURE_TOKEN` | хранилище Qwen | Личный API-токен TestOps; переменная окружения для CI, в `.env` запрещён |
 | `ALLURE_MCP_URL` | `<ALLURE_ENDPOINT>/api/mcp` | Адрес MCP-сервера TestOps, если он другой |
 | `ALLURE_IMAGES_PER_PROBLEM` | `3` | Сколько скриншотов из вложений показать агенту на проблему; `0` — не скачивать (если модель не принимает изображения) |
 | `ALLURE_CLUSTERING_THRESHOLD` | `0.60` | Насколько похожими должны быть падения, чтобы попасть в одну проблему. Чем ниже порог, тем больше падений объединяется |

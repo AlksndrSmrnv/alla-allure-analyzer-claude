@@ -1,6 +1,7 @@
 ---
 paths:
   - "qwen-skill/alla-launch/scripts/alla_skill.py"
+  - "qwen-skill/alla-launch/credentials/**"
   - "qwen-skill/alla-launch/scripts/alla_skill_lib/qwen_files.py"
   - "qwen-skill/alla-launch/commands/**"
   - "qwen-skill/alla-launch/tests/test_skill_update.py"
@@ -22,6 +23,13 @@ paths:
   `importlib.metadata`; маркер `.venv/.alla-setup-complete` игнорируется и не меняется.
   Lock допускает точные hashed deps и применимые Python-маркеры. Проверка не создаёт
   Python-кэши в `.qwen/`. Окружение, `.env` из образца и `.gitignore` готовит инженер.
+- `.env` содержит только несекретные настройки: непустой ALLURE_TOKEN запрещён.
+  Инженер отдельно устанавливает `credentials/` как Qwen-расширение
+  `alla-launch-credentials` и вводит токен через `qwen extensions settings set
+  alla-launch-credentials ALLURE_TOKEN --scope workspace` из корня проекта. Для общего
+  токена — scope user, для CI — окружение ALLURE_TOKEN. `setup` только показывает эти шаги,
+  не устанавливает расширение и не спрашивает токен. Адаптер хранилища требует npm Qwen
+  0.27.0 и Node.js в PATH; это не новое подключение MCP и не установка команд/субагентов.
 - `update [--source PATH]` работает без venv. `[update] source` — локальный путь; прежние
   repo/ref/path и URL запрещены. Git не вызывается. Каталог/ZIP/TAR/TAR.GZ проходят проверку
   путей, links/special files, collisions, лимиты100MiB/10000entries/256MiB распакованного потока.

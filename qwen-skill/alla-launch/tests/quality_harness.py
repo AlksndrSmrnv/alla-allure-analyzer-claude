@@ -125,7 +125,8 @@ def skill_files(root: Path) -> list[Path]:
     """
     files = [root / "SKILL.md"]
     for directory, pattern in (("references", "*.md"), ("agents", "*.md"), ("commands", "*.md"),
-                               ("scripts", "*.py"), ("extensions", "*.md"),
+                               ("scripts", "*.py"), ("scripts", "*.mjs"),
+                               ("credentials", "qwen-extension.json"), ("extensions", "*.md"),
                                ("extensions", "*.toml"), ("extensions", "*.py")):
         files.extend((root / directory).rglob(pattern))
     files.extend(root.glob("requirements*.txt"))

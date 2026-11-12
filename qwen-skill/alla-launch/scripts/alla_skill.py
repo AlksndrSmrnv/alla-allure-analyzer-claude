@@ -206,12 +206,18 @@ def engineer_instructions() -> None:
     print("   Существующее окружение проверь и при необходимости исправь вручную.")
     print("2. Установи зависимости из lock-файла разрешённым в вашей среде способом:")
     print(command(str(venv_python()), "-m", "pip", "install", "--require-hashes", "-r", str(REQUIREMENTS)))
-    print("3. Если файла настроек нет, скопируй {} в {} и заполни адрес и токен; "
-          "токен в чат не пиши.".format(SKILL_DIR / ".env.example", SKILL_DIR / ".env"))
+    print("3. Если файла настроек нет, скопируй {} в {} и заполни адрес; "
+          "токен в .env и в чат не пиши.".format(SKILL_DIR / ".env.example", SKILL_DIR / ".env"))
     if os.name != "nt":
         print(command("chmod", "600", str(SKILL_DIR / ".env")))
     print("   Разрешённый адрес TestOps задаётся инженером в [testops].allowed_origins файла {}.".format(
         PROJECT_DIR / "alla-extensions" / "config.toml"))
+    print("   Для хранилища нужны npm Qwen Code 0.27.0 и Node.js в PATH. Из корня проекта:")
+    print(command("qwen", "extensions", "install", str(SKILL_DIR / "credentials")))
+    print(command("qwen", "extensions", "settings", "set", "alla-launch-credentials",
+                  "ALLURE_TOKEN", "--scope", "workspace"))
+    print("   Введи токен в запросе Qwen; после переноса удали ALLURE_TOKEN из прежнего .env. "
+          "Для CI передай ALLURE_TOKEN переменной окружения.")
     print("4. Повтори проверку окружения и проверь настройки и доступ к TestOps:")
     print(self_command("setup"))
     print(self_command("check"))

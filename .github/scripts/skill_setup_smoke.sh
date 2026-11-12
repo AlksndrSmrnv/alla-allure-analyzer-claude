@@ -140,7 +140,8 @@ for _ in $(seq 50); do
 done
 token=$(.venv/bin/python -c "import sys; sys.path.insert(0, sys.argv[1]); import skill_fake_testops as f; print(f.TOKEN)" \
   "$repo/qwen-skill/alla-launch/tests")
-printf 'ALLURE_ENDPOINT=http://127.0.0.1:%s\nALLURE_TOKEN=%s\nALLURE_PROJECT_ID=5\n' "$port" "$token" > "$skill/.env"
+printf 'ALLURE_ENDPOINT=http://127.0.0.1:%s\nALLURE_PROJECT_ID=5\n' "$port" > "$skill/.env"
+export ALLURE_TOKEN="$token"
 mkdir -p alla-extensions
 printf '[testops]\nallowed_origins = ["http://127.0.0.1:%s"]\n' "$port" > alla-extensions/config.toml
 python3 "$entry" check | tee "$work/check.log"

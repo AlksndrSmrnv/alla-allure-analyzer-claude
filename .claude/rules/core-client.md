@@ -2,6 +2,12 @@
 paths:
   - "qwen-skill/alla-launch/scripts/alla_core/clients/**"
   - "qwen-skill/alla-launch/scripts/alla_core/config.py"
+  - "qwen-skill/alla-launch/scripts/alla_core/credentials.py"
+  - "qwen-skill/alla-launch/scripts/qwen_credentials.mjs"
+  - "qwen-skill/alla-launch/tests/test_core_credentials.py"
+  - "qwen-skill/alla-launch/scripts/alla_core/credentials.py"
+  - "qwen-skill/alla-launch/scripts/qwen_credentials.mjs"
+  - "qwen-skill/alla-launch/credentials/**"
   - "qwen-skill/alla-launch/scripts/alla_core/exceptions.py"
   - "qwen-skill/alla-launch/scripts/alla_core/models/testops.py"
   - "qwen-skill/alla-launch/tests/test_core_testops_client.py"
@@ -117,13 +123,39 @@ REST API TestOps у пользователей закрыт (решение по
 ## Настройки (`config.py`)
 
 `Settings` читает `<skill>/.env` и переменные окружения `ALLURE_*` (окружение важнее файла),
-чужие ключи игнорирует. Границы значений — `BOUNDS` (ge/le). `load(require_testops=False)` — для
-команд без TestOps (`rerun`): адрес и токен не обязательны, остальное проверяется.
+чужие ключи игнорирует. Непустой `ALLURE_TOKEN` в `.env` запрещён даже при токене окружения.
+Токен берётся из непустой переменной окружения (CI), иначе — из sensitive setting
+`ALLURE_TOKEN` расширения Qwen `alla-launch-credentials` (workspace важнее user).
+Границы значений — `BOUNDS` (ge/le). `load(require_testops=False)` — для команд без TestOps
+(`rerun`): адрес и токен не обязательны, хранилище не читается; запрет открытого токена
+в `.env` остаётся.
+
+`credentials.py` вызывает `qwen_credentials.mjs` через subprocess без shell, с закрытым
+pipe и очищенным окружением. Адаптер поддерживает npm Qwen Code 0.27.0 и Node.js в PATH;
+внутренние API Qwen читают настройки и secret store, шифрование в Python не дублируется.
+QWEN_HOME учитывается. Не вызывать refreshCache/recovery, загрузку hooks/commands или
+полную загрузку расширений ради чтения токена. Токен из `.env` проекта/расширения Qwen
+отклоняется, чтобы не принять plaintext fallback Qwen. Значение и сырые ошибки адаптера
+не попадают в сообщения; отсутствие секрета, неизвестная версия и сбой хранилища —
+ConfigurationError без продолжения запроса к TestOps.
+На macOS используем Bun из npm-установки Qwen, если он есть: в sandbox Node
+os.userInfo() недоступен, а native Bun-reader Qwen получает ту же OS identity через id.
+Runtime стартует из каталога пакета Qwen; для Bun отключены config, dotenv, auto-install
+и macros. Проект не должен выполнять preload до чтения секретов.
+Происхождение ALLURE_TOKEN из .env/settings.env проверяется по служебной provenance Qwen;
+это не CI export. Проверка raw деклараций не даёт скрыть токен пустым повтором ключа.
+Загрузчик .env вообще не добавляет ALLURE_TOKEN в результат: разрешённая пустая запись
+или комментарий после неё не должны стать токеном вместо хранилища Qwen.
+
+Qwen предпочитает keychain, иначе хранит AES-256-GCM в extension-secrets-v1.json (0600).
+Файловый ключ выводится из фиксированной строки и host/user: не обещать keychain-only
+или защиту от восстановления ключа при известных host/user. Штатный keychain-reader
+Qwen может создавать/удалять временную запись проверки доступности.
 
 | Переменная | Обязательная | По умолчанию | Описание |
 |---|:---:|---|---|
 | `ALLURE_ENDPOINT` | да | — | URL Allure TestOps без `/api` |
-| `ALLURE_TOKEN` | да | `""` | API token |
+| `ALLURE_TOKEN` | да | хранилище Qwen | API token; env CI важнее Qwen, в `.env` запрещён |
 | `ALLURE_MCP_URL` | нет | `""` | Адрес MCP-сервера TestOps; пусто — `<ALLURE_ENDPOINT>/api/mcp`; иначе `http(s)://` |
 | `ALLURE_PROJECT_ID` | нет | `""` | Проект TestOps поиска результатов: `5` или по модулям `orders=5,payments/api=7` (`Settings.projects` → `ProjectRef`; номер > 0, модуль — папка без `..`, `\` → `/`, не повторяется; число вместе с парами — `ConfigurationError`) |
 | `ALLURE_REQUEST_TIMEOUT` | нет | `30` | HTTP timeout к TestOps |

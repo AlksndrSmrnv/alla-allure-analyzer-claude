@@ -30,7 +30,8 @@ def _chain(exc: BaseException) -> Iterator[BaseException]:
 # иначе сама правила бы файл с токеном.
 USER_ACTION_NOTE = (
     "Это настройка пользователя: скажи ему, что нужно сделать, и остановись. "
-    "Не меняй .env и переменные окружения сам, содержимое .env не читай и не выводи."
+    "Не меняй .env и переменные окружения сам. Хранилище Qwen не меняй; "
+    "секреты не читай и не выводи, адаптер qwen_credentials.mjs напрямую не запускай."
 )
 
 
@@ -103,7 +104,8 @@ def fetch_error_hint(exc: BaseException, settings: Settings, env_file: Path) -> 
         or (api is not None and api.status_code in (401, 403))
     ):
         return (
-            f"Проверь ALLURE_TOKEN в {env_file} (или в переменных окружения): токен "
+            "Проверь ALLURE_TOKEN в хранилище Qwen (или в окружении CI): токен "
             "неверный, просрочен или у него нет доступа к проекту."
+            " Обновить: qwen extensions settings set alla-launch-credentials ALLURE_TOKEN --scope workspace."
         )
     return ""

@@ -49,6 +49,10 @@ from quality_harness import fingerprint, skill_files  # noqa: E402
 import skill_fake_maven  # noqa: E402
 from skill_fake_testops import TOKEN, wide_sources  # noqa: E402
 from skill_fixtures import LOGIN_TEST_JAVA, ORDER_TEST_JAVA  # noqa: E402 — и scripts/ в sys.path
+from qwen_credentials_support import (  # noqa: E402
+    QwenCredentialUnavailable,
+    install_synthetic_credentials,
+)
 
 from alla_skill_lib import session_log  # noqa: E402
 from alla_skill_lib.child_env import SERVICE_PREFIXES, INJECTION_KEYS, inherited_env  # noqa: E402
@@ -207,6 +211,8 @@ class Scenario:
     local_release: bool = False
     # False — в проекте нет .env скилла, как сразу после копирования папки.
     env_ready: bool = True
+    # Секрет сохраняется настоящим Qwen CLI в изолированное encrypted-file хранилище.
+    secure_credentials: bool = False
     launch_id: int | None = None
     note: str = ""
     # Записи базы знаний проекта (KNOWLEDGE), закоммиченные до запуска.
@@ -409,6 +415,11 @@ SCENARIOS: dict[str, Scenario] = {
         "Зелёный прогон", "green", ("/alla-launch 778",),
         ("skill_visible", "activated", "prepare_launch", "reached_done", "no_analyses",
          "report_verbatim", *SAFE), launch_id=778),
+    "S01": Scenario(
+        "Токен из зашифрованного хранилища Qwen", "green", ("/alla-launch 778",),
+        ("skill_visible", "activated", "prepare_launch", "reached_done", "no_analyses",
+         "report_verbatim", "secure_credentials", *SAFE), launch_id=778, secure_credentials=True,
+        note="Настоящий CLI сохраняет синтетический токен до старта агента; ALLURE_TOKEN в env нет"),
     "P02": Scenario(
         "Первый запуск: нет окружения — остановка без установки", "default", ("/alla-launch 777",),
         ("skill_visible", "activated", "setup_required_stops", "no_dependency_install",
@@ -711,7 +722,7 @@ def build_project(work: Path, endpoint: str, venv: Path | None, knowledge: str =
     if env_ready:
         # Запись статуса в TestOps по умолчанию выключена (REST закрыт): сценарии с ней
         # включают её явно.
-        write(skill / ".env", f"ALLURE_ENDPOINT={endpoint}\nALLURE_TOKEN={TOKEN}\n"
+        write(skill / ".env", f"ALLURE_ENDPOINT={endpoint}\n"
               f"ALLURE_PROJECT_ID={project_ids}\n"
               + ("ALLURE_RERUN_RESOLVE=true\n" if resolve else ""))
     if venv is not None:
@@ -2089,8 +2100,25 @@ def check_local_release_staged(ctx: Context) -> dict[str, Any]:
 
 def check_asks_for_env(ctx: Context) -> dict[str, Any]:
     final = "\n".join(ctx.trace.turn_finals) or ctx.trace.final
-    named = ".env" in final and ("ALLURE_TOKEN" in final or "токен" in final.lower())
-    return ok() if named else bad(f"ответ не просит вписать адрес и токен в .env: {final[:200]!r}")
+    named = ".env" in final and ("ALLURE_ENDPOINT" in final or "адрес" in final.lower())
+    secure = "qwen extensions" in final or "хранилищ" in final.lower()
+    return ok() if named and secure else bad("ответ не разделяет адрес в .env и токен в хранилище Qwen")
+
+
+def check_secure_credentials(ctx: Context) -> dict[str, Any]:
+    """S01: setup used the native encrypted store, without a plaintext fixture token."""
+    if ctx.home is None:
+        return bad("неизвестен HOME сценария с хранилищем секретов")
+    store = ctx.home / ".qwen" / "extension-secrets-v1.json"
+    content = store.read_bytes() if store.is_file() else b""
+    if not content or TOKEN.encode() in content:
+        return bad("нет зашифрованного файла синтетического токена")
+    if store.stat().st_mode & 0o777 != 0o600:
+        return bad("у файла секретов права отличаются от 0600")
+    env = ctx.project / SKILL_IN_PROJECT / ".env"
+    if env.is_file() and TOKEN in env.read_text(encoding="utf-8"):
+        return bad("синтетический токен записан в .env")
+    return ok("зашифрованный native store, права 0600; токена в .env нет")
 
 
 RESOLVE_PATH_RE = re.compile(r"/api/testresult/\d+/resolve")
@@ -2429,6 +2457,16 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
         installed_skill = project / SKILL_IN_PROJECT
         used_skill = fingerprint(installed_skill, skill_files(installed_skill))
         home = build_home(work, settings)
+        if scenario.secure_credentials:
+            try:
+                install_synthetic_credentials(work, project, TOKEN)
+            except QwenCredentialUnavailable as error:
+                return not_run_case(case_id, attempt, str(error))
+            except RuntimeError as error:
+                raise StandError(str(error)) from error
+            secret_env = {**secret_env, "QWEN_CODE_FORCE_FILE_STORAGE": "true"}
+        elif scenario.env_ready:
+            secret_env = {**secret_env, "ALLURE_TOKEN": TOKEN}
         session: str | None = None
         for number, prompt in enumerate(turns, start=1):
             trace_path = case_dir / f"trace-{number}.jsonl"

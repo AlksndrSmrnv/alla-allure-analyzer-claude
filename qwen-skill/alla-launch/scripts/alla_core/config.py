@@ -2,7 +2,8 @@
 
 Ядро (``alla_core``) ожидает объект ``Settings``: доступ к TestOps, логи,
 кластеризация, лимиты промптов. Значения читаются из ``<skill>/.env`` и переменных окружения
-``ALLURE_*`` (окружение важнее файла). Чужие ключи игнорируются: скилл
+``ALLURE_*`` (окружение важнее файла). Токен — только окружение или хранилище Qwen,
+не ``.env``. Чужие ключи игнорируются: скилл
 живёт в чужом проекте, где рядом могут быть любые переменные.
 """
 
@@ -16,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from alla_core.exceptions import ConfigurationError
+from alla_core.credentials import load_qwen_token, reject_plaintext_token, validate_environment_token
 from alla_core.origins import load_allowed_origins, origin, require_allowed_origin
 
 ENV_PREFIX = "ALLURE_"
@@ -87,7 +89,13 @@ class Settings:
         values: dict[str, str] = {}
         if env_file is not None and env_file.is_file():
             values.update(read_env_file(env_file))
-        values.update(os.environ if environ is None else environ)
+        if project_root is not None:
+            for candidate in (project_root / ".env", project_root / ".qwen" / ".env"):
+                if candidate.is_file():
+                    reject_plaintext_token(candidate.read_text(encoding="utf-8-sig"))
+        process_env = os.environ if environ is None else environ
+        validate_environment_token(process_env)
+        values.update(process_env)
 
         kwargs: dict[str, object] = {}
         for item in dataclasses.fields(cls):
@@ -99,6 +107,8 @@ class Settings:
             kwargs[item.name] = _coerce(item.name, type(item.default), raw.strip())
         if require_testops:
             kwargs["allowed_origins"] = load_allowed_origins(project_root)
+            if values.get("ALLURE_ENDPOINT", "").strip() and not values.get("ALLURE_TOKEN", "").strip():
+                kwargs["token"] = load_qwen_token(project_root, process_env)
         settings = cls(**kwargs)  # type: ignore[arg-type]
         settings.validate(require_testops=require_testops)
         return settings
@@ -258,13 +268,19 @@ BOUNDS: dict[str, tuple[float | None, float | None]] = {
 
 def read_env_file(path: Path) -> dict[str, str]:
     """Прочитать простой ``.env``: ``KEY=VALUE``, ``export KEY=VALUE``, комментарии ``#``."""
+    text = path.read_text(encoding="utf-8-sig")
+    reject_plaintext_token(text)
     result: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8-sig").splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
         key = key.strip().removeprefix("export ").strip()
+        # The validator permits empty/comment-only token declarations. They must
+        # never become a credential: file tokens are not a configuration source.
+        if key == "ALLURE_TOKEN":
+            continue
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]

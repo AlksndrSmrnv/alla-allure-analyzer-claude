@@ -511,7 +511,7 @@ def test_hint_from_frames_and_unknown_names(code_project: Path) -> None:
 def test_settings_env_overrides_file(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "# comment\nexport ALLURE_ENDPOINT='https://file.example'\nALLURE_TOKEN=file-token\n"
+        "# comment\nexport ALLURE_ENDPOINT='https://file.example'\n"
         "ALLURE_HTTP_RETRIES=5\nDATABASE_URL=postgres://ignored\n",
         encoding="utf-8",
     )

@@ -128,6 +128,19 @@ def test_fingerprint_detects_uncommitted_bytes_and_file_names(quality, tmp_path:
     assert len({before, after, renamed}) == 3
 
 
+@pytest.mark.parametrize("relative", ["scripts/qwen_credentials.mjs", "credentials/qwen-extension.json"])
+def test_credential_runtime_changes_are_in_skill_fingerprint(quality, tmp_path: Path, relative: str) -> None:
+    (tmp_path / "SKILL.md").write_text("synthetic skill")
+    file = tmp_path / relative
+    file.parent.mkdir(parents=True)
+    file.write_text("before")
+    before = quality.fingerprint(tmp_path, quality.skill_files(tmp_path))
+    file.write_text("after")
+    after = quality.fingerprint(tmp_path, quality.skill_files(tmp_path))
+    assert before["files"][relative] != after["files"][relative]
+    assert before["sha256"] != after["sha256"]
+
+
 def test_protocol_run_scrubs_testops_credentials_and_keeps_agent_not_run(
     quality, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -764,7 +764,7 @@ def _prepare_settings(project_root: Path) -> Settings | int:
         print("STATUS: error")
         print(f"Ошибка конфигурации: {exc}")
         print(
-            f"Пользователю нужно заполнить {env_file} по образцу .env.example или задать "
+            f"Пользователю нужно проверить несекретные настройки {env_file} по образцу .env.example или задать "
             "переменные окружения ALLURE_ENDPOINT и ALLURE_TOKEN. " + USER_ACTION_NOTE
         )
         return 2
@@ -3007,7 +3007,9 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
         print("STATUS: error")
         print(*lines, sep="\n")
         print(f"Ошибка конфигурации: {exc}")
-        print(f"Пользователю нужно заполнить {env_file} по образцу .env.example. " + USER_ACTION_NOTE)
+        print(f"Несекретные настройки — в {env_file}; токен сохраняется через "
+              "qwen extensions settings set alla-launch-credentials ALLURE_TOKEN --scope workspace "
+              "или передаётся окружением CI. " + USER_ACTION_NOTE)
         return 2
     lines += [
         f"ALLURE_ENDPOINT: {settings.endpoint}",
