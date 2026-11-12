@@ -212,7 +212,7 @@ def engineer_instructions() -> None:
         print(command("chmod", "600", str(SKILL_DIR / ".env")))
     print("   Разрешённый адрес TestOps задаётся инженером в [testops].allowed_origins файла {}.".format(
         PROJECT_DIR / "alla-extensions" / "config.toml"))
-    print("   Для хранилища нужны npm Qwen Code 0.27.0 и Node.js в PATH. Из корня проекта:")
+    print("   Используется уже установленный Qwen Code; конкретная версия не требуется. Из корня проекта:")
     print(command("qwen", "extensions", "install", str(SKILL_DIR / "credentials")))
     print(command("qwen", "extensions", "settings", "set", "alla-launch-credentials",
                   "ALLURE_TOKEN", "--scope", "workspace"))

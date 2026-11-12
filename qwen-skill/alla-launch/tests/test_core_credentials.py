@@ -82,6 +82,7 @@ def test_mac_sandbox_uses_existing_native_bun_without_changing_storage_identity(
     bun.write_text("synthetic runtime placeholder")
     bun.chmod(0o755)
     assert credentials.credential_runtime(tmp_path, "/node") == str(bun)
+    assert credentials.credential_runtime(tmp_path, None) == str(bun)
 
 
 def test_environment_token_and_offline_commands_never_open_qwen_store(
@@ -158,6 +159,11 @@ def test_native_qwen_cli_encryption_scope_precedence_and_failure_modes(tmp_path:
     assert not (project / "PRELOAD_EXECUTED").exists()
     qwen = shutil.which("qwen")
     assert qwen is not None
+    if credentials.sys.platform == "darwin" and credentials.credential_runtime(package, "node") != "node":
+        # The running CLI/IDE supplies its entry. No second installation or
+        # command-line shim in PATH is needed to read an existing secure token.
+        without_cli = {**env, "QWEN_CODE_CLI": str(Path(qwen).resolve()), "PATH": os.defpath}
+        assert credentials.load_qwen_token(project, without_cli) == SYNTHETIC_TOKEN
     listed = subprocess.run([qwen, "extensions", "settings", "list", credentials.EXTENSION_NAME],
                             cwd=project, env=env, capture_output=True, text=True, timeout=30)
     assert listed.returncode == 0
@@ -183,7 +189,7 @@ def test_native_qwen_cli_encryption_scope_precedence_and_failure_modes(tmp_path:
     secret_file.write_text("corrupted encrypted storage")
     with pytest.raises(ConfigurationError, match="не удалось прочитать"):
         credentials.load_qwen_token(project, env)
-    # Unknown versions must fail before reading storage, never fall back to plaintext.
+    # Missing reader capabilities fail closed regardless of package version.
     unsupported = tmp_path / "unsupported"
     unsupported.mkdir()
     (unsupported / "package.json").write_text(json.dumps({"name": "@qwen-code/qwen-code", "version": "0.28.0"}))

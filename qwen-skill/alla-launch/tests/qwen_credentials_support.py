@@ -1,7 +1,6 @@
 """Native Qwen credential fixtures; use only synthetic secrets in an isolated HOME."""
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -35,9 +34,7 @@ def native_qwen_package() -> Path:
     try:
         package = credentials.qwen_package(os.environ)
     except ConfigurationError:
-        raise RuntimeError("Native credential fixture requires an npm Qwen Code installation") from None
-    if json.loads((package / "package.json").read_text())["version"] != "0.27.0":
-        raise RuntimeError("Native credential contract requires Qwen Code 0.27.0")
+        raise RuntimeError("Native credential fixture cannot locate the installed Qwen module") from None
     return package
 
 

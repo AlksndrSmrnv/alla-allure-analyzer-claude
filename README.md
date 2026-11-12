@@ -94,8 +94,8 @@
 ## Установка
 
 Понадобятся Qwen Code, Python 3.11+, Allure TestOps 26.2.1.8 или новее с включённым MCP и
-личный API-токен TestOps. Для чтения токена из хранилища нужны Qwen Code **0.27.0 из npm**
-и Node.js в `PATH`. Скрипт сам ходит в MCP TestOps (`<адрес TestOps>/api/mcp`);
+личный API-токен TestOps. Используется уже установленный Qwen Code: устанавливать
+другую или конкретную версию для Аллы не нужно. Скрипт сам ходит в MCP TestOps (`<адрес TestOps>/api/mcp`);
 `mcp-remote` и настройка MCP в Qwen не нужны.
 
 **1. Скопируйте скилл в проект автотестов:** папку `qwen-skill/alla-launch/` — в

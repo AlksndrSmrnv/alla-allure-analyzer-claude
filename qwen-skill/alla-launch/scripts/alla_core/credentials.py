@@ -1,7 +1,7 @@
 """Read Qwen's sensitive extension setting through a private subprocess pipe.
 
-Qwen owns encryption and keychain access. The adapter is deliberately versioned:
-its credential reader is an internal Qwen API, not a public CLI command.
+Qwen owns encryption and keychain access. The adapter checks available reader
+capabilities, not the installed CLI version. The reader is an internal Qwen API.
 """
 from __future__ import annotations
 
@@ -71,11 +71,21 @@ def validate_environment_token(environ: Mapping[str, str]) -> None:
 
 
 def qwen_package(environ: Mapping[str, str]) -> Path:
+    entries = [Path(value) for key in ("QWEN_CODE_CLI", "QWEN_CLI_ENTRY")
+               if (value := environ.get(key)) and Path(value).is_absolute()]
     executable = shutil.which("qwen", path=environ.get("PATH", ""))
     if executable is not None:
-        binary = Path(executable).resolve()
-        # npm POSIX symlink and Windows npm command shim layouts.
-        candidates = [binary.parent, binary.parent / "node_modules/@qwen-code/qwen-code"]
+        entries.append(Path(executable))
+    for entry in entries:
+        try:
+            binary = entry.resolve()
+        except (OSError, ValueError):
+            continue
+        # Active CLI/IDE entries may be under dist/ or bin/. npm's Windows shim
+        # instead sits next to node_modules. Do not invoke or reinstall the CLI.
+        parents = list(binary.parents)[:4]
+        candidates = [binary.parent, binary.parent / "node_modules/@qwen-code/qwen-code",
+                      *parents[1:]]
         for candidate in candidates:
             try:
                 metadata = json.loads((candidate / "package.json").read_text(encoding="utf-8"))
@@ -84,12 +94,12 @@ def qwen_package(environ: Mapping[str, str]) -> Path:
             except (OSError, ValueError):
                 continue
     raise ConfigurationError(
-        "ALLURE_TOKEN: для хранилища нужен Qwen Code 0.27.0 из npm и Node.js в PATH; "
-        "для CI передайте токен переменной окружения"
+        "ALLURE_TOKEN: не удалось найти модуль хранилища текущего Qwen Code. "
+        "Можно передать токен переменной окружения; переустановка Qwen не требуется"
     )
 
 
-def credential_runtime(package: Path, node: str) -> str:
+def credential_runtime(package: Path, node: str | None) -> str:
     """Use Qwen's bundled Bun on macOS, whose native reader works in Seatbelt.
 
     Node's os.userInfo() cannot query the account database inside Qwen's macOS
@@ -102,14 +112,15 @@ def credential_runtime(package: Path, node: str) -> str:
             bun = package / "node_modules" / "@oven" / f"bun-darwin-{arch}" / "bin" / "bun"
             if bun.is_file() and os.access(bun, os.X_OK):
                 return str(bun)
-    return node
+    if node is not None:
+        return node
+    raise ConfigurationError("ALLURE_TOKEN: не найден JS runtime текущего Qwen Code; "
+                             "можно передать токен переменной окружения")
 
 
 def load_qwen_token(project_root: Path | None, environ: Mapping[str, str]) -> str:
     package = qwen_package(environ)
     node = shutil.which("node", path=environ.get("PATH", ""))
-    if node is None:
-        raise ConfigurationError("ALLURE_TOKEN: для чтения хранилища Qwen нужен Node.js в PATH")
     root = (project_root or Path.cwd()).resolve()
     env = {key: value for key, value in environ.items() if key in BRIDGE_ENV_KEYS}
     runtime = credential_runtime(package, node)
@@ -126,7 +137,8 @@ def load_qwen_token(project_root: Path | None, environ: Mapping[str, str]) -> st
         raise ConfigurationError("ALLURE_TOKEN: не удалось прочитать хранилище Qwen") from None
     if result.returncode:
         messages = {
-            "QWEN_UNSUPPORTED": "адаптер хранилища поддерживает Qwen Code 0.27.0 из npm",
+            "QWEN_UNSUPPORTED": "текущая сборка Qwen не предоставляет совместимый интерфейс "
+                "чтения хранилища; можно передать токен переменной окружения",
             "QWEN_NOT_INSTALLED": f"установите расширение {EXTENSION_NAME} из папки credentials скилла",
             "QWEN_PLAINTEXT": "удалите ALLURE_TOKEN из .env проекта и расширения Qwen после переноса в хранилище",
             "QWEN_SECRET_MISSING": f"сохраните токен через {SETTING_COMMAND}",

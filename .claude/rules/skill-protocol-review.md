@@ -23,7 +23,7 @@ paths:
 
 Стенд не пишет `ALLURE_TOKEN` в `.env`: обычные готовые сценарии получают синтетический токен
 через окружение процесса, `env_ready=False` — без токена. `S01` проверяет зелёный прогон 778
-с native credential store Qwen 0.27.0: до старта модели настоящий CLI устанавливает
+с native credential store установленного Qwen без фиксации версии: до старта модели настоящий CLI устанавливает
 `alla-launch-credentials` и сохраняет токен в отдельном HOME через PTY. Общая utility —
 `tests/qwen_credentials_support.py`, без pytest; `QWEN_CODE_FORCE_FILE_STORAGE=true`
 исключает личный keychain. Агенту токен через окружение не передаётся. Проверяются

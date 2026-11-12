@@ -4,7 +4,7 @@
  * Usage: node qwen_credentials.mjs <qwen-package-root> <project-root>
  * stdout is a private pipe: {token, source}. Never run this helper as a model tool.
  * Qwen has no public secret reader API. This bridge uses internal named exports
- * and deliberately supports only the verified Qwen Code 0.27.0 contract.
+ * and checks the available storage interfaces without pinning a CLI version.
  * Qwen itself selects the OS keychain or its encrypted-file fallback; its
  * keychain availability check may create and delete a temporary probe entry.
  */
@@ -55,40 +55,58 @@ async function rejectPlaintextFile(filename) {
   }
 }
 
-async function findReader(packageRoot) {
+async function findReader(packageRoot, projectRoot) {
   let manifest;
   try {
     manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
   } catch {
     fail('QWEN_UNSUPPORTED');
   }
-  if (manifest.name !== '@qwen-code/qwen-code' || manifest.version !== '0.27.0') {
+  if (manifest.name !== '@qwen-code/qwen-code') {
     fail('QWEN_UNSUPPORTED');
   }
-  const chunks = path.join(packageRoot, 'chunks');
-  const candidates = [];
-  for (const entry of await readdir(chunks, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith('.js')) continue;
-    const filename = path.join(chunks, entry.name);
-    const content = await readFile(filename, 'utf8');
-    for (const block of content.matchAll(/\bexport\s*\{([^{}]*)\}\s*;/g)) {
-      const names = new Set(block[1].split(',').map((item) => item.trim().split(/\s+as\s+/).at(-1)));
-      if (names.has('ExtensionManager') && names.has('getScopedEnvContents')) {
-        candidates.push(filename);
-        break;
+  for (const relative of ['chunks', 'dist/chunks']) {
+    const candidates = [];
+    const chunks = path.join(packageRoot, relative);
+    let entries;
+    try {
+      entries = await readdir(chunks, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.js')) continue;
+      const filename = path.join(chunks, entry.name);
+      const content = await readFile(filename, 'utf8');
+      for (const block of content.matchAll(/\bexport\s*\{([^{}]*)\}\s*;/g)) {
+        const names = new Set(block[1].split(',').map((item) => item.trim().split(/\s+as\s+/).at(-1)));
+        if (names.has('ExtensionManager') && names.has('getScopedEnvContents')) {
+          candidates.push(filename);
+          break;
+        }
       }
     }
+    if (candidates.length > 1) fail('QWEN_UNSUPPORTED');
+    if (candidates.length === 0) continue;
+    const api = await import(pathToFileURL(candidates[0]).href);
+    if (typeof api.ExtensionManager !== 'function' || typeof api.getScopedEnvContents !== 'function') {
+      continue;
+    }
+    const manager = new api.ExtensionManager({
+      workspaceDir: projectRoot,
+      enabledExtensionOverrides: ['none'],
+    });
+    // A legacy root artifact must not mask a compatible dist reader. Check the
+    // actual instance so both prototype and instance methods are supported.
+    if (typeof manager.loadExtensionManifestHead !== 'function') continue;
+    return { manager, getScopedEnvContents: api.getScopedEnvContents };
   }
-  if (candidates.length !== 1) fail('QWEN_UNSUPPORTED');
-  const api = await import(pathToFileURL(candidates[0]).href);
-  if (typeof api.ExtensionManager !== 'function' || typeof api.getScopedEnvContents !== 'function') {
-    fail('QWEN_UNSUPPORTED');
-  }
-  return api;
+  fail('QWEN_UNSUPPORTED');
 }
 
 async function readCredentials(packageRoot, projectRoot) {
-  const { ExtensionManager, getScopedEnvContents } = await findReader(packageRoot);
+  const { manager, getScopedEnvContents } = await findReader(packageRoot, projectRoot);
   const qwenHome = process.env.QWEN_HOME
     ? path.resolve(process.env.QWEN_HOME.replace(/^~(?=$|[/\\])/, homedir()))
     : path.join(homedir(), '.qwen');
@@ -105,11 +123,6 @@ async function readCredentials(packageRoot, projectRoot) {
   // Metadata loading computes the native installation identity, including link
   // and snapshot installs. Do not refresh the extension cache: it can migrate or
   // recover extension-store state and load unrelated extension resources.
-  const manager = new ExtensionManager({
-    workspaceDir: projectRoot,
-    enabledExtensionOverrides: ['none'],
-  });
-  if (typeof manager.loadExtensionManifestHead !== 'function') fail('QWEN_UNSUPPORTED');
   const head = await manager.loadExtensionManifestHead(
     { extensionDir, workspaceDir: projectRoot },
     { createDataDir: false },
