@@ -1,5 +1,5 @@
 ---
-description: Установить и настроить скилл alla-launch в этом проекте
+description: Проверить окружение alla-launch и показать инструкцию инженеру
 disable-model-invocation: true
 ---
 Вызови скилл alla-launch (инструмент skill): пользователь просит установить и настроить

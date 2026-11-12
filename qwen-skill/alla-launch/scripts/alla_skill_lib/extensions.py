@@ -75,8 +75,8 @@ _TABLE_RE = re.compile(r"^[ \t]*\[", re.MULTILINE)
 _SETTING_TYPES = (str, bool, int)
 CONFIG_HEADER = (
     "# Расширения скилла alla-launch для этого проекта.\n"
-    "# enabled — включённые расширения; меняют его команды\n"
-    "#   alla_skill.py extensions enable <имя> / disable <имя>.\n"
+    "# enabled — включённые расширения; список меняет инженер вручную.\n"
+    "# Команды extensions enable/disable только печатают инструкцию.\n"
     "# Настройки расширения — таблица с его именем, например:\n"
     "# [git-publish]\n"
     "# remote = \"origin\"\n"
@@ -385,18 +385,6 @@ def load_config(project_root: Path) -> Config:
         raise ExtensionError(f"{path}: enabled — список имён расширений")
     settings = {key: value for key, value in data.items() if isinstance(value, dict)}
     return Config(tuple(dict.fromkeys(enabled)), settings)
-
-
-def set_enabled(project_root: Path, name: str, on: bool) -> bool:
-    """Включить или выключить расширение; True — ``config.toml`` изменён.
-
-    Переписывается только строка ``enabled = [...]``: комментарии и настройки остаются.
-    """
-    updated = enabled_text(project_root, name, on)
-    if updated is None:
-        return False
-    ws.write_atomic(config_path(project_root), updated)
-    return True
 
 
 def enabled_text(project_root: Path, name: str, on: bool) -> str | None:

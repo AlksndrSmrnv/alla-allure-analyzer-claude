@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
+import importlib.metadata
 import os
 import re
 import shutil
@@ -620,7 +620,7 @@ def _install_skill_copy(tmp_path: Path) -> tuple[Path, Path]:
     project = tmp_path / "project"
     skill = project / ".qwen" / "skills" / "alla-launch"
     shutil.copytree(SCRIPTS_DIR, skill / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
-    (skill / "requirements.txt").write_text("httpx>=0.27\n", encoding="utf-8")
+    (skill / "requirements.txt").write_text("httpx==" + importlib.metadata.version("httpx") + " --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
     return project, skill / "scripts" / "alla_skill.py"
 
 
@@ -648,9 +648,9 @@ def _run_stub(stub: Path, *args: str) -> subprocess.CompletedProcess[str]:
 @pytest.mark.parametrize(
     ("state", "message"),
     [
-        ("missing", "не установлены"),
-        ("no_marker", "не доустановлены"),
-        ("stale_marker", "не доустановлены"),
+        ("missing", "Окружения .venv нет"),
+        ("no_marker", "не соответствуют"),
+        ("stale_marker", "не соответствуют"),
     ],
 )
 @pytest.mark.skipif(os.name == "nt", reason="обёртка .venv/bin/python — POSIX")
@@ -658,6 +658,8 @@ def test_entrypoint_requires_complete_setup(tmp_path: Path, state: str, message:
     project, stub = _install_skill_copy(tmp_path)
     if state != "missing":
         _fake_venv_python(project)
+    if state != "missing":
+        (stub.parents[1] / "requirements.txt").write_text("httpx==0.0.0 --hash=sha256:" + "0" * 64 + "\n")
     if state == "stale_marker":
         (project / ".venv" / ".alla-setup-complete").write_text("0" * 64, encoding="utf-8")
 
@@ -672,11 +674,9 @@ def test_entrypoint_requires_complete_setup(tmp_path: Path, state: str, message:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="обёртка .venv/bin/python — POSIX")
-def test_entrypoint_runs_cli_after_complete_setup(tmp_path: Path) -> None:
+def test_entrypoint_runs_cli_without_setup_marker(tmp_path: Path) -> None:
     project, stub = _install_skill_copy(tmp_path)
     _fake_venv_python(project)
-    digest = hashlib.sha256((stub.parents[1] / "requirements.txt").read_bytes()).hexdigest()
-    (project / ".venv" / ".alla-setup-complete").write_text(digest + "\n", encoding="utf-8")
 
     result = _run_stub(stub, "next", "--project-root", str(project))
 
@@ -713,7 +713,7 @@ def test_setup_refuses_unusable_project_venv(tmp_path: Path, python_body: str, m
 def test_setup_never_installs_missing_pip_implicitly(tmp_path: Path) -> None:
     project, stub = _install_skill_copy(tmp_path)
     (stub.parents[1] / "requirements.txt").write_text("httpx==0.0.0 --hash=sha256:" + "0" * 64 + "\n")
-    python = _fake_venv_python(project, 'case "$1" in -c) echo 3.11;; *) exit 1;; esac')
+    python = _fake_venv_python(project, 'case "$*" in *print*) echo 3.11;; *) exit 1;; esac')
     before = python.read_bytes()
     result = _run_stub(stub, "setup")
     assert result.returncode == 0
@@ -796,7 +796,7 @@ def _lock_entries(path: Path) -> dict[str, list[list[str]]]:
     ("requirements.txt", "requirements.in"), ("requirements-dev.txt", "requirements-dev.in"),
 ])
 def test_dependencies_are_locked_with_exact_versions_and_hashes(lock: str, source: str) -> None:
-    """setup ставит с --require-hashes: у каждого пакета ``==`` и хеши, прямые зависимости на месте."""
+    """Инженер ставит с --require-hashes: у каждого пакета ``==`` и хеши, прямые зависимости на месте."""
     entries = _lock_entries(SKILL_ROOT / lock)
     assert entries
     for name, blocks in entries.items():
@@ -810,14 +810,6 @@ def test_dependencies_are_locked_with_exact_versions_and_hashes(lock: str, sourc
     ]
     assert wanted
     assert not [name for name in wanted if name not in entries]
-
-
-def test_setup_installs_only_from_the_hashed_lock() -> None:
-    import alla_skill
-
-    assert alla_skill.REQUIREMENTS.name == "requirements.txt"
-    source = (SKILL_ROOT / "scripts" / "alla_skill.py").read_text(encoding="utf-8")
-    assert '"--require-hashes", "-r", str(REQUIREMENTS)' in source
 
 
 def test_cli_does_not_load_clustering_libraries() -> None:

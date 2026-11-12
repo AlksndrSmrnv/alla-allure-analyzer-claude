@@ -423,11 +423,12 @@ def test_batch_agent_is_planned_and_updated_by_install_files(
         return next(item for item in qwen_files.planned_files(tmp_path) if item.target == target)
 
     assert agent_item().state == qwen_files.NEW
-    qwen_files.install_planned([agent_item()])
+    target.parent.mkdir(parents=True)
+    target.write_text(qwen_files.batch_agent_source().read_text(encoding="utf-8"), encoding="utf-8")
     assert target.read_text(encoding="utf-8") == qwen_files.batch_agent_source().read_text(
         encoding="utf-8")
     assert agent_item().state == qwen_files.SAME
-    assert qwen_files.install_planned([agent_item()]) == []  # уже установлен — не пишет
+    assert agent_item().state == qwen_files.SAME  # размещён инженером
     target.write_text("старая версия", encoding="utf-8")
-    assert agent_item().state == qwen_files.CHANGED  # устарел — install-files обновит
+    assert agent_item().state == qwen_files.CHANGED  # устарел — install-files покажет содержимое
 

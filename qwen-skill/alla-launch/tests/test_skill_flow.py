@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -52,17 +51,8 @@ MARKDOWN_ANALYSIS = (
 
 
 def _run(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
-    # Existing integration scenarios explicitly approve extension configuration changes.
-    # Dedicated transaction tests exercise the preview/refusal paths directly.
     code = cli.main(argv)
-    out = capsys.readouterr().out
-    if (code == 0 and argv[:2] in (["extensions", "enable"], ["extensions", "disable"])
-            and "--yes" not in argv and out.startswith("STATUS: install_files")):
-        digest = re.search(r"--diff ([0-9a-f]{64})", out)
-        assert digest is not None, out
-        code = cli.main([*argv, "--yes", "--diff", digest.group(1)])
-        return code, out + capsys.readouterr().out
-    return code, out
+    return code, capsys.readouterr().out
 
 
 def _prepare(

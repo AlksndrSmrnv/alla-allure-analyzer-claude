@@ -1,29 +1,28 @@
 #!/usr/bin/env python3
 """Точка входа скилла alla-launch.
 
-    python3 .qwen/skills/alla-launch/scripts/alla_skill.py setup [--wheelhouse PATH] [--python PATH]
+    python3 .qwen/skills/alla-launch/scripts/alla_skill.py setup
     python3 .qwen/skills/alla-launch/scripts/alla_skill.py update --source PATH
     python3 .qwen/skills/alla-launch/scripts/alla_skill.py prepare <launch_id>
 
-Python 3.8+ bootstrap. setup проверяет готовое окружение без установки;
-только явный --wheelhouse разрешает локальную установку. update готовит
-новый локальный релиз с diff, сохраняя активный скилл.
+Python 3.8+ bootstrap. setup только проверяет готовое окружение и печатает
+инструкцию инженеру. update готовит новый локальный релиз с diff, сохраняя активный скилл.
 
 """
 
 # Аннотации — строками (PEP 563): Python 3.8 их не вычисляет, а mypy проверяет.
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+# Команды скилла не создают __pycache__ внутри установленной папки .qwen/.
+sys.dont_write_bytecode = True
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -48,18 +47,11 @@ def project_root(skill_dir: Path = SKILL_DIR) -> Path:
 PROJECT_DIR = project_root()
 VENV_DIR = PROJECT_DIR / ".venv"
 REQUIREMENTS = SKILL_DIR / "requirements.txt"
-# Пишется только после успешного pip install: хэш requirements.txt, с которым
-# ставились зависимости. Нет маркера или хэш другой — окружение не готово.
-SETUP_MARKER = VENV_DIR / ".alla-setup-complete"
 MIN_VERSION = (3, 11)
-# setup и update в .qwen/ проекта не пишут: команды /alla:* и субагента ставит install-files
-# после согласия пользователя.
 FILES_NOTE = (
-    "Слэш-команды /alla:* и субагент пакетов в .qwen/ проекта setup и update не ставят: это "
-    "отдельный шаг с вопросом пользователю (порядок — SKILL.md, «Файлы в .qwen/ проекта»), "
-    "сразу эту команду не выполняй. Показ файлов (ничего не записывает): {}"
+    "Файлы команд /alla:* и субагентов размещает инженер вручную. "
+    "Показать готовые файлы, пути и diff без записи: {}"
 )
-PYTHON_CANDIDATES = ("python3.13", "python3.12", "python3.11", "python3", "python")
 CHILD_MARKER = "ALLA_SKILL_IN_VENV"
 
 
@@ -67,19 +59,6 @@ def venv_python(venv_dir: Path = VENV_DIR) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
-
-
-def requirements_digest() -> str:
-    return hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest()
-
-
-def setup_complete() -> bool:
-    """Окружение создано и зависимости из текущего requirements.txt установлены."""
-    try:
-        marker = SETUP_MARKER.read_text(encoding="utf-8").strip()
-        return venv_python().exists() and marker == requirements_digest()
-    except OSError:
-        return False
 
 
 def running_in_venv() -> bool:
@@ -100,7 +79,7 @@ def self_command(*args: str) -> str:
 def python_version(executable: str) -> tuple[int, int] | None:
     try:
         result = subprocess.run(
-            [executable, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            [executable, "-I", "-B", "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             universal_newlines=True,
@@ -108,36 +87,13 @@ def python_version(executable: str) -> tuple[int, int] | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
+    if result.returncode != 0:
+        return None
     try:
         major, minor = result.stdout.strip().split(".")
         return int(major), int(minor)
     except ValueError:
         return None
-
-
-def find_base_python(explicit: str | None = None) -> str | None:
-    if explicit:
-        candidates: list[str | None] = [explicit]
-    else:
-        candidates = [sys.executable, *(shutil.which(name) for name in PYTHON_CANDIDATES)]
-    for candidate in candidates:
-        if candidate and (python_version(candidate) or (0, 0)) >= MIN_VERSION:
-            return candidate
-    return None
-
-
-def split_setup_args(argv: Sequence[str]) -> tuple[str | None, Path | None]:
-    """Only explicit local wheelhouse installation is supported."""
-    args = list(argv)
-    found: dict[str, str] = {}
-    while args:
-        name = args.pop(0)
-        if name not in ("--python", "--wheelhouse") or name in found or not args:
-            raise ValueError("setup [--wheelhouse PATH] [--python PATH]; pip-аргументы не принимаются")
-        found[name] = args.pop(0)
-    if "--python" in found and "--wheelhouse" not in found:
-        raise ValueError("--python используется только вместе с --wheelhouse")
-    return found.get("--python"), Path(found["--wheelhouse"]) if "--wheelhouse" in found else None
 
 
 def venv_needs_ignore(root: Path) -> bool:
@@ -158,90 +114,11 @@ def venv_needs_ignore(root: Path) -> bool:
     return code == 1  # 0 — уже игнорируется, 128 — не репозиторий
 
 
-def create_env_file() -> Path | None:
-    """``.env`` из образца, чтобы пользователю оставалось вписать endpoint и токен."""
-    env_file = SKILL_DIR / ".env"
-    example = SKILL_DIR / ".env.example"
-    if os.path.lexists(str(env_file)) or not example.exists():
-        return None
-    shutil.copyfile(str(example), str(env_file))
-    if os.name != "nt":
-        os.chmod(str(env_file), 0o600)
-    return env_file
-
-
-def use_existing_venv(explicit: str | None) -> bool:
-    """Существующий ``.venv`` проекта годится: Python в нём запускается и он 3.11+."""
-    version = python_version(str(venv_python()))
-    wanted = "{}.{}".format(*MIN_VERSION)
-    if version is None:
-        print("STATUS: error")
-        print(
-            "В проекте есть {}, но Python в нём не запускается. Пересоздай этот .venv на "
-            "Python {}+ (и поставь в него зависимости проекта заново) или удали его, затем "
-            "повтори: {}".format(VENV_DIR, wanted, self_command("setup"))
-        )
-        return False
-    if version < MIN_VERSION:
-        print("STATUS: error")
-        print(
-            "{} проекта создан на Python {}.{}, а скиллу нужен {}+. Пересоздай этот .venv на "
-            "Python {}+ (и поставь в него зависимости проекта заново), затем повтори: {}".format(
-                VENV_DIR, version[0], version[1], wanted, wanted, self_command("setup")
-            )
-        )
-        return False
-    if explicit:
-        print("{} уже есть — --python не используется.".format(VENV_DIR), flush=True)
-    return True
-
-
-def create_venv(explicit: str | None) -> int:
-    """Создать ``.venv`` проекта; 0 — создан, иначе код возврата ``setup``."""
-    base = find_base_python(explicit)
-    if base is None:
-        print("STATUS: error")
-        print(
-            "Не найден Python {}.{}+. Установи его и повтори, например: {}".format(
-                MIN_VERSION[0], MIN_VERSION[1], self_command("setup", "--wheelhouse", "/local/wheels", "--python", "/path/to/python3.11")
-            )
-        )
-        return 2
-    print("Создаю окружение {} (Python: {})".format(VENV_DIR, base), flush=True)
-    if subprocess.call([base, "-m", "venv", str(VENV_DIR)]) != 0:
-        print("STATUS: error")
-        print("Не удалось создать venv. На Debian/Ubuntu нужен пакет python3-venv.")
-        return 1
-    return 0
-
-
-def ensure_pip(python: Path) -> bool:
-    """pip в ``.venv``: окружение могли создать с ``--without-pip``.
-
-    ``ensurepip`` ставит pip из колёс, вшитых в Python, — без сети и зеркала.
-    """
-    check = [str(python), "-I", "-m", "pip", "--version"]
-    if subprocess.call(check, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
-        return True
-    print("В {} нет pip — ставлю его через ensurepip.".format(VENV_DIR), flush=True)
-    if subprocess.call([str(python), "-I", "-m", "ensurepip", "--upgrade"]) == 0:
-        return True
-    print("STATUS: error")
-    print(
-        "В {} нет pip, и ensurepip не смог его поставить (на Debian/Ubuntu для ensurepip нужен "
-        "пакет python3-venv). Поставь pip в этот .venv сам: {} -m ensurepip --upgrade — или "
-        "пересоздай .venv на Python {}.{}+, затем повтори: {}".format(
-            VENV_DIR, python, MIN_VERSION[0], MIN_VERSION[1], self_command("setup")
-        )
-    )
-    return False
-
-
 def locked_requirements() -> list[tuple[str, str, str]]:
     """Accept only exact hashed distributions and the lock's Python version markers.
 
     A restricted grammar prevents requirements options, URLs and nested files from
-    turning the offline installation into another source of dependencies.
+    changing which installed dependencies are checked.
     """
     text = REQUIREMENTS.read_text(encoding="utf-8")
     logical = re.sub(r"\\\n\s*", " ", text)
@@ -290,77 +167,68 @@ for name, version, marker in entries:
 """
     try:
         return subprocess.call(
-            [str(python), "-I", "-c", code, json.dumps(entries)],
+            [str(python), "-I", "-B", "-c", code, json.dumps(entries)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
         ) == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
 
-def setup(argv: Sequence[str]) -> int:
+def environment_status() -> tuple[str, str]:
+    """Проверка окружения без маркера, установки пакетов и записи файлов."""
+    if not (VENV_DIR.exists() or VENV_DIR.is_symlink()):
+        return "setup_required", "Окружения .venv нет: {}".format(VENV_DIR)
+    version = python_version(str(venv_python()))
+    if version is None:
+        return "error", "В проекте есть {}, но Python в нём не запускается.".format(VENV_DIR)
+    if version < MIN_VERSION:
+        return "error", "{} проекта создан на Python {}.{}, а скиллу нужен {}.{}+.".format(
+            VENV_DIR, version[0], version[1], MIN_VERSION[0], MIN_VERSION[1])
     try:
-        explicit, wheelhouse = split_setup_args(argv)
         entries = locked_requirements()
-        if wheelhouse is not None:
-            wheelhouse = wheelhouse.resolve(strict=True)
-            if not wheelhouse.is_dir():
-                raise ValueError("--wheelhouse должен указывать на локальный каталог")
     except (ValueError, OSError) as error:
-        return update_error(str(error), 2)
-    if VENV_DIR.exists() or VENV_DIR.is_symlink():
-        if not use_existing_venv(explicit):
-            return 2
-    elif wheelhouse is None:
-        print("STATUS: setup_required")
-        print("Окружения .venv нет. Установи зависимости вручную либо явно укажи setup --wheelhouse /local/path. Автоматической установки нет.")
-        return 0
-    else:
-        code = create_venv(explicit)
-        if code:
-            return code
-    target = venv_python()
-    if wheelhouse is not None:
-        from alla_wheels import local_wheels
+        return "error", str(error)
+    if not validate_dependencies(venv_python(), entries):
+        return "setup_required", (
+            "Версии зависимостей в {} не соответствуют requirements.txt."
+        ).format(VENV_DIR)
+    return "ready", "Версии Python и зависимостей проверены: {}".format(VENV_DIR)
 
-        try:
-            with local_wheels(wheelhouse) as wheels:
-                SETUP_MARKER.unlink(missing_ok=True)
-                if not ensure_pip(target):
-                    return 1
-                env = {k: v for k, v in os.environ.items() if not k.startswith("PIP_")}
-                env["PIP_CONFIG_FILE"] = os.devnull
-                code = subprocess.call([
-                    str(target), "-I", "-m", "pip", "install", "--disable-pip-version-check",
-                    "--no-index", "--find-links", str(wheels), "--only-binary=:all:", "--no-deps",
-                    "--require-hashes", "-r", str(REQUIREMENTS),
-                ], env=env)
-        except (ValueError, OSError) as error:
-            return update_error(str(error), 2)
-        if code:
-            return update_error("Не удалось установить зависимости из локального wheelhouse; сеть не используется.")
-    if not validate_dependencies(target, entries):
-        # A stale marker must not claim that a failed validation was successful.
-        SETUP_MARKER.unlink(missing_ok=True)
-        print("STATUS: setup_required")
-        print("Версии зависимостей не соответствуют requirements.txt. Установи их вручную либо явно выполни setup --wheelhouse /local/path.")
-        return 0
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=str(VENV_DIR),
-                                     prefix=".alla-setup-", delete=False) as handle:
-        handle.write(requirements_digest() + "\n")
-        marker_tmp = Path(handle.name)
-    try:
-        os.replace(str(marker_tmp), str(SETUP_MARKER))
-    finally:
-        marker_tmp.unlink(missing_ok=True)
+
+def engineer_instructions() -> None:
+    """Готовые команды для инженера — только печать, без запуска и запроса согласия."""
+    def command(*parts: str) -> str:
+        return subprocess.list2cmdline(parts) if os.name == "nt" else shlex.join(parts)
+
+    print("Дальнейшие действия выполняет инженер вручную; скилл их не запускает:")
+    print("1. Если .venv отсутствует, создай её на Python {}.{}+:".format(*MIN_VERSION))
+    print(command("python3.11", "-m", "venv", str(VENV_DIR)))
+    print("   Существующее окружение проверь и при необходимости исправь вручную.")
+    print("2. Установи зависимости из lock-файла разрешённым в вашей среде способом:")
+    print(command(str(venv_python()), "-m", "pip", "install", "--require-hashes", "-r", str(REQUIREMENTS)))
+    print("3. Если файла настроек нет, скопируй {} в {} и заполни адрес и токен; "
+          "токен в чат не пиши.".format(SKILL_DIR / ".env.example", SKILL_DIR / ".env"))
+    if os.name != "nt":
+        print(command("chmod", "600", str(SKILL_DIR / ".env")))
+    print("   Разрешённый адрес TestOps задаётся инженером в [testops].allowed_origins файла {}.".format(
+        PROJECT_DIR / "alla-extensions" / "config.toml"))
+    print("4. Повтори проверку окружения и проверь настройки и доступ к TestOps:")
+    print(self_command("setup"))
+    print(self_command("check"))
+    print("5. " + FILES_NOTE.format(self_command("install-files")))
+    print("   Размести указанные файлы вручную, затем начни новый сеанс Qwen Code.")
+
+
+def setup(argv: Sequence[str]) -> int:
+    if argv:
+        return update_error("setup не принимает аргументы: только проверка окружения и инструкция инженеру.", 2)
+    status, message = environment_status()
+    print("STATUS: " + status)
+    print(message)
+    engineer_instructions()
     if venv_needs_ignore(PROJECT_DIR):
-        print("git не игнорирует .venv: добавь /.venv в .gitignore проекта сам.", flush=True)
-    print("STATUS: ready")
-    print("Версии зависимостей проверены: {}".format(VENV_DIR))
-    created = create_env_file()
-    if created is not None:
-        print("Создан {}: впиши адрес и токен (токен в чат не пиши).".format(created))
-    print(FILES_NOTE.format(self_command("install-files")))
-    return 0
+        print("git не игнорирует .venv: добавь /.venv в .gitignore проекта сам.")
+    return 2 if status == "error" else 0
 
 
 def update_error(message: str, code: int = 1) -> int:
@@ -402,19 +270,28 @@ def main(argv: Sequence[str]) -> int:
     if argv[:1] == ["update"]:
         return update(argv[1:])
 
-    if not setup_complete():
-        if venv_python().exists():
-            state = "не доустановлены или устарели (изменился requirements.txt)"
-        else:
-            state = "не установлены"
-        print("STATUS: setup_required")
-        print(
-            "Зависимости скилла в .venv проекта ({}) {}. Проверь уже установленное окружение:".format(VENV_DIR, state)
-        )
+    subargs = list(argv[1:])
+    while subargs and subargs[0].split("=", 1)[0] in ("--project-root", "--reports-dir", "--job"):
+        option = subargs.pop(0)
+        if "=" not in option and subargs:
+            subargs.pop(0)
+    print_only = argv[:1] == ["install-files"] or (
+        argv[:1] == ["extensions"] and bool(subargs) and subargs[0] in ("enable", "disable"))
+    removed_before_command = (argv[:1] == ["extensions"] and bool(subargs)
+                              and subargs[0].split("=", 1)[0] in ("--yes", "--diff"))
+    if removed_before_command or (print_only and any(
+            arg in ("--yes", "--diff") or arg.startswith(("--yes=", "--diff=")) for arg in argv)):
+        return update_error("--yes и --diff удалены: команда только печатает инструкцию инженеру.", 2)
+    status, message = environment_status()
+    if status != "ready":
+        print("STATUS: " + status)
+        print(message)
+        print("Проверь окружение и прочитай инструкцию инженеру:")
         print(self_command("setup"))
-        print("Не устанавливай пакеты автоматически. После ручной установки или явного --wheelhouse повтори команду:")
+        print("Не устанавливай пакеты и не меняй настройки автоматически. "
+              "После ручной подготовки повтори команду:")
         print(self_command(*argv))
-        return 0  # агент останавливается; установка требует явного локального источника
+        return 2 if status == "error" else 0
 
     if running_in_venv() or os.environ.get(CHILD_MARKER):
         sys.path.insert(0, str(SCRIPTS_DIR))
@@ -423,7 +300,7 @@ def main(argv: Sequence[str]) -> int:
         return cli_main(list(argv))
 
     env = dict(os.environ, **{CHILD_MARKER: "1"})
-    command = [str(venv_python()), str(Path(__file__).resolve())] + list(argv)
+    command = [str(venv_python()), "-B", str(Path(__file__).resolve())] + list(argv)
     return subprocess.call(command, env=env)
 
 

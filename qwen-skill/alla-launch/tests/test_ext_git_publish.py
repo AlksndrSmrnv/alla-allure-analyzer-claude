@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from skill_fixtures import configure_extension
 from skill_fixtures import (  # noqa: F401
     nested_project_fixture,
     project_fixture,
@@ -68,6 +69,7 @@ def enable(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
     shutil.copytree(BUNDLED / "git-publish", ws.SKILL_DIR / "extensions" / "git-publish")
     code, out = _run(["extensions", "enable", "git-publish", "--project-root", str(project)], capsys)
     assert code == 0, out
+    configure_extension(project, "git-publish")
 
 
 def applied_run(

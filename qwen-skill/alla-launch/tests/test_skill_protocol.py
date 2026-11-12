@@ -415,33 +415,12 @@ def test_clean_removes_only_old_runs(project: Path, testops: FakeTestOps, capsys
 # --- обёртка setup ---------------------------------------------------------------------
 
 
-def test_setup_argument_split() -> None:
+@pytest.mark.parametrize("args", [["--wheelhouse", "/local/wheels"], ["--python", "/opt/py311"], ["--unknown"]])
+def test_setup_rejects_installation_arguments(args: list[str], capsys: pytest.CaptureFixture[str]) -> None:
     import alla_skill
 
-    assert alla_skill.split_setup_args([]) == (None, None)
-    assert alla_skill.split_setup_args(["--wheelhouse", "/local/wheels", "--python", "/opt/py311"]) == (
-        "/opt/py311", Path("/local/wheels"),
-    )
-    for args in (["--python", "/opt/py311"], ["--", "--index-url", "https://mirror/simple"], ["--unknown"]):
-        with pytest.raises(ValueError):
-            alla_skill.split_setup_args(args)
-
-
-def test_setup_creates_env_from_example_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import alla_skill
-
-    monkeypatch.setattr(alla_skill, "SKILL_DIR", tmp_path)
-    assert alla_skill.create_env_file() is None  # образца нет
-
-    (tmp_path / ".env.example").write_text("ALLURE_ENDPOINT=\nALLURE_TOKEN=\n", encoding="utf-8")
-    created = alla_skill.create_env_file()
-    assert created == tmp_path / ".env" and created.read_text(encoding="utf-8").startswith("ALLURE_ENDPOINT=")
-    if os.name != "nt":
-        assert created.stat().st_mode & 0o077 == 0  # токен потом лежит только для владельца
-
-    created.write_text("ALLURE_TOKEN=already-filled\n", encoding="utf-8")
-    assert alla_skill.create_env_file() is None  # существующий .env не перезаписывается
-    assert "already-filled" in created.read_text(encoding="utf-8")
+    assert alla_skill.setup(args) == 2
+    assert capsys.readouterr().out.startswith("STATUS: error")
 
 
 def test_unknown_fix_state_is_reported_and_blocks_reapply(project: Path, testops: FakeTestOps, capsys) -> None:

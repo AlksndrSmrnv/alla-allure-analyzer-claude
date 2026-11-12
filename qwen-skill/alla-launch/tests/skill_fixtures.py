@@ -134,3 +134,30 @@ def answer_related(run_dir: Path) -> None:
     """Ответ на ``STATUS: relate``: у всех проблем групп разные причины (пометок нет)."""
     numbers = ", ".join(map(str, related_numbers(run_dir)))
     (run_dir / "related.md").write_text(f"РАЗНЫЕ: {numbers} — причины разные\n", encoding="utf-8")
+
+
+def configure_extension(project: Path, name: str, on: bool = True) -> None:
+    """Fixture setup: reproduce files placed manually by the engineer, outside CLI."""
+    from alla_skill_lib import extensions as ext
+    from alla_skill_lib import qwen_files
+
+    updated = ext.enabled_text(project, name, on)
+    if updated is not None:
+        target = ext.config_path(project)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(updated, encoding="utf-8")
+    extension = ext.discover(project).extensions.get(name)
+    if extension is None:
+        return
+    sources = [(source, qwen_files.extension_command_target(project, command))
+               for command, source in extension.commands.items()]
+    if extension.agent is not None:
+        sources.append((extension.agent, qwen_files.extension_agent_target(project, extension.agent_name)))
+    for source, target in sources:
+        content = source.read_text(encoding="utf-8")
+        content = content if content.endswith("\n") else content + "\n"
+        if on:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        elif target.is_file() and target.read_text(encoding="utf-8") == content:
+            target.unlink()

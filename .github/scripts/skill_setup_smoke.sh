@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# Установка скилла с нуля, как у пользователя: синтетический git-проект автотестов,
-# скилл в .qwen/skills/alla-launch, `setup` создаёт .venv проекта, `check` — сначала с пустым
-# .env (ждём error), затем с адресом фейкового TestOps (ждём ready), и `prepare` прогона.
-# Нужны python3 (3.11+), git и заранее подготовленный ALLA_WHEELHOUSE. Сеть установки не используется.
-# Унаследованные переменные ALLURE_* сбрасываются: окружение важнее .env скилла, и с ними
-# скрипт ходил бы в настоящий TestOps вместо фейкового.
-#
-#   bash .github/scripts/skill_setup_smoke.sh
-#   docker run --rm -v "$PWD":/repo -w /repo python:3.11 bash .github/scripts/skill_setup_smoke.sh
+# Инженер вручную готовит синтетический проект и зависимости; команды скилла
+# setup/install-files/enable/disable только печатают проверку и инструкции.
+# Нужны python3 (3.11+), git и заранее подготовленный ALLA_WHEELHOUSE.
+# Установка зависимостей ниже — явный шаг инженера в CI, вне команд скилла и без сети.
+# ALLURE_* сбрасываются, чтобы check/prepare работали только с фейковым TestOps.
 set -euo pipefail
 
 while IFS= read -r var; do unset "$var"; done < <(compgen -e | grep '^ALLURE_' || true)
@@ -45,37 +41,86 @@ skill="$project/.qwen/skills/alla-launch"
 entry="$skill/scripts/alla_skill.py"
 cd "$project"
 
-echo "== без setup команда просит setup"
+# Снимок содержимого, структуры и прав: в том числе игнорируемые .env, кэши и старый маркер.
+# Внутренности установленного venv не обходятся, кроме маркера, которым раньше управлял setup.
+cat > "$work/snapshot.py" <<'SNAPSHOT'
+import hashlib, json, os, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+paths = [root / name for name in (".qwen", "alla-extensions", ".gitignore", ".venv", ".venv/.alla-setup-complete")]
+for directory in (root / ".qwen", root / "alla-extensions"):
+    if directory.is_dir():
+        paths.extend(directory.rglob("*"))
+result = {}
+for path in sorted(set(paths)):
+    if not path.exists() and not path.is_symlink():
+        continue
+    row = {"mode": path.lstat().st_mode}
+    if path.is_symlink():
+        row["link"] = os.readlink(path)
+    elif path.is_file():
+        row["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    result[str(path.relative_to(root))] = row
+print(json.dumps(result, sort_keys=True))
+SNAPSHOT
+snapshot() { python3 "$work/snapshot.py" "$project"; }
+unchanged() {
+  snapshot > "$work/after.json"
+  cmp "$work/before.json" "$work/after.json" || fail "$* изменил файлы установки"
+}
+
+echo "== без окружения check/setup только сообщают инструкцию"
+snapshot > "$work/before.json"
 python3 "$entry" check | tee "$work/pre.log"
 expect_status setup_required "$work/pre.log"
+python3 "$entry" setup | tee "$work/setup-missing.log"
+expect_status setup_required "$work/setup-missing.log"
+unchanged "check/setup без окружения"
 
-echo "== setup с нуля"
-python3 "$entry" setup --wheelhouse "$wheelhouse" | tee "$work/setup.log"
+echo "== инженер создаёт окружение и ставит зависимости вне скилла"
+python3 -m venv .venv
+.venv/bin/python -I -m pip install --no-index --find-links "$wheelhouse" --only-binary=:all: \
+  --no-deps --require-hashes -r "$skill/requirements.txt"
+[ ! -e .venv/.alla-setup-complete ] || fail "появился старый маркер установки"
+
+echo "== setup проверяет готовое окружение без записи"
+snapshot > "$work/before.json"
+python3 "$entry" setup | tee "$work/setup.log"
 expect_status ready "$work/setup.log"
-[ -x .venv/bin/python ] || fail "нет .venv/bin/python"
-[ -f .venv/.alla-setup-complete ] || fail "нет маркера установки"
-[ ! -e .gitignore ] || ! grep -q "venv" .gitignore || fail "setup изменил .gitignore проекта"
-[ -f "$skill/.env" ] || fail "setup не создал .env"
-mode=$(python3 -c "import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))" "$skill/.env")
-[ "$mode" = 0o600 ] || fail "у .env права $mode, ждали 0o600"
-[ ! -e .qwen/commands ] || fail "setup поставил команды /alla:* без просьбы"
-grep -q "install-files" "$work/setup.log" || fail "setup не подсказал install-files"
-
-echo "== повторный setup берёт существующий .venv"
 python3 "$entry" setup | tee "$work/setup2.log"
 expect_status ready "$work/setup2.log"
-[ ! -e .gitignore ] || ! grep -q "venv" .gitignore || fail "повторный setup изменил .gitignore"
+grep -q "install-files" "$work/setup.log" || fail "setup не подсказал install-files"
+unchanged "setup готового окружения"
 
-echo "== install-files: сначала показ, запись только с --yes"
+echo "== install-files и enable печатают инструкции без записи"
 python3 "$entry" install-files | tee "$work/files.log"
 expect_status install_files "$work/files.log"
-[ ! -e .qwen/commands ] || fail "install-files без --yes записал файлы"
-diff_hash=$(sed -nE 's/.*--diff ([0-9a-f]{64}).*/\1/p' "$work/files.log" | head -n1)
-[ -n "$diff_hash" ] || fail "install-files не вернул DIFF hash"
-python3 "$entry" install-files --yes --diff "$diff_hash" | tee "$work/files-yes.log"
-expect_status ok "$work/files-yes.log"
-[ -f .qwen/commands/alla/run.md ] || fail "install-files --yes не поставил команды /alla:*"
-[ -f .qwen/agents/alla-batch.md ] || fail "install-files --yes не поставил субагента alla-batch"
+python3 "$entry" extensions enable git-publish | tee "$work/enable.log"
+expect_status install_files "$work/enable.log"
+unchanged "install-files/enable"
+for args in "install-files --yes" "install-files --diff abc" \
+            "extensions enable git-publish --yes" "extensions disable git-publish --diff abc" \
+            "setup --wheelhouse $wheelhouse" "setup --python python3"; do
+  if python3 "$entry" $args > "$work/removed-option.log"; then
+    fail "удалённый режим принят: $args"
+  fi
+  expect_status error "$work/removed-option.log"
+  unchanged "удалённые флаги"
+done
+
+echo "== инженер размещает готовые файлы Qwen и конфигурацию расширения"
+mkdir -p .qwen/agents .qwen/commands/alla alla-extensions
+cp "$skill"/agents/*.md .qwen/agents/
+cp "$skill"/commands/alla/*.md .qwen/commands/alla/
+cp "$skill/extensions/git-publish/agent.md" .qwen/agents/alla-git-publish.md
+printf 'enabled = ["git-publish"]\n' > alla-extensions/config.toml
+snapshot > "$work/before.json"
+python3 "$entry" extensions disable git-publish | tee "$work/disable.log"
+expect_status install_files "$work/disable.log"
+unchanged "disable включённого расширения"
+
+# .env также размещает инженер; setup его не создавал.
+cp "$skill/.env.example" "$skill/.env"
+chmod 600 "$skill/.env"
 
 echo "== check с пустым .env"
 code=0
@@ -111,4 +156,4 @@ done
 expect_status analyze "$work/prepare.log"
 compgen -G "alla-reports/777-*/clusters/01.md" > /dev/null || fail "prepare не записал задание кластера"
 
-echo "OK: установка скилла на $(uname -s) с $(python3 --version)"
+echo "OK: ручная подготовка и read-only setup скилла на $(uname -s) с $(python3 --version)"

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from skill_fixtures import configure_extension
 import skill_fake_maven
 from skill_fake_testops import FakeTestOps, default_launch, flaky_launch
 from skill_fixtures import (  # noqa: F401
@@ -540,10 +541,10 @@ def test_rerun_result_goes_to_the_report_without_a_new_summary_or_hooks(
     nested_project: Path, flaky_testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
 ) -> None:
     from alla_skill_lib import extensions as ext
-    from test_skill_extensions import ext_cli, make_demo
+    from test_skill_extensions import make_demo
 
     make_demo(nested_project)
-    ext_cli(nested_project, capsys, "enable", "demo")
+    configure_extension(nested_project, "demo")
     skill_fake_maven.install(nested_project / "autotests", {
         f"{ORDER}#createOrder": [FAILED_500, "passed"], f"{ORDER}#updateOrder": [FAILED_500]})
     run_dir, run, _ = _prepare(nested_project, capsys)

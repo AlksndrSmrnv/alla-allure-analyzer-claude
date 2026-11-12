@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -141,7 +142,7 @@ from alla_skill_lib.proposals import (
     validate_proposal,
 )
 from alla_skill_lib.problem_state import CurrentState, confirmations, current_state
-from alla_skill_lib import file_transaction as ft
+from alla_skill_lib import file_preview as fp
 from alla_skill_lib.qwen_files import (
     SAME,
     PlannedFile,
@@ -349,7 +350,7 @@ def _dispatch(argv: list[str] | None) -> int:
     if args.command == "check":
         return cmd_check(project_root, reports_dir)
     if args.command == "install-files":
-        return cmd_install_files(project_root, confirm=args.yes, diff_hash=args.diff_hash)
+        return cmd_install_files(project_root)
     if args.command == "clean":
         return cmd_clean(reports_dir, args.older_than_days, dry_run=args.dry_run)
     if args.command == "remember":
@@ -468,14 +469,10 @@ def _build_parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "check", parents=[common], help="проверить окружение, настройки и доступ к TestOps"
     )
-    installer = commands.add_parser(
+    commands.add_parser(
         "install-files", parents=[common],
-        help="показать (или с --yes поставить) субагентов и команды /alla:* в .qwen/ проекта",
+        help="напечатать файлы субагентов и команд /alla:* для ручной установки инженером",
     )
-    installer.add_argument(
-        "--yes", action="store_true", help="поставить файлы; только после согласия пользователя"
-    )
-    installer.add_argument("--diff", dest="diff_hash", help="хэш показанного diff")
     review = commands.add_parser(
         "review", parents=[common],
         help="проверить законченный разбор (пилот): отчёт о ходе и качестве и сводка без данных",
@@ -578,10 +575,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ext_commands = extensions.add_subparsers(dest="ext_command")
     ext_commands.add_parser("list", parents=[common], help="показать расширения и их состояние")
     for verb, text in (("enable", "включить"), ("disable", "выключить")):
-        toggle = ext_commands.add_parser(verb, parents=[common], help=f"{text} расширение в проекте")
+        toggle = ext_commands.add_parser(verb, parents=[common], help=f"показать инженеру, как {text} расширение в проекте")
         toggle.add_argument("name", help="имя расширения")
-        toggle.add_argument("--yes", action="store_true", help="применить показанный diff после согласия")
-        toggle.add_argument("--diff", dest="diff_hash", help="хэш показанного diff")
     again = ext_commands.add_parser(
         "run", parents=[common],
         help="запустить расширение по просьбе пользователя (on_request) или повторить его хук: "
@@ -2654,7 +2649,6 @@ def cmd_extensions(args: argparse.Namespace, project_root: Path, reports_dir: Pa
         elif command in ("enable", "disable"):
             status, body = _extensions_toggle(
                 project_root, args.name, command == "enable",
-                confirm=args.yes, diff_hash=args.diff_hash,
             )
         elif command == "run":
             status, body = "ok", _extensions_run(
@@ -2715,19 +2709,18 @@ def _extensions_list(project_root: Path) -> str:
     if config_error:
         lines.append(f"Ошибка настроек: {config_error}")
     lines += [
-        f"Включить: {ws.skill_command('extensions', 'enable', '<имя>')}",
-        f"Выключить: {ws.skill_command('extensions', 'disable', '<имя>')}",
+        f"Инструкция включения: {ws.skill_command('extensions', 'enable', '<имя>')}",
+        f"Инструкция отключения: {ws.skill_command('extensions', 'disable', '<имя>')}",
         f"Свои расширения кладут в {ext.project_dir(project_root)}/<имя>/; как их писать — "
         f"{ext.bundled_dir() / 'README.md'}.",
     ]
     return "\n".join(lines)
 
 
-def _extensions_toggle(
-    project_root: Path, name: str, on: bool, *, confirm: bool = False,
-    diff_hash: str | None = None,
-) -> tuple[str, str]:
-    ft.recover(project_root)
+def _extensions_toggle(project_root: Path, name: str, on: bool) -> tuple[str, str]:
+    """Describe manual configuration without writing or recovering files."""
+    fp.check_journal(project_root)
+    fp.safe_target(project_root, ext.config_path(project_root))
     catalog = ext.discover(project_root)
     extension = catalog.extensions.get(name)
     if on:
@@ -2738,49 +2731,52 @@ def _extensions_toggle(
         conflict = ext.command_conflict(extension, catalog, config)
         if conflict:
             raise ext.ExtensionError(f"Расширение {name} не включено: {conflict}")
-    changes: list[ft.Change] = []
-    kept: list[str] = []
-    if extension is not None:
-        sources = [(project_root / ".qwen" / "commands" / "alla" / f"{command}.md", source)
-                   for command, source in extension.commands.items()]
-        if extension.agent is not None:
-            sources.append((project_root / ".qwen" / "agents" / f"{extension.agent_name}.md",
-                            extension.agent))
-        for target, source in sorted(sources):
-            data = source.read_text(encoding="utf-8")
-            content = (data if data.endswith("\n") else data + "\n").encode()
-            old = ft.read_bytes(project_root, target)
-            if on:
-                changes.append(ft.Change(target, old, content))
-            elif old == content:
-                changes.append(ft.Change(target, old, None))
-            elif old is not None:
-                kept.append(f"Изменён вручную — не удаляю: {target}")
-    # Configuration is part of the same snapshot, committed last.
     updated = ext.enabled_text(project_root, name, on)
     config_path = ext.config_path(project_root)
-    old_config = ft.read_bytes(project_root, config_path)
-    changes.append(ft.Change(config_path, old_config,
-                             updated.encode() if updated is not None else old_config))
-    if not any(item.before != item.after for item in changes):
-        return "ok", "Изменений нет.\n" + "\n".join(kept)
-    command = ws.skill_command("extensions", "enable" if on else "disable", name,
-                               "--project-root", str(project_root), "--yes", "--diff",
-                               ft.digest(project_root, changes))
-    if not confirm:
-        return "install_files", (ft.preview(project_root, changes) + "\n" + "\n".join(kept)
-                                  + "\nНичего не записано. Покажи diff пользователю и спроси "
-                                  "согласие. После его «да»:\n" + command)
-    ft.apply(project_root, changes, diff_hash)
-    lines = [f"Расширение {name} {'включено' if on else 'выключено'}. "
-             "Qwen Code увидит файлы после перезапуска сеанса."]
-    if on and extension is not None:
-        if extension.commands:
-            lines.append("Команды " + ", ".join(f"/alla:{command}" for command in extension.commands)
-                         + " установлены.")
-        if extension.settings:
-            lines.append(f"Настройки меняются в таблице [{name}] файла {ext.CONFIG_FILE}.")
-    return "ok", "\n".join([*lines, *kept])
+    old_config = fp.read_bytes(project_root, config_path)
+    names = [item for item in ext.load_config(project_root).enabled if item != name]
+    if on:
+        names.append(name)
+    line = "enabled = [" + ", ".join(json.dumps(item) for item in names) + "]"
+    lines = [f"Конфигурация: {config_path}",
+             ("Текущая корневая строка уже подходит; менять её не нужно:" if updated is None
+              else "Корневая строка (до первой таблицы), которой инженер заменяет прежнюю:"), line]
+    changes = [fp.Change(config_path, old_config,
+                         updated.encode() if updated is not None else old_config)]
+    instructions = ""
+    manual_review = False
+    if extension is not None:
+        sources = [(source, project_root / ".qwen" / "commands" / "alla" / f"{command}.md")
+                   for command, source in extension.commands.items()]
+        if extension.agent is not None:
+            sources.append((extension.agent, project_root / ".qwen" / "agents" /
+                            f"{extension.agent_name}.md"))
+        if on:
+            instructions = fp.file_instructions(project_root, sorted(sources))
+        else:
+            for source, target in sorted(sources):
+                text = source.read_text(encoding="utf-8")
+                content = (text if text.endswith("\n") else text + "\n").encode()
+                old = fp.read_bytes(project_root, target)
+                if old == content:
+                    changes.append(fp.Change(target, old, None))
+                    lines.append(f"Инженер может удалить файл отключённого расширения: {target}")
+                elif old is not None:
+                    manual_review = True
+                    lines.append(f"Изменён вручную — сохраните и проверьте отдельно: {target}")
+    preview = fp.preview(project_root, changes)
+    if preview:
+        lines.append("Diff:\n" + preview)
+    if instructions:
+        lines.append(instructions)
+    if on and extension is not None and extension.settings:
+        lines.append(f"Настройки меняются в таблице [{name}] файла {ext.CONFIG_FILE}.")
+    changed = bool(preview or instructions or manual_review)
+    if not changed:
+        lines.append("Изменений нет.")
+    lines.append("Ничего не записано. Описанные изменения выполняет инженер вручную. "
+                 "Скилл эти шаги не выполняет. После ручных изменений перезапустите сеанс Qwen Code.")
+    return "install_files" if changed else "ok", "\n".join(lines)
 
 
 def _extensions_run(
@@ -2895,37 +2891,21 @@ def _qwen_files_plan(project_root: Path) -> list[PlannedFile]:
     return planned_files(project_root, agents, commands)
 
 
-def cmd_install_files(
-    project_root: Path, *, confirm: bool, diff_hash: str | None = None,
-) -> int:
-    """Preview actual contents; apply only the reviewed snapshot after consent."""
+def cmd_install_files(project_root: Path) -> int:
+    """Print ready files and diffs for the engineer; never write project files."""
     try:
-        ft.recover(project_root)
+        fp.check_journal(project_root)
+        fp.safe_target(project_root, ext.config_path(project_root))
         files = _qwen_files_plan(project_root)
-        changes = []
-        for item in sorted(files, key=lambda item: str(item.target)):
-            text = item.source.read_text(encoding="utf-8")
-            data = (text if text.endswith("\n") else text + "\n").encode()
-            changes.append(ft.change(project_root, item.target, data))
-        # Include configuration in the hash even though install-files does not edit it.
-        config = ext.config_path(project_root)
-        config_bytes = ft.read_bytes(project_root, config)
-        changes.append(ft.Change(config, config_bytes, config_bytes))
-        if not any(item.before != item.after for item in changes):
-            print("STATUS: ok")
-            print("Субагенты и команды /alla:* уже установлены: ставить нечего.")
-            return 0
-        if confirm:
-            ft.apply(project_root, changes, diff_hash)
-            print("STATUS: ok")
-            print("Записано в .qwen/ проекта. Qwen Code увидит файлы после перезапуска сеанса.")
+        body = fp.file_instructions(project_root, [(item.source, item.target)
+                                    for item in sorted(files, key=lambda item: str(item.target))])
+        print("STATUS: install_files" if body else "STATUS: ok")
+        if body:
+            print(body)
+            print("Ничего не записано. Готовые файлы размещает инженер вручную по указанным "
+                  "путям. Скилл эти шаги не выполняет. После ручной установки перезапустите сеанс Qwen Code.")
         else:
-            print("STATUS: install_files")
-            print(ft.preview(project_root, changes))
-            print("Ничего не записано. Покажи diff пользователю и спроси согласие. "
-                  "Только после его «да» выполни:\n" + ws.skill_command(
-                      "install-files", "--yes", "--diff", ft.digest(project_root, changes),
-                      "--project-root", str(project_root)))
+            print("Субагенты и команды /alla:* уже установлены: ставить нечего.")
         return 0
     except (OSError, ValueError) as exc:
         print("STATUS: error")

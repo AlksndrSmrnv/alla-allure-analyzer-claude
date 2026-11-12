@@ -88,7 +88,7 @@ def test_command_refers_to_existing_skill_sections(path: Path) -> None:
         assert f"**{item}**" in SKILL_MD, f"{path.stem}: пункта «{item}» нет в SKILL.md"
 
 
-def test_install_planned_writes_new_and_changed_only(
+def test_planned_files_compare_new_same_and_changed_without_writing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(ws, "SKILL_DIR", SKILL_DIR)
@@ -98,18 +98,21 @@ def test_install_planned_writes_new_and_changed_only(
 
     plan = qwen_files.planned_files(tmp_path)
     assert [item.state for item in plan] == [qwen_files.NEW] * len(plan)
-    written = qwen_files.install_planned(plan)
+    written = plan
+    for item in plan:
+        item.target.parent.mkdir(parents=True, exist_ok=True)
+        item.target.write_text(item.source.read_text(encoding="utf-8"), encoding="utf-8")
     assert [item.target for item in written] == [item.target for item in plan]
     for path in _commands():
         assert (target_dir / path.name).read_text(encoding="utf-8") == path.read_text(encoding="utf-8")
     assert (tmp_path / ".qwen" / "agents" / "alla-batch.md").is_file()
     plan = qwen_files.planned_files(tmp_path)
     assert {item.state for item in plan} == {qwen_files.SAME}
-    assert qwen_files.install_planned(plan) == []  # уже установлены — не пишет
+    assert {item.state for item in plan} == {qwen_files.SAME}
     (target_dir / "apply.md").write_text("старая версия", encoding="utf-8")
     plan = qwen_files.planned_files(tmp_path)
     assert [item.target for item in plan if item.state == qwen_files.CHANGED] == [target_dir / "apply.md"]
-    assert [item.target for item in qwen_files.install_planned(plan)] == [target_dir / "apply.md"]
+    assert [item.target for item in plan if item.state == qwen_files.CHANGED] == [target_dir / "apply.md"]
     assert (target_dir / "my.md").exists()  # чужое не удаляется
 
 
@@ -120,14 +123,14 @@ def test_setup_hint_quotes_awkward_paths(monkeypatch: pytest.MonkeyPatch) -> Non
 
     awkward = Path("/work/QA'sTests/e2e(test)/alla_skill.py")
     monkeypatch.setattr(alla_skill, "__file__", str(awkward))
-    command = alla_skill.self_command("setup", "--python", "/opt/py 3.11/bin/python")
+    command = alla_skill.self_command("setup")
 
     parts = shlex.split(command)
     assert parts[1].endswith("QA'sTests/e2e(test)/alla_skill.py")
-    assert parts[2:] == ["setup", "--python", "/opt/py 3.11/bin/python"]
+    assert parts[2:] == ["setup"]
 
 
-def test_source_without_trailing_newline_is_installed_once(
+def test_source_without_trailing_newline_matches_engineer_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """write_text дописывает перевод строки: сверка с ним, иначе файл вечно «изменён»."""
@@ -138,13 +141,15 @@ def test_source_without_trailing_newline_is_installed_once(
 
     plan = qwen_files.planned_files(project, {"alla-demo": source})
     assert [item.state for item in plan] == [qwen_files.NEW]
-    assert len(qwen_files.install_planned(plan)) == 1
+    item = plan[0]
+    item.target.parent.mkdir(parents=True)
+    item.target.write_text(item.source.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     plan = qwen_files.planned_files(project, {"alla-demo": source})
     assert [item.state for item in plan] == [qwen_files.SAME]
-    assert qwen_files.install_planned(plan) == []
+    assert plan[0].state == qwen_files.SAME
 
 
-def test_command_file_in_another_encoding_is_replaced(
+def test_command_file_in_another_encoding_is_marked_changed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(ws, "SKILL_DIR", SKILL_DIR)
@@ -154,38 +159,34 @@ def test_command_file_in_another_encoding_is_replaced(
 
     plan = qwen_files.planned_files(tmp_path)
     assert next(item.state for item in plan if item.target == target) == qwen_files.CHANGED
-    qwen_files.install_planned(plan)
-    assert target.read_text(encoding="utf-8") == (COMMANDS_DIR / "run.md").read_text(encoding="utf-8")
+    assert target.read_bytes() == "команда".encode("utf-16")
 
 
-def test_install_files_lists_without_writing_and_installs_after_yes(
+def test_install_files_prints_ready_files_and_diff_without_writing(
     project: Path, testops: FakeTestOps, capsys,
 ) -> None:
     shutil.copytree(SKILL_DIR / "commands", ws.SKILL_DIR / "commands")
     shutil.copytree(SKILL_DIR / "agents", ws.SKILL_DIR / "agents")
     qwen_dir = project / ".qwen"
-
+    for _ in range(2):
+        code, out = _run(["install-files", "--project-root", str(project)], capsys)
+        assert code == 0 and out.startswith("STATUS: install_files"), out
+        assert "alla-batch.md" in out and "commands/alla/run.md" in out and "+++" in out
+        assert "Источник:" in out and "Назначение:" in out and "Готовое содержимое:" in out
+        assert (COMMANDS_DIR / "run.md").read_text(encoding="utf-8") in out
+        assert "install-files --yes" not in out and not qwen_dir.exists()
+    for item in qwen_files.planned_files(project):
+        item.target.parent.mkdir(parents=True, exist_ok=True)
+        text = item.source.read_text(encoding="utf-8")
+        item.target.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
     code, out = _run(["install-files", "--project-root", str(project)], capsys)
-    assert code == 0, out
-    assert out.splitlines()[0] == "STATUS: install_files"
-    assert "alla-batch.md" in out and "commands/alla/run.md" in out and "+++" in out
-    assert "install-files --yes" in out and "«да»" in out
-    assert f"--project-root {shlex.quote(str(project))}" in out  # подтверждение — для того же проекта
-    assert not qwen_dir.exists()  # без --yes ничего не записано
-
-    code, out = _run(["install-files", "--yes", "--diff", _install_hash(project, capsys), "--project-root", str(project)], capsys)
-    assert code == 0, out
-    assert out.splitlines()[0] == "STATUS: ok"
-    assert (qwen_dir / "agents" / "alla-batch.md").is_file()
-    installed = sorted(path.name for path in (qwen_dir / "commands" / "alla").glob("*.md"))
-    assert installed == [path.name for path in _commands()]
-
+    assert out.startswith("STATUS: ok") and "ставить нечего" in out
+    target = qwen_dir / "commands/alla/apply.md"
+    target.write_text("старая версия", encoding="utf-8")
     code, out = _run(["install-files", "--project-root", str(project)], capsys)
-    assert out.splitlines()[0] == "STATUS: ok" and "ставить нечего" in out
-    (qwen_dir / "commands" / "alla" / "apply.md").write_text("старая версия", encoding="utf-8")
-    code, out = _run(["install-files", "--project-root", str(project)], capsys)
-    assert out.splitlines()[0] == "STATUS: install_files"
+    assert out.startswith("STATUS: install_files")
     assert "--- a/.qwen/commands/alla/apply.md" in out and "run.md" not in out
+    assert target.read_text(encoding="utf-8") == "старая версия"
 
 
 def test_prepare_and_check_do_not_write_into_qwen_dir(
@@ -200,12 +201,3 @@ def test_prepare_and_check_do_not_write_into_qwen_dir(
     assert not (project / ".qwen").exists()
     assert "не установлены или устарели" in out and "install-files" in out
     assert f"--project-root {shlex.quote(str(project))}" in out
-
-
-def _install_hash(project: Path, capsys: pytest.CaptureFixture[str]) -> str:
-    import re
-
-    code, output = _run(["install-files", "--project-root", str(project)], capsys)
-    assert code == 0, output
-    match = re.search(r"--diff ([0-9a-f]{64})", output)
-    return match.group(1) if match else "unchanged"

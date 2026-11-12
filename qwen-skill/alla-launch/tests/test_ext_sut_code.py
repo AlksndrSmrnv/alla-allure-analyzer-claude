@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from skill_fixtures import configure_extension
 from skill_fixtures import (  # noqa: F401
     project_fixture,
     testops_fixture,
@@ -122,6 +123,7 @@ def enable(project: Path, capsys: pytest.CaptureFixture[str], **settings: Any) -
     shutil.copytree(BUNDLED / "sut-code", ws.SKILL_DIR / "extensions" / "sut-code")
     code, out = _run(["extensions", "enable", "sut-code", "--project-root", str(project)], capsys)
     assert code == 0, out
+    configure_extension(project, "sut-code")
     config = ext.config_path(project)
     lines = ["", "[sut-code]"] + [f"{key} = {json.dumps(value)}" for key, value in settings.items()]
     config.write_text(config.read_text(encoding="utf-8") + "\n".join(lines) + "\n", encoding="utf-8")
@@ -746,7 +748,7 @@ def test_enable_names_the_settings_table_of_the_extension(
 ) -> None:
     shutil.copytree(BUNDLED / "sut-code", ws.SKILL_DIR / "extensions" / "sut-code")
     code, out = _run(["extensions", "enable", "sut-code", "--project-root", str(project)], capsys)
-    assert code == 0 and "Команды /alla:code установлены" in out, out
+    assert code == 0 and "commands/alla/code.md" in out and "Ничего не записано" in out, out
     assert "в таблице [sut-code] файла" in out and "[code]" not in out
 
 

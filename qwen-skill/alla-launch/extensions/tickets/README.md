@@ -11,8 +11,9 @@
 python3 .qwen/skills/alla-launch/scripts/alla_skill.py extensions enable tickets
 ```
 
-После включения перезапусти сеанс Qwen Code. Появится `/alla:ticket N [N…]`.
-Настройки команды — в `alla-extensions/config.toml`:
+Команда только печатает строку `enabled` и файлы. Инженер сам меняет корневую строку
+`enabled` и размещает файлы по указанным путям, затем перезапускает сеанс Qwen Code:
+появится `/alla:ticket N [N…]`. Настройки в `alla-extensions/config.toml` также вносит инженер:
 
 ```toml
 [tickets]
@@ -196,7 +197,8 @@ python3 .qwen/skills/alla-launch/scripts/alla_skill.py extensions action tickets
 1. Скопируй [adapters/mcp-tracker.example.toml](adapters/mcp-tracker.example.toml) в
    `alla-extensions/mcp-tracker.toml` и поправь имена инструментов, поля ответов и проекты
    по документации своего MCP-сервера (список инструментов отдаёт сам сервер, `tools/list`).
-2. Подключи адаптер. Доступ к трекеру должен быть настроен на стороне MCP-сервера или
+2. Подключи адаптер: инженер вносит следующий фрагмент в `alla-extensions/config.toml`;
+   агент показывает текст без записи. Доступ к трекеру должен быть настроен на стороне MCP-сервера или
    пользовательской обёртки: токены из окружения Qwen до расширения не доходят.
 
 ```toml

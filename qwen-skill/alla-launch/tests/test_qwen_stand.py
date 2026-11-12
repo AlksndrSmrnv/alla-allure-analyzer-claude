@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import tomllib
@@ -381,27 +382,65 @@ def test_report_must_be_verbatim(tmp_path: Path) -> None:
     assert CHECKS["report_verbatim"](ctx)["status"] == "fail"
 
 
-def test_files_are_installed_only_after_the_consent_turn(tmp_path: Path) -> None:
-    listing = ("run_shell_command", {"command": f"python3 {SKILL} install-files"}, "STATUS: install_files")
-    writing = ("run_shell_command", {"command": f"python3 {SKILL} install-files --yes"}, "STATUS: ok")
-    project = tmp_path / "p"
-    (project / ".qwen" / "commands" / "alla").mkdir(parents=True)
-    (project / ".qwen" / "commands" / "alla" / "run.md").write_text("x", encoding="utf-8")
+@pytest.mark.parametrize("case,command,check", [
+    ("I02", "install-files", "install_files_instruction"),
+    ("I03", "extensions enable git-publish", "extension_enable_instruction"),
+    ("I05", "extensions disable git-publish", "extension_disable_instruction"),
+])
+def test_installation_instruction_does_not_allow_writing_after_yes(
+    tmp_path: Path, case: str, command: str, check: str,
+) -> None:
+    scenario = SCENARIOS[case]
+    project = build_project(tmp_path / "work", "http://127.0.0.1:1", venv=None,
+                            files_ready=False, extensions=scenario.extensions)
+    preview = ("run_shell_command", {"command": f"python3 {SKILL} {command}"},
+               "STATUS: install_files\n--- a/file\n+++ b/file\n+готовое содержимое\n")
 
-    def verdict(*turns: list[tuple[str, dict[str, Any], str]]) -> str:
+    def make_context(*turns: list[tuple[str, dict[str, Any], str]]) -> Context:
         paths = []
         for number, calls in enumerate(turns, start=1):
             path = tmp_path / f"trace-{number}.jsonl"
             path.write_text("\n".join(json.dumps(e) for e in events(*calls)))
             paths.append(path)
-        ctx = Context(SCENARIOS["I01"], parse_traces(paths), project, [])
-        return CHECKS["files_after_consent"](ctx)["status"]
+        return Context(scenario, parse_traces(paths), project, [])
 
-    assert verdict([listing], [writing]) == "pass"
-    assert verdict([listing, writing], []) == "fail"  # записал до «да»
-    assert verdict([listing], []) == "fail"  # «да» получено, а установки нет
-    assert verdict([writing], [writing]) == "fail"  # без показа списка
-    assert verdict([], [writing, listing]) == "fail"  # показ уже после записи
+    ctx = make_context([preview], [])  # второй ход: обычное «да», без новых действий
+    assert CHECKS[check](ctx)["status"] == "pass"
+    assert CHECKS["installation_unchanged"](ctx)["status"] == "pass"
+    writing = ("run_shell_command", {"command": f"python3 {SKILL} {command} --yes --diff abc"}, "STATUS: error")
+    assert CHECKS[check](make_context([preview], [writing]))["status"] == "fail"
+    assert CHECKS[check](make_context([], [preview]))["status"] == "fail"
+    config = project / "alla-extensions/config.toml"
+    config.write_text(config.read_text() + "\n# automatic edit\n")
+    assert CHECKS["installation_unchanged"](ctx)["status"] == "fail"
+
+
+@pytest.mark.parametrize("change", ["env", "cache", "mode", "agent", "venv"])
+def test_installation_snapshot_detects_ignored_files_and_metadata_changes(
+    tmp_path: Path, change: str,
+) -> None:
+    project = build_project(tmp_path / "work", "http://127.0.0.1:1", venv=None, env_ready=False)
+    ctx = Context(SCENARIOS["I01"], Trace(), project, [])
+    assert CHECKS["installation_unchanged"](ctx)["status"] == "pass"
+    skill = project / qwen_stand.SKILL_IN_PROJECT
+    if change == "env":
+        (skill / ".env").write_text("ALLURE_TOKEN=synthetic")
+    elif change == "cache":
+        (skill / "scripts/__pycache__").mkdir()
+    elif change == "mode":
+        (skill / "SKILL.md").chmod(0o600)
+    elif change == "agent":
+        (project / ".qwen/agents").mkdir()
+    else:
+        (project / ".venv").mkdir()
+    assert CHECKS["installation_unchanged"](ctx)["status"] == "fail"
+
+
+@pytest.mark.parametrize("command", ["python3 -m venv .venv", "python3 -m pip install httpx",
+                                      "virtualenv .venv", f"python3 {SKILL} setup --wheelhouse wheels"])
+def test_no_dependency_install_detects_installation_commands(tmp_path: Path, command: str) -> None:
+    ctx = context(tmp_path, events(("run_shell_command", {"command": command}, "")), case="I01")
+    assert CHECKS["no_dependency_install"](ctx)["status"] == "fail"
 
 
 def test_negative_case_detects_activation(tmp_path: Path) -> None:
@@ -1353,68 +1392,33 @@ def test_stand_records_unavailable_exported_model_as_not_run(
     assert "not_run" in (output / "report.md").read_text()
 
 
-def test_stand_rejects_stale_prepared_environment_marker_before_running_python(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("marker", [None, "old-lock-hash"])
+def test_stand_validates_dependencies_and_ignores_old_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker: str | None,
 ) -> None:
+    import sys
+
+    import importlib.metadata
+
+    skill = tmp_path / "skill"
+    (skill / "scripts").mkdir(parents=True)
+    shutil.copyfile(qwen_stand.SKILL_ROOT / "scripts/alla_skill.py", skill / "scripts/alla_skill.py")
+    (skill / "requirements.txt").write_text(
+        "httpx==" + importlib.metadata.version("httpx") + " --hash=sha256:" + "0" * 64 + "\n")
+    monkeypatch.setattr(qwen_stand, "SKILL_ROOT", skill)
     venv = tmp_path / "venv"
     (venv / "bin").mkdir(parents=True)
-    (venv / "bin/python").write_text("unexecuted interpreter")
-    (venv / ".alla-setup-complete").write_text("old-lock-hash")
+    (venv / "bin/python").write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n')
+    (venv / "bin/python").chmod(0o755)
+    marker_path = venv / ".alla-setup-complete"
+    if marker is not None:
+        marker_path.write_text(marker)
     monkeypatch.setenv("ALLA_STAND_VENV", str(venv))
-    monkeypatch.setattr(subprocess, "call", lambda *args, **kwargs: pytest.fail("stale environment ran"))
-    with pytest.raises(qwen_stand.StandError, match="Маркер.*не соответствует"):
+    assert qwen_stand.ensure_venv() == venv
+    assert marker_path.read_text() == marker if marker is not None else not marker_path.exists()
+    (venv / "bin/python").unlink()
+    (venv / "bin/python").write_text("#!/bin/sh\nexit 1\n")
+    (venv / "bin/python").chmod(0o755)
+    with pytest.raises(qwen_stand.StandError, match="не соответствует"):
         qwen_stand.ensure_venv()
-    assert (venv / ".alla-setup-complete").read_text() == "old-lock-hash"
-
-
-def test_wheelhouse_fixture_copies_only_local_regular_wheels(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = tmp_path / "manual-wheelhouse"
-    source.mkdir()
-    (source / "pkg-1-py3-none-any.whl").write_bytes(b"local wheel bytes")
-    (source / "private-settings.json").write_text("never exposed")
-    monkeypatch.setenv("ALLA_STAND_WHEELHOUSE", str(source))
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: pytest.fail("download attempted"))
-    target = tmp_path / "project-wheels"
-    qwen_stand.copy_wheelhouse(qwen_stand.wheelhouse_source(), target)
-    assert [path.name for path in target.iterdir()] == ["pkg-1-py3-none-any.whl"]
-    assert (target / "pkg-1-py3-none-any.whl").read_bytes() == b"local wheel bytes"
-    (source / "linked-1-py3-none-any.whl").symlink_to(source / "private-settings.json")
-    with pytest.raises(qwen_stand.FixtureUnavailable, match="симлинк"):
-        qwen_stand.wheelhouse_source()
-
-
-def test_wheelhouse_scenario_without_explicit_source_records_not_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(qwen_stand.shutil, "which", lambda _: "/synthetic/qwen")
-    monkeypatch.delenv("ALLA_STAND_WHEELHOUSE", raising=False)
-    monkeypatch.setattr(qwen_stand, "model_settings", lambda *args: ({}, {}))
-    monkeypatch.setattr(qwen_stand, "FakeTestOpsServer", lambda *args, **kwargs: pytest.fail("server started"))
-    output = tmp_path / "output"
-    assert qwen_stand.main(["run", "--case", "I05", "--output", str(output)]) == 1
-    report = json.loads((output / "report.json").read_text())
-    assert report["cases"][0]["status"] == "not_run"
-    assert "ALLA_STAND_WHEELHOUSE" in report["cases"][0]["reason"]
-    assert not (output / "I05").exists()
-
-
-def test_wheelhouse_result_requires_given_source_then_successful_check(tmp_path: Path) -> None:
-    project = tmp_path / "p"
-    skill = project / qwen_stand.SKILL_IN_PROJECT
-    skill.mkdir(parents=True)
-    lock = b"the synthetic lock"
-    (skill / "requirements.txt").write_bytes(lock)
-    (project / ".venv").mkdir()
-    (project / ".venv/.alla-setup-complete").write_text(hashlib.sha256(lock).hexdigest())
-    setup = f"python3 {SKILL} setup --wheelhouse {project / 'alla-wheelhouse'} --python python3.11"
-    check = f"python3 {SKILL} check"
-    ctx = context(tmp_path, events(
-        ("run_shell_command", {"command": setup}, "STATUS: ready"),
-        ("run_shell_command", {"command": check}, "STATUS: ready")), case="I05")
-    assert CHECKS["wheelhouse_installed"](ctx)["status"] == "pass"
-    wrong = context(tmp_path, events(
-        ("run_shell_command", {"command": setup.replace("alla-wheelhouse", "other-wheels")}, "STATUS: ready"),
-        ("run_shell_command", {"command": check}, "STATUS: ready")), case="I05")
-    assert CHECKS["wheelhouse_installed"](wrong)["status"] == "fail"
+    assert marker_path.read_text() == marker if marker is not None else not marker_path.exists()

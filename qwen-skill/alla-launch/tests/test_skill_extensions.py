@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from skill_fixtures import (  # noqa: F401
     project_fixture,
+    configure_extension,
     testops_fixture,
 )
 from skill_fake_testops import FakeTestOps
@@ -146,7 +147,7 @@ def test_hooks_and_actions_filter_parent_environment(
 ) -> None:
     script = "import os\nprint('STATUS: ok')\nprint('CUSTOM_TOKEN' in os.environ)\n"
     make_demo(tmp_path, hook_py=script, act_py=script)
-    ext.set_enabled(tmp_path, "demo", True)
+    configure_extension(tmp_path, "demo", True)
     monkeypatch.setattr(ext.os, "environ", {"CUSTOM_TOKEN": "synthetic-secret"})
     if route == "hook":
         paths = ws.RunPaths(tmp_path / "reports" / "run")
@@ -234,30 +235,27 @@ def test_agent_name_must_match_extension(project: Path) -> None:
         ext.load_manifest(folder, bundled=False)
 
 
-def test_enable_and_disable_keep_config_and_manage_agent(project: Path, capsys) -> None:
+def test_enable_and_disable_only_print_config_and_agent(project: Path, capsys) -> None:
     make_demo(project)
     config = ext.config_path(project)
-    config.write_text(
-        "# наш проект\n\n[demo]\ngreeting = \"здравствуй\"\n", encoding="utf-8")
-    code, out = ext_cli(project, capsys, "enable", "demo")
-    assert code == 0 and "Расширение demo включено" in out
-    assert 'greeting = "здравствуй"' in out and "после перезапуска сеанса" in out
-    text = config.read_text(encoding="utf-8")
-    assert text.startswith("# наш проект\n\nenabled = [\"demo\"]\n")
-    assert "[demo]\ngreeting = \"здравствуй\"" in text
+    original = '# наш проект\n\n[demo]\ngreeting = "здравствуй"\n'
+    config.write_text(original, encoding="utf-8")
     agent = project / ".qwen" / "agents" / "alla-demo.md"
-    assert agent.read_text(encoding="utf-8") == AGENT
-    assert "Изменений нет" in ext_cli(project, capsys, "enable", "demo")[1]
-
+    for _ in range(2):
+        code, out = ext_cli(project, capsys, "enable", "demo")
+        assert code == 0 and out.startswith("STATUS: install_files"), out
+        assert 'enabled = ["demo"]' in out and AGENT in out
+        assert str(agent) in out and str(config) in out
+        assert config.read_text(encoding="utf-8") == original
+        assert not agent.exists() and not ext.load_config(project).enabled
+    configure_extension(project, "demo")
+    before = config.read_bytes()
     code, out = ext_cli(project, capsys, "disable", "demo")
-    assert code == 0 and "выключено" in out
-    assert "enabled = []" in config.read_text(encoding="utf-8") and "[demo]" in config.read_text(
-        encoding="utf-8")
-    assert not agent.exists()
-
-    ext_cli(project, capsys, "enable", "demo")
-    agent.write_text(AGENT + "\nправка команды\n", encoding="utf-8")
-    assert "Изменён вручную — не удаляю" in ext_cli(project, capsys, "disable", "demo")[1]
+    assert code == 0 and "enabled = []" in out and "Инженер может удалить" in out
+    assert config.read_bytes() == before and agent.read_text(encoding="utf-8") == AGENT
+    assert "Изменений нет" in ext_cli(project, capsys, "enable", "demo")[1]
+    agent.write_text(AGENT + "правка команды\n", encoding="utf-8")
+    assert "Изменён вручную — сохраните" in ext_cli(project, capsys, "disable", "demo")[1]
     assert agent.is_file()
 
 
@@ -288,7 +286,7 @@ def test_disabled_extension_adds_nothing(project: Path, testops: FakeTestOps, ca
 
 def test_apply_and_revert_fire_hooks(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project)
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, order, out = applied(project, capsys)
     task = run_dir / "extensions" / "demo" / f"after_apply-{order}.md"
     # Порядок как в SKILL.md: применена → откат → расширения → предложить тест.
@@ -325,7 +323,7 @@ def test_apply_and_revert_fire_hooks(project: Path, testops: FakeTestOps, capsys
 def test_task_values_are_one_line(project: Path, testops: FakeTestOps, capsys) -> None:
     """Многострочная причина из разбора не ломает разметку задания."""
     make_demo(project, task_md="Причина: $cause\nПочему: $why\n")
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, run, _ = _prepare(project, capsys)
     order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
     (run_dir / "analyses" / f"{order}.md").write_text(TEST_ANALYSIS, encoding="utf-8")
@@ -343,14 +341,14 @@ def test_task_values_are_one_line(project: Path, testops: FakeTestOps, capsys) -
 def test_confirm_asks_before_subagent(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project)
     ext.config_path(project).write_text(ext.config_path(project).read_text() + "\n[demo]\nconfirm = true\n", encoding="utf-8")
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     _, _, out = applied(project, capsys)
     assert "- Демо (demo): спроси пользователя: «Сделать демо?» Только после явного «да» запусти" in out
 
 
 def test_failing_script_hook_does_not_break_revert(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project, hook_py="import sys\nprint('сломалось', file=sys.stderr)\nsys.exit(3)\n")
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, _, _ = applied(project, capsys)
     code, out = _run(["revert", "1", "--run", str(run_dir)], capsys)
     assert code == 0 and out.startswith("STATUS: reverted")
@@ -360,7 +358,7 @@ def test_failing_script_hook_does_not_break_revert(project: Path, testops: FakeT
 def test_hanging_script_hook_times_out(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project, extension_toml=MANIFEST.replace("timeout = 5", "timeout = 1"),
               hook_py="import time\ntime.sleep(5)\n")
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, _, _ = applied(project, capsys)
     code, out = _run(["revert", "1", "--run", str(run_dir)], capsys)
     assert code == 0 and "не уложился в 1 с" in out
@@ -374,7 +372,7 @@ def test_script_hooks_of_one_command_share_its_time_budget(
     second = '[[hooks]]\nevent = "after_revert"\nscript = "hook.py"\n\n[[hooks]]\nevent = "after_report"'
     make_demo(project, hook_py="import time\ntime.sleep(5)\n",
               extension_toml=MANIFEST.replace('[[hooks]]\nevent = "after_report"', second))
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, _, _ = applied(project, capsys)
     monkeypatch.setattr(ext, "HOOK_BUDGET_S", 1.5)
     code, out = _run(["revert", "1", "--run", str(run_dir)], capsys)
@@ -388,7 +386,7 @@ def test_report_hook_is_marked_before_it_runs(
 ) -> None:
     # Команду, оборванную на зависшем хуке, следующий next не повторяет: он показывает отчёт.
     make_demo(project)
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, run, _ = _prepare(project, capsys)
     order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
     (run_dir / "analyses" / f"{order}.md").write_text(
@@ -411,7 +409,7 @@ def test_report_hook_is_marked_before_it_runs(
 
 def test_broken_enabled_extension_is_reported_not_fatal(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project)
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     (project / ext.PROJECT_DIRNAME / "demo" / "act.py").unlink()
     _, _, out = applied(project, capsys)
     assert out.startswith("STATUS: applied")
@@ -421,7 +419,7 @@ def test_broken_enabled_extension_is_reported_not_fatal(project: Path, testops: 
 
 def test_after_report_fires_once_per_report(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project)
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, _, _ = _prepare(project, capsys)
     entries = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["clusters"]
     order, login = [entry["file_id"] for entry in entries if not entry["auto"]]
@@ -441,7 +439,7 @@ def test_after_report_fires_once_per_report(project: Path, testops: FakeTestOps,
 
 def test_run_repeats_after_apply_only_for_applied_fix(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project)
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, order, _ = applied(project, capsys)
     code, out = _run(["extensions", "run", "demo", "1", "--run", str(run_dir)], capsys)
     assert code == 0 and "subagent_type «alla-demo»" in out
@@ -454,7 +452,7 @@ def test_run_repeats_after_apply_only_for_applied_fix(project: Path, testops: Fa
 
 def test_action_runs_script_with_context(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project)
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, order, _ = applied(project, capsys)
     context = run_dir / "extensions" / "demo" / f"after_apply-{order}.json"
     code, out = ext_cli(project, capsys, "action", "demo", "act", "--context", str(context),
@@ -472,22 +470,23 @@ def test_action_runs_script_with_context(project: Path, testops: FakeTestOps, ca
     code, out = ext_cli(project, capsys, "action", "demo", "act", "--context", str(context))
     assert code == 1 and "без строки STATUS: ok|error" in out and "готово" in out
 
-    ext_cli(project, capsys, "disable", "demo")
+    configure_extension(project, "demo", False)
     code, out = ext_cli(project, capsys, "action", "demo", "act", "--context", str(context))
     assert code == 1 and "не включено" in out
 
 
 def test_install_files_installs_agents_of_enabled_extensions(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project)
-    ext.set_enabled(project, "demo", True)
+    configure_extension(project, "demo", True)
+    (project / ".qwen/agents/alla-demo.md").unlink()
     _prepare(project, capsys)  # prepare в .qwen/ ничего не пишет
     target = project / ".qwen" / "agents" / "alla-demo.md"
     assert not target.exists()
     code, out = _run(["install-files", "--project-root", str(project)], capsys)
     assert out.splitlines()[0] == "STATUS: install_files" and "alla-demo.md" in out
     assert not target.exists()
-    code, out = _run(["install-files", "--yes", "--diff", _install_hash(project, capsys), "--project-root", str(project)], capsys)
-    assert code == 0 and target.read_text(encoding="utf-8") == AGENT
+    assert code == 0 and AGENT in out
+    assert not target.exists()
 
 
 def test_session_rules_allow_only_extension_text_files() -> None:
@@ -507,7 +506,7 @@ def test_broken_override_disables_bundled(project: Path, testops: FakeTestOps, c
     shutil.copytree(BUNDLED / "git-publish", ws.SKILL_DIR / "extensions" / "git-publish")
     own = project / ext.PROJECT_DIRNAME / "git-publish"
     shutil.copytree(BUNDLED / "git-publish", own)
-    ext.set_enabled(project, "git-publish", True)
+    configure_extension(project, "git-publish", True)
     manifest = own / "extension.toml"
     manifest.write_text(manifest.read_text(encoding="utf-8").replace("api = 1", "api = 2"),
                         encoding="utf-8")
@@ -522,7 +521,7 @@ def test_broken_override_disables_bundled(project: Path, testops: FakeTestOps, c
 
 def test_unreadable_agent_is_an_extension_error(project: Path, testops: FakeTestOps, capsys) -> None:
     folder = make_demo(project)
-    ext.set_enabled(project, "demo", True)
+    configure_extension(project, "demo", True)
     (folder / "agent.md").write_bytes(b"---\nname: alla-demo\n\xff\xfe\n---\n")
     assert "demo" in ext.discover(project).errors
     run_dir, order, out = applied(project, capsys)  # правка записана — ответ applied
@@ -533,7 +532,7 @@ def test_commands_survive_unexpected_discovery_failure(
     project: Path, testops: FakeTestOps, capsys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     make_demo(project)
-    ext.set_enabled(project, "demo", True)
+    configure_extension(project, "demo", True)
 
     def broken(_: Path) -> ext.Catalog:
         raise PermissionError("нет доступа к alla-extensions")
@@ -558,7 +557,7 @@ def test_override_without_manifest_disables_bundled(project: Path, damage: str) 
     shutil.copytree(BUNDLED / "git-publish", ws.SKILL_DIR / "extensions" / "git-publish")
     own = project / ext.PROJECT_DIRNAME / "git-publish"
     shutil.copytree(BUNDLED / "git-publish", own)
-    ext.set_enabled(project, "git-publish", True)
+    configure_extension(project, "git-publish", True)
     (own / "extension.toml").unlink()
     if damage == "directory":
         (own / "extension.toml").mkdir()
@@ -593,7 +592,7 @@ def test_authoring_guide_template_rules(project: Path, testops: FakeTestOps, cap
     """AUTHORING.md: «$$» — литеральный «$», неизвестная переменная остаётся, скрипт хука
     запускается и отдельно — со своим контекстом в ALLA_CONTEXT."""
     make_demo(project, task_md="Цена $$5, $unknown, проблема $problem\n")
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, order, _ = applied(project, capsys)
     task = (run_dir / "extensions" / "demo" / f"after_apply-{order}.md").read_text(encoding="utf-8")
     assert task == "Цена $5, $unknown, проблема 1\n"
@@ -621,8 +620,8 @@ def test_broken_extension_is_reported_at_done(project: Path, testops: FakeTestOp
     for name in ("extension.toml", "agent.md"):
         path = healthy / name
         path.write_text(path.read_text(encoding="utf-8").replace("demo", "healthy"), encoding="utf-8")
-    ext.set_enabled(project, "demo", True)
-    ext.set_enabled(project, "healthy", True)
+    configure_extension(project, "demo", True)
+    configure_extension(project, "healthy", True)
     (project / ext.PROJECT_DIRNAME / "demo" / "act.py").unlink()
 
     run_dir, _, _ = _prepare(project, capsys)
@@ -636,7 +635,7 @@ def test_broken_extension_is_reported_at_done(project: Path, testops: FakeTestOp
     again = _run(["next", str(run_dir)], capsys)[1]
     assert ext.BLOCK_HEADING not in again  # тот же отчёт — без повторов
 
-    ext.set_enabled(project, "healthy", False)
+    configure_extension(project, "healthy", False)
     (healthy.parent / "demo" / "act.py").write_text("", encoding="utf-8")  # починили demo
     repaired = _run(["next", str(run_dir)], capsys)[1]
     assert "- Демо (demo) — покажи пользователю как есть:" in repaired  # хук отчёта — впервые
@@ -650,7 +649,7 @@ def test_broken_extension_without_report_hooks_is_reported(
 ) -> None:
     make_demo(project, extension_toml=MANIFEST.replace(
         '[[hooks]]\nevent = "after_report"\nscript = "hook.py"\n', ""))
-    ext.set_enabled(project, "demo", True)
+    configure_extension(project, "demo", True)
     (project / ext.PROJECT_DIRNAME / "demo" / "agent.md").unlink()
     run_dir, _, _ = _prepare(project, capsys)
     entries = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["clusters"]
@@ -668,7 +667,7 @@ def test_silent_report_hook_runs_once(project: Path, testops: FakeTestOps, capsy
         "import pathlib\n"
         f"path = pathlib.Path({str(counter)!r})\n"
         "path.write_text(path.read_text() + 'x' if path.exists() else 'x')\n"))
-    ext.set_enabled(project, "demo", True)
+    configure_extension(project, "demo", True)
     run_dir, _, _ = _prepare(project, capsys)
     entries = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["clusters"]
     order, login = [entry["file_id"] for entry in entries if not entry["auto"]]
@@ -680,22 +679,22 @@ def test_silent_report_hook_runs_once(project: Path, testops: FakeTestOps, capsy
     assert counter.read_text() == "x"
 
 
-def test_enable_touches_only_root_enabled(project: Path, capsys) -> None:
+def test_enable_previews_only_root_enabled(project: Path, capsys) -> None:
     make_demo(project, extension_toml=MANIFEST.replace(
         'greeting = "привет"', 'greeting = "привет"\nenabled = ["base"]'))
     config = ext.config_path(project)
     text = '# наш проект\n[demo]\nenabled = ["feature-x"]\n'
     config.write_text(text, encoding="utf-8")
     code, out = ext_cli(project, capsys, "enable", "demo")
-    assert code == 0, out
-    assert config.read_text(encoding="utf-8") == (
-        '# наш проект\nenabled = ["demo"]\n\n[demo]\nenabled = ["feature-x"]\n')
-    assert ext.load_config(project).enabled == ("demo",)
+    assert code == 0 and '+enabled = ["demo"]' in out, out
+    assert config.read_text(encoding="utf-8") == text
+    assert not ext.load_config(project).enabled
     assert ext.load_config(project).settings == {"demo": {"enabled": ["feature-x"]}}
-
+    configure_extension(project, "demo")
+    before = config.read_bytes()
     code, out = ext_cli(project, capsys, "disable", "demo")
-    assert code == 0 and ext.load_config(project).settings == {"demo": {"enabled": ["feature-x"]}}
-    assert 'enabled = []\n\n[demo]\nenabled = ["feature-x"]' in config.read_text(encoding="utf-8")
+    assert code == 0 and '+enabled = []' in out
+    assert config.read_bytes() == before
 
 
 def test_enable_refuses_unsafe_rewrite(project: Path, capsys) -> None:
@@ -715,8 +714,9 @@ def test_enable_keeps_keys_that_only_look_like_enabled(project: Path, capsys) ->
     config = ext.config_path(project)
     config.write_text('enabled = ["x"] # список\n"enabled.extra" = 1\n', encoding="utf-8")
     code, out = ext_cli(project, capsys, "enable", "demo")
-    assert code == 0 and ext.load_config(project).enabled == ("x", "demo")
-    assert config.read_text(encoding="utf-8") == 'enabled = ["x", "demo"]\n"enabled.extra" = 1\n'
+    assert code == 0 and '+enabled = ["x", "demo"]' in out
+    assert ext.load_config(project).enabled == ("x",)
+    assert config.read_text(encoding="utf-8") == 'enabled = ["x"] # список\n"enabled.extra" = 1\n'
 
 
 REQUEST_MANIFEST = MANIFEST.replace("confirm = false", "confirm = true") + """
@@ -731,7 +731,7 @@ def test_on_request_runs_subagent_per_problem_with_params(
     project: Path, testops: FakeTestOps, capsys
 ) -> None:
     make_demo(project, extension_toml=REQUEST_MANIFEST, request_md=REQUEST_TASK)
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, run, _ = _prepare(project, capsys)
     order, login = [entry["file_id"] for entry in run["clusters"] if not entry["auto"]]
 
@@ -761,7 +761,7 @@ def test_on_request_runs_subagent_per_problem_with_params(
 
 def test_on_request_errors(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project, extension_toml=REQUEST_MANIFEST, request_md=REQUEST_TASK)
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, _, _ = _prepare(project, capsys)
     code, out = _run(["extensions", "run", "demo", "--run", str(run_dir)], capsys)
     assert code == 1 and "Назови номер проблемы" in out
@@ -775,7 +775,7 @@ def test_on_request_errors(project: Path, testops: FakeTestOps, capsys) -> None:
 
 def test_params_need_on_request_hook(project: Path, testops: FakeTestOps, capsys) -> None:
     make_demo(project)
-    ext_cli(project, capsys, "enable", "demo")
+    configure_extension(project, "demo")
     run_dir, _, _ = _prepare(project, capsys)
     code, out = _run(["extensions", "run", "demo", "1", "--run", str(run_dir),
                       "--param", "ref=x"], capsys)
@@ -790,30 +790,26 @@ COMMAND = (
 )
 
 
-def test_extension_commands_are_installed_and_removed(
-    project: Path, testops: FakeTestOps, capsys
-) -> None:
-    manifest = MANIFEST.replace('timeout = 5\n', 'timeout = 5\ncommands = ["commands/demo-run.md"]\n')
-    folder = make_demo(project, extension_toml=manifest)
+def test_extension_commands_are_only_printed(project: Path, testops: FakeTestOps, capsys) -> None:
+    folder = make_demo(project, extension_toml=MANIFEST.replace(
+        'timeout = 5\n', 'timeout = 5\ncommands = ["commands/demo-run.md"]\n'))
     (folder / "commands").mkdir()
-    (folder / "commands" / "demo-run.md").write_text(COMMAND, encoding="utf-8")
-    target = project / ".qwen" / "commands" / "alla" / "demo-run.md"
-
-    assert "Команда: /alla:demo-run." in ext_cli(project, capsys)[1]
+    (folder / "commands/demo-run.md").write_text(COMMAND, encoding="utf-8")
+    target = project / ".qwen/commands/alla/demo-run.md"
     code, out = ext_cli(project, capsys, "enable", "demo")
-    assert code == 0 and "Расширение demo включено" in out
-    assert target.read_text(encoding="utf-8") == COMMAND
+    assert code == 0 and str(target) in out and COMMAND in out
+    assert not target.exists()
+    configure_extension(project, "demo")
     target.unlink()
-    _prepare(project, capsys)  # prepare в .qwen/ не пишет
-    assert not target.is_file()
-    assert _run(["install-files", "--yes", "--diff", _install_hash(project, capsys), "--project-root", str(project)], capsys)[0] == 0  # а install-files возвращает
-    assert target.is_file()
-
+    _prepare(project, capsys)
+    assert not target.exists()
+    code, out = _run(["install-files", "--project-root", str(project)], capsys)
+    assert code == 0 and COMMAND in out and not target.exists()
+    target.write_text(COMMAND, encoding="utf-8")
     code, out = ext_cli(project, capsys, "disable", "demo")
-    assert code == 0 and not target.exists()
-    ext_cli(project, capsys, "enable", "demo")
+    assert code == 0 and "Инженер может удалить" in out and target.exists()
     target.write_text(COMMAND + "своё\n", encoding="utf-8")
-    assert "Изменён вручную — не удаляю" in ext_cli(project, capsys, "disable", "demo")[1]
+    assert "Изменён вручную — сохраните" in ext_cli(project, capsys, "disable", "demo")[1]
     assert target.is_file()
 
 
@@ -842,7 +838,7 @@ def test_two_extensions_cannot_share_a_command(project: Path) -> None:
             f'name = "{name}"\napi = 1\ncommands = ["commands/same.md"]\n\n[[hooks]]\n'
             'event = "after_revert"\nscript = "hook.py"\n', encoding="utf-8")
         (folder / "hook.py").write_text(HOOK, encoding="utf-8")
-        ext.set_enabled(project, name, True)
+        configure_extension(project, name, True)
     current = ext.active(project)
     assert [extension.name for extension, _ in current.extensions] == ["demo"]
     assert "команда /alla:same уже есть у расширения demo" in current.problems[0]
@@ -859,6 +855,7 @@ def test_enable_refuses_a_command_of_another_enabled_extension(project: Path, ca
         (folder / "hook.py").write_text(HOOK, encoding="utf-8")
     target = project / ".qwen" / "commands" / "alla" / "same.md"
     assert ext_cli(project, capsys, "enable", "demo")[0] == 0
+    configure_extension(project, "demo")
 
     code, out = ext_cli(project, capsys, "enable", "other")
     assert code == 1 and "Расширение other не включено" in out, out
@@ -869,10 +866,32 @@ def test_enable_refuses_a_command_of_another_enabled_extension(project: Path, ca
     assert [extension.name for extension, _ in ext.active(project).extensions] == ["demo"]
 
 
-def _install_hash(project: Path, capsys: pytest.CaptureFixture[str]) -> str:
-    import re
+def test_already_enabled_config_is_information_not_an_edit(project: Path, capsys) -> None:
+    make_demo(project)
+    configure_extension(project, "demo")
+    (project / ".qwen/agents/alla-demo.md").unlink()
+    before = ext.config_path(project).read_bytes()
+    code, out = ext_cli(project, capsys, "enable", "demo")
+    assert code == 0 and "Текущая корневая строка уже подходит; менять её не нужно" in out
+    assert "которую размещает инженер" not in out
+    assert ext.config_path(project).read_bytes() == before
 
-    code, output = _run(["install-files", "--project-root", str(project)], capsys)
-    assert code == 0, output
-    match = re.search(r"--diff ([0-9a-f]{64})", output)
-    return match.group(1) if match else "unchanged"
+
+def test_disabled_modified_file_is_reported_as_instruction(project: Path, capsys) -> None:
+    make_demo(project)
+    target = project / ".qwen/agents/alla-demo.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("engineer version\n")
+    code, out = ext_cli(project, capsys, "disable", "demo")
+    assert code == 0 and out.startswith("STATUS: install_files")
+    assert "Изменён вручную" in out and "Изменений нет" not in out
+    assert target.read_text() == "engineer version\n"
+
+
+def test_new_config_header_explains_manual_enabled_change(project: Path, capsys) -> None:
+    make_demo(project)
+    ext.config_path(project).unlink(missing_ok=True)
+    code, out = ext_cli(project, capsys, "enable", "demo")
+    assert code == 0 and "список меняет инженер вручную" in out
+    assert "меняют его команды" not in out
+    assert not ext.config_path(project).exists()

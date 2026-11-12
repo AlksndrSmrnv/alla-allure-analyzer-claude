@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from skill_fixtures import configure_extension
 from skill_fixtures import project_fixture, testops_fixture  # noqa: F401
 from skill_fake_testops import FakeTestOps
 from test_skill_extensions import MANIFEST, ext_cli, make_demo
@@ -63,7 +64,7 @@ def test_request_many_is_one_unique_context_and_exact_text(project: Path,
     folder = make_demo(project, extension_toml=MANIFEST.replace(
         'event = "after_apply"', 'event = "on_request_many"'))
     run_dir, _, _ = _prepare(project, capsys)
-    assert ext_cli(project, capsys, "enable", "demo")[0] == 0
+    configure_extension(project, "demo")
     directory = run_dir / "extensions" / "demo"
     directory.mkdir(parents=True)
     text = "  вопрос\r\n" + "д" * 15_000 + "\nпроверка\t \n"
@@ -140,7 +141,7 @@ def test_reconcile_after_clean_uses_actual_reports_without_context(project: Path
         'rid=sys.argv[sys.argv.index("--request")+1]\n'
         'r=json.loads((Path(c["state_dir"])/"custom-log.json").read_text())\n'
         'assert r["key"]==rid\nprint("STATUS: ok")\nprint(rid)\n'))
-    assert ext_cli(project, capsys, "enable", "demo")[0] == 0
+    configure_extension(project, "demo")
     original, _, _ = _prepare(project, capsys)
     reports = project / "custom-reports"
     reports.mkdir()
@@ -231,7 +232,7 @@ def test_action_refuses_foreign_project(project: Path,
     make_demo(project, extension_toml=MANIFEST.replace(
         'event = "after_apply"', 'event = "on_request_many"'))
     run_dir, _, _ = _prepare(project, capsys)
-    assert ext_cli(project, capsys, "enable", "demo")[0] == 0
+    configure_extension(project, "demo")
     assert ext_cli(project, capsys, "run", "demo", "1", "--run", str(run_dir))[0] == 0
     context_file = next((run_dir / "extensions" / "demo").glob("on_request_many-*.json"))
     code, output = _run(["extensions", "action", "demo", "act", "--context", str(context_file),
@@ -254,7 +255,7 @@ def test_single_snapshot_channel_refreshes_before_every_action(project: Path,
     paths = ws.RunPaths(run_dir)
     first = run["clusters"][0]["file_id"]
     paths.analysis(first).write_text(VALID_ANALYSIS + "\nСОГЛАСОВАННОСТЬ: одна причина\n")
-    assert ext_cli(project, capsys, "enable", "demo")[0] == 0
+    configure_extension(project, "demo")
     original = data.snapshot
     seen = []
     def capture(paths, settings):
@@ -281,7 +282,7 @@ def test_action_context_and_snapshot_removed_on_failure(project: Path,
     make_demo(project, extension_toml=MANIFEST.replace('api = 1', 'api = 1\nsnapshot = true').replace(
         'event = "after_apply"', 'event = "on_request_many"'))
     run_dir, _, _ = _prepare(project, capsys)
-    assert ext_cli(project, capsys, "enable", "demo")[0] == 0
+    configure_extension(project, "demo")
     assert ext_cli(project, capsys, "run", "demo", "1", "--run", str(run_dir))[0] == 0
     directory = run_dir / "extensions" / "demo"
     source = next(directory.glob("on_request_many-*.json"))
@@ -311,7 +312,7 @@ def test_snapshot_work_consumes_action_budget(project: Path, testops: FakeTestOp
         'api = 1', 'api = 1\nsnapshot = true').replace(
         'event = "after_apply"', 'event = "on_request_many"'))
     run_dir, _, _ = _prepare(project, capsys)
-    assert ext_cli(project, capsys, "enable", "demo")[0] == 0
+    configure_extension(project, "demo")
     assert ext_cli(project, capsys, "run", "demo", "1", "--run", str(run_dir))[0] == 0
     context_file = next((run_dir / "extensions" / "demo").glob("on_request_many-*.json"))
     elapsed = [100.0]
@@ -338,6 +339,7 @@ def test_tickets_generic_reconcile_after_clean_with_lost_response(project: Path,
     paths = ws.RunPaths(run_dir)
     first = next(entry["file_id"] for entry in run["clusters"] if not entry["auto"])
     paths.analysis(first).write_text(VALID_ANALYSIS + "\nСОГЛАСОВАННОСТЬ: одна причина\n")
+    configure_extension(project, "tickets")
     code, output = ext_cli(project, capsys, "enable", "tickets")
     assert code == 0, output
     program = project / ".venv" / "bin" / "python"

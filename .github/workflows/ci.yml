@@ -44,9 +44,9 @@ jobs:
       - name: Eval (dev)
         run: python qwen-skill/alla-launch/tests/eval/run_eval.py
 
-  # Установка скилла с нуля в чистом Debian-образе, как у пользователя на Linux.
+  # Ручная подготовка инженером, read-only setup и синтетический разбор в Debian.
   setup-smoke:
-    name: skill setup from scratch (python:3.11 container)
+    name: engineer setup and read-only checks (python:3.11 container)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     container: python:3.11
@@ -56,7 +56,7 @@ jobs:
         run: >-
           python -m pip download --require-hashes --only-binary=:all:
           -r qwen-skill/alla-launch/requirements.txt --dest /tmp/alla-wheelhouse
-      - name: setup, check, prepare
+      - name: Manual environment, read-only instructions, check and prepare
         env:
           ALLA_WHEELHOUSE: /tmp/alla-wheelhouse
         run: bash .github/scripts/skill_setup_smoke.sh

@@ -27,8 +27,8 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 | Путь (от `qwen-skill/alla-launch/`) | Что там |
 |---|---|
 | `SKILL.md`, `references/` | сценарий и правила для модели, форматы её файлов, протокол, установка |
-| `agents/alla-batch.md` | свой субагент Qwen для пакетов кластеров; `install-files` ставит его в `.qwen/agents/` проекта после согласия пользователя |
-| `commands/alla/` | слэш-команды Qwen `/alla:run`, `/alla:apply`…; `install-files` ставит их в `.qwen/commands/alla/` проекта после согласия пользователя (`setup`, `update`, `prepare` в `.qwen/` не пишут) |
+| `agents/alla-batch.md` | свой субагент Qwen для пакетов кластеров; инженер размещает его в `.qwen/agents/` проекта по инструкции `install-files` |
+| `commands/alla/` | слэш-команды Qwen `/alla:run`, `/alla:apply`…; инженер размещает их в `.qwen/commands/alla/` проекта по инструкции `install-files`; команды скилла в `.qwen/` не пишут |
 | `extensions/` | расширения скилла: `README.md` (контракт для авторов), встроенные `git-publish/` (ветка git), `sut-code/` (`/alla:code N` — разбор по коду приложения) и `tickets/` (`/alla:ticket N [N…]` — просмотр и отправка тикетов через пользовательский адаптер); свои — `<проект>/alla-extensions/` |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` проекта автотестов |
 | `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `learn`, `fix_facts`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `projects`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files`, `jobs`, `retries`, `images`, `extension_data` |
@@ -53,16 +53,18 @@ pytest (`-rs`; на Linux пропускаются проверки, требу�
 (`--python-version` версии матрицы: на 3.12 ставится numpy с заглушками на синтаксисе 3.12)
 и эталон (только dev: holdout проверяет `test_eval_quality`, отдельно его не печатать);
 отдельный job гоняет `skill_setup_smoke.sh` в контейнере `python:3.11` —
-установку скилла из явно подготовленного wheelhouse в синтетический проект и `check`/`prepare` против фейкового TestOps.
+подготовку окружения явными командами инженера, отсутствие записи у `setup`/`install-files`/toggle
+и `check`/`prepare` против фейкового TestOps.
 Стенд Qwen в CI не запускается: он только для macOS и платный. ruff и mypy закреплены в
 `requirements-dev.in` точными версиями — обновлять вместе с исправлением их замечаний.
 
-Зависимости — lock-файлы с хешами: `requirements.txt` (runtime, его ставит явный `setup --wheelhouse PATH` с
-`--require-hashes`) и `requirements-dev.txt` собирает `uv pip compile` из `requirements.in` и
-`requirements-dev.in` (команды — README, «Для разработчиков»; `--exclude-newer` — не новее 3 дней, как
-на этом Mac). `.txt` руками не править; `test_skill_units.py` проверяет `==` и хеши у каждого
-пакета. Хеш `requirements.txt` — маркер установки: любая правка файла даёт всем один раз
-`setup_required`.
+Зависимости — lock-файлы с хешами: `requirements.txt` (runtime, инженер устанавливает его
+вручную с `--require-hashes`) и `requirements-dev.txt` собирает `uv pip compile` из
+`requirements.in` и `requirements-dev.in` (команды — README, «Для разработчиков»;
+`--exclude-newer` — не новее 3 дней, как на этом Mac). `.txt` руками не править;
+`test_skill_units.py` проверяет `==` и хеши у каждого пакета. `setup` только проверяет
+готовое окружение и печатает инструкцию инженеру; перед запуском основной CLI версии
+проверяются заново, маркер `.alla-setup-complete` не используется и не меняется.
 
 ## Проверка на настоящем Qwen Code
 
