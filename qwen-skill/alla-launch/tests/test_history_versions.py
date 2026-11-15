@@ -78,3 +78,22 @@ def test_latest_versions_preserve_unique_launch_counts_and_original_dates(tmp_pa
         "launches": 2, "first_date": "2026-09-20", "last_date": "2026-09-22",
     }
     assert len(rows) == 3
+
+
+def test_invalid_utf8_line_is_skipped_without_corrupting_valid_records(tmp_path: Path) -> None:
+    before, after = _row(), _row(run="778-other", launch_id=778)
+    history.append_run(tmp_path, [before])
+    path = tmp_path / history.HISTORY_FILE
+    # Даже синтаксически верный JSON с битым байтом внутри строки нельзя принимать.
+    damaged = json.dumps(_row(cause="broken")).encode().replace(b"broken", b"\xff")
+    with path.open("ab") as stream:
+        stream.write(damaged + b"\n\xff\xfe\n")
+    history.append_run(tmp_path, [after])
+    assert history.load_history(tmp_path) == [before, after]
+    assert history.recurrence(history.load_history(tmp_path), launch_id=999,
+                              signature="v7:issue", kb_ids=set())["launches"] == 2
+
+    with path.open("ab") as stream:
+        stream.write(b'{"cause": "\xd0')
+    history.append_changed_run(tmp_path, [before, after, _row(file_id="03")])
+    assert history.load_history(tmp_path) == [before, after, _row(file_id="03")]

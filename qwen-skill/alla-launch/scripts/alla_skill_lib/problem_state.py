@@ -116,7 +116,8 @@ def current_state(
             file_id = entry["file_id"]
             path = paths.analysis(file_id)
             text = ws.read_text(path) if path.is_file() else ""
-            if entry.get("kb_auto") and (not text.strip() or kb_auto_written(state, file_id, text)):
+            if entry.get("kb_auto") and (
+                    not text.strip() or kb_auto_written(state, file_id, text, entry)):
                 text = current_auto_text(entry, paths, project) or ""
                 if text:
                     current_auto.add(file_id)
@@ -134,9 +135,10 @@ def current_state(
         # parse_analysis.raw убирает завершающий перевод строки: владельца файла
         # определяем по исходным байтам, а не по нормализованному тексту парсера.
         known_auto = current_auto | {
-            file_id for file_id in analyses if file_id not in current_auto
+            entry["file_id"] for entry in run["clusters"]
+            if (file_id := entry["file_id"]) in analyses and file_id not in current_auto
             and paths.analysis(file_id).is_file()
-            and kb_auto_written(state, file_id, ws.read_text(paths.analysis(file_id)))}
+            and kb_auto_written(state, file_id, ws.read_text(paths.analysis(file_id)), entry)}
     known = known_issues(run, analyses, flagged, paths, known_auto)
     confirmed = confirmations(paths, run, state)
     matches = current_kb_matches(run, paths)
@@ -191,10 +193,11 @@ def _accepted_related(
             return (related_groups(decision, run) if not validate_related(decision, candidates)
                     else Related())
     sizes = {entry["file_id"]: int(entry["member_count"]) for entry in run["clusters"]}
+    ids_by_number = {int(file_id): file_id for file_id in sizes}
     groups: list[RelatedGroup] = []
     for scoped in state.get("related_scopes", []):
         try:
-            ids = [f"{int(n):02d}" for n in scoped["numbers"]]
+            ids = [ids_by_number[int(n)] for n in scoped["numbers"]]
             if (len(ids) < 2 or not set(ids) <= eligible
                     or scoped["fingerprint"] != relation_scope(analyses, ids, matches)
                     or not isinstance(scoped["cause"], str)):

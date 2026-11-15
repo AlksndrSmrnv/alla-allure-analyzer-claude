@@ -1643,7 +1643,7 @@ def check_kb_auto_resolved(ctx: Context) -> dict[str, Any]:
             continue
         state_path = run_dir / "state.json"
         state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
-        auto = [entry["file_id"] for entry in run["clusters"] if entry.get("kb_auto")]
+        auto = {entry["file_id"]: entry for entry in run["clusters"] if entry.get("kb_auto")}
         if not auto:
             return bad(f"{run_dir.name}: ни одна проблема не разобрана по базе знаний")
         for file_id in auto:
@@ -1651,7 +1651,7 @@ def check_kb_auto_resolved(ctx: Context) -> dict[str, Any]:
             if canonical(path) in written:
                 return bad(f"{run_dir.name}: модель писала {path.name}, разобранный по базе знаний")
             text = path.read_text(encoding="utf-8") if path.is_file() else ""
-            if not kb_auto_written(state, file_id, text):
+            if not kb_auto_written(state, file_id, text, auto[file_id]):
                 return bad(f"{run_dir.name}: {path.name} — не разбор скрипта по базе знаний")
         report = run_dir / "report.md"
         if "Разобрано по базе знаний" not in (report.read_text(encoding="utf-8")

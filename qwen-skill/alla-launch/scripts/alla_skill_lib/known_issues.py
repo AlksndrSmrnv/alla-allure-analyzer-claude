@@ -478,7 +478,7 @@ def sync_known_auto(
         file_id = entry["file_id"]
         path = paths.analysis(file_id)
         current = ws.read_text(path) if path.is_file() else ""
-        if current.strip() and _digest(current) != written.get(file_id):
+        if current.strip() and not kb_auto_written(state, file_id, current, entry):
             continue  # разбор после отката пишет модель
         text = current_auto_text(entry, paths, project_root, notes=notes)
         if text is None:
@@ -573,10 +573,19 @@ def _exact_now(entry: dict[str, Any], entry_id: str) -> KBRecord | None:
     return record
 
 
-def kb_auto_written(state: Mapping[str, Any], file_id: str, text: str) -> bool:
-    """Разбор проблемы — тот, что записал скрипт по базе знаний (``sync_known_auto``)."""
-    written = state.get(KB_AUTO_STATE)
-    return bool(text.strip()) and isinstance(written, dict) and written.get(file_id) == _digest(text)
+def kb_auto_written(state: Mapping[str, Any], file_id: str, text: str,
+                    entry: Mapping[str, Any] | None = None) -> bool:
+    """Владелец — по хэшу; без отметки state.json — по шаблону скрипта и id записи."""
+    if not text.strip():
+        return False
+    written = state.get(KB_AUTO_STATE) or {}
+    if isinstance(written, dict) and file_id in written:
+        return bool(written[file_id] == _digest(text))  # ручная правка сильнее шаблона
+    auto = (entry or {}).get("kb_auto") or {}
+    return bool(auto) and (
+        text.startswith("ЧТО СЛОМАЛОСЬ: Известная проблема из базы знаний: «")
+        and "». Эту ошибку уже разобрал и подтвердил инженер, разбор взят из записи.\n" in text
+        and text.endswith(f"\nБАЗА ЗНАНИЙ: {auto.get('id')}\n"))
 
 
 def _digest(text: str) -> str:

@@ -28,10 +28,10 @@ def load_history(reports_dir: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
     records: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_bytes().split(b"\n"):
         try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
+            record = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
             continue
         if _is_record(record):
             records.append(record)

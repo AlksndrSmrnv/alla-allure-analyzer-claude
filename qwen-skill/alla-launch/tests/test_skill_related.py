@@ -67,6 +67,37 @@ def _groups(run: dict[str, Any], analyses: dict[str, Any], root: Path, **kwargs:
             for group in candidate_groups(run, analyses, set(), root, **kwargs)]
 
 
+@pytest.mark.parametrize("width", [2, 3, 4])
+@pytest.mark.parametrize("stale_file", [False, True])
+def test_related_scopes_restore_actual_run_ids(
+    tmp_path: Path, width: int, stale_file: bool,
+) -> None:
+    from alla_skill_lib import workspace as ws
+    from alla_skill_lib.problem_state import _accepted_related
+    from alla_skill_lib.related import relation_scope
+
+    run = _run(100)
+    for entry in run["clusters"]:
+        entry["file_id"] = str(int(entry["file_id"])).zfill(width)
+    ids = [entry["file_id"] for entry in run["clusters"][:2]]
+    analyses = {file_id: _analysis() for file_id in ids}
+    candidates = candidate_groups(run, analyses, set(), tmp_path)
+    assert candidates
+    state = {"related_scopes": [
+        {"numbers": [1, 2], "fingerprint": relation_scope(analyses, ids, {}),
+         "cause": CUSTOMER},
+        {"numbers": [1, 999], "fingerprint": "stale", "cause": "Удалённая проблема"},
+    ]}
+    paths = ws.RunPaths(tmp_path)
+    if stale_file:
+        paths.related.write_text("РАЗНЫЕ: 1, 2 — устаревшее решение\n", encoding="utf-8")
+    related = _accepted_related(paths, run, state, analyses, candidates, {}, set(ids))
+    assert [group.file_ids for group in related.groups] == [ids]
+    assert related.groups[0].size == 2
+    assert not _accepted_related(
+        paths, run, state, analyses, candidates, {}, {ids[0]}).groups
+
+
 # --- кандидаты -----------------------------------------------------------------------------
 
 

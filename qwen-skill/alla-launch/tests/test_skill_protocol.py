@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from skill_fake_testops import TOKEN, FakeTestOps, LaunchFixture, default_launch
+from skill_fake_testops import TOKEN, FakeTestOps, LaunchFixture, default_launch, green_launch
 from skill_fixtures import project_fixture, testops_fixture  # noqa: F401
 from test_skill_flow import (
     MARKDOWN_ANALYSIS,
@@ -121,6 +121,82 @@ def test_prepare_starts_new_run_after_finished_or_stale(
             os.utime(path / "run.json", (old, old))
     _prepare(project, capsys)
     assert len(list((project / "alla-reports").glob("777-*"))) == 3
+
+
+@pytest.mark.parametrize("green", [False, True])
+@pytest.mark.parametrize("existing", [False, True])
+def test_failed_report_publication_never_leaves_a_partial_completion_marker(
+    project: Path, testops: FakeTestOps, monkeypatch: pytest.MonkeyPatch, capsys,
+    green: bool, existing: bool,
+) -> None:
+    if green:
+        FakeTestOps(green_launch()).install(monkeypatch)
+    launch_id = 778 if green else 777
+    run_dir, run, _ = _prepare(project, capsys, launch_id=launch_id)
+    if not green:
+        order, login = _clusters(run)
+        _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    paths = ws.RunPaths(run_dir)
+    original = paths.report.read_bytes()
+    if not existing:
+        paths.report.unlink()
+    saved = {p: p.read_bytes() for p in paths.analyses_dir.glob("*.md")}
+    if paths.summary.exists():
+        saved[paths.summary] = paths.summary.read_bytes()
+    real_write, real_replace = ws.write_text, os.replace
+
+    def broken_write(path: Path, text: str) -> None:
+        if path == paths.report:
+            path.write_bytes(text.encode()[:20])
+            raise OSError("disk full")
+        real_write(path, text)
+
+    def broken_replace(src, dst) -> None:
+        if Path(dst) == paths.report:
+            Path(src).write_bytes(Path(src).read_bytes()[:20])
+            raise OSError("disk full")
+        real_replace(src, dst)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(ws, "write_text", broken_write)
+        patcher.setattr(os, "replace", broken_replace)
+        code, out = _run(["next", str(run_dir)], capsys)
+        assert code == 1 and out.startswith("STATUS: error"), out
+        if existing:
+            assert paths.report.read_bytes() == original
+        else:
+            assert not paths.report.exists()
+        assert not list(run_dir.glob("report.md.*.tmp"))
+
+    assert all(path.read_bytes() == content for path, content in saved.items())
+    if not existing:
+        requests_before = len(testops.requests)
+        code, out = _run(["prepare", str(launch_id), "--project-root", str(project)], capsys)
+        assert code == 0 and out.startswith("STATUS: done"), out
+        assert "Продолжаю неоконченный разбор" in out
+        assert len(testops.requests) == requests_before
+        assert len(list(run_dir.parent.glob(f"{launch_id}-*"))) == 1
+    else:
+        assert _next(run_dir, capsys).startswith("STATUS: done")
+    assert paths.report.read_bytes() == original
+
+
+def test_invalid_utf8_history_does_not_block_prepare_or_done(
+    project: Path, testops: FakeTestOps, capsys,
+) -> None:
+    reports = project / "alla-reports"
+    reports.mkdir()
+    history = reports / "history.jsonl"
+    history.write_bytes(b"\xff\xfe\n")
+    run_dir, run, out = _prepare(project, capsys)
+    assert out.startswith("STATUS: analyze"), out
+    order, login = _clusters(run)
+    _finish(run_dir, capsys, {order: VALID_ANALYSIS, login: MARKDOWN_ANALYSIS})
+    assert _next(run_dir, capsys).startswith("STATUS: done")
+    from alla_skill_lib.history import load_history
+
+    assert len(load_history(reports)) == 2
+    assert history.read_bytes().startswith(b"\xff\xfe\n")
 
 
 def _run_dir_of(out: str) -> Path:

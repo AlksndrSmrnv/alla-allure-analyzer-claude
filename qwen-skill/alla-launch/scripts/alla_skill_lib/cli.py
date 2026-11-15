@@ -1225,7 +1225,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
     run = ws.read_json(paths.run_json)
     if not run["clusters"]:
         console, full = render_green_report(run, paths)
-        ws.write_text(paths.report, full)
+        ws.write_atomic(paths.report, full)
         return "done", _done_body(console, paths, {})
 
     project_root = Path(run["project_root"])
@@ -1431,7 +1431,7 @@ def _next_step(paths: ws.RunPaths, notices: list[str]) -> tuple[str, str]:
         related, confirmed, rerun.RerunView.of(job),
         flaky.marked_by_problem(run, flaky.marks_for_run(run)),
     )
-    ws.write_text(paths.report, full)
+    ws.write_atomic(paths.report, full)
     # Уже применённую или неоднозначную правку повторно не предлагаем.
     offered = {file_id: p for file_id, p in fixes.items() if states[file_id] == "not_applied"}
     # Проблему проверенной правки (fix_facts) перезапуск как флаки не берёт и без файла

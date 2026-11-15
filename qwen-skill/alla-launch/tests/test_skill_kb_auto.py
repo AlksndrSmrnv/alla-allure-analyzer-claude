@@ -19,7 +19,9 @@ from alla_core.models.clustering import ClusterSignature, FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib.analysis_format import parse_analysis, validate_analysis
 from alla_skill_lib.kb import KBRecord, cluster_evidence, cluster_signature, cluster_tests, match_cluster
-from alla_skill_lib.known_issues import KB_AUTO_STATE, auto_resolution, known_issue_analysis
+from alla_skill_lib.known_issues import (
+    KB_AUTO_STATE, auto_resolution, kb_auto_written, known_issue_analysis,
+)
 from alla_skill_lib.signature import (
     NO_LOG_ERRORS,
     SIGNATURE_VERSION,
@@ -172,6 +174,18 @@ def test_analysis_from_a_record_passes_the_usual_check() -> None:
     assert analysis.fix.splitlines() == ["1. Увеличить пул", "2. Найти утечку соединений"]
 
 
+def test_kb_ownership_recovery_requires_script_template_and_matching_record() -> None:
+    record = _record(None)
+    text = known_issue_analysis(record, ("S1", POOL))
+    entry = {"kb_auto": {"id": record.id}}
+    assert kb_auto_written({}, "01", text, entry)
+    assert kb_auto_written({KB_AUTO_STATE: {"02": "other"}}, "01", text, entry)
+    assert not kb_auto_written({}, "01", text)
+    assert not kb_auto_written({}, "01", text, {"kb_auto": {"id": "other"}})
+    assert not kb_auto_written({}, "01", VALID_ANALYSIS + f"БАЗА ЗНАНИЙ: {record.id}\n", entry)
+    assert not kb_auto_written({KB_AUTO_STATE: {"01": "other"}}, "01", text, entry)
+
+
 # --- сквозные сценарии -------------------------------------------------------
 
 
@@ -226,6 +240,93 @@ def test_all_known_problems_finish_without_the_model(
     assert not (run_dir / "summary_task.md").exists()
 
 
+@pytest.mark.parametrize("state_content", [None, "", "{", "[]", "{}"])
+@pytest.mark.parametrize("change", ["unchanged", "reject", "deleted", "updated"])
+def test_scripted_kb_analysis_survives_state_loss(
+    project: Path, testops: FakeTestOps, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state_content: str | None, change: str,
+) -> None:
+    from alla_skill_lib import extension_data
+    from alla_skill_lib import workspace as ws
+    from alla_skill_lib.kb import ProjectKB
+    from alla_skill_lib.problem_state import current_state
+
+    _remember_both(project, capsys)
+    FakeTestOps(default_launch(778)).install(monkeypatch)
+    run_dir, run, out = _prepare(project, capsys, launch_id=778)
+    assert out.startswith("STATUS: done"), out
+    paths = ws.RunPaths(run_dir)
+    entry = next(e for e in run["clusters"] if e.get("kb_auto"))
+    file_id, entry_id = entry["file_id"], entry["kb_auto"]["id"]
+    if state_content is None:
+        paths.state_json.unlink()
+    else:
+        paths.state_json.write_text(state_content, encoding="utf-8")
+    if change == "reject":
+        code, out = _run(["reject", file_id, entry_id, "--run", str(run_dir)], capsys)
+        assert code == 0, out
+    elif change == "deleted":
+        (Path(entry["kb_dir"]) / f"{entry_id}.json").unlink()
+    elif change == "updated":
+        kb = ProjectKB(Path(entry["kb_dir"]))
+        record = kb.get(entry_id)
+        assert record is not None
+        record.resolution_steps = ["Уточнить настройки сервиса перед повторным запуском."]
+        kb.save(record)
+
+    # Снимок до next выбирает тот же диагноз, но ничего не пишет.
+    before = paths.analysis(file_id).read_bytes()
+    before_state = paths.state_json.read_bytes() if paths.state_json.exists() else None
+    current = current_state(paths)
+    problem = next(item for item in extension_data.snapshot(paths, {})["problems"]
+                   if item["number"] == int(file_id))
+    invalidated = change in {"reject", "deleted"}
+    assert (file_id in current.known.auto) == (not invalidated)
+    assert current.diagnoses[file_id].accepted == (not invalidated)
+    assert problem["valid"] == (not invalidated)
+    assert problem["category"] == current.diagnoses[file_id].category
+    assert problem["cause"] == current.diagnoses[file_id].cause
+    assert problem["fix"] == current.diagnoses[file_id].fix
+    assert paths.analysis(file_id).read_bytes() == before
+    assert (paths.state_json.read_bytes() if paths.state_json.exists() else None) == before_state
+    if change == "updated":
+        assert "Уточнить настройки" in current.diagnoses[file_id].fix
+
+    out = _next(run_dir, capsys)
+    if invalidated:
+        assert out.startswith("STATUS: analyze"), out
+        assert not paths.analysis(file_id).exists()
+        assert str(paths.cluster_task(file_id)) in out
+    else:
+        assert out.startswith("STATUS: done"), out
+        assert "разобрано по базе знаний" in paths.report.read_text(encoding="utf-8").lower()
+        state = json.loads(paths.state_json.read_text(encoding="utf-8"))
+        assert file_id in state[KB_AUTO_STATE]
+        if change == "updated":
+            assert "Уточнить настройки" in paths.analysis(file_id).read_text(encoding="utf-8")
+
+
+def test_scripted_kb_hand_edit_with_saved_hash_is_not_overwritten(
+    project: Path, testops: FakeTestOps, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from alla_skill_lib import workspace as ws
+    from alla_skill_lib.problem_state import current_state
+
+    _remember_both(project, capsys)
+    FakeTestOps(default_launch(778)).install(monkeypatch)
+    run_dir, run, _ = _prepare(project, capsys, launch_id=778)
+    paths = ws.RunPaths(run_dir)
+    entry = next(e for e in run["clusters"] if e.get("kb_auto"))
+    path = paths.analysis(entry["file_id"])
+    edited = path.read_text(encoding="utf-8").replace(
+        "\nКАК ИСПРАВИТЬ:\n", "\nКАК ИСПРАВИТЬ:\n1. Проверить текущую версию сервиса.\n")
+    path.write_text(edited, encoding="utf-8")
+    assert entry["file_id"] not in current_state(paths).known.auto
+    assert _next(run_dir, capsys).startswith("STATUS: summary")
+    assert path.read_text(encoding="utf-8") == edited
+
+
 def test_updated_record_rewrites_the_analysis_and_a_hand_edit_stays(
     project: Path, testops: FakeTestOps, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -276,8 +377,10 @@ def test_fingerprint_match_is_analysed_by_the_model(
     assert "ПРИЗНАК НАЙДЕН" in (run_dir / "clusters" / f"{order}.md").read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("lost_state", [False, True])
 def test_review_counts_analyses_from_records_as_script_work(
     project: Path, testops: FakeTestOps, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    lost_state: bool,
 ) -> None:
     from alla_skill_lib import review
     from alla_skill_lib import workspace as ws
@@ -286,6 +389,8 @@ def test_review_counts_analyses_from_records_as_script_work(
     _remember_both(project, capsys)
     FakeTestOps(default_launch(778)).install(monkeypatch)
     run_dir, _, _ = _prepare(project, capsys, launch_id=778)
+    if lost_state:
+        (run_dir / "state.json").unlink()
 
     facts = review.collect_facts(ws.RunPaths(run_dir))
     assert facts["size"]["manual"] == 0 and facts["size"]["kb_auto"] == 2

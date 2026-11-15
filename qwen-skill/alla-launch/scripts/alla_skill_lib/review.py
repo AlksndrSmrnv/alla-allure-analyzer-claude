@@ -179,7 +179,8 @@ def _cluster_facts(
         # Разбор известной проблемы по записи базы знаний пишет скрипт — как у auto, модель его
         # не писала, и оценивать его нечего.
         # Разбор по проверенной правке (fix_facts) — тоже скрипта (ревью Codex).
-        item["kb_auto"] = ((bool(entry.get("kb_auto")) and kb_auto_written(state, file_id, text))
+        item["kb_auto"] = ((bool(entry.get("kb_auto"))
+                           and kb_auto_written(state, file_id, text, entry))
                            or (bool(entry.get("fix_auto"))
                                and fix_facts.fix_auto_written(state, file_id, text, entry)))
         item["auto"] = item["auto"] or item["kb_auto"]
