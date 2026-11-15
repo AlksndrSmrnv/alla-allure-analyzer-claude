@@ -182,3 +182,11 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 - Хуки Claude Code (ruff после правки `.py`, тесты справочников после правки `SKILL.md`,
   `references/`, `alla_skill_lib/`, ruff + pytest + mypy перед `git commit`) — личная настройка
   в `.claude/settings.local.json`, в репозиторий не входит; те же проверки — команды выше.
+
+## Инструменты OpenCode
+
+Проектная настройка — `.opencode/`: Serena MCP для symbol-level навигации (read-only,
+holdout исключён из индекса) и плагин `alla-quality` — подключает `.claude/rules/` по
+`paths:`, гоняет ruff и docs/prompts-тесты после правки, повторяет pre-commit gate и
+предупреждает о holdout. Подробности и ограничения — `.opencode/README.md`. Это
+инструменты разработки, а не runtime скилла.

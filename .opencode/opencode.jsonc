@@ -1,0 +1,63 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // Semantic navigation over the Python skill. Serena runs read-only and
+  // without its own memory: the repository already has alla-kb and .claude/rules.
+  "mcp": {
+    "servers": {
+      "serena": {
+        "type": "local",
+        "command": [
+          "serena",
+          "start-mcp-server",
+          "--context", "ide",
+          "--agent-interface", "tools",
+          "--project-from-cwd",
+          "--mode", "no-memories",
+          "--mode", "no-onboarding",
+          "--enable-web-dashboard", "false",
+          "--log-level", "WARNING"
+        ],
+        "cwd": ".",
+        "timeout": {
+          "startup": 60000,
+          "catalog": 30000,
+          "execution": 120000
+        }
+      }
+    }
+  },
+
+  // The holdout is a check-only corpus. Every view must be recorded in
+  // qwen-skill/alla-launch/tests/eval/holdout_journal.md.
+  "permissions": [
+    { "action": "read", "resource": "**/corpus_holdout.py", "effect": "ask" },
+    { "action": "edit", "resource": "**/corpus_holdout.py", "effect": "deny" },
+    { "action": "edit", "resource": "*.env", "effect": "deny" },
+    { "action": "edit", "resource": "*.env.*", "effect": "deny" },
+    { "action": "shell", "resource": "git push *", "effect": "ask" }
+  ],
+
+  // Multi-step work benefits from the built-in todo tool.
+  "experimental": {
+    "todo": true
+  },
+
+  // The repository checks ruff, not ruff format. Auto-formatting would add
+  // unrelated changes to skill and test edits.
+  "formatter": false,
+
+  "watcher": {
+    "ignore": [
+      ".venv/**",
+      "**/__pycache__/**",
+      ".pytest_cache/**",
+      ".mypy_cache/**",
+      ".ruff_cache/**",
+      "alla-reports/**",
+      ".serena/logs/**",
+      ".serena/cache/**",
+      ".claude/worktrees/**"
+    ]
+  }
+}
