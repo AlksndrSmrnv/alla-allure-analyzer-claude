@@ -191,8 +191,36 @@ def test_fetch_error_of_the_job_is_shown(
     assert f"Не удалось получить прогон #{LAUNCH}" in out
 
 
+def test_overdue_live_job_is_not_replaced_or_reported_dead(
+    autotests: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slot = _slot(autotests)
+    files = jobs.JobFiles(slot.root / "old-live")
+    files.root.mkdir(parents=True)
+    (slot.root / "current").write_text(files.root.name)
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        files.pid.write_text(f"{process.pid} {time.time() - jobs.CEILING_S - 1}")
+        state = jobs.job_state(files)
+        assert state.state == "running" and state.active
+        monkeypatch.setattr(jobs, "WAIT_BUDGET", 0)
+        for _ in range(2):
+            code, out = _prepare(autotests, capsys, "--fresh")
+            assert code == 1 and out.startswith("STATUS: error"), out
+            assert "Новый запуск не начат" in out and "Сам команду не повторяй" in out
+            assert str(files.log) in out
+            assert _job(autotests) == files
+            assert not files.delivered.exists()
+            assert process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("age", [0, jobs.CEILING_S + 1])
 def test_job_that_died_without_a_result_is_an_error(
     autotests: Path, server: FakeTestOpsServer, capsys: pytest.CaptureFixture[str],
+    age: int,
 ) -> None:
     slot = _slot(autotests)
     files = jobs.JobFiles(slot.root / "20261025000000-dead00")
@@ -201,7 +229,7 @@ def test_job_that_died_without_a_result_is_an_error(
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
     # Процесс задания завершился, а итога (exit) нет: оборвался.
-    files.pid.write_text(f"{dead.pid} {time.time():.0f}", encoding="utf-8")
+    files.pid.write_text(f"{dead.pid} {time.time() - age:.0f}", encoding="utf-8")
 
     code, out = _prepare(autotests, capsys)
 

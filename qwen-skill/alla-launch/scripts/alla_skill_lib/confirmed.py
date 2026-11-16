@@ -44,12 +44,12 @@ def check_finding(data: Any, file_id: str) -> list[str]:
         return ["вывод — не JSON-объект"]
     errors: list[str] = []
     if data.get("problem") != int(file_id):
-        errors.append(f"вывод относится к проблеме {data.get('problem')!r}, а не {int(file_id)}")
+        errors.append(f"поле problem должно содержать номер проблемы {int(file_id)}")
     if data.get("format_ok") is not True:
         errors.append("разбор расширения не прошёл его проверку формата")
     category = data.get("category")
     if category not in CATEGORY_TO_KB:
-        errors.append(f"категория {category!r}: сохранить можно только тест, приложение, "
+        errors.append("неверная категория: сохранить можно только тест, приложение, "
                       "окружение или данные")
     for key in ("title", "cause"):
         value = data.get(key)
@@ -73,8 +73,8 @@ def check_finding(data: Any, file_id: str) -> list[str]:
     # alla-kb/ и отчёт коммитятся и пересылаются: секретов не должно быть ни в одном поле.
     texts = [data["title"], data["cause"], *data["fix"], *data.get("details", []),
              *data.get("kb_fields", {}).values()]
-    for line in secret_lines("\n".join(texts)):
-        errors.append(f"строка похожа на секрет, её нельзя сохранять: «{line[:60]}»")
+    if secret_lines("\n".join(texts)):
+        errors.append("строка похожа на секрет, её нельзя сохранять")
     return errors
 
 

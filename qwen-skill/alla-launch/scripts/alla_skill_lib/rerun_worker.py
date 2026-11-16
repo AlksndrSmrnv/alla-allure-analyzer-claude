@@ -34,7 +34,6 @@ from alla_skill_lib.rerun import (
     method_result,
     read_reports,
     repeats_ci,
-    report_snapshot,
     safe_text,
     source_digest,
     worker_env,
@@ -99,7 +98,6 @@ def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
             _progress(files, plan, attempt, group.module, outcomes)
             suffix = f"alla-{plan['job']}-{attempt}"
             log = files.maven_log(attempt, group.module)
-            before = report_snapshot(Path(group.fallback_cwd or group.cwd))
             use_fallback = group.module in fallback
             code, killed = _maven(group, batch, suffix, extra, log, deadline, use_fallback)
             if code and not killed and not use_fallback and group.fallback_cwd and _says(log, NOT_IN_REACTOR):
@@ -109,7 +107,7 @@ def execute(files: JobFiles, plan: dict[str, Any]) -> dict[str, Any]:
             timed_out = timed_out or killed
             if code and not killed:
                 build[group.module] = build_errors(log)
-            cases = read_reports(Path(group.fallback_cwd or group.cwd), suffix, before)
+            cases = read_reports(Path(group.fallback_cwd or group.cwd), suffix)
             for test in batch:
                 found = method_result(cases, test)
                 if found is None:

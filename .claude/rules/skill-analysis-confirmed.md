@@ -9,6 +9,8 @@ paths:
 
 ## Подтверждённый вывод расширения (`confirmed.py`)
 
+- Ошибки `check_finding` не цитируют строки с секретами или неверные значения
+  `problem`/`category`: называют только поле и допустимую форму.
 - `confirmed/NN.json` пишет `remember --from-extension` (`skill-memory-feedback.md`); `next` читает их
   (`load_confirmed`, битые пропускаются) и передаёт в `build_summary_data` и `render_report`.
 - Так же показывается исправление инженера, которое `remember` сохранил из feedback

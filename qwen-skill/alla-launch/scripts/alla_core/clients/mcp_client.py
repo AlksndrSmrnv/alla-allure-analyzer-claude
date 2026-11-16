@@ -371,8 +371,6 @@ class TestOpsMcpClient:
             arguments[params["expand"] or "expand"] = list(FULL_EXPAND)
         page = _items(await self._call_tool(arguments))
         item = next((entry for entry in page if entry.get("id") == test_result_id), None)
-        if item is None and len(page) == 1:
-            item = page[0]
         if item is None:
             raise AllureApiError(404, f"результат {test_result_id} не найден", _ENDPOINT)
         return item

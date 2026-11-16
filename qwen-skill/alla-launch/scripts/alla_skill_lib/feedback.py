@@ -338,6 +338,24 @@ def _remember(
     from_extension: str | None = None,
 ) -> tuple[str, str] | _Saved:
     """Общий путь ``remember``: отказ (статус, текст) или что сохранено."""
+    from alla_skill_lib import fix_facts
+
+    # Включая чтение и переназначение прежних записей: атомарного save недостаточно.
+    with fix_facts.kb_write_lock(Path(run["project_root"])):
+        return _remember_locked(paths, run, entry, entry_id, today,
+                                from_analysis=from_analysis, from_extension=from_extension)
+
+
+def _remember_locked(
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    entry: dict[str, Any],
+    entry_id: str | None,
+    today: date,
+    *,
+    from_analysis: bool = False,
+    from_extension: str | None = None,
+) -> tuple[str, str] | _Saved:
     file_id = entry["file_id"]
     blocked = _blocked(paths, entry)
     if blocked:
@@ -475,9 +493,9 @@ def _remember(
             ("ПРИЧИНА", description),
             ("КАК ИСПРАВИТЬ", "\n".join(steps)),
         ):
-            for line in secret_lines(text):
+            if secret_lines(text):
                 errors.append(
-                    f"в «{field_name}:» строка похожа на секрет, её нельзя коммитить: «{line[:60]}»"
+                    f"в «{field_name}:» строка похожа на секрет, её нельзя коммитить"
                 )
     if errors and from_extension:
         # Вывод расширения модель не перепишет: отказ — сразу пользователю. Признак у этого
@@ -643,21 +661,24 @@ def reject(
         return "error", blocked
     if entry_id.startswith(FIX_PREFIX):
         return _forget_fix(paths, run, entry, entry_id[len(FIX_PREFIX):])
+    from alla_skill_lib import fix_facts
+
     kb = project_kb(run, entry)
-    try:
-        record = kb.get(entry_id)
-    except ValueError as exc:
-        return "error", str(exc)
-    if record is None:
-        return "error", f"В {kb.directory} нет записи «{entry_id}»."
-    record.reject(str(entry["signature"]), entry_tests(run, entry))
-    path = kb.save(record)
-    _drop_feedback_receipt(paths, entry["file_id"], record.id)
-    refresh = _report_refresh(paths, run, kb, [record.id])
-    # Подтверждение, сохранённое в эту запись, отвергнуто вместе с ней.
-    dropped = drop_confirmed(paths, entry["file_id"], record.id)
-    if dropped is not None:
-        refresh = [_confirmed_dropped(paths, entry["file_id"])]
+    with fix_facts.kb_write_lock(Path(run["project_root"])):
+        try:
+            record = kb.get(entry_id)
+        except ValueError as exc:
+            return "error", str(exc)
+        if record is None:
+            return "error", f"В {kb.directory} нет записи «{entry_id}»."
+        record.reject(str(entry["signature"]), entry_tests(run, entry))
+        path = kb.save(record)
+        _drop_feedback_receipt(paths, entry["file_id"], record.id)
+        refresh = _report_refresh(paths, run, kb, [record.id])
+        # Подтверждение, сохранённое в эту запись, отвергнуто вместе с ней.
+        dropped = drop_confirmed(paths, entry["file_id"], record.id)
+        if dropped is not None:
+            refresh = [_confirmed_dropped(paths, entry["file_id"])]
     return "saved", "\n".join([
         f"Запись {record.id} больше не будет предлагаться для этой ошибки.",
         f"Изменён файл: {path}",
@@ -757,8 +778,8 @@ def _fingerprint_errors(fingerprint: str, evidence_path: Path) -> list[str]:
     errors: list[str] = []
     if len(lines) > MAX_FINGERPRINT_LINES:
         errors.append(f"в «ПРИЗНАК:» больше {MAX_FINGERPRINT_LINES} строк — оставь самые характерные")
-    for line in secret_lines(fingerprint):
-        errors.append(f"строка признака похожа на секрет, её нельзя коммитить: «{line[:60]}»")
+    if secret_lines(fingerprint):
+        return [*errors, "строка признака похожа на секрет, её нельзя коммитить"]
     evidence = evidence_path.read_text(encoding="utf-8")
     for line in missing_fingerprint_lines(fingerprint, evidence):
         errors.append(

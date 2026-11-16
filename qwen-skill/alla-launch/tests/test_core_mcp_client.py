@@ -618,6 +618,30 @@ def test_detail_without_expand_for_attempts(monkeypatch: pytest.MonkeyPatch) -> 
     assert detail.hidden and fake.calls == [{"aql": "id = 106", "projectId": 5}]
 
 
+@pytest.mark.parametrize("returned_id", [202, None])
+@pytest.mark.parametrize("expanded", [False, True])
+def test_single_foreign_result_is_never_used(
+    monkeypatch: pytest.MonkeyPatch, returned_id: int | None, expanded: bool,
+) -> None:
+    fixture = default_launch()
+    fixture.details[101] = {"id": returned_id, "status": "failed", "scenario": [],
+                            "message": "Foreign error", "attachments": {}}
+    FakeTestOps(fixture).install(monkeypatch)
+
+    async def action(client: TestOpsMcpClient) -> None:
+        with pytest.raises(AllureApiError) as exc_info:
+            if expanded:
+                await client.get_test_result_execution(101)
+            else:
+                await client.get_test_result_detail(101)
+        assert exc_info.value.status_code == 404
+        # Ошибочный полный ответ не должен остаться в кеше под запрошенным id.
+        fixture.details[101]["id"] = 101
+        assert (await client.get_test_result_detail(101)).id == 101
+
+    _run(_settings(), action)
+
+
 def test_unknown_attachment_is_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeTestOps(default_launch()).install(monkeypatch)
     with pytest.raises(AllureApiError) as exc_info:

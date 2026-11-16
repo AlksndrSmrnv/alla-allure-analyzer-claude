@@ -629,6 +629,13 @@ def _finish_job(
         output, code = jobs.deliver(files)
         print(output, end="" if output.endswith("\n") else "\n")
         return code
+    if state.overdue:
+        print("STATUS: error")
+        print("Фоновое задание выполняется дольше ожидаемого, но процесс ещё существует. "
+              f"Новый запуск не начат. Подробности для пользователя — в файле {files.log} "
+              "(сам его не читай). Сам команду не повторяй; покажи этот текст пользователю "
+              "и остановись: нужно проверить, не зависло ли задание.")
+        return 1
     if state.state == "running":
         print("STATUS: running")
         print(running(state))

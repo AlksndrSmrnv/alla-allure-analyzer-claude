@@ -1,6 +1,11 @@
 """Только действительно сохранённый ввод инженера становится принятым диагнозом."""
 from __future__ import annotations
 
+import os
+import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +61,57 @@ def test_receipt_is_created_after_save_and_preserves_unrelated_state(case: Any,
     assert accepted["fix"] == ["Восстановить пул соединений на стенде."]
     assert accepted["text"] == CORRECTION and accepted["record_id"] == record_id
     assert paths.state_json.read_bytes() == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Блокировка проекта использует fcntl")
+@pytest.mark.parametrize("second_action", ["remember", "reject"])
+def test_parallel_feedback_keeps_both_updates(
+    case: Any, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+    second_action: str,
+) -> None:
+    paths, run, entry = case
+    record_id = save(case, capsys)
+    other_paths = ws.RunPaths(paths.root.parent.parent / "other-reports" / paths.root.name)
+    shutil.copytree(paths.root, other_paths.root)
+    first_entry = {**entry, "signature": "v12:first"}
+    second_entry = {**entry, "signature": "v12:second"}
+    snapshot_read, second_done = threading.Event(), threading.Event()
+    local = threading.local()
+    original_get = ProjectKB.get
+
+    def get(kb, wanted):
+        record = original_get(kb, wanted)
+        if getattr(local, "hold", False):
+            local.hold = False
+            snapshot_read.set()
+            # Без блокировки второй вызов успеет записать, и первый затрёт его снимком.
+            second_done.wait(1)
+        return record
+
+    monkeypatch.setattr(ProjectKB, "get", get)
+
+    def first():
+        local.hold = True
+        return feedback.remember(paths, run, first_entry, record_id, date.today())
+
+    def second():
+        try:
+            if second_action == "reject":
+                return feedback.reject(other_paths, run, second_entry, record_id)
+            return feedback.remember(other_paths, run, second_entry, record_id, date.today())
+        finally:
+            second_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_call = pool.submit(first)
+        assert snapshot_read.wait(5)
+        second_call = pool.submit(second)
+        assert first_call.result(timeout=10)[0] == "saved"
+        assert second_call.result(timeout=10)[0] == "saved"
+    record = original_get(feedback.project_kb(run, entry), record_id)
+    assert record is not None and "v12:first" in record.confirmed_signatures
+    assert "v12:second" in (record.rejected_signatures if second_action == "reject"
+                            else record.confirmed_signatures)
 
 
 def test_failed_remember_does_not_create_or_refresh_receipt(case: Any,
@@ -172,4 +228,3 @@ def test_forged_matching_record_without_success_marker_is_not_accepted(case: Any
     state.pop("accepted_feedback")
     ws.write_json(paths.state_json, state)
     assert feedback.accepted_feedback(paths, run, entry) is None
-

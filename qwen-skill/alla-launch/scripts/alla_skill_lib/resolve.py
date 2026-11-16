@@ -75,7 +75,7 @@ def plan_marks(
         ids = [value for value in variants if value not in resolved]
         if ids:
             own = str(test.get("message") or "")
-            notes = {value: note(item, attempts, (messages or {}).get(value) or own)
+            notes = {value: note(item, attempts, (messages or {}).get(value, own))
                      for value in ids}
             marks.append(Mark(ids, variants, str(item.get("full_name") or test_id),
                               str(item.get("file_id") or ""), str(item.get("changed") or ""),

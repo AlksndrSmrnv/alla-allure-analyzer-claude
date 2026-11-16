@@ -301,10 +301,8 @@ def test_applied_fix_makes_the_rerun_a_check_of_the_fix(
 ) -> None:
     skill_fake_maven.install(nested_project / "autotests", {
         f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
-    run_dir, run, _ = _prepare(nested_project, capsys)
-    order = _problem_of(run, 101)
-    (run_dir / "proposals").mkdir(exist_ok=True)
-    (run_dir / "proposals" / f"{int(order):02d}.applied.json").write_text("{}", encoding="utf-8")
+    run_dir, order, _ = _applied(
+        nested_project, capsys, "autotests/src/test/java/ru/company/orders/OrderTest.java")
 
     plan = _rerun(run_dir, capsys, order)
     assert "проверка правки (правка агента применена): о нестабильности не скажет" in plan
@@ -365,7 +363,7 @@ def test_surefire_reports_are_read_per_method_with_parameters_and_reruns(tmp_pat
         '<testsuite><testcase name="param" classname="ru.company.orders.OrderTest"/></testsuite>',
         encoding="utf-8")
 
-    cases = read_reports(tmp_path, "alla-j-1", before={})
+    cases = read_reports(tmp_path, "alla-j-1")
 
     assert method_result(cases, _planned("param")) == rerun.CaseResult("failed", "boom 2")
     assert method_result(cases, _planned("flaky")) == rerun.CaseResult("passed", flaky=True)
@@ -374,21 +372,39 @@ def test_surefire_reports_are_read_per_method_with_parameters_and_reruns(tmp_pat
     assert method_result(cases, _planned("missing")) is None
 
 
-def test_reports_without_our_suffix_count_only_if_this_run_wrote_them(tmp_path: Path) -> None:
-    """pom со своим суффиксом: свежий отчёт прошлого запуска не выдаёт себя за итог этого."""
+def test_reports_without_our_suffix_never_count_as_this_run(tmp_path: Path) -> None:
+    """Время изменения не доказывает, что отчёт записал наш Maven, а не IDE."""
     reports = tmp_path / "target" / "surefire-reports"
     reports.mkdir(parents=True)
     old = reports / "TEST-ru.company.orders.OrderTest.xml"
     old.write_text('<testsuite><testcase name="flaky" classname="ru.company.orders.OrderTest"/>'
                    "</testsuite>", encoding="utf-8")
-    before = rerun.report_snapshot(tmp_path)
-
-    assert not read_reports(tmp_path, "alla-j-1", before)  # сборка упала — отчёт прежний
+    before = old.stat().st_mtime_ns
+    assert not read_reports(tmp_path, "alla-j-1")
     old.write_text(old.read_text(encoding="utf-8"), encoding="utf-8")
-    import os
-    os.utime(old, ns=(before[old.name] + 10**9, before[old.name] + 10**9))
-    assert read_reports(tmp_path, "alla-j-1", before)  # этот запуск переписал его
-    assert read_reports(tmp_path, "alla-j-1", {})  # и новый файл — тоже
+    os.utime(old, ns=(before + 10**9, before + 10**9))
+    assert not read_reports(tmp_path, "alla-j-1")
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_worker_does_not_accept_a_fresh_foreign_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_code: int,
+) -> None:
+    files, plan = _job(tmp_path, timeout=60, test=_planned("flaky"))
+
+    def foreign_maven(group, batch, suffix, extra, log, deadline, fallback):
+        reports = tmp_path / "target" / "surefire-reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        (reports / "TEST-OrderTest.xml").write_text(
+            f'<testsuite><testcase name="flaky" classname="{ORDER}"/></testsuite>')
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("[ERROR] Synthetic compilation failure\n" if exit_code else "")
+        return exit_code, False
+
+    monkeypatch.setattr(rerun_worker, "_maven", foreign_maven)
+    item = execute(files, plan)["tests"][0]
+    assert item["outcome"] == "not_run"
+    assert item["runs"] == 0
 
 
 def test_same_error_ignores_ids_and_time_but_not_codes() -> None:
@@ -519,14 +535,14 @@ def test_offer_after_the_report_reruns_the_candidates_with_one_yes(
 
 
 @pytest.mark.parametrize("fixture", ["project", "nested_project"])
-def test_no_offer_without_maven_or_with_an_applied_fix(
+def test_no_offer_without_maven_or_with_an_unverifiable_fix(
     fixture: str, flaky_testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
     request: pytest.FixtureRequest,
 ) -> None:
     root: Path = request.getfixturevalue(fixture)
     run_dir, run, _ = _prepare(root, capsys)
     order = f"{int(_problem_of(run, 101)):02d}"
-    if fixture == "nested_project":  # Maven есть, кандидаты есть, но правка уже применена
+    if fixture == "nested_project":  # битая отметка: совпадение кода с CI не доказано
         (run_dir / "proposals").mkdir(exist_ok=True)
         (run_dir / "proposals" / f"{order}.applied.json").write_text("{}", encoding="utf-8")
 
@@ -1222,7 +1238,7 @@ def test_failure_without_a_message_attribute_drops_the_exception_class(tmp_path:
         "java.net.SocketTimeoutException: Read timed out\n\tat x.y(Z.java:1)</error>"
         "</testcase></testsuite>", encoding="utf-8")
 
-    cases = read_reports(tmp_path, "alla-j-1", {})
+    cases = read_reports(tmp_path, "alla-j-1")
 
     assert method_result(cases, _planned("a")) == rerun.CaseResult("failed", "Read timed out")
 
@@ -1307,6 +1323,11 @@ def test_variants_of_a_method_keep_every_ci_error_and_each_problem_its_own_test(
     assert [mark.ids for mark in resolve.plan_marks(result, planned, {})] == [[101, 102]]
     notes = resolve.plan_marks(result, planned, {}, {101: "boom 1", 102: "boom 2"})[0].notes
     assert notes[101].endswith("Ошибка в CI: boom 1") and notes[102].endswith("Ошибка в CI: boom 2")
+    empty_note = resolve.plan_marks(result, planned, {}, {101: "boom 1", 102: ""})[0].notes[102]
+    assert "Ошибка в CI:" not in empty_note
+    assert "boom 1" not in empty_note
+    missing_note = resolve.plan_marks(result, planned, {}, {})[0].notes[102]
+    assert missing_note.endswith(f"Ошибка в CI: {plan.tests[0].message}")
     assert [mark.ids for mark in resolve.plan_marks(result, planned, {101: "d"})] == [[102]]
     assert resolve.plan_marks(result, planned, {101: "d", 102: "d"}) == []
     signals = {int(t["test_result_id"]): codes for t, codes in ((tests[101], []),
@@ -1396,6 +1417,37 @@ def test_applied_fix_without_maven_asks_the_user_to_run_the_test(
     _, _, out = _applied(project, capsys, "src/test/java/ru/company/orders/OrderTest.java")
 
     assert out.splitlines()[-1] == "Тесты не запускай: предложи пользователю запустить исправленный тест."
+
+
+@pytest.mark.parametrize("state", ["reverted", "corrupt", "unknown", "missing_proposal"])
+def test_rerun_plan_checks_the_recorded_fix_not_just_the_record_file(
+    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    skill_fake_maven.install(nested_project / "autotests", {})
+    source = "autotests/src/test/java/ru/company/orders/OrderTest.java"
+    run_dir, order, _ = _applied(nested_project, capsys, source)
+    paths = ws.RunPaths(run_dir)
+    if state == "reverted":
+        (nested_project / source).write_bytes(paths.proposal_backup(order).read_bytes())
+    elif state == "corrupt":
+        paths.proposal_record(order).write_text("{}")
+    elif state == "unknown":
+        (nested_project / source).write_text(
+            paths.proposal_backup(order).read_text().replace("assertEquals(200", "assertEquals(202"))
+    else:
+        paths.proposal(order).unlink()
+    monkeypatch.setattr(rerun, "_git_status", lambda *_args: "clean")
+    run = ws.read_json(paths.run_json)
+    entry = next(item for item in run["clusters"] if item["file_id"] == order)
+    plan = rerun.build_plan(paths, run,
+                           [(entry, test) for test in rerun.failed_tests_of(run, entry)],
+                           attempts=3, max_tests=20)
+    assert plan.tests
+    if state == "reverted":
+        assert all(not test.changed for test in plan.tests)
+    else:
+        assert all(test.changed and test.changed != "правка агента применена" for test in plan.tests)
 
 
 @pytest.mark.parametrize("raw", ["verify", "deploy", "--settings /tmp/custom.xml", "-f other.xml",

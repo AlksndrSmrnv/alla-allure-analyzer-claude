@@ -34,6 +34,7 @@ from pathlib import Path, PurePath
 from typing import Any
 
 from alla_core.utils.text_normalization import message_key
+from alla_skill_lib import proposals
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.child_env import inherited_env
 from alla_skill_lib.code_hints import JvmTest, ProjectIndex, jvm_test_of
@@ -301,6 +302,7 @@ def maven_tool(project_root: Path, reactor: PurePath) -> list[str] | None:
 
 
 GIT_UNKNOWN = "git не ответил, совпадает ли код теста с CI"
+FIX_UNKNOWN = "не удалось проверить, осталась ли применённая правка в коде"
 FIX_IN_CODE = "проблему разобрала проверенная правка — код может отличаться от CI"
 
 
@@ -324,11 +326,29 @@ def _changed(
     без вопроса получил бы отметку «нестабильный» (ревью Grok). Проект не в git — как раньше,
     сверять не с чем.
     """
+    sources = [source]
     if paths.proposal_record(file_id).is_file():
-        return "правка агента применена"
-    if source not in dirty:
-        dirty[source] = _git_status(project_root, source)
-    return {"dirty": "код теста изменён", "unknown": GIT_UNKNOWN}.get(dirty[source], "")
+        try:
+            proposal = proposals.parse_proposal(paths.proposal(file_id).read_text(encoding="utf-8"))
+            state = proposals.recorded_applied_state(
+                proposal, project_root, proposals.ProposalFiles(
+                    paths.proposal_record(file_id), paths.proposal_backup(file_id),
+                    paths.proposal_patch(file_id)))
+        except (OSError, ValueError):
+            return FIX_UNKNOWN
+        if state == "applied":
+            return "правка агента применена"
+        if state != "not_applied":
+            return FIX_UNKNOWN
+        if proposal.file:
+            sources.append(PurePath(proposal.file))  # откат хелпера тоже должен вернуть код как в CI
+    for path in sources:
+        if path not in dirty:
+            dirty[path] = _git_status(project_root, path)
+        changed = {"dirty": "код теста изменён", "unknown": GIT_UNKNOWN}.get(dirty[path], "")
+        if changed:
+            return changed
+    return ""
 
 
 def fix_digest(paths: ws.RunPaths, project_root: Path, file_id: str) -> str:
@@ -534,35 +554,22 @@ class CaseResult:
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _SUFFIXED_CLASS_RE = re.compile(r"\([^()]*\)$")
-_OUR_REPORT_RE = re.compile(r"-alla-[\w-]+-\d+\.xml$")
 _METHOD_END_RE = re.compile(r"[(\[]")
 # «org.opentest4j.AssertionFailedError: …» в тексте отчёта без message: класса в сообщении
 # Allure обычно нет.
 _EXCEPTION_PREFIX_RE = re.compile(r"^[\w.$]+(?:Exception|Error|Throwable|Failure)\w*:\s*")
 
 
-def report_snapshot(module_dir: Path) -> dict[str, int]:
-    """Отчёты surefire модуля до запуска: имя → время изменения (нс)."""
-    reports = module_dir / "target" / "surefire-reports"
-    return {path.name: _mtime_ns(path) for path in reports.glob("TEST-*.xml")}
-
-
 def read_reports(
-    module_dir: Path, suffix: str, before: dict[str, int],
+    module_dir: Path, suffix: str,
 ) -> dict[tuple[str, str], list[CaseResult]]:
     """Результаты по (класс, метод) из ``target/surefire-reports`` этого запуска.
 
-    Файлы запуска — ``TEST-<класс>-<суффикс>.xml`` (``-Dsurefire.reportNameSuffix``); если их
-    нет (pom задаёт свой суффикс), — ``TEST-*.xml``, которых не было до запуска или которые
-    с тех пор изменились (``before`` — ``report_snapshot``). Время «не старше начала» не
-    годится: отчёт прошлого запуска секундной давности выдал бы себя за итог сломанной сборки.
+    Только ``TEST-<класс>-<суффикс>.xml`` (``-Dsurefire.reportNameSuffix``): свежий чужой
+    отчёт мог параллельно записать Maven из IDE, время изменения не доказывает владельца.
     """
     reports = module_dir / "target" / "surefire-reports"
     files = sorted(reports.glob(f"TEST-*-{suffix}.xml"))
-    if not files:  # отчёты прежних перезапусков (свой суффикс) — не этого запуска
-        files = [path for path in sorted(reports.glob("TEST-*.xml"))
-                 if not _OUR_REPORT_RE.search(path.name)
-                 and before.get(path.name) != _mtime_ns(path)]
     cases: dict[tuple[str, str], list[CaseResult]] = {}
     for path in files:
         try:
@@ -587,13 +594,6 @@ def _case_result(case: ElementTree.Element) -> CaseResult:
         return CaseResult("skipped")
     flaky = case.find("flakyFailure") is not None or case.find("flakyError") is not None
     return CaseResult("passed", flaky=flaky)
-
-
-def _mtime_ns(path: Path) -> int:
-    try:
-        return path.stat().st_mtime_ns
-    except OSError:
-        return 0
 
 
 def source_digest(project_root: Path, source: str) -> str:

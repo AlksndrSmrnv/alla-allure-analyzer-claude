@@ -29,7 +29,7 @@ from pathlib import Path
 from alla_skill_lib import workspace as ws
 
 WAIT_BUDGET = 75.0  # секунд на один ответ: Qwen обрывает команду через 120 с
-CEILING_S = 3600  # задание дольше — процесс уже не наш или завис
+CEILING_S = 3600  # после часа просим пользователя проверить задание, но не считаем процесс мёртвым
 KEEP_S = 86400  # папки прежних запусков старше суток удаляет следующий запуск
 JOBS_DIRNAME = ".jobs"
 POLL_S = 0.5
@@ -102,6 +102,11 @@ class JobState:
         """Новый вызов подключается к заданию, а не начинает своё."""
         return self.state == "running" or (self.state in ("done", "lost") and not self.delivered)
 
+    @property
+    def overdue(self) -> bool:
+        return (self.state == "running" and self.started is not None
+                and time.time() - self.started > CEILING_S)
+
 
 def job_state(files: JobFiles) -> JobState:
     started = _started(files)
@@ -111,7 +116,7 @@ def job_state(files: JobFiles) -> JobState:
     if started is None:
         return JobState("none")
     progress = _read(files.progress)
-    if _alive(files, started):
+    if _alive(files):
         return JobState("running", started, progress)
     return JobState("lost", started, progress, delivered=delivered)
 
@@ -173,7 +178,7 @@ def wait(files: JobFiles, budget: float) -> JobState:
     deadline = time.monotonic() + budget
     while True:
         state = job_state(files)
-        if state.state != "running" or time.monotonic() >= deadline:
+        if state.state != "running" or state.overdue or time.monotonic() >= deadline:
             return state
         time.sleep(POLL_S)
 
@@ -212,9 +217,7 @@ def _started(files: JobFiles) -> float | None:
         return None
 
 
-def _alive(files: JobFiles, started: float) -> bool:
-    if time.time() - started > CEILING_S:
-        return False
+def _alive(files: JobFiles) -> bool:
     try:
         pid = int(files.pid.read_text(encoding="utf-8").split()[0])
         os.kill(pid, 0)

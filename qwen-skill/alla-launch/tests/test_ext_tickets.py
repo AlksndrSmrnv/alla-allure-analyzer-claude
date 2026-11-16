@@ -46,7 +46,9 @@ def problem(number: int, **changes: Any) -> dict[str, Any]:
 
 
 @pytest.fixture
-def case(tmp_path: Path) -> tuple[dict[str, Any], dict[str, Any], Any]:
+def case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, Any], dict[str, Any], Any]:
+    # Каждый сценарий имитирует новый запуск скрипта, а не срок от начала pytest collection.
+    monkeypatch.setattr(t, "SCRIPT_STARTED", time.monotonic())
     project = tmp_path / "project"
     project.mkdir()
     python = project / ".venv" / "bin" / "python"

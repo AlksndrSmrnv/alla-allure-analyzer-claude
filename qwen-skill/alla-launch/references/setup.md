@@ -379,7 +379,9 @@ Gradle/Maven) — в корне git-репозитория. В многомод�
   -DfailIfNoTests=false -Dmaven.test.failure.ignore=true -DskipTests=false
   -Dmaven.test.skip=false -Dsurefire.reportNameSuffix=…` плюс
   `ALLURE_RERUN_MAVEN_ARGS` (только профили и свойства: `-Pstand -Denv=ift`). Итог читается из
-  `target/surefire-reports/TEST-*.xml` этого запуска.
+  `target/surefire-reports/TEST-*-<суффикс>.xml` только с уникальным суффиксом этого задания
+  и попытки. Если pom принудительно задаёт свой `reportNameSuffix`, разрешите значение из
+  командной строки; без своего отчёта итог — «не запустились», даже при коде Maven 0.
 - Параметры, расширяющие набор тестов, цели, settings/POM/reactor и переопределения
   `test`, `it.test`, `skipTests`, `skipITs`, `surefire.*`, `failsafe.*`, `maven.*` запрещены.
   `.mvn/maven.config` проверяется до старта: дополнительные цели и конфликтующие настройки

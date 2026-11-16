@@ -428,6 +428,41 @@ def test_report_says_when_proposal_limit_is_reached(
     )
 
 
+@pytest.mark.parametrize("field", ["НАЗВАНИЕ", "ПРИЧИНА", "КАК ИСПРАВИТЬ", "ПРИЗНАК"])
+def test_remember_rejects_secrets_without_echoing_them(
+    project: Path, testops: FakeTestOps, capsys, field: str,
+) -> None:
+    run_dir, run, _ = _prepare(project, capsys)
+    entry = next(item for item in run["clusters"] if not item["auto"])
+    secret = "password=SYNTHETIC_VALIDATION_SECRET"
+    value = f"приложение — {secret}" if field == "ПРИЧИНА" else secret
+    text = FEEDBACK + f"\n{field}: {value}\n"
+    (run_dir / "feedback" / f"{entry['file_id']}.md").write_text(text, encoding="utf-8")
+
+    code, out = _run(["remember", entry["file_id"], "--run", str(run_dir)], capsys)
+
+    assert code == 0 and out.startswith("STATUS: fix"), out
+    assert "секрет" in out
+    assert "SYNTHETIC_VALIDATION_SECRET" not in out
+    assert not list((project / "alla-kb").glob("*.json"))
+
+
+@pytest.mark.parametrize("field", ["title", "cause", "fix", "details", "kb_fields",
+                                        "category", "problem"])
+def test_finding_errors_do_not_echo_secrets(field: str) -> None:
+    from alla_skill_lib.confirmed import check_finding
+
+    secret = "password=SYNTHETIC_FINDING_SECRET"
+    finding = {"problem": 1, "format_ok": True, "category": "приложение",
+               "title": "Сбой сервиса", "cause": "Нет customer", "fix": ["Проверить customer"]}
+    finding[field] = ([secret] if field in ("fix", "details") else
+                      {"revision": secret} if field == "kb_fields" else secret)
+    errors = check_finding(finding, "01")
+
+    assert errors
+    assert "SYNTHETIC_FINDING_SECRET" not in "\n".join(errors)
+
+
 def test_remember_stops_after_three_refusals_in_a_row(
     project: Path, testops: FakeTestOps, capsys
 ) -> None:
