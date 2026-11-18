@@ -473,6 +473,50 @@ def test_ticket_connection_stop_needs_no_skill_command(tmp_path: Path, prepare: 
     assert result["pending_review"]  # The explanation still requires human assessment.
 
 
+def test_kb_question_asked_skips_in_headless_and_fails_when_interactive(tmp_path: Path) -> None:
+    ctx = context(tmp_path, events(final="Краткий разбор готов.\nПолный разбор: report.md"),
+                  case="K01")
+    assert CHECKS["kb_question_asked"](ctx)["status"] == "skip"
+    ctx.headless = False
+    assert CHECKS["kb_question_asked"](ctx)["status"] == "fail"
+
+
+def test_kb_question_asked_passes_when_model_asks(tmp_path: Path) -> None:
+    ctx = context(tmp_path, events(
+        final="Краткий разбор готов.\nПолный разбор: report.md\n"
+              "Какие разборы верны? Сохраню их в базу знаний."), case="K01")
+    assert CHECKS["kb_question_asked"](ctx)["status"] == "pass"
+
+
+def test_skipped_check_makes_case_inconclusive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    project = build_project(tmp_path / "work", "http://127.0.0.1:1", venv=None)
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "trace-1.jsonl").write_text(json.dumps(
+        {"type": "result", "session_id": "s", "result": "ok"}), encoding="utf-8")
+    scenario = qwen_stand.Scenario("fake", "default", ("/x",), ("skipped",))
+    monkeypatch.setitem(qwen_stand.SCENARIOS, "T99", scenario)
+    monkeypatch.setitem(qwen_stand.CHECKS, "skipped", lambda ctx: qwen_stand.skip("не проверяется"))
+    monkeypatch.setattr(qwen_stand, "journal_context", lambda *args: SimpleNamespace(
+        peak=0, compressions=0, subagent_peak=0, subagent_compressions=0))
+    result = qwen_stand.evaluate({
+        "id": "T99", "attempt": 1, "title": "fake", "dir": str(case_dir),
+        "project": str(project), "home": str(project.parent / "home"), "exit_codes": [0]})
+    assert result["status"] == "inconclusive"
+    assert result["failed_checks"] == []
+    assert result["skipped_checks"] == ["skipped"]
+    assert result["pending_review"] == []
+    assert result["checks"]["skipped"]["status"] == "skip"
+    assert result["checks"]["skipped"]["evidence"] == "не проверяется"
+
+
+def test_f01_answers_kb_before_rerun() -> None:
+    assert SCENARIOS["F01"].turns[1].startswith("Все разборы верны")
+    assert SCENARIOS["F01"].turns[2] == "Да, перезапусти."
+
+
 def test_prepare_with_wrong_launch_fails(tmp_path: Path) -> None:
     ctx = context(tmp_path, events(
         ("run_shell_command", {"command": f"python3 {SKILL} prepare 12345"}, "")))

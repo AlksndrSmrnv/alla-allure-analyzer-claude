@@ -342,7 +342,8 @@ SCENARIOS: dict[str, Scenario] = {
         "Несколько проектов TestOps по модулям: модуль спрашивается", "default",
         ("/alla-launch 777", "Это модуль orders."),
         ("module_asked", *FULL_RUN), launch_id=777, project_ids="orders=5,payments=7",
-        review=("Модуль спрошен у пользователя одной фразой с перечнем модулей, а не угадан",)),
+        review=("Модуль спрошен у пользователя одной фразой с перечнем модулей, а не угадан; "
+                "в headless сам вопрос не проверяется — только отсутствие догадки",)),
     "A04": Scenario(
         "Отрицательный запрос", "default",
         ("Объясни, чем Allure Report отличается от TestOps",),
@@ -485,9 +486,9 @@ SCENARIOS: dict[str, Scenario] = {
         ("/alla-launch 777", "Все разборы верны, сохрани их в базу знаний.", "/alla-launch 778"),
         (*FULL_RUN, "prepare_launch", "kb_question_asked", "kb_saved", "kb_auto_resolved"),
         launch_id=777, edits=("alla-kb/",), also_launches=(778,),
-        review=(("Evidence: вопрос «какие разборы верны» задан один раз, сразу после краткого "
-                 "разбора; ответ сохранён одной командой; во втором прогоне отчёт выведен "
-                 "дословно и разборы по базе знаний не переписаны"),)),
+        review=(("Evidence: ответ сохранён одной командой; во втором прогоне отчёт выведен "
+                 "дословно и разборы по базе знаний не переписаны; вопрос о базе знаний "
+                 "проверяется автоматически (при отказе модели в headless — skip)"),)),
     "C01": Scenario(
         "Слэш-команда /alla:run, полный разбор", "default", ("/alla:run 777",),
         (*FULL_RUN, "commands_visible", "prepare_launch"), launch_id=777),
@@ -596,16 +597,17 @@ SCENARIOS: dict[str, Scenario] = {
     "F01": Scenario(
         "Флаки: после отчёта — перезапуск, «да» → Maven в фоне → итог и отметка в базе знаний "
         "без вопроса → «да» → статус passed в TestOps", "flaky",
-        ("/alla-launch 793", "Да, перезапусти.", "Да, отметь в TestOps."),
+        ("/alla-launch 793", "Все разборы верны, сохрани их в базу знаний.",
+         "Да, перезапусти.", "Да, отметь в TestOps."),
         (*[name for name in FULL_RUN if name != "report_verbatim"], "prepare_launch",
          "rerun_started", "rerun_result_shown", "flaky_saved", "testops_resolved"),
         launch_id=793, edits=("alla-kb/",), resolved=(101,),
         maven=((f"{STAND_ORDER}#createOrder", (FAILED_500, "passed")),
                (f"{STAND_ORDER}#updateOrder", (FAILED_500,))),
-        review=("Вопрос о перезапуске задан один раз, после краткого разбора: число тестов, "
-                "проблемы, время и что тесты пойдут на этой машине; итог выведен дословно; "
-                "про отметку в базе знаний сказано, что она уже записана (без вопроса); вопрос "
-                "после итога — один, только про TestOps",)),
+        review=("Сначала вопрос о базе знаний, после ответа — вопрос о перезапуске (автоматически "
+                "не проверяется: сценарий использует явное «Да, перезапусти»); итог выведен "
+                "дословно; про отметку в базе знаний сказано, что она уже записана (без вопроса); "
+                "вопрос после итога — один, только про TestOps",)),
     "F02": Scenario(
         "Проверка правки: «да» на правку → вопрос о перезапуске тестов проблемы → «да» → итог "
         "→ «да» → статус passed в TestOps",
@@ -615,10 +617,10 @@ SCENARIOS: dict[str, Scenario] = {
          "fix_applied", "rerun_started", "fix_checked", "fix_remembered", "testops_resolved"),
         launch_id=782, edits=(STAND_ORDER_TEST, "alla-kb/"), resolved=(201,),
         maven=((f"{STAND_ORDER}#createOrder", ("passed",)),),
-        review=("После apply вопрос о перезапуске задан отдельно от «да» на правку, с числом "
-                "тестов и что они пойдут на этой машине; итог выведен дословно; сказано, что "
-                "проверенная правка запомнена (без вопроса); вопрос об отметке в TestOps "
-                "говорит, что в CI правки ещё нет",)),
+        review=("Итог выведен дословно; сказано, что проверенная правка запомнена (без вопроса); "
+                "вопрос об отметке в TestOps говорит, что в CI правки ещё нет. Вопрос о "
+                "перезапуске автоматически не проверяется: сценарий использует проактивное "
+                "«Да, перезапусти тесты»",)),
     "P04": Scenario(
         "40 кластеров: пакеты субагентов", "many:40", ("/alla-launch 900",),
         (*FULL_RUN, "prepare_launch", "subagents_used", "batch_agent_used"), launch_id=900),
@@ -1167,6 +1169,9 @@ class Context:
     project: Path
     requests: list[dict[str, Any]]
     home: Path | None = None  # HOME проверяемого процесса Qwen: в нём раскрывается «~»
+    # Стенд запускает Qwen одной репликой; в headless-режиме системный промпт запрещает
+    # вопросы. Проверка вопроса пропускается, пока нет интерактивного прогона.
+    headless: bool = True
 
     @property
     def qwen_home(self) -> Path:
@@ -1188,6 +1193,11 @@ class Context:
     def rules(self) -> RuleContext:
         return RuleContext(self.project, self.qwen_home, self.trace.calls, self.trace.final,
                            self.run_dirs())
+
+
+def skip(evidence: str) -> dict[str, Any]:
+    """Проверка неприменима в текущем режиме: не pass и не fail."""
+    return {"status": "skip", "evidence": evidence}
 
 
 # Правила поведения — общие со скиллом (``alla_skill_lib/session_rules.py``): та же проверка
@@ -1599,6 +1609,9 @@ def check_kb_question_asked(ctx: Context) -> dict[str, Any]:
     tail = first[first.rfind("Полный разбор"):] if "Полный разбор" in first else first
     if re.search(r"верн", tail, re.IGNORECASE) and re.search(r"баз\w* знаний|alla-kb", tail):
         return ok("вопрос задан в ответе на первую реплику")
+    if ctx.headless:
+        return skip("Qwen в headless-режиме системно запрещает вопросы; "
+                    "проверка требует интерактивного прогона")
     return bad(f"в ответе на первую реплику нет вопроса: …{first[-300:]}")
 
 
@@ -2515,19 +2528,23 @@ def evaluate(case: dict[str, Any]) -> dict[str, Any]:
         # рабочего репозитория могли меняться между сценариями одного запуска.
         installed_skill = project / SKILL_IN_PROJECT
         case["skill"] = fingerprint(installed_skill, skill_files(installed_skill))
-    ctx = Context(scenario, trace, project, requests, home)
+    ctx = Context(scenario, trace, project, requests, home,
+                  headless=not bool(case.get("interactive", False)))
     checks = {name: CHECKS[name](ctx) for name in scenario.checks}
     failed = [name for name, result in checks.items() if result["status"] == "fail"]
+    skipped = [name for name, result in checks.items() if result["status"] == "skip"]
     if failed:
         status = "fail"
-    elif any(code != 0 for code in case["exit_codes"]) or scenario.review:
+    elif skipped or any(code != 0 for code in case["exit_codes"]) or scenario.review:
         status = "inconclusive"
     else:
         status = "pass"
+    pending = list(scenario.review)
     case.update({
         "status": status,
         "failed_checks": failed,
-        "pending_review": list(scenario.review),
+        "skipped_checks": skipped,
+        "pending_review": pending,
         "checks": checks,
         "tool_calls": len(trace.calls),
         "subagent_calls": sum(call.subagent for call in trace.calls),
@@ -2591,7 +2608,8 @@ def write_report(output: Path, report: dict[str, Any]) -> None:
         if case.get("skill"):
             lines += [f"Версия установленного скилла: `{case['skill']['sha256']}`.", ""]
         for name, result in case["checks"].items():
-            lines.append(f"- {result['status']} `{name}` {result['evidence']}")
+            label = "не проверено" if result["status"] == "skip" else result["status"]
+            lines.append(f"- {label} `{name}` {result['evidence']}")
         for item in case["pending_review"]:
             lines.append(f"- оценить: {item}")
     (output / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -2606,7 +2624,7 @@ def not_run_case(case_id: str, attempt: int, reason: str) -> dict[str, Any]:
     return {
         "id": case_id, "attempt": attempt, "title": SCENARIOS[case_id].title,
         "status": "not_run", "reason": reason, "checks": {}, "failed_checks": [],
-        "pending_review": [], "duration_s": 0, "tool_calls": 0,
+        "skipped_checks": [], "pending_review": [], "duration_s": 0, "tool_calls": 0,
         "model": None, "qwen_version": None,
         "context": {"peak": 0, "subagent_peak": 0, "compressions": 0, "subagent_compressions": 0},
     }
