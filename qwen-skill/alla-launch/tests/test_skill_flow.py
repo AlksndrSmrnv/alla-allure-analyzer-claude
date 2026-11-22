@@ -181,7 +181,7 @@ def test_full_flow_until_done(project: Path, testops: FakeTestOps, capsys) -> No
     assert "Агент считает: [ПРИЛОЖЕНИЕ]" in brief
     assert "Агент считает: [СТЕНД]" in brief
     assert "Агент считает: [НЕ ЯСНО]" in brief
-    assert "   Что делать:    Добавить проверку customer в OrderService.create." in brief
+    assert "Что делать: Добавить проверку customer в OrderService.create." in brief
     assert "### 🔴 Требуют вашего внимания (2)" in brief
     assert brief.index("Требуют вашего внимания (2)") < brief.index("Стенд и тестовые данные (1)")
     assert brief.index("[ПРИЛОЖЕНИЕ]") < brief.index("[НЕ ЯСНО]")
@@ -328,9 +328,9 @@ def test_test_cluster_gets_fix_proposal_and_apply(project: Path, testops: FakeTe
     out = _finish(run_dir, capsys, {login: MARKDOWN_ANALYSIS})
     assert "### 🟢 Агент может поправить сам (1)" in out
     assert (
-        "   Агент считает: [АВТОТЕСТ] API создания заказа по контракту возвращает "
+        "Агент считает: [АВТОТЕСТ] API создания заказа по контракту возвращает "
         "201 Created\n"
-        "   Правка:        `src/test/java/ru/company/orders/OrderTest.java:6` — ждёт вашего «да»" in out
+        "Правка: `src/test/java/ru/company/orders/OrderTest.java:6` — ждёт вашего «да»" in out
     )
     assert "apply 01 --run" in out and "--yes" in out
     report = _full_report(run_dir)

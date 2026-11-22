@@ -323,10 +323,10 @@ def test_related_problems_are_merged_in_report_brief_and_summary(
     (run_dir / "summary.md").write_text("Итог прогона.", encoding="utf-8")
     out = _next(run_dir, capsys)
     assert out.startswith("STATUS: done"), out
-    assert "6 упавших тестов -> 1 проблема (2 до объединения похожих):" in out
+    assert "6 упавших тестов -> 1 проблема (2 до объединения похожих)\n" in out
     assert "### 🔴 Требуют вашего внимания (1)" in out
     assert "**Проблема 1 и 2** · 6 тестов · [объединил агент]" in out
-    assert "   Общая причина: [ПРИЛОЖЕНИЕ] покупатель в заказе не заполнен" in out
+    assert "Общая причина: [ПРИЛОЖЕНИЕ] покупатель в заказе не заполнен" in out
     assert out.count("**Проблема ") == 1 and "похоже, та же причина" not in out
     report = _full_report(run_dir)
     assert "В разборе: 6 упавших тестов → 1 проблема (2 до объединения похожих)" in report

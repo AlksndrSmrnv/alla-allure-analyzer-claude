@@ -19,7 +19,7 @@ from alla_skill_lib.analysis_format import ClusterAnalysis, parse_analysis
 from alla_skill_lib.proposals import Proposal
 from alla_skill_lib.report import (
     BRIEF_TEXT_CHARS,
-    MAX_BRIEF_ITEMS,
+    MAX_DETAILED_BRIEF_CARDS,
     MAX_SUMMARY_DETAILED,
     MAX_SUMMARY_LISTED,
     build_summary_data,
@@ -186,40 +186,40 @@ def test_terminal_brief_says_what_broke_what_the_agent_thinks_and_what_to_do(tmp
     assert (
         "**Проблема 1** · 5 тестов\n"
         "Заказ не создаётся, сервер отвечает 500.\n"
-        "   Агент считает: [ПРИЛОЖЕНИЕ] NPE в OrderService при пустом customer.\n"
-        "   Что делать:    Добавить проверку customer.\n"
-        "   Например:      test_1\n"
+        "Агент считает: [ПРИЛОЖЕНИЕ] NPE в OrderService при пустом customer.\n"
+        "Что делать: Добавить проверку customer.\n"
+        "Например: test_1\n"
     ) in attention
     assert (
         "**Проблема 5** · 1 тест\n"
         "Тест упал без внятной причины.\n"
-        "   Агент считает: [НЕ ЯСНО] данных мало.\n"
-        "   Что делать:    Посмотреть лог вручную.\n"
-        "   Тест:          test_15\n"
+        "Агент считает: [НЕ ЯСНО] данных мало.\n"
+        "Что делать: Посмотреть лог вручную.\n"
+        "Тест: test_15\n"
     ) in attention + "\n"
     assert attention.index("Проблема 1") < attention.index("Проблема 5")
     agent = _section(console, "Агент может поправить сам")
     assert (
         "**Проблема 2** · 4 теста\n"
         "Тест ждёт код 200, а сервис отвечает 201.\n"
-        "   Агент считает: [АВТОТЕСТ] Контракт API изменился\n"
-        "   Правка:        `src/OrderTest.java:6` — ждёт вашего «да»\n"
-        "   Проверьте:     меняется ожидаемое значение в проверке (200 → 201)"
+        "Агент считает: [АВТОТЕСТ] Контракт API изменился\n"
+        "Правка: `src/OrderTest.java:6` — ждёт вашего «да»\n"
+        "Проверьте: меняется ожидаемое значение в проверке (200 → 201)"
     ) in agent
     environment = _section(console, "Стенд и тестовые данные")
-    assert "   Агент считает: [СТЕНД] auth-service не отвечает." in environment
-    assert "   Что делать:    Поднять auth-service." in environment
-    assert "   Агент считает: [ДАННЫЕ] пользователь удалён." in environment
+    assert "Агент считает: [СТЕНД] auth-service не отвечает." in environment
+    assert "Что делать: Поднять auth-service." in environment
+    assert "Агент считает: [ДАННЫЕ] пользователь удалён." in environment
     assert "Автотест сломан, но править вручную" not in console  # пустых разделов нет
 
     # Кратко: у каждой проблемы своё мнение агента; подробности (все шаги, тесты) — в файле.
     assert console.count("**Проблема ") == 5
-    assert console.count("   Агент считает: ") == 5
+    assert console.count("\nАгент считает: ") == 5
     for detail in ("Что случилось:", "Почему:", "- Тесты:", "testresult", "### Что делать"):
         assert detail not in console
 
 
-def test_terminal_header_shows_pass_bar_and_section_overview(tmp_path: Path) -> None:
+def test_terminal_header_shows_pass_bar_and_section_totals_once(tmp_path: Path) -> None:
     run = _run([5, 4, 3, 2, 1])
     console, _ = _render(
         tmp_path, run, [APP, TEST, ENV, DATA, UNKNOWN],
@@ -228,12 +228,12 @@ def test_terminal_header_shows_pass_bar_and_section_overview(tmp_path: Path) -> 
     assert console.startswith(
         "## Разбор прогона #5 — Nightly\n\n"
         "[####------] 25 тестов: прошло 10, упало 15\n"
-        "15 упавших тестов -> 5 проблем:\n"
-        "   🔴 требуют вашего внимания .... 2 (6 тестов)\n"
-        "   🟢 агент поправит сам ......... 1 (4 теста)\n"
-        "   🔵 стенд и данные ............. 2 (5 тестов)\n"
+        "15 упавших тестов -> 5 проблем\n"
         "TestOps: https://testops.example/launch/5\n"
     )
+    assert "🔴 Требуют вашего внимания (2) · 6 тестов\n" in console
+    assert "🟢 Агент может поправить сам (1) · 4 теста\n" in console
+    assert "🔵 Стенд и тестовые данные (2) · 5 тестов\n" in console
 
 
 def test_pass_bar_is_empty_or_full_only_when_all_tests_failed_or_passed() -> None:
@@ -258,9 +258,35 @@ def test_terminal_brief_explains_why_the_agent_left_a_test_fix_to_the_engineer(t
         proposals={"01": _proposal("skip", "нужен доступ к боевому стенду")},
     )
     manual = _section(console, "Автотест сломан, но править вручную")
-    assert "   Агент считает: [АВТОТЕСТ] ожидаемый код устарел." in manual
-    assert "   Почему не сам: агент решил не трогать код: нужен доступ к боевому стенду" in manual
-    assert "   Почему не сам: в разборе нет ссылки на строку кода автотеста" in manual
+    assert "Агент считает: [АВТОТЕСТ] ожидаемый код устарел." in manual
+    assert "Почему не сам: агент решил не трогать код: нужен доступ к боевому стенду" in manual
+    assert "Почему не сам: в разборе нет ссылки на строку кода автотеста" in manual
+
+
+def test_terminal_brief_shows_missing_evidence_for_unknown_cause(tmp_path: Path) -> None:
+    missing = "Тело ответа сервиса авторизации за время упавшего запроса."
+    console, _ = _render(tmp_path, _run([2, 1, 1]), [
+        UNKNOWN + f"НЕ ХВАТАЕТ: {missing}\n",
+        UNKNOWN + "НЕ ХВАТАЕТ: нет\n",
+        APP + "НЕ ХВАТАЕТ: Полное тело запроса.\n",
+    ])
+    assert f"Не хватает: {missing}\nЧто делать: Посмотреть лог вручную." in console
+    assert console.count("Не хватает:") == 1
+
+
+def test_terminal_brief_preserves_a_concrete_step_before_clipping_long_text(tmp_path: Path) -> None:
+    step = (
+        "В логе сервиса авторизации найти запрос по идентификатору тестовой операции и сверить код ответа "
+        "и срок действия токена; если срока нет в ответе, проверить часы на стенде."
+    )
+    complete_words = "ошибка " * 22
+    symptom = complete_words + "непропорциональнодлинноеслово продолжение."
+    assert 140 < len(step) <= report.BRIEF_STEP_CHARS
+    analysis = f"ЧТО СЛОМАЛОСЬ: {symptom}\nПРИЧИНА: окружение — нет ответа.\nКАК ИСПРАВИТЬ:\n1. {step}\n"
+    console, full = _render(tmp_path, _run([1]), [analysis])
+    assert f"\n{complete_words.rstrip()}…\n" in console
+    assert f"\nЧто делать: {step}\n" in console
+    assert symptom in full
 
 
 def test_terminal_brief_ends_with_a_link_to_the_full_report(tmp_path: Path) -> None:
@@ -278,28 +304,31 @@ def test_terminal_brief_ends_with_a_link_to_the_full_report(tmp_path: Path) -> N
     assert f"[report.md]({report_path.as_uri()})" in green
 
 
-def test_terminal_brief_lists_limited_items_per_section(tmp_path: Path) -> None:
-    count = MAX_BRIEF_ITEMS + 6
-    run = _run([1] * count)
-    console, _ = _render(tmp_path, run, [APP] * count)
-    attention = _section(console, "Требуют вашего внимания")
-    assert f"### 🔴 Требуют вашего внимания ({count})" in attention
-    assert attention.count("**Проблема ") == MAX_BRIEF_ITEMS
-    assert (
-        "- … и ещё 6 проблем (6 тестов) — полный список в report.md, "
-        "раздел «Требуют вашего внимания»" in attention
-    )
-    assert "проблемы 6" not in attention  # голый список номеров ничего не говорит
-    assert len(console) < 4_000
+def test_terminal_brief_switches_layout_by_card_count_not_by_test_count(tmp_path: Path) -> None:
+    detailed_count = MAX_DETAILED_BRIEF_CARDS
+    detailed, _ = _render(tmp_path, _run([25] * detailed_count), [APP] * detailed_count)
+    count = detailed_count + 1
+    compact, _ = _render(tmp_path, _run([1] * count), [APP] * (count - 1) + [ENV])
+    assert "**Проблема 1** · 25 тестов\nЗаказ не создаётся" in detailed
+    assert "Например: test_1" in detailed
+    assert "**Проблема 1** · 1 тест — Заказ не создаётся" in compact
+    assert "Тест: test_1" not in compact
+    assert "Что делать: Добавить проверку customer." in compact
+    assert "Что делать: Поднять auth-service." in compact
+    assert compact.count("**Проблема ") == count
+    assert "Не показано:" not in compact
 
 
-def test_terminal_brief_stays_small_on_a_huge_launch(tmp_path: Path) -> None:
-    count = 80
+def test_terminal_brief_shows_every_problem_on_a_large_launch(tmp_path: Path) -> None:
+    count = 40
     run = _run([2] * count)
     texts = [[APP, TEST, TEST_NO_CODE, ENV, DATA, UNKNOWN][i % 6] for i in range(count)]
     proposals = {f"{i + 1:02d}": _proposal() for i, text in enumerate(texts) if text is TEST}
     console, full = _render(tmp_path, run, texts, proposals=proposals)
-    assert len(console) < 7_000 < len(full)
+    for number in range(1, count + 1):
+        assert f"**Проблема {number}**" in console
+    assert "В CLI показано" not in console
+    assert len(console) < len(full)
 
 
 def test_terminal_brief_does_not_grow_with_the_number_of_problems(tmp_path: Path) -> None:
@@ -307,29 +336,45 @@ def test_terminal_brief_does_not_grow_with_the_number_of_problems(tmp_path: Path
     run = _run([1] * count)
     console, full = _render(tmp_path, run, [APP] * count)
     attention = _section(console, "Требуют вашего внимания")
-    assert attention.count("**Проблема ") == MAX_BRIEF_ITEMS
-    assert (
-        f"- … и ещё {count - MAX_BRIEF_ITEMS} проблем ({count - MAX_BRIEF_ITEMS} тестов) — "
-        "полный список в report.md, раздел «Требуют вашего внимания»" in attention
-    )
-    assert "14, 15" not in attention  # номера не перечисляются
-    assert len(console) < 2_500 < len(full)
+    shown = attention.count("**Проблема ")
+    assert MAX_DETAILED_BRIEF_CARDS < shown < count
+    assert f"Не показано: {count - shown} из {count} проблем." in attention
+    assert f"В CLI показано {shown} из {count} проблем" in console.split("### Коротко")[0]
+    assert len(console) < report.BRIEF_CARD_BUDGET + 1_500 < len(full)
     assert full.count("**Проблема ") == count  # в файле — каждая проблема
 
 
-def test_terminal_brief_has_a_fixed_ceiling_even_with_long_texts_in_every_section(tmp_path: Path) -> None:
-    """Каждое поле пункта обрезано, поэтому брифу, который повторяет каждый next, есть потолок."""
-    text = "ЧТО СЛОМАЛОСЬ: {w}.\nПРИЧИНА: {c} — {w}.\nКАК ИСПРАВИТЬ:\n1. {w}.\n".replace("{w}", LONG.strip())
-    categories = ["приложение", "тест", "окружение", "данные"]  # «тест» без КОД — «вручную»
+def test_terminal_brief_budget_keeps_section_totals_even_with_long_texts(tmp_path: Path) -> None:
+    text = (
+        "ЧТО СЛОМАЛОСЬ: {w}.\nПРИЧИНА: {c} — {w}.\nНЕ ХВАТАЕТ: {w}.\nКАК ИСПРАВИТЬ:\n1. {w}.\n"
+    ).replace("{w}", LONG.strip())
+    categories = ["неизвестно", "тест", "окружение", "данные"]  # «тест» без КОД — «вручную»
     sizes = []
     for count in (40, 400):
         run = _run([1] * count)
         texts = [text.replace("{c}", categories[i % 4]) for i in range(count)]
         console, _ = _render(tmp_path, run, texts)
-        assert console.count("**Проблема ") == 3 * MAX_BRIEF_ITEMS  # внимание, вручную, стенд
+        shown = console.count("**Проблема ")
+        assert 0 < shown < count
+        assert "Не хватает:" in console
+        assert f"В CLI показано {shown} из {count} проблем" in console
+        assert f"Стенд и тестовые данные ({count // 2})" in console
         sizes.append(len(console))
-    assert max(sizes) < 16_000
-    assert abs(sizes[0] - sizes[1]) < 300  # размер не зависит от числа проблем
+    assert max(sizes) < report.BRIEF_CARD_BUDGET + 1_500
+
+
+def test_terminal_brief_reserves_room_for_the_first_fix_when_attention_fills_budget(tmp_path: Path) -> None:
+    count = 100
+    console, _ = _render(
+        tmp_path, _run([1] * count), [APP] * (count - 1) + [TEST],
+        proposals={str(count): _proposal()},
+    )
+    assert "В CLI показано" in console
+    agent = _section(console, "Агент может поправить сам")
+    assert f"**Проблема {count}** · 1 тест — Тест ждёт код 200" in agent
+    assert "Правка: `src/OrderTest.java:6` — ждёт вашего «да»" in agent
+    assert "Проверьте: меняется ожидаемое значение" in agent
+    assert len(console) < report.BRIEF_CARD_BUDGET + 1_500
 
 
 def test_terminal_brief_limits_warnings_and_notes_but_file_keeps_them(tmp_path: Path) -> None:
@@ -395,7 +440,7 @@ def test_symptom_markdown_does_not_break_the_rest_of_the_brief(
     lines = console.splitlines()
     head = lines.index("**Проблема 1** · 2 теста")
     if shown is None:  # от симптома ничего не осталось — строки нет
-        assert lines[head + 1].startswith("   Агент считает: ")
+        assert lines[head + 1].startswith("Агент считает: ")
     else:
         assert lines[head + 1] == shown
     for line in lines:
@@ -449,12 +494,12 @@ def test_terminal_shows_applied_fix_and_flagged_problem(tmp_path: Path) -> None:
         tmp_path, run, [TEST, "ПРИЧИНА: тест — совсем без формата"],
         proposals={"01": _proposal()}, apply_states={"01": "applied"}, flagged={"02"},
     )
-    assert "   Агент считает: [АВТОТЕСТ] Контракт API изменился" in console
-    assert "   Правка:        `src/OrderTest.java:6` — уже применено" in console
+    assert "Агент считает: [АВТОТЕСТ] Контракт API изменился" in console
+    assert "Правка: `src/OrderTest.java:6` — уже применено" in console
     assert (
         "**Проблема 2** · 1 тест\n"
-        "   Агент считает: [ФОРМАТ НАРУШЕН] разбор не прошёл проверку формата, текст — в report.md\n"
-        "   Тест:          test_3"
+        "Агент считает: [ФОРМАТ НАРУШЕН] разбор не прошёл проверку формата, текст — в report.md\n"
+        "Тест: test_3"
     ) in console
     assert "совсем без формата" not in console  # текст такого разбора — только в файле
     assert "- Статус: уже применено — запустите тест заново" in full
@@ -472,7 +517,11 @@ def test_unknown_fix_state_is_not_offered_as_waiting_for_consent(tmp_path: Path)
     assert "Проблема 2" in agent and "Проблема 1" not in agent
     manual = _section(console, "Автотест сломан, но править вручную")
     assert "**Проблема 1** · 3 теста\n" in manual
-    assert "   Агент считает: [АВТОТЕСТ] ожидаемый код устарел." in manual
+    assert "Агент считает: [АВТОТЕСТ] ожидаемый код устарел." in manual
+    assert (
+        "Почему не сам: Проверьте `git diff`: состояние правки неизвестно, apply повторно её не применит. "
+        "Место: `src/OrderTest.java:6`"
+    ) in manual
     assert "ждёт вашего «да»" not in manual  # обещания правки для проблемы 1 нет
     # Причина видна в файле: и в разделе, и в подробностях, с честной пометкой состояния.
     top = full.split("\n---\n", 1)[0]
@@ -540,7 +589,7 @@ def test_manual_test_fix_explains_why_agent_did_not_fix(tmp_path: Path) -> None:
 
 
 def test_full_report_keeps_reason_for_every_problem(tmp_path: Path) -> None:
-    count = MAX_BRIEF_ITEMS + 6
+    count = 11
     run = _run([1] * count)
     long_why = "нужен доступ к боевому стенду, " * 15
     console, full = _render(
@@ -549,7 +598,7 @@ def test_full_report_keeps_reason_for_every_problem(tmp_path: Path) -> None:
         not_proposed={"10": "лимит — не больше 5 предложений правок на один разбор",
                       "11": "предложение правки не прошло проверку за 3 попытки и отброшено"},
     )
-    assert "**Проблема 9**" not in console  # в терминале — только первые пункты
+    assert "**Проблема 9**" in console
     details = full.split("## Подробности по проблемам", 1)[1]
     for number, reason in (
         ("09", f"агент решил не трогать код: {long_why.strip()}"),
@@ -564,7 +613,7 @@ def test_full_report_keeps_reason_for_every_problem(tmp_path: Path) -> None:
 def test_weakening_warning_is_visible_next_to_the_fix(tmp_path: Path) -> None:
     run = _run([2])
     console, full = _render(tmp_path, run, [TEST], proposals={"01": _proposal()})
-    assert "   Проверьте:     меняется ожидаемое значение в проверке (200 → 201)" in console
+    assert "Проверьте: меняется ожидаемое значение в проверке (200 → 201)" in console
     assert "- Обратите внимание: меняется ожидаемое значение в проверке (200 → 201)" in full
 
 
@@ -576,7 +625,7 @@ def test_report_file_keeps_full_text_and_all_steps(tmp_path: Path) -> None:
 
     assert LONG.strip() not in console  # в терминале — только начало каждого текста
     name = " ".join(("тест с очень длинным названием " * 10).split())
-    assert f"   Например:      {name}" in console  # имя теста в терминале целиком
+    assert f"Например: {name}" in console  # имя теста в терминале целиком
     assert all(len(line) <= 300 for line in console.splitlines()
                if line.startswith("  ") and name not in line)
     assert "…" not in full  # в файле нет ни одного сокращения
@@ -588,7 +637,7 @@ def test_report_file_keeps_full_text_and_all_steps(tmp_path: Path) -> None:
 
 
 def test_report_file_shows_every_problem_and_all_numbers(tmp_path: Path) -> None:
-    count = MAX_BRIEF_ITEMS + 6
+    count = 11
     run = _run([1] * count)
     why = "нужен доступ к боевому стенду, " * 15
     console, full = _render(
@@ -600,7 +649,7 @@ def test_report_file_shows_every_problem_and_all_numbers(tmp_path: Path) -> None
     assert f"агент решил не трогать код: {why.strip()}" in top
     assert why.strip() not in console  # в терминале причина отказа обрезана
     assert top.count("- Агент считает: ") == count  # мнение агента — у каждой проблемы файла
-    assert "… и ещё 6" in console
+    assert console.count("**Проблема ") == count
 
 
 def test_report_file_lists_all_tests_and_points_to_testops_beyond_the_cap(tmp_path: Path) -> None:
@@ -639,7 +688,7 @@ def test_report_uses_plain_words(tmp_path: Path) -> None:
     assert "В разборе: 5 упавших тестов → 2 проблемы (ещё 1 отключённый muted-тест не учитываем)." in full
     assert "Внимание: данные могли не выгрузиться полностью" in full
     assert "[######----] 16 тестов: прошло 10, упало 6\n" in console  # нулевые счётчики не пишем
-    assert "5 упавших тестов -> 2 проблемы (ещё 1 отключённый muted-тест не учитываем):" in console
+    assert "5 упавших тестов -> 2 проблемы (ещё 1 отключённый muted-тест не учитываем)\n" in console
     assert "(!) данные могли не выгрузиться полностью" in console
     for text in (console, full):
         for jargon in ("кластер", "Кластер", "Активных падений", "По категориям", "сигнатур"):
@@ -773,12 +822,12 @@ def test_related_problems_become_one_item_and_one_problem_in_counts(tmp_path: Pa
     related = _related(([1, 2], "в заказе не заполнен покупатель"), run=run)
     console, full = _render(tmp_path, run, [APP, APP, ENV], related=related)
 
-    assert "9 упавших тестов -> 2 проблемы (3 до объединения похожих):" in console
+    assert "9 упавших тестов -> 2 проблемы (3 до объединения похожих)\n" in console
     attention = _section(console, "Требуют вашего внимания")
     assert attention.startswith("### 🔴 Требуют вашего внимания (1)")
     assert "**Проблема 1 и 2** · 5 тестов · [объединил агент]" in attention
-    assert "   Общая причина: [ПРИЛОЖЕНИЕ] в заказе не заполнен покупатель" in attention
-    assert "   Например:      test_1" in attention  # тест самой большой проблемы
+    assert "Общая причина: [ПРИЛОЖЕНИЕ] в заказе не заполнен покупатель" in attention
+    assert "Например: test_1" in attention  # тест самой большой проблемы
     assert attention.count("**Проблема ") == 1
 
     assert "→ 2 проблемы (3 до объединения похожих)." in full
@@ -795,19 +844,30 @@ def test_related_problems_become_one_item_and_one_problem_in_counts(tmp_path: Pa
     assert "- Агент счёл одной причиной с проблемой 1: в заказе не заполнен покупатель" in details
 
 
+def test_terminal_brief_scopes_missing_evidence_to_a_merged_example(tmp_path: Path) -> None:
+    run = _run([3, 1])
+    console, _ = _render(tmp_path, run, [
+        UNKNOWN + "НЕ ХВАТАЕТ: Лог авторизации.\n",
+        UNKNOWN + "НЕ ХВАТАЕТ: Время запроса.\n",
+    ], related=_related(([1, 2], "причина не установлена"), run=run))
+    assert "Требуют вашего внимания (1) · 4 теста" in console
+    assert "Не хватает (на примере): Лог авторизации." in console
+    assert "Время запроса." not in console
+
+
 def test_problems_with_an_agent_fix_are_not_merged(tmp_path: Path) -> None:
     run = _run([2, 2, 2])
     related = _related(([1, 2, 3], "ожидаемый код устарел"), run=run)
     console, full = _render(tmp_path, run, [TEST, TEST, TEST_NO_CODE],
                             proposals={"01": _proposal()}, related=related)
 
-    assert "-> 2 проблемы (3 до объединения похожих):" in console
+    assert "-> 2 проблемы (3 до объединения похожих)\n" in console
     agent = _section(console, "Агент может поправить сам")
     assert "**Проблема 1** · 2 теста · [та же причина у проблем 2, 3 (объединил агент)]" in agent
     manual = _section(console, "Автотест сломан, но править вручную")
     assert ("**Проблема 2 и 3** · 4 теста · [объединил агент] · [та же причина у проблемы 1]"
             in manual)
-    assert "   Почему не сам:" in manual
+    assert "Почему не сам:" in manual
     assert "- Та же причина, по мнению агента, и у проблемы 1" in _section(
         full, "Автотест сломан, но править вручную")
     assert merged_count(run, related, {"01"}) == 2
@@ -833,10 +893,10 @@ def test_brief_with_merged_problems_keeps_its_ceiling(tmp_path: Path) -> None:
 
     attention = _section(console, "Требуют вашего внимания")
     assert attention.startswith(f"### 🔴 Требуют вашего внимания ({count // 2})")
-    assert attention.count("**Проблема ") == MAX_BRIEF_ITEMS
-    rest = count // 2 - MAX_BRIEF_ITEMS
-    assert f"- … и ещё {rest} проблем ({2 * rest} тестов)" in attention
-    assert len(console) < 4_000
+    shown = attention.count("**Проблема ")
+    assert f"В CLI показано {shown} из {count // 2} проблем" in console
+    assert f"Не показано: {count // 2 - shown} из {count // 2} проблем." in attention
+    assert len(console) < report.BRIEF_CARD_BUDGET + 1_500
     assert full.count("объединил агент") == count // 2
 
 

@@ -13,7 +13,8 @@ from alla_skill_lib.history import run_records
 from alla_skill_lib.kb import KBRecord, ProjectKB
 from alla_skill_lib.known_issues import KnownIssues, current_kb_matches, known_issues
 from alla_skill_lib.report import (
-    MAX_BRIEF_ITEMS,
+    BRIEF_CARD_BUDGET,
+    MAX_DETAILED_BRIEF_CARDS,
     MAX_REPORT_GROUP_NUMBERS,
     MAX_SUMMARY_GROUP_NUMBERS,
     MAX_SUMMARY_LISTED,
@@ -263,9 +264,9 @@ def test_brief_collapses_group_into_one_block(tmp_path: Path) -> None:
     assert "### 🔴 Требуют вашего внимания (3)" in attention
     assert "**Проблема 1 и 3 и 4** · 10 тестов · [известная проблема: payment_db_pool_1a2b3c4d]" in attention
     assert "Одна известная проблема: «Пул соединений БД платежей исчерпан»" in attention
-    assert "   База знаний:   [ПРИЛОЖЕНИЕ] Сервис платежей не отдаёт соединения из пула БД." in attention
-    assert "   Что делать:    Увеличить пул payment-db" in attention
-    assert "   Например:      test_1" in attention
+    assert "База знаний: [ПРИЛОЖЕНИЕ] Сервис платежей не отдаёт соединения из пула БД." in attention
+    assert "Что делать: Увеличить пул payment-db" in attention
+    assert "Например: test_1" in attention
     assert "**Проблема 3**" not in attention and "**Проблема 4**" not in attention
     assert "**Проблема 2**" in _section(console, "Стенд и тестовые данные")
 
@@ -288,16 +289,16 @@ def test_brief_does_not_collapse_problems_with_fixes(tmp_path: Path) -> None:
 
 
 def test_brief_counts_a_collapsed_group_as_one_item(tmp_path: Path) -> None:
-    sizes = [10] * 3 + [1] * (MAX_BRIEF_ITEMS + 2)
-    texts = [_kb(APP)] * 3 + [APP] * (MAX_BRIEF_ITEMS + 2)
+    sizes = [10] * 3 + [1] * (MAX_DETAILED_BRIEF_CARDS - 1)
+    texts = [_kb(APP)] * 3 + [APP] * (MAX_DETAILED_BRIEF_CARDS - 1)
     run, analyses, paths = _setup(tmp_path, sizes, texts)
     known = _known(run, analyses, paths)
     console, _ = _render(run, analyses, paths, known)
     attention = _section(console, "Требуют вашего внимания")
     blocks = re.findall(r"^\*\*Проблем", attention, re.MULTILINE)
-    assert len(blocks) == MAX_BRIEF_ITEMS
-    # Показаны группа (3 проблемы) и ещё 4 проблемы; хвост — оставшиеся 3 проблемы.
-    assert "… и ещё 3 проблемы (3 теста)" in attention
+    assert len(blocks) == MAX_DETAILED_BRIEF_CARDS
+    assert "Например: test_1" in attention  # свёрнутая группа не заставила включить компактный вид
+    assert "Не показано:" not in attention
 
 
 def test_brief_group_numbers_are_limited(tmp_path: Path) -> None:
@@ -324,9 +325,10 @@ def test_brief_size_does_not_grow_with_many_groups(tmp_path: Path) -> None:
         known = _known(run, analyses, paths)
         assert len(known.groups) == groups
         console, _ = _render(run, analyses, paths, known)
-        assert console.count("**Проблема ") == MAX_BRIEF_ITEMS
+        shown = 2 * console.count("**Проблема ")
+        assert f"В CLI показано {shown} из {2 * groups} проблем" in console
         sizes.append(len(console))
-    assert max(sizes) < 6_000
+    assert max(sizes) < BRIEF_CARD_BUDGET + 1_500
     assert abs(sizes[0] - sizes[1]) < 300
 
 

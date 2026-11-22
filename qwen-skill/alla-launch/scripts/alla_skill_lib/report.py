@@ -6,9 +6,9 @@
 код (категория разбора и наличие принятой правки), а не модель.
 
 В терминал агент выводит краткий разбор: шапка с полоской прошедших тестов и
-обзором разделов, общий анализ и по блоку на проблему в каждом разделе — что
+счётчиками, общий анализ и по блоку на проблему в каждом разделе — что
 случилось, что думает агент о причине и что делать, — а в конце ссылка на
-``report.md``. Эмодзи — только у разделов (срочность цветом), остальное — ASCII.
+``report.md``. Эмодзи — только у разделов (срочность цветом).
 Полный разбор (тексты целиком, все шаги, все тесты, правки БЫЛО/СТАЛО) лежит
 в ``report.md``. Краткий текст повторно попадает в контекст модели при каждом ``next``, поэтому
 на него действуют потолки; файл в контекст не попадает и ничем не ограничен.
@@ -43,15 +43,15 @@ FEEDBACK_INVITATION = (
     "Обратная связь: если причина указана неверно или вы знаете точную — назовите номер "
     "проблемы и что на самом деле, я сохраню это в базу знаний проекта (alla-kb/)."
 )
-# Краткий разбор в терминале: по несколько строк на проблему, не больше пяти на раздел.
-MAX_BRIEF_ITEMS = 5
+MAX_DETAILED_BRIEF_CARDS = 8
+BRIEF_CARD_BUDGET = 10_000
+BRIEF_COMPACT_TEXT_CHARS = 100
 BRIEF_TEXT_CHARS = 160  # «что случилось»
 BRIEF_CAUSE_CHARS = 200  # «агент считает»
-BRIEF_STEP_CHARS = 140  # «что делать»
+BRIEF_STEP_CHARS = 200  # «что делать»
 BRIEF_REASON_CHARS = 160  # «почему агент не правил сам»
-BRIEF_WARNING_CHARS = 140
+BRIEF_WARNING_CHARS = 200
 BRIEF_BAR_CELLS = 10  # полоска прошедших тестов: [####------]
-BRIEF_LABEL_WIDTH = 15  # подписи строк проблемы выровнены в колонку
 # Предупреждения и замечания в терминале: число и длина ограничены — их повторяет каждый next.
 MAX_BRIEF_NOTES = 5
 BRIEF_NOTE_CHARS = 300
@@ -137,13 +137,13 @@ SECTIONS = (
         "код автотестов, скорее всего, ни при чём.",
     ),
 )
-# Краткий разбор: значок раздела (срочность цветом) и короткое имя для обзора в шапке.
+# Краткий разбор: значок раздела (срочность цветом).
 # Эмодзи без селектора U+FE0F: с ним в части терминалов съезжает ширина строки.
 BRIEF_SECTIONS = {
-    ATTENTION: ("🔴", "требуют вашего внимания"),
-    AGENT: ("🟢", "агент поправит сам"),
-    MANUAL: ("🟡", "править вручную"),
-    ENVIRONMENT: ("🔵", "стенд и данные"),
+    ATTENTION: "🔴",
+    AGENT: "🟢",
+    MANUAL: "🟡",
+    ENVIRONMENT: "🔵",
 }
 # Категория в кратком разборе — ASCII-меткой: «Агент считает: [ПРИЛОЖЕНИЕ] …».
 CATEGORY_TAGS = {
@@ -625,14 +625,32 @@ def render_report(
     ]
     groups = [(bucket, title, units) for bucket, title, units in groups if units]
     count = sum(len(units) for _, _, units in groups)
-    brief = _brief_header(run, groups, count, rerun)
+    brief = _brief_header(run, count, rerun)
     kb_auto = sum(1 for problem in problems if problem.kb_auto)
-    if kb_auto:
-        brief.insert(brief.index(f"TestOps: {run['launch_url']}"), _kb_auto_header(kb_auto))
+    folded = [(bucket, title, _brief_units(bucket, units)) for bucket, title, units in groups]
+    compact = sum(len(folds) for _, _, folds in folded) > MAX_DETAILED_BRIEF_CARDS
+    sections: list[str] = []
+    budget = BRIEF_CARD_BUDGET
+    first_cards = [_brief_card(folds[0], tests, reasons, compact) for _, _, folds in folded]
+    first_costs = [_brief_card_cost(card) for card in first_cards]
+    # Пока первые карточки помещаются вместе, ранний раздел не отнимает их место у остальных.
+    reserve_first = compact and sum(first_costs) <= budget
+    shown = 0
+    for index, (bucket, title, folds) in enumerate(folded):
+        reserve = sum(first_costs[index + 1:]) if reserve_first else 0
+        lines, remaining, section_shown = _brief_section(
+            bucket, title, folds, tests, reasons, compact, budget - reserve, first_cards[index],
+        )
+        sections += ["", *lines]
+        budget = remaining + reserve
+        shown += section_shown
+    header_notes = [_kb_auto_header(kb_auto)] if kb_auto else []
+    if shown < count:
+        header_notes.append(f"В CLI показано {shown} из {count} проблем отчёта: достигнут предел длины карточек.")
+    link_index = brief.index(f"TestOps: {run['launch_url']}")
+    brief[link_index:link_index] = header_notes
     summary = _plain_text(summary)
-    brief += ["", "### Коротко", summary, "", "---"]
-    for bucket, title, group in groups:
-        brief += ["", *_brief_section(bucket, title, group, tests, reasons)]
+    brief += ["", "### Коротко", summary, "", "---", *sections]
     if notes:
         brief += ["", "### Замечания", *_brief_lines(notes, "- ", "замечаний")]
     brief += ["", "---", "", FEEDBACK_INVITATION, "", link]
@@ -1005,11 +1023,10 @@ def _muted_note(counts: dict[str, Any]) -> str:
 
 def _brief_header(
     run: dict[str, Any],
-    groups: list[tuple[str, str, list[list[_Problem]]]],
     count: int,
     rerun: RerunView | None = None,
 ) -> list[str]:
-    """Шапка краткого разбора: полоска прошедших тестов, счётчики без нулей и обзор разделов."""
+    """Шапка краткого разбора: полоска прошедших тестов и счётчики."""
     counts = run["counts"]
     title = f"## Разбор прогона #{run['launch_id']}"
     if run.get("launch_name"):
@@ -1035,15 +1052,7 @@ def _brief_header(
             f"{active} {_plural(active, 'упавший тест', 'упавших теста', 'упавших тестов')}"
             f" -> {_merged_scope(run, count)}"
         )
-        lines.append(scope + _muted_note(counts) + ":")
-        width = max(len(name) for _, name in BRIEF_SECTIONS.values()) + 4
-        for bucket, _, units in groups:
-            icon, name = BRIEF_SECTIONS[bucket]
-            size = sum(_size(unit) for unit in units)
-            lines.append(
-                f"   {icon} {name} {'.' * (width - len(name))} {len(units)} "
-                f"({size} {_plural(size, 'тест', 'теста', 'тестов')})"
-            )
+        lines.append(scope + _muted_note(counts))
     lines.append(f"TestOps: {run['launch_url']}")
     return lines + _brief_lines(run.get("warnings", []), "(!) ", "предупреждений")
 
@@ -1064,35 +1073,43 @@ def _pass_bar(passed: int, total: int) -> str:
 def _brief_section(
     bucket: str,
     title: str,
-    units: list[list[_Problem]],
+    folds: list[list[list[_Problem]]],
     tests: _Tests,
     not_proposed: dict[str, str],
-) -> list[str]:
-    icon, _ = BRIEF_SECTIONS[bucket]
-    lines = [f"### {icon} {title} ({len(units)})"]
-    folds = _brief_units(bucket, units)
-    for fold in folds[:MAX_BRIEF_ITEMS]:
-        if len(fold) > 1:
-            item = _brief_known([unit[0] for unit in fold], tests)
-        elif len(fold[0]) > 1:
-            item = _brief_merged(fold[0], tests, not_proposed)
-        else:
-            item = _brief_item(fold[0][0], tests, not_proposed)
+    compact: bool,
+    budget: int,
+    first: list[str],
+) -> tuple[list[str], int, int]:
+    units = [unit for fold in folds for unit in fold]
+    size = sum(_size(unit) for unit in units)
+    lines = [f"### {BRIEF_SECTIONS[bucket]} {title} ({len(units)}) · "
+             f"{size} {_plural(size, 'тест', 'теста', 'тестов')}"]
+    shown = 0
+    for index, fold in enumerate(folds):
+        item = _brief_card(fold, tests, not_proposed, compact) if index else first
+        cost = _brief_card_cost(item)
+        if compact and cost > budget:
+            rest = [unit for remaining in folds[index:] for unit in remaining]
+            lines += ["", f"Не показано: {len(rest)} из {len(units)} проблем. Полный список — в report.md."]
+            break
+        budget -= cost
+        shown += len(fold)
         lines += ["", *item]
-    rest = [unit for fold in folds[MAX_BRIEF_ITEMS:] for unit in fold]
-    if rest:
-        # Без номеров: голый список номеров ничего не говорит, а при тысячах проблем
-        # рос бы с каждым next. Сколько их и где смотреть — достаточно.
-        count = sum(_size(unit) for unit in rest)
-        lines += [
-            "",
-            (
-                f"- … и ещё {len(rest)} {_plural(len(rest), 'проблема', 'проблемы', 'проблем')} "
-                f"({count} {_plural(count, 'тест', 'теста', 'тестов')}) — "
-                f"полный список в report.md, раздел «{title}»"
-            ),
-        ]
-    return lines
+    return lines, budget, shown
+
+
+def _brief_card(
+    fold: list[list[_Problem]], tests: _Tests, not_proposed: dict[str, str], compact: bool,
+) -> list[str]:
+    if len(fold) > 1:
+        return _brief_known([unit[0] for unit in fold], tests, compact)
+    if len(fold[0]) > 1:
+        return _brief_merged(fold[0], tests, not_proposed, compact)
+    return _brief_item(fold[0][0], tests, not_proposed, compact)
+
+
+def _brief_card_cost(card: list[str]) -> int:
+    return sum(len(line) + 1 for line in card) + 1
 
 
 def _brief_units(bucket: str, units: list[list[_Problem]]) -> list[list[list[_Problem]]]:
@@ -1119,7 +1136,7 @@ def _brief_units(bucket: str, units: list[list[_Problem]]) -> list[list[list[_Pr
     return folds
 
 
-def _brief_known(unit: list[_Problem], tests: _Tests) -> list[str]:
+def _brief_known(unit: list[_Problem], tests: _Tests, compact: bool) -> list[str]:
     """Свёрнутая известная проблема: номера, запись базы знаний, её первый шаг и пример теста."""
     first = unit[0]
     assert first.group is not None
@@ -1131,17 +1148,17 @@ def _brief_known(unit: list[_Problem], tests: _Tests) -> list[str]:
          f"· [известная проблема: {record.id}]"
          + "".join(f" · [{tag}]" for tag in [*([KB_AUTO_TAG] if all(p.kb_auto for p in unit) else []),
                                               *_flaky_tags(unit)])),
-        _truncate(f"Одна известная проблема: «{_plain_line(_one_line(record.title))}»", BRIEF_TEXT_CHARS),
     ]
+    _brief_symptom(lines, f"Одна известная проблема: «{_plain_line(_one_line(record.title))}»", compact)
     reason = record.description or _one_line(_reason(first))
-    lines.append(_brief_field("База знаний:", f"[{first.tag}] {_truncate(_plain_line(reason), BRIEF_CAUSE_CHARS)}"))
+    lines.append(_brief_field("База знаний:", f"[{first.tag}] {_brief_clip(_plain_line(reason), BRIEF_CAUSE_CHARS)}"))
     step = _one_line(record.first_step) or first.analysis.first_fix_step()
     if step:
-        lines.append(_brief_field("Что делать:", _truncate(_plain_line(step), BRIEF_STEP_CHARS)))
-    return lines + _brief_example(_largest(unit), tests)
+        lines.append(_brief_field("Что делать:", _brief_clip(_plain_line(step), BRIEF_STEP_CHARS)))
+    return lines if compact else lines + _brief_example(_largest(unit), tests)
 
 
-def _brief_merged(unit: list[_Problem], tests: _Tests, not_proposed: dict[str, str]) -> list[str]:
+def _brief_merged(unit: list[_Problem], tests: _Tests, not_proposed: dict[str, str], compact: bool) -> list[str]:
     """Проблемы одной причины в терминале: номера, общая причина из решения агента, шаг и
     тест самой большой проблемы."""
     group = unit[0].related
@@ -1159,17 +1176,18 @@ def _brief_merged(unit: list[_Problem], tests: _Tests, not_proposed: dict[str, s
         f"{_plural(size, 'тест', 'теста', 'тестов')}" + "".join(f" · [{tag}]" for tag in tags)
     ]
     what = first_sentence(_plain_line(_one_line(largest.analysis.what)))
-    if what:
-        lines.append(_truncate(what, BRIEF_TEXT_CHARS))
-    cause = _truncate(_plain_line(_one_line(group.cause)), BRIEF_CAUSE_CHARS)
+    _brief_symptom(lines, what, compact)
+    cause = _brief_clip(_plain_line(_one_line(group.cause)), BRIEF_CAUSE_CHARS)
     lines.append(_brief_field("Общая причина:", f"[{largest.tag}] {cause}"))
+    if largest.analysis.category == "неизвестно" and largest.analysis.missing_text:
+        lines.append(_brief_field("Не хватает (на примере):",
+                                  _brief_clip(largest.analysis.missing_text, BRIEF_TEXT_CHARS)))
     step = largest.analysis.first_fix_step()
     if step:
-        lines.append(_brief_field("Что делать:", _truncate(step, BRIEF_STEP_CHARS)))
+        lines.append(_brief_field("Что делать:", _brief_clip(step, BRIEF_STEP_CHARS)))
     if largest.bucket == MANUAL:
-        reason = _truncate(_one_line(_not_fixed_reason(largest, not_proposed)), BRIEF_REASON_CHARS)
-        lines.append(_brief_field("Почему не сам:", reason))
-    return lines + _brief_example(largest, tests)
+        lines.append(_brief_manual_reason(largest, not_proposed))
+    return lines if compact else lines + _brief_example(largest, tests)
 
 
 def _merged_tags(unit: list[_Problem]) -> list[str]:
@@ -1191,16 +1209,16 @@ def _flaky_tags(unit: list[_Problem]) -> list[str]:
 
 def _brief_lines(items: list[str], prefix: str, what: str) -> list[str]:
     """Предупреждения/замечания для терминала: не больше пяти, каждое не длиннее лимита."""
-    lines = [prefix + _truncate(_one_line(item), BRIEF_NOTE_CHARS) for item in items[:MAX_BRIEF_NOTES]]
+    lines = [prefix + _brief_clip(_one_line(item), BRIEF_NOTE_CHARS) for item in items[:MAX_BRIEF_NOTES]]
     rest = len(items) - MAX_BRIEF_NOTES
     if rest > 0:
         lines.append(f"{prefix}… и ещё {rest} {what} — в полном разборе")
     return lines
 
 
-def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) -> list[str]:
+def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str], compact: bool) -> list[str]:
     """Проблема в терминале — блок: «Проблема N · размер · [метки]», что случилось и строки
-    с подписями в колонку: что думает агент, что делать, пример теста.
+    с подписями: что думает агент, что делать, пример теста.
 
     Для правки вместо «что делать» — где она и в каком состоянии, плюс «Проверьте»,
     если есть; для «править вручную» — ещё и почему агент не правил сам.
@@ -1209,44 +1227,51 @@ def _brief_item(problem: _Problem, tests: _Tests, not_proposed: dict[str, str]) 
     size = f"{problem.size} {_plural(problem.size, 'тест', 'теста', 'тестов')}"
     tags = "".join(f" · [{tag}]" for tag in _brief_tags(problem))
     lines = [f"**Проблема {problem.number}** · {size}{tags}"]
+    example = [] if compact else _brief_example(problem, tests)
     if problem.flagged and problem.confirmed is None:
         text = f"[{problem.tag}] разбор не прошёл проверку формата, текст — в report.md"
         lines.append(_brief_field("Агент считает:", text))
-        return lines + _brief_example(problem, tests)
+        return lines + example
     # Строка без подписи: разметку модели в начале убираем до выбора первого предложения,
     # иначе «1. Заказ…» дало бы предложение «1.».
     what = first_sentence(_plain_line(_one_line(analysis.what)))
-    if what:
-        lines.append(_truncate(what, BRIEF_TEXT_CHARS))
+    _brief_symptom(lines, what, compact)
     if problem.confirmed is not None:
-        cause = _truncate(_one_line(str(problem.confirmed["cause"])), BRIEF_CAUSE_CHARS)
+        cause = _brief_clip(_one_line(str(problem.confirmed["cause"])), BRIEF_CAUSE_CHARS)
         lines.append(_brief_field("Подтверждено:", f"[{problem.tag}] {cause}"))
         steps = [str(step) for step in problem.confirmed.get("fix", []) if str(step).strip()]
         if steps:
-            lines.append(_brief_field("Что делать:", _truncate(_one_line(steps[0]), BRIEF_STEP_CHARS)))
+            lines.append(_brief_field("Что делать:", _brief_clip(_one_line(steps[0]), BRIEF_STEP_CHARS)))
         if problem.bucket == MANUAL:
-            reason = _truncate(_one_line(_not_fixed_reason(problem, not_proposed)), BRIEF_REASON_CHARS)
-            lines.append(_brief_field("Почему не сам:", reason))
-        return lines + _brief_example(problem, tests)
-    reason = _truncate(_one_line(_reason(problem)), BRIEF_CAUSE_CHARS) or problem.label
+            lines.append(_brief_manual_reason(problem, not_proposed))
+        return lines + example
+    reason = _brief_clip(_one_line(_reason(problem)), BRIEF_CAUSE_CHARS) or problem.label
     lines.append(_brief_field(_opinion_label(problem), f"[{problem.tag}] {reason}"))
+    if analysis.category == "неизвестно" and analysis.missing_text:
+        lines.append(_brief_field("Не хватает:", _brief_clip(analysis.missing_text, BRIEF_TEXT_CHARS)))
     proposal = problem.proposal
     if problem.bucket == AGENT and proposal is not None:
         status = "уже применено" if problem.applied else "ждёт вашего «да»"
         lines.append(_brief_field("Правка:", f"`{proposal.location}` — {status}"))
         lines += [
-            _brief_field("Проверьте:", _truncate(warning, BRIEF_WARNING_CHARS))
+            _brief_field("Проверьте:", _brief_clip(warning, BRIEF_WARNING_CHARS))
             for warning in weakening_warnings(proposal.before, proposal.after)[:1]
         ]
-        return lines + _brief_example(problem, tests)
+        return lines + example
     # Шаги разбора по отвергнутой записи лечат не подтверждённую причину — не советуем их.
     step = analysis.first_fix_step() if problem.rejected is None else ""
     if step:
-        lines.append(_brief_field("Что делать:", _truncate(step, BRIEF_STEP_CHARS)))
+        lines.append(_brief_field("Что делать:", _brief_clip(step, BRIEF_STEP_CHARS)))
     if problem.bucket == MANUAL:
-        reason = _truncate(_one_line(_not_fixed_reason(problem, not_proposed)), BRIEF_REASON_CHARS)
-        lines.append(_brief_field("Почему не сам:", reason))
-    return lines + _brief_example(problem, tests)
+        lines.append(_brief_manual_reason(problem, not_proposed))
+    return lines + example
+
+
+def _brief_symptom(lines: list[str], what: str, compact: bool) -> None:
+    if what and compact:
+        lines[0] += f" — {_brief_clip(what, BRIEF_COMPACT_TEXT_CHARS)}"
+    elif what:
+        lines.append(_brief_clip(what, BRIEF_TEXT_CHARS))
 
 
 def _plain_line(text: str) -> str:
@@ -1269,7 +1294,27 @@ def _plain_text(text: str) -> str:
 
 
 def _brief_field(label: str, text: str) -> str:
-    return f"   {label:<{BRIEF_LABEL_WIDTH}}{text}"
+    return f"{label} {text}"
+
+
+def _brief_clip(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    prefix = text[:limit - 1]
+    word_end = text.rfind(" ", 0, limit)
+    return (text[:word_end] if word_end >= limit // 2 else prefix).rstrip() + "…"
+
+
+def _brief_manual_reason(problem: _Problem, not_proposed: dict[str, str]) -> str:
+    proposal = problem.proposal
+    if proposal is not None and proposal.is_fix and problem.state == "unknown":
+        return _brief_field(
+            "Почему не сам:",
+            "Проверьте `git diff`: состояние правки неизвестно, apply повторно её не применит. "
+            f"Место: `{proposal.location}`",
+        )
+    reason = _brief_clip(_one_line(_not_fixed_reason(problem, not_proposed)), BRIEF_REASON_CHARS)
+    return _brief_field("Почему не сам:", reason)
 
 
 def _brief_example(problem: _Problem, tests: _Tests) -> list[str]:

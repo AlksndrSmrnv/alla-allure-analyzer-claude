@@ -645,7 +645,7 @@ def test_confirmed_finding_goes_to_kb_and_report(
         out = _run(["next", str(run_dir)], capsys)[1]
     assert out.startswith("STATUS: done"), out
     assert "[подтверждено по коду]" in out
-    assert "Подтверждено:  [ПРИЛОЖЕНИЕ] OrderService.create бросает NPE" in out
+    assert "Подтверждено: [ПРИЛОЖЕНИЕ] OrderService.create бросает NPE" in out
     # Подсказка после отчёта больше не предлагает подтверждённую проблему.
     assert f"/alla:code {number} " not in out
     report = (run_dir / "report.md").read_text(encoding="utf-8")
