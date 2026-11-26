@@ -957,6 +957,65 @@ def test_stand_profile_allows_node_and_blocks_outside_reads(tmp_path: Path) -> N
     qwen_stand.check_sandbox(profile, project, home, venv=None)
 
 
+def test_linked_runtime_reads_excludes_openssl_private_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import qwen_stand
+
+    root = tmp_path / "hb"
+    node_bin = root / "Cellar" / "node" / "1.0" / "bin" / "node"
+    node_bin.parent.mkdir(parents=True)
+    node_bin.write_text("", encoding="utf-8")
+
+    ssl_pkg = root / "opt" / "openssl@4"
+    (ssl_pkg / "lib").mkdir(parents=True)
+    (ssl_pkg / "bin").mkdir(parents=True)
+    libcrypto = ssl_pkg / "lib" / "libcrypto.4.dylib"
+    libcrypto.write_text("", encoding="utf-8")
+    openssl_bin = ssl_pkg / "bin" / "openssl"
+    openssl_bin.write_text("", encoding="utf-8")
+
+    ca_dir = root / "etc" / "ca-certificates"
+    ca_dir.mkdir(parents=True)
+    ca_cert = ca_dir / "cert.pem"
+    ca_cert.write_text("ca", encoding="utf-8")
+
+    ssl_dir = root / "etc" / "openssl@4"
+    (ssl_dir / "certs").mkdir(parents=True)
+    (ssl_dir / "certs" / "ca.pem").write_text("ca", encoding="utf-8")
+    (ssl_dir / "private").mkdir(parents=True)
+    secret_key = ssl_dir / "private" / "secret.key"
+    secret_key.write_text("secret", encoding="utf-8")
+    (ssl_dir / "openssl.cnf").write_text("cnf", encoding="utf-8")
+    (ssl_dir / "cert.pem").symlink_to(ca_cert)
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/otool" if name == "otool" else None)
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[0] == "/usr/bin/otool":
+            target = Path(cmd[2])
+            if target == node_bin.resolve():
+                out = f"{target}:\n\t{libcrypto} (compatibility version 4.0.0)\n"
+            else:
+                out = f"{target}:\n"
+            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+        if cmd[0] == str(openssl_bin):
+            return subprocess.CompletedProcess(cmd, 0, stdout=f'OPENSSLDIR: "{ssl_dir}"\n', stderr="")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    dirs, files = qwen_stand._linked_runtime_reads(node_bin)
+
+    assert ssl_dir not in dirs and ssl_dir.resolve() not in dirs
+    assert (ssl_dir / "private") not in dirs
+    assert ca_dir not in dirs and ca_dir.resolve() not in dirs
+    assert (ssl_dir / "certs") in dirs
+    assert (ssl_dir / "openssl.cnf") in files
+    assert (ssl_dir / "cert.pem") in files and ca_cert.resolve() in files
+    assert secret_key not in files
+    assert not any(secret_key.resolve().is_relative_to(d.resolve()) for d in dirs)
+
+
 def _scant_run(tmp_path: Path, analysis: str | None, attempts: int = 0, *,
                skipped: bool = False, written_by_model: bool = True) -> Context:
     run_dir = tmp_path / "p" / "alla-reports" / "781-20261004-100000"

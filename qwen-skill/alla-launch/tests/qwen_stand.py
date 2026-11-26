@@ -938,14 +938,15 @@ def qwen_package_dir() -> Path:
     return Path(os.path.realpath(qwen)).parent
 
 
-def _linked_dylib_dirs(binary: Path) -> set[Path]:
-    """Каталоги несистемных dylib-зависимостей бинарника (например, Homebrew node на macOS)."""
+def _linked_runtime_reads(binary: Path) -> tuple[set[Path], set[Path]]:
+    """Каталоги и файлы несистемных зависимостей бинарника (например, Homebrew node на macOS)."""
     otool = shutil.which("otool")
     if otool is None:
-        return set()
+        return set(), set()
     root_lib = binary.parent.parent / "lib"
     system_prefixes = tuple(d.rstrip("/") + "/" for d in SYSTEM_READ_DIRS)
     dirs: set[Path] = set()
+    files: set[Path] = set()
     seen: set[Path] = set()
     queue: list[Path] = [binary]
     while queue:
@@ -990,14 +991,19 @@ def _linked_dylib_dirs(binary: Path) -> set[Path]:
                 if match:
                     ssl_dir = Path(match.group(1))
                     if ssl_dir.is_dir():
-                        dirs.add(ssl_dir)
-                        dirs.add(Path(os.path.realpath(ssl_dir)))
-                        cert = ssl_dir / "cert.pem"
-                        if cert.exists():
-                            dirs.add(Path(os.path.realpath(cert)).parent)
+                        # Не открываем весь OPENSSLDIR (там может быть private/): только конфиг и сертификаты.
+                        for name in ("openssl.cnf", "ct_log_list.cnf", "cert.pem"):
+                            target = ssl_dir / name
+                            if target.exists():
+                                files.add(target)
+                                files.add(Path(os.path.realpath(target)))
+                        certs_dir = ssl_dir / "certs"
+                        if certs_dir.is_dir():
+                            dirs.add(certs_dir)
+                            dirs.add(Path(os.path.realpath(certs_dir)))
             if resolved not in seen:
                 queue.append(resolved)
-    return dirs
+    return dirs, files
 
 
 def runtime_reads() -> tuple[list[Path], list[Path]]:
@@ -1009,7 +1015,9 @@ def runtime_reads() -> tuple[list[Path], list[Path]]:
         raise StandError("node не найден в PATH")
     node_real = Path(os.path.realpath(node))
     dirs.add(node_real.parent.parent)
-    dirs.update(_linked_dylib_dirs(node_real))
+    dep_dirs, dep_files = _linked_runtime_reads(node_real)
+    dirs.update(dep_dirs)
+    files.update(dep_files)
     dirs.add(qwen_package_dir())
     files.update(Path(p) for p in (node, shutil.which("qwen")) if p)
     for name in PYTHON_CANDIDATES:
@@ -1018,7 +1026,9 @@ def runtime_reads() -> tuple[list[Path], list[Path]]:
             files.add(Path(found))
             py_real = Path(os.path.realpath(found))
             dirs.add(py_real.parent.parent)
-            dirs.update(_linked_dylib_dirs(py_real))
+            py_dirs, py_files = _linked_runtime_reads(py_real)
+            dirs.update(py_dirs)
+            files.update(py_files)
     dirs.update(Path(os.path.realpath(venv)) for venv in CACHE_DIR.glob("venv-*"))
     # /usr/bin/python3 и git — заглушки xcrun: они грузят libxcrun из активного каталога
     # разработчика (/Library/Developer/CommandLineTools или Xcode.app/Contents/Developer),
