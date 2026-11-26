@@ -87,10 +87,14 @@ paths:
   затёрло бы первое. Хуков `script` на событие может быть несколько.
 - Агенты встроенных расширений (`alla-git-publish`, `alla-sut-code`, `alla-tickets`) лежат
   в корневом `agents/` и поставляются самим расширением Qwen Code (`_bundled_agent`); у
-  своих расширений проекта `agent = "agent.md"` в `extension.toml` обязателен.
+  своей замены встроенного плагина в `alla-extensions/<имя>/` при отсутствии `agent` в
+  манифесте используется тот же `_bundled_agent(name)`, а для своих расширений проекта
+  `agent = "agent.md"` при хуке с `task` обязателен.
 - Слэш-команды `/alla:code` и `/alla:ticket` лежат в корневом `commands/alla/` и поставляются
-  расширением `alla`. Для своих расширений проекта поле `commands = ["commands/<имя>.md"]` в
-  манифесте проверяется прежними правилами (`_commands`/`_check_command`).
+  расширением `alla`. Свои расширения проекта не могут занимать команды скилла и чужих
+  плагинов, но своя замена `sut-code`/`tickets` (`api = 1`) по `BUNDLED_PLUGIN_COMMANDS`
+  по-прежнему может объявлять `commands/code.md` или `commands/ticket.md`. Поле
+  `commands = ["commands/<имя>.md"]` в манифесте проверяется `_commands`/`_check_command`.
   `enable`/`disable` печатает только строку `enabled` и diff `alla-extensions/config.toml`
   со статусом `ok` (без `--yes`/`--diff`, без записи и без копирования агентов/команд).
 - Модель работу расширения не делает: субагент запускает только команду скилла из задания

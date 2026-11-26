@@ -57,6 +57,27 @@
 Скилл вызывается командой `/alla:launch 12345`, `/alla:run 12345` (можно вставить ссылку на
 запуск) или фразой «разбери прогон 12345».
 
+### Переход со старой версии (`.qwen/skills/alla-launch/`)
+
+Если в проекте уже стояла старая версия в `.qwen/skills/alla-launch/`, обязателен ручной
+переход. В Qwen Code (в т.ч. `0.28.4`) проектные `.qwen/commands/alla/`,
+`.qwen/skills/alla-launch/` и `.qwen/agents/` загружаются раньше расширения: при конфликте
+имени новая команда переименовывается, а `/alla:run` продолжает запускать старый `alla-launch`.
+
+1. Проверьте свои изменения (`git diff`, `.qwen/commands/alla/`, `.qwen/agents/`). Сохраните
+   команды и субагентов ваших расширений из `alla-extensions/`, при необходимости заменив
+   в своих командах `alla-launch` на `alla:launch`.
+2. Перенесите несекретные настройки из `.qwen/skills/alla-launch/.env` в `<project>/.qwen/alla.env`
+   (права `600`, без `ALLURE_TOKEN`).
+3. Перенесите токен: `qwen extensions settings set alla ALLURE_TOKEN --scope workspace`, затем
+   `qwen extensions uninstall alla-launch-credentials`.
+4. Удалите `.qwen/skills/alla-launch/`, встроенные команды в `.qwen/commands/alla/` (`run.md`,
+   `continue.md`, `apply.md`, `revert.md`, `remember.md`, `reject.md`, `rerun.md`, `review.md`,
+   `extensions.md`, `setup.md`, `update.md`, `code.md`, `ticket.md` — или всю папку, если нет
+   своих команд) и встроенных субагентов в `.qwen/agents/` (`alla-batch.md`, `alla-git-publish.md`,
+   `alla-sut-code.md`, `alla-tickets.md`). Если файлы были в git — закоммитьте удаление.
+5. Перезапустите Qwen Code и выполните `check` / `/alla:setup`.
+
 ### Хранение токена
 
 Манифест `qwen-extension.json` расширения `alla` объявляет настройку `ALLURE_TOKEN` с `sensitive: true`;

@@ -57,6 +57,13 @@ BLOCK_HEADING = "Расширения:"
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 # Имена, чей субагент alla-<имя> затёр бы субагента самого скилла в .qwen/agents/.
 RESERVED_NAMES = frozenset({BATCH_AGENT.removeprefix("alla-")})
+# Слэш-команды встроенных плагинов, перенесённые в commands/alla/ расширения alla.
+# Своя замена встроенного плагина в alla-extensions/<имя>/ с api = 1 может по-прежнему
+# объявлять свою команду; другие расширения — нет.
+BUNDLED_PLUGIN_COMMANDS: dict[str, frozenset[str]] = {
+    "sut-code": frozenset({"code"}),
+    "tickets": frozenset({"ticket"}),
+}
 ACTION_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
 DEFAULT_TIMEOUT = 120  # секунд на скрипт расширения (манифест)
 MAX_TIMEOUT = 600
@@ -226,7 +233,12 @@ def load_manifest(folder: Path, *, bundled: bool) -> Extension:
     timeout = data.get("timeout", DEFAULT_TIMEOUT)
     if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= MAX_TIMEOUT:
         raise ExtensionError(f"timeout — целое число секунд от 1 до {MAX_TIMEOUT}")
-    agent = _file(folder, data["agent"], "agent") if "agent" in data else (_bundled_agent(name) if bundled else None)
+    has_bundled_override = not bundled and (bundled_dir() / name / MANIFEST_FILE).is_file()
+    agent = (
+        _file(folder, data["agent"], "agent")
+        if "agent" in data
+        else (_bundled_agent(name) if (bundled or has_bundled_override) else None)
+    )
     if agent is not None:
         _check_agent(agent, AGENT_PREFIX + name)
     hooks = tuple(_hook(folder, raw, agent) for raw in _list_of_tables(data, "hooks"))
@@ -254,7 +266,7 @@ def load_manifest(folder: Path, *, bundled: bool) -> Extension:
         actions[action] = _file(folder, script, f"actions.{action}")
     if not hooks and not actions:
         raise ExtensionError("нет ни хуков [[hooks]], ни действий [actions] — расширение ничего не делает")
-    commands = _commands(folder, data.get("commands", []))
+    commands = _commands(folder, data.get("commands", []), ext_name=name)
     return Extension(
         name=name,
         title=str(data.get("title") or name),
@@ -278,10 +290,10 @@ def skill_command_names() -> frozenset[str]:
     return frozenset(path.stem for path in source.glob("*.md"))
 
 
-def _commands(folder: Path, raw: Any) -> dict[str, Path]:
+def _commands(folder: Path, raw: Any, *, ext_name: str = "") -> dict[str, Path]:
     if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
         raise ExtensionError("commands — список путей к файлам команд Qwen (commands/<имя>.md)")
-    reserved = skill_command_names()
+    reserved = skill_command_names() - BUNDLED_PLUGIN_COMMANDS.get(ext_name, frozenset())
     commands: dict[str, Path] = {}
     for item in raw:
         path = _file(folder, item, "commands")

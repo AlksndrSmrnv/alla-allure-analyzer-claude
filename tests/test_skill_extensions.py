@@ -197,13 +197,20 @@ def test_project_extension_overrides_bundled(project: Path, capsys) -> None:
     shutil.copytree(BUNDLED / "git-publish", ws.SKILL_DIR / "extensions" / "git-publish")
     own = project / ext.PROJECT_DIRNAME / "git-publish"
     shutil.copytree(BUNDLED / "git-publish", own)
+    # Без agent = "agent.md" своя замена встроенного расширения наследует субагента из alla.
+    catalog = ext.discover(project)
+    assert catalog.extensions["git-publish"].overrides_bundled
+    assert catalog.extensions["git-publish"].root == own
+    assert catalog.extensions["git-publish"].agent_name == "alla-git-publish"
+    assert "(своё, заменяет встроенное)" in ext_cli(project, capsys)[1]
+
+    # С явным agent = "agent.md" (прежняя схема расширения) тоже работает.
     shutil.copy2(BUNDLED.parent / "agents" / "alla-git-publish.md", own / "agent.md")
     manifest = own / "extension.toml"
     manifest.write_text('agent = "agent.md"\n' + manifest.read_text(encoding="utf-8"), encoding="utf-8")
     catalog = ext.discover(project)
     assert catalog.extensions["git-publish"].overrides_bundled
-    assert catalog.extensions["git-publish"].root == own
-    assert "(своё, заменяет встроенное)" in ext_cli(project, capsys)[1]
+    assert catalog.extensions["git-publish"].agent == (own / "agent.md").resolve()
 
 
 def test_bundled_git_publish_manifest_is_valid() -> None:
@@ -806,6 +813,61 @@ def test_extension_command_errors(project: Path, name: str, text: str, error: st
     (folder / "commands").mkdir()
     (folder / "commands" / name).write_text(text, encoding="utf-8")
     assert error in ext.discover(project).errors["demo"]
+
+
+def test_project_override_of_sut_code_and_tickets_allows_legacy_commands(project: Path) -> None:
+    """Копии встроенных плагинов (api = 1) с прежними commands/code.md и commands/ticket.md остаются рабочими."""
+    for name, cmd in (("sut-code", "code"), ("tickets", "ticket")):
+        shutil.copytree(BUNDLED / name, ws.SKILL_DIR / "extensions" / name)
+        own = project / ext.PROJECT_DIRNAME / name
+        shutil.copytree(BUNDLED / name, own)
+        (own / "commands").mkdir()
+        (own / "commands" / f"{cmd}.md").write_text(COMMAND, encoding="utf-8")
+        manifest = own / "extension.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                "api = 1\n", f'api = 1\ncommands = ["commands/{cmd}.md"]\n', 1
+            ),
+            encoding="utf-8",
+        )
+        configure_extension(project, name, True)
+
+    catalog = ext.discover(project)
+    assert not catalog.errors
+    assert catalog.extensions["sut-code"].overrides_bundled
+    assert "code" in catalog.extensions["sut-code"].commands
+    assert catalog.extensions["tickets"].overrides_bundled
+    assert "ticket" in catalog.extensions["tickets"].commands
+
+    current = ext.active(project)
+    assert not current.problems
+    assert [extension.name for extension, _ in current.extensions] == ["sut-code", "tickets"]
+
+
+def test_non_matching_extension_cannot_use_bundled_plugin_commands(project: Path) -> None:
+    for cmd in ("code.md", "ticket.md"):
+        manifest = MANIFEST.replace('timeout = 5\n', f'timeout = 5\ncommands = ["commands/{cmd}"]\n')
+        folder = make_demo(project, extension_toml=manifest)
+        (folder / "commands").mkdir(exist_ok=True)
+        (folder / "commands" / cmd).write_text(COMMAND, encoding="utf-8")
+        assert "уже есть у скилла" in ext.discover(project).errors["demo"]
+
+    shutil.copytree(BUNDLED / "sut-code", ws.SKILL_DIR / "extensions" / "sut-code")
+    for cmd in ("ticket.md", "run.md"):
+        own = project / ext.PROJECT_DIRNAME / "sut-code"
+        if own.exists():
+            shutil.rmtree(own)
+        shutil.copytree(BUNDLED / "sut-code", own)
+        (own / "commands").mkdir()
+        (own / "commands" / cmd).write_text(COMMAND, encoding="utf-8")
+        manifest = own / "extension.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                "api = 1\n", f'api = 1\ncommands = ["commands/{cmd}"]\n', 1
+            ),
+            encoding="utf-8",
+        )
+        assert "уже есть у скилла" in ext.discover(project).errors["sut-code"]
 
 
 def test_two_extensions_cannot_share_a_command(project: Path) -> None:

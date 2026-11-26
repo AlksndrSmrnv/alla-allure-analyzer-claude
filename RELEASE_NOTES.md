@@ -17,6 +17,27 @@
   `install-files` (`qwen_files.py`); обновление расширения выполняется через
   `qwen extensions update alla`.
 
+**После обновления (обязательный ручной переход с `.qwen/skills/alla-launch/`):**
+простой установки расширения недостаточно — в Qwen Code (в том числе `0.28.4`) проектные
+`.qwen/commands/alla/`, `.qwen/skills/alla-launch/` и `.qwen/agents/` имеют приоритет над
+расширением: при конфликте новая команда расширения переименовывается, а `/alla:run`
+продолжает вызывать старый `alla-launch`. Чтобы избежать смешанной установки:
+
+1. Проверьте свои локальные правки (`git diff`, `.qwen/commands/alla/`, `.qwen/agents/`).
+   Файлы команд и субагентов ваших расширений из `alla-extensions/` сохраните (вызов
+   `alla-launch` в своих командах замените на `alla:launch`).
+2. Перенесите несекретные настройки из `.qwen/skills/alla-launch/.env` в `.qwen/alla.env`
+   (права `600`, без `ALLURE_TOKEN`).
+3. Сохраните токен командой `qwen extensions settings set alla ALLURE_TOKEN --scope workspace`
+   и удалите прежнее расширение секретов `qwen extensions uninstall alla-launch-credentials`.
+4. Удалите из проекта `.qwen/skills/alla-launch/`, встроенные команды в `.qwen/commands/alla/`
+   (`run.md`, `continue.md`, `apply.md`, `revert.md`, `remember.md`, `reject.md`, `rerun.md`,
+   `review.md`, `extensions.md`, `setup.md`, `update.md`, `code.md`, `ticket.md` — либо всю
+   папку, если своих команд нет) и встроенных субагентов в `.qwen/agents/` (`alla-batch.md`,
+   `alla-git-publish.md`, `alla-sut-code.md`, `alla-tickets.md`), затем закоммитьте удаление,
+   если файлы были в git.
+5. Перезапустите Qwen Code и проверьте установку (`/alla:setup` / `check`).
+
 ## 23 ноября 2026
 
 ### Разбор в Qwen Code проще читать

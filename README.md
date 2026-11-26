@@ -124,6 +124,9 @@ qwen extensions link /путь/к/alla-allure-analyzer-claude
 
 После установки `alla` автоматически регистрирует скилл `/alla:launch`, все команды
 `/alla:*` и встроенных субагентов `alla-*` — копировать файлы в `.qwen/` проекта не нужно.
+Если в проекте ранее была установлена прежняя версия в `.qwen/skills/alla-launch/`,
+обязательно выполните ручной переход ниже — иначе проектные команды продолжат перекрывать
+команды расширения.
 
 **2. Подготовьте окружение и проверьте его.** Зависимости устанавливает инженер по
 правилам команды, например из корня проекта:
@@ -177,6 +180,43 @@ allowed_origins = ["https://testops.company.ru"]
 ```bash
 qwen extensions update alla
 ```
+
+### Переход со старой версии (из `.qwen/skills/alla-launch/`)
+
+Простой установки `alla` недостаточно, если в проекте остались старые файлы. В Qwen Code
+(в том числе `0.28.4`) проектные файлы в `.qwen/commands/alla/`, `.qwen/skills/alla-launch/`
+и `.qwen/agents/` загружаются раньше расширения: при совпадении имён новая команда расширения
+переименовывается, а `/alla:run` продолжает вызывать старый скилл `alla-launch`. Получится
+смешанная установка вместо перехода.
+
+Выполните ручной переход по шагам:
+
+1. **Проверьте локальные изменения и свои расширения.** Посмотрите `git diff` и содержимое
+   `.qwen/commands/alla/` и `.qwen/agents/`. Сохраните файлы команд и субагентов, относящиеся
+   к вашим собственным расширениям из `alla-extensions/` (если своя команда вызывает
+   `alla-launch`, замените вызов на `alla:launch`).
+2. **Перенесите несекретные настройки:** скопируйте нужные значения из
+   `.qwen/skills/alla-launch/.env` в `.qwen/alla.env` (права `600` на Linux/macOS, без
+   `ALLURE_TOKEN`).
+3. **Перенесите токен TestOps** в настройки расширения `alla` и удалите старое расширение
+   секретов:
+
+   ```bash
+   qwen extensions settings set alla ALLURE_TOKEN --scope workspace
+   qwen extensions uninstall alla-launch-credentials
+   ```
+
+4. **Удалите старые встроенные файлы `alla-launch` из проекта:**
+   - каталог `.qwen/skills/alla-launch/`;
+   - встроенные команды в `.qwen/commands/alla/`: `run.md`, `continue.md`, `apply.md`,
+     `revert.md`, `remember.md`, `reject.md`, `rerun.md`, `review.md`, `extensions.md`,
+     `setup.md`, `update.md`, `code.md`, `ticket.md` (или весь каталог `.qwen/commands/alla/`,
+     если своих команд расширений нет);
+   - встроенных субагентов в `.qwen/agents/`: `alla-batch.md`, `alla-git-publish.md`,
+     `alla-sut-code.md`, `alla-tickets.md` (субагентов своих расширений не удаляйте).
+
+   Если эти файлы были закоммичены в репозиторий автотестов, закоммитьте их удаление.
+5. **Перезапустите Qwen Code** и проверьте установку командой `/alla:setup` или `check`.
 
 ## Как пользоваться
 
