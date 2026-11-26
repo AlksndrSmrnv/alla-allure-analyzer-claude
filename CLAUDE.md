@@ -15,7 +15,8 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 
 ## Состояние репозитория
 
-- В `main` только скилл: `qwen-skill/alla-launch/`.
+- Корень репозитория — нативное **расширение Qwen Code CLI `alla`** (`qwen-extension.json`,
+  скилл `skills/launch/SKILL.md` → `/alla:launch`, команды `commands/alla/`, агенты `agents/`).
 - Серверный инструмент (CLI `alla`, FastAPI `alla-server`, MCP, PostgreSQL, GigaChat,
   HTML-отчёт, dashboard, Docker/Jenkins) удалён и есть только в истории git: последний
   коммит с ним — `e100909` (`git show e100909:src/alla/<файл>`). Серверный код и пакет
@@ -24,37 +25,40 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 
 ## Где что лежит
 
-| Путь (от `qwen-skill/alla-launch/`) | Что там |
+| Путь (от корня репозитория) | Что там |
 |---|---|
-| `SKILL.md`, `references/` | сценарий и правила для модели, форматы её файлов, протокол, установка |
-| `agents/alla-batch.md` | свой субагент Qwen для пакетов кластеров; инженер размещает его в `.qwen/agents/` проекта по инструкции `install-files` |
-| `commands/alla/` | слэш-команды Qwen `/alla:run`, `/alla:apply`…; инженер размещает их в `.qwen/commands/alla/` проекта по инструкции `install-files`; команды скилла в `.qwen/` не пишут |
-| `extensions/` | расширения скилла: `README.md` (контракт для авторов), встроенные `git-publish/` (ветка git), `sut-code/` (`/alla:code N` — разбор по коду приложения) и `tickets/` (`/alla:ticket N [N…]` — просмотр и отправка тикетов через пользовательский адаптер); свои — `<проект>/alla-extensions/` |
+| `qwen-extension.json` | манифест расширения Qwen Code (`name: "alla"`, `settings: ALLURE_TOKEN`, пути `skills/`, `commands/`, `agents/`) |
+| `skills/launch/` | скилл `alla:launch`: `SKILL.md` и `references/` (сценарий, правила модели, форматы, протокол, установка) |
+| `agents/alla-*.md` | встроенные субагенты расширения (`alla-batch`, `alla-git-publish`, `alla-sut-code`, `alla-tickets`) |
+| `commands/alla/*.md` | слэш-команды расширения Qwen `/alla:run`, `/alla:apply`, `/alla:continue`…; в `.qwen/` проекта копировать не нужно |
+| `extensions/` | расширения скилла: `README.md` (контракт для авторов), встроенные `git-publish/`, `sut-code/`, `tickets/`; пользовательские — `<проект>/alla-extensions/` |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` проекта автотестов |
-| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `learn`, `fix_facts`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `projects`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `qwen_files`, `jobs`, `retries`, `images`, `extension_data` |
-| `scripts/alla_core/` | ядро: клиент MCP TestOps (`clients/mcp_client.py`), триаж, логи, кластеризация, блок «Данные» |
-| `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
+| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `learn`, `fix_facts`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `projects`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `jobs`, `retries`, `images`, `extension_data` |
+| `scripts/alla_core/` | ядро: клиент MCP TestOps (`clients/mcp_client.py`), настройки (`config.py`), секреты (`credentials.py`), триаж, логи, кластеризация, блок «Данные» |
+| `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро, `test_extension_manifest.py` — манифест и установка расширения; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
 | `tests/eval/` | эталон точности: кассеты прогонов (`record.py` пишет у команды), размеченный корпус dev/holdout, метрики склеек, дробления, скрытых групп и потери доказательств (`run_eval.py`), см. `README.md` там же |
 
 ## Команды
 
 ```bash
-python3.11 -m venv .venv && .venv/bin/pip install --require-hashes -r qwen-skill/alla-launch/requirements-dev.txt
+python3.11 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements-dev.txt
 .venv/bin/python -m pytest                      # из корня, около 2,5 минут
-.venv/bin/ruff check qwen-skill/alla-launch
-.venv/bin/mypy qwen-skill/alla-launch/scripts qwen-skill/alla-launch/extensions   # strict, без ошибок
-.venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case A01 --output /tmp/alla-stand-001
-.venv/bin/python qwen-skill/alla-launch/tests/eval/run_eval.py --details   # эталон, офлайн, ~2 с
-ALLA_WHEELHOUSE=/local/wheels bash .github/scripts/skill_setup_smoke.sh # offline setup → check → prepare
+.venv/bin/ruff check scripts extensions tests
+.venv/bin/mypy scripts extensions               # strict, без ошибок
+.venv/bin/python tests/qwen_stand.py run --case A01 --output /tmp/alla-stand-001
+.venv/bin/python tests/eval/run_eval.py --details   # эталон, офлайн, ~2 с
+ALLA_WHEELHOUSE=/local/wheels bash .github/scripts/skill_setup_smoke.sh # offline setup → check → prepare + install
 ```
 
 CI — `.github/workflows/ci.yml` (GitHub Actions, ubuntu-latest): на Python 3.11 и 3.12 —
-pytest (`-rs`; на Linux пропускаются проверки, требующие macOS, и проверки её системных ссылок), ruff, mypy
+pytest в два шага (`not loopback` и `loopback`): локальный пропуск из-за запрета `bind`
+не заменяет обязательную HTTP-проверку в CI. На Linux пропускаются проверки, требующие macOS.
+Также CI запускает ruff, mypy
 (`--python-version` версии матрицы: на 3.12 ставится numpy с заглушками на синтаксисе 3.12)
 и эталон (только dev: holdout проверяет `test_eval_quality`, отдельно его не печатать);
 отдельный job гоняет `skill_setup_smoke.sh` в контейнере `python:3.11` —
-подготовку окружения явными командами инженера, отсутствие записи у `setup`/`install-files`/toggle
-и `check`/`prepare` против фейкового TestOps.
+подготовку окружения явными командами инженера, отсутствие записи у `setup`/toggle,
+`check`/`prepare` против фейкового TestOps и `qwen extensions install` в изолированном HOME.
 Стенд Qwen в CI не запускается: он только для macOS и платный. ruff и mypy закреплены в
 `requirements-dev.in` точными версиями — обновлять вместе с исправлением их замечаний.
 
@@ -118,7 +122,7 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
     совместимости со старыми версиями нет. Несовместимо меняя `run.json` или файлы папки,
     поднимите `workspace.RUN_SCHEMA` — папка другой версии не откроется, `prepare` начнёт
     новую.
-- Тесты — только `qwen-skill/alla-launch/tests/` (единственный `testpaths`). Фикстуры — в
+- Тесты — только `tests/` (единственный `testpaths`). Фикстуры — в
   `skill_fixtures.py`, фабрики моделей ядра — в `skill_factories.py`, фейковый TestOps на
   `httpx.MockTransport` — в `skill_fake_testops.py`; `conftest.py` нет, чтобы папка скилла
   оставалась самодостаточной. `skill_fixtures` импортировать раньше `alla_core`: он
@@ -137,10 +141,10 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 
 | Файл | О чём | Подгружается при работе с |
 |---|---|---|
-| `skill-protocol.md` | команды, статусы и коды возврата, правила исполнителя и справочники | `SKILL.md`, `references/`, `alla_skill.py`, `cli.py`, `agent_rules.py`, `errors.py`, `session_rules.py` |
-| `skill-protocol-setup.md` | точка входа, `setup`, `update`, слэш-команды `/alla:*` | `alla_skill.py`, `qwen_files.py`, `commands/`, `workspace.py` |
+| `skill-protocol.md` | команды, статусы и коды возврата, правила исполнителя и справочники | `skills/launch/SKILL.md`, `skills/launch/references/`, `alla_skill.py`, `cli.py`, `agent_rules.py`, `errors.py`, `session_rules.py` |
+| `skill-protocol-setup.md` | точка входа, `setup`, слэш-команды `/alla:*` | `alla_skill.py`, `commands/`, `workspace.py` |
 | `skill-protocol-workspace.md` | `prepare` фоновым заданием, выбор проекта TestOps, папка разбора, `run.json`/`state.json` | `cli.py`, `workspace.py`, `jobs.py`, `projects.py` |
-| `skill-protocol-batch.md` | пакетный разбор, субагент `alla-batch`, шаг `relate` | `cli.py`, `batch_task.py`, `qwen_files.py` |
+| `skill-protocol-batch.md` | пакетный разбор, субагент `alla-batch`, шаг `relate` | `cli.py`, `batch_task.py`, `agents/alla-batch.md` |
 | `skill-protocol-review.md` | проверка разбора для пилота (`review`), журнал сеанса Qwen | `review.py`, `review_model.py`, `session_log.py`, `qwen_stand.py`, `session_rules.py` |
 | `skill-analysis.md` | `problem_state.current_state` — общий источник диагнозов для `next`, отчёта и снимка | `problem_state.py`, `report.py`, `related.py`, `known_issues.py`, `confirmed.py` |
 | `skill-analysis-task.md` | задание кластера: данные, лог операции, примеры, источники, повторы | `cluster_task.py`, `analysis_format.py`, `sources.py`, `retries.py`, `code_hints.py`, `prompt_builder_service.py`, `log_focus.py` |
@@ -176,11 +180,11 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 - Навигация по Python — LSP (pyright): определения и ссылки до переименования или смены
   сигнатуры.
 - Документация httpx, pydantic, pytest, Qwen Code — Context7, затем локальная `--help`.
-- Инструкции скилла (`SKILL.md`, `references/`, тексты заданий): формулировки — скилл
+- Инструкции скилла (`skills/launch/SKILL.md`, `skills/launch/references/`, тексты заданий): формулировки — скилл
   `skill-creator`; после существенной правки — агент `qwen-executor-review` (читает скилл
   с чистым контекстом, без этого файла); поведение модели — скилл `skill-evaluation`.
-- Хуки Claude Code (ruff после правки `.py`, тесты справочников после правки `SKILL.md`,
-  `references/`, `alla_skill_lib/`, ruff + pytest + mypy перед `git commit`) — личная настройка
+- Хуки Claude Code (ruff после правки `.py`, тесты справочников после правки `skills/launch/SKILL.md`,
+  `skills/launch/references/`, `alla_skill_lib/`, ruff + pytest + mypy перед `git commit`) — личная настройка
   в `.claude/settings.local.json`, в репозиторий не входит; те же проверки — команды выше.
 
 ## Инструменты OpenCode

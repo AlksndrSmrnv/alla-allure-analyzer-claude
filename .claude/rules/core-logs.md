@@ -1,15 +1,15 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_core/utils/log_utils.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/utils/log_focus.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/utils/text_normalization.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/services/log_extraction_service.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/services/attachment_handlers.py"
-  - "qwen-skill/alla-launch/tests/test_core_log_extraction.py"
-  - "qwen-skill/alla-launch/tests/test_core_log_utils.py"
-  - "qwen-skill/alla-launch/tests/test_log_selection.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/utils/log_events.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/config.py"
+  - "scripts/alla_core/utils/log_utils.py"
+  - "scripts/alla_core/utils/log_focus.py"
+  - "scripts/alla_core/utils/text_normalization.py"
+  - "scripts/alla_core/services/log_extraction_service.py"
+  - "scripts/alla_core/services/attachment_handlers.py"
+  - "tests/test_core_log_extraction.py"
+  - "tests/test_core_log_utils.py"
+  - "tests/test_log_selection.py"
+  - "scripts/alla_core/utils/log_events.py"
+  - "scripts/alla_core/config.py"
 ---
 
 # Ядро: операция теста и отбор логов

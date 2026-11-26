@@ -1,8 +1,8 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/signature.py"
-  - "qwen-skill/alla-launch/tests/test_skill_signature.py"
-  - "qwen-skill/alla-launch/tests/test_log_signature_persistence.py"
+  - "scripts/alla_skill_lib/signature.py"
+  - "tests/test_skill_signature.py"
+  - "tests/test_log_signature_persistence.py"
 ---
 
 # База знаний: сигнатура

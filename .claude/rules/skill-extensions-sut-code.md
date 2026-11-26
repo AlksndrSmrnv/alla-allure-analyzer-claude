@@ -1,7 +1,7 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/extensions/sut-code/**"
-  - "qwen-skill/alla-launch/tests/test_ext_sut_code.py"
+  - "extensions/sut-code/**"
+  - "tests/test_ext_sut_code.py"
 ---
 
 # Расширения: sut-code

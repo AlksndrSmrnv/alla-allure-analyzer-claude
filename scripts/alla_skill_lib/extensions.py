@@ -1,0 +1,932 @@
+"""Расширения скилла: свои функции команды без форка и правки кода скилла.
+
+Расширение — папка с манифестом ``extension.toml``: встроенные лежат в
+``<скилл>/extensions/``, свои — в ``<проект>/alla-extensions/`` (своё с тем же именем
+заменяет встроенное). Включаются строкой ``enabled = [...]`` в
+``<проект>/alla-extensions/config.toml``.
+
+На событие скилла (``after_apply``, ``after_revert``, ``after_report``, ``on_request`` — по
+просьбе пользователя) расширение отвечает хуком:
+
+* ``task`` — задание своему субагенту: скилл пишет контекст и задание в папку разбора, а
+  в ответ команды добавляет блок «Расширения:» с точной инструкцией основному агенту;
+* ``script`` — скрипт, который скилл запускает сам; его вывод уходит пользователю.
+
+Код расширения скилл не импортирует: скрипты идут отдельным процессом и получают данные
+через JSON-контекст (``ALLA_CONTEXT``) с версией контракта ``api``. Ошибка расширения не
+ломает команду скилла — она становится строкой блока «Расширения:».
+"""
+
+from __future__ import annotations
+
+import json
+import contextlib
+import os
+import re
+import subprocess
+import sys
+import time
+import tomllib
+import uuid
+from collections.abc import Collection
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from string import Template
+from typing import Any
+
+from alla_skill_lib import workspace as ws
+from alla_skill_lib.analysis_format import parse_analysis
+from alla_skill_lib.batch_task import BATCH_AGENT
+from alla_skill_lib.proposals import parse_proposal
+from alla_skill_lib.sources import describe, load_registry
+
+API_VERSION = 1
+EVENTS = ("after_apply", "after_revert", "after_report", "on_request", "on_request_many")
+# Событие по просьбе пользователя (``extensions run``): вопрос confirm не нужен — он уже попросил.
+REQUEST_EVENT = "on_request"
+MANY_REQUEST_EVENT = "on_request_many"
+PARAM_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+PARAM_VALUE_LIMIT = 500
+MAX_SOURCES_CHARS = 60_000  # куски «Данных» проблемы в контексте расширения
+MAX_CONTEXT_TESTS = 20
+PROJECT_DIRNAME = "alla-extensions"
+CONFIG_FILE = "config.toml"
+MANIFEST_FILE = "extension.toml"
+AGENT_PREFIX = "alla-"
+BLOCK_HEADING = "Расширения:"
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
+# Имена, чей субагент alla-<имя> затёр бы субагента самого скилла в .qwen/agents/.
+RESERVED_NAMES = frozenset({BATCH_AGENT.removeprefix("alla-")})
+ACTION_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
+DEFAULT_TIMEOUT = 120  # секунд на скрипт расширения (манифест)
+MAX_TIMEOUT = 600
+# Qwen Code обрывает команду shell через 120 с, а хуки идут внутри команды скилла (next, apply,
+# revert, extensions run): все её скрипты расширений делят этот бюджет, сколько бы ни просил
+# манифест. Убитая команда не выводила ни отчёта, ни отметки, и next зацикливался на хуке.
+HOOK_BUDGET_S = 60
+# Действие расширения — отдельная команда из shell субагента: его потолок — под лимит Qwen.
+ACTION_LIMIT_S = 110
+OUTPUT_LIMIT = 4000  # символов вывода скрипта в ответе скилла
+# [ \t], а не \s: \s захватил бы перевод строки и пустые строки после enabled.
+_ENABLED_LINE_RE = re.compile(r"^[ \t]*enabled[ \t]*=[ \t]*\[[^\]\n]*\][ \t]*(?:#.*)?$",
+                              re.MULTILINE)
+_ENABLED_KEY_RE = re.compile(r"^[ \t]*enabled[ \t]*=", re.MULTILINE)
+_TABLE_RE = re.compile(r"^[ \t]*\[", re.MULTILINE)
+_SETTING_TYPES = (str, bool, int)
+CONFIG_HEADER = (
+    "# Расширения скилла alla-launch для этого проекта.\n"
+    "# enabled — включённые расширения; список меняет инженер вручную.\n"
+    "# Команды extensions enable/disable только печатают инструкцию.\n"
+    "# Настройки расширения — таблица с его именем, например:\n"
+    "# [git-publish]\n"
+    "# remote = \"origin\"\n"
+)
+
+
+class ExtensionError(Exception):
+    """Расширение или его настройка не годятся; текст — для пользователя."""
+
+
+@dataclass(frozen=True)
+class Hook:
+    event: str
+    task: Path | None = None
+    script: Path | None = None
+    ask: str = ""  # вопрос пользователю перед запуском субагента (при confirm)
+
+
+@dataclass(frozen=True)
+class Extension:
+    name: str
+    title: str
+    description: str
+    root: Path
+    bundled: bool
+    hooks: tuple[Hook, ...]
+    actions: dict[str, Path]
+    settings: dict[str, Any]
+    agent: Path | None = None
+    timeout: int = DEFAULT_TIMEOUT
+    overrides_bundled: bool = False
+    # Слэш-команды Qwen расширения: имя → файл; ставятся в .qwen/commands/alla/<имя>.md.
+    commands: dict[str, Path] = field(default_factory=dict)
+    snapshot: bool = False
+
+    @property
+    def agent_name(self) -> str:
+        return AGENT_PREFIX + self.name
+
+    def hooks_for(self, event: str) -> list[Hook]:
+        return [hook for hook in self.hooks if hook.event == event]
+
+
+@dataclass
+class Catalog:
+    """Найденные расширения и ошибки манифестов (``имя: что не так``)."""
+
+    extensions: dict[str, Extension] = field(default_factory=dict)
+    errors: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Config:
+    enabled: tuple[str, ...] = ()
+    settings: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# обнаружение и манифест
+# ---------------------------------------------------------------------------
+
+
+def bundled_dir() -> Path:
+    """Встроенные расширения (``ws.SKILL_DIR`` читается при вызове — его подменяют тесты)."""
+    return ws.SKILL_DIR / "extensions"
+
+
+def project_dir(project_root: Path) -> Path:
+    return project_root / PROJECT_DIRNAME
+
+
+def config_path(project_root: Path) -> Path:
+    return project_dir(project_root) / CONFIG_FILE
+
+
+def discover(project_root: Path) -> Catalog:
+    catalog = Catalog()
+    for bundled, base in ((True, bundled_dir()), (False, project_dir(project_root))):
+        if not base.is_dir():
+            continue
+        for folder in _extension_folders(base, bundled=bundled):
+            try:
+                extension = load_manifest(folder, bundled=bundled)
+            except (ExtensionError, OSError, ValueError) as exc:  # ValueError — и UnicodeDecodeError
+                error = str(exc) if isinstance(exc, ExtensionError) else f"{type(exc).__name__}: {exc}"
+                if not bundled and catalog.extensions.pop(folder.name, None) is not None:
+                    # Команда заменила встроенное своим (например, с ограничениями git-publish):
+                    # неисправная замена выключает расширение, а не возвращает встроенное.
+                    error = f"своя замена встроенного расширения не работает — оно выключено: {error}"
+                catalog.errors[folder.name] = error
+                continue
+            if not bundled and extension.name in catalog.extensions:
+                extension = replace(extension, overrides_bundled=True)
+            catalog.extensions[extension.name] = extension
+            catalog.errors.pop(extension.name, None)
+    return catalog
+
+
+def _extension_folders(base: Path, *, bundled: bool) -> list[Path]:
+    """Папки расширений. В ``alla-extensions/`` расширение — любая папка, и папка без
+    манифеста — неисправное расширение: иначе удалённый ``extension.toml`` своей замены
+    молча вернул бы встроенное (с его настройками вместо ограничений команды)."""
+    folders = [path for path in base.iterdir()
+               if path.is_dir() and not path.name.startswith((".", "_"))]
+    if bundled:
+        folders = [path for path in folders if (path / MANIFEST_FILE).is_file()]
+    return sorted(folders)
+
+
+def _bundled_agent(name: str) -> Path | None:
+    """Встроенный субагент плагина лежит в ``agents/alla-<имя>.md`` корня расширения alla."""
+    filename = f"{AGENT_PREFIX}{name}.md"
+    for root in (ws.SKILL_DIR, Path(__file__).resolve().parents[2]):
+        candidate = root / "agents" / filename
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def load_manifest(folder: Path, *, bundled: bool) -> Extension:
+    if not (folder / MANIFEST_FILE).is_file():
+        raise ExtensionError(f"в папке нет файла {MANIFEST_FILE}")
+    try:
+        data = tomllib.loads((folder / MANIFEST_FILE).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ExtensionError(f"{MANIFEST_FILE} не читается: {exc}") from exc
+    name = data.get("name")
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+        raise ExtensionError("name — латиница в нижнем регистре, цифры и дефис, с буквы")
+    if name in RESERVED_NAMES:
+        raise ExtensionError(f"имя «{name}» занято самим скиллом (субагент alla-{name})")
+    if name != folder.name:
+        raise ExtensionError(f"name «{name}» не совпадает с именем папки «{folder.name}»")
+    if data.get("api") != API_VERSION:
+        raise ExtensionError(
+            f"api = {data.get('api')!r}: эта версия скилла поддерживает только api = {API_VERSION}"
+        )
+    settings = data.get("settings", {})
+    if not isinstance(settings, dict):
+        raise ExtensionError("[settings] — таблица значений")
+    for key, value in settings.items():
+        if not _valid_setting(value):
+            raise ExtensionError(f"настройка {key}: строка, число, да/нет или список строк")
+    settings.setdefault("confirm", False)
+    if not isinstance(settings["confirm"], bool):
+        raise ExtensionError("настройка confirm — true или false")
+    timeout = data.get("timeout", DEFAULT_TIMEOUT)
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= MAX_TIMEOUT:
+        raise ExtensionError(f"timeout — целое число секунд от 1 до {MAX_TIMEOUT}")
+    agent = _file(folder, data["agent"], "agent") if "agent" in data else (_bundled_agent(name) if bundled else None)
+    if agent is not None:
+        _check_agent(agent, AGENT_PREFIX + name)
+    hooks = tuple(_hook(folder, raw, agent) for raw in _list_of_tables(data, "hooks"))
+    if any(hook.event == REQUEST_EVENT for hook in hooks) and any(
+            hook.event == MANY_REQUEST_EVENT for hook in hooks):
+        raise ExtensionError("on_request и on_request_many одновременно объявлять нельзя")
+    snapshot = data.get("snapshot", False)
+    if not isinstance(snapshot, bool):
+        raise ExtensionError("snapshot — true или false")
+    task_events = [hook.event for hook in hooks if hook.task is not None]
+    repeated = sorted({event for event in task_events if task_events.count(event) > 1})
+    if repeated:
+        # Задание события пишется в один файл <событие>-NN.md: второе затёрло бы первое.
+        raise ExtensionError(
+            f"хук task на событие {', '.join(repeated)} — не больше одного: шаги одного "
+            "субагента пишутся в одно задание"
+        )
+    actions_raw = data.get("actions", {})
+    if not isinstance(actions_raw, dict):
+        raise ExtensionError("[actions] — таблица «имя = путь к скрипту»")
+    actions: dict[str, Path] = {}
+    for action, script in actions_raw.items():
+        if not ACTION_RE.fullmatch(action):
+            raise ExtensionError(f"действие «{action}»: латиница, цифры, дефис и _, с буквы")
+        actions[action] = _file(folder, script, f"actions.{action}")
+    if not hooks and not actions:
+        raise ExtensionError("нет ни хуков [[hooks]], ни действий [actions] — расширение ничего не делает")
+    commands = _commands(folder, data.get("commands", []))
+    return Extension(
+        name=name,
+        title=str(data.get("title") or name),
+        description=str(data.get("description") or ""),
+        root=folder.resolve(),
+        bundled=bundled,
+        hooks=hooks,
+        actions=actions,
+        settings=settings,
+        agent=agent,
+        timeout=timeout,
+        commands=commands,
+        snapshot=snapshot,
+    )
+
+
+def skill_command_names() -> frozenset[str]:
+    """Слэш-команды самого скилла (``/alla:run``…): расширение их не заменяет. Набор берётся из
+    папки скилла рядом с этим модулем: он часть кода скилла, а не установки."""
+    source = Path(__file__).resolve().parents[2] / "commands" / "alla"
+    return frozenset(path.stem for path in source.glob("*.md"))
+
+
+def _commands(folder: Path, raw: Any) -> dict[str, Path]:
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        raise ExtensionError("commands — список путей к файлам команд Qwen (commands/<имя>.md)")
+    reserved = skill_command_names()
+    commands: dict[str, Path] = {}
+    for item in raw:
+        path = _file(folder, item, "commands")
+        name = path.stem
+        if path.suffix != ".md" or not NAME_RE.fullmatch(name):
+            raise ExtensionError(
+                f"команда {item}: файл <имя>.md, имя — латиница в нижнем регистре, цифры и дефис"
+            )
+        if name in reserved or name in commands:
+            raise ExtensionError(f"команда /alla:{name} уже есть у скилла — выбери другое имя")
+        _check_command(path)
+        commands[name] = path
+    return commands
+
+
+def _check_command(path: Path) -> None:
+    """Файл команды Qwen: заголовок с description и запретом вызова моделью (как /alla:*)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ExtensionError(f"{path.name} не читается: {exc}") from exc
+    parts = text.split("---\n", 2)
+    if len(parts) != 3 or parts[0].strip():
+        raise ExtensionError(f"команда {path.name}: нет заголовка --- description … ---")
+    header = parts[1]
+    if not re.search(r"^description:\s*\S", header, re.MULTILINE):
+        raise ExtensionError(f"команда {path.name}: нет description")
+    if not re.search(r"^disable-model-invocation:\s*true\s*$", header, re.MULTILINE):
+        raise ExtensionError(
+            f"команда {path.name}: нужен disable-model-invocation: true — команду вызывает только "
+            "пользователь"
+        )
+    if len(parts[2].strip()) < 10:
+        raise ExtensionError(f"команда {path.name}: пустой текст команды")
+
+
+def _valid_setting(value: Any) -> bool:
+    if isinstance(value, list):
+        return all(isinstance(item, str) for item in value)
+    return isinstance(value, _SETTING_TYPES)
+
+
+def _list_of_tables(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    raw = data.get(key, [])
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        raise ExtensionError(f"{key} — список таблиц [[{key}]]")
+    return raw
+
+
+def _file(folder: Path, raw: Any, where: str) -> Path:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ExtensionError(f"{where} — путь к файлу внутри папки расширения")
+    path = (folder / raw).resolve()
+    if not path.is_relative_to(folder.resolve()):
+        raise ExtensionError(f"{where}: файл {raw} вне папки расширения")
+    if not path.is_file():
+        raise ExtensionError(f"{where}: нет файла {raw}")
+    return path
+
+
+def _hook(folder: Path, raw: dict[str, Any], agent: Path | None) -> Hook:
+    event = raw.get("event")
+    if event not in EVENTS:
+        raise ExtensionError(f"событие {event!r} неизвестно; есть: {', '.join(EVENTS)}")
+    if ("task" in raw) == ("script" in raw):
+        raise ExtensionError(f"хук {event}: нужен ровно один из ключей task или script")
+    if "task" in raw:
+        if agent is None:
+            raise ExtensionError(f"хук {event} с task: в манифесте нет agent — субагента расширения")
+        return Hook(event, task=_file(folder, raw["task"], f"{event}.task"), ask=str(raw.get("ask", "")))
+    return Hook(event, script=_file(folder, raw["script"], f"{event}.script"))
+
+
+def _check_agent(path: Path, expected: str) -> None:
+    """Файл агента Qwen: невалидный Qwen пропускает молча, и хук ушёл бы в пустоту."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ExtensionError(f"{path.name} не читается: {exc}") from exc
+    parts = text.split("---\n", 2)
+    if len(parts) != 3 or parts[0].strip():
+        raise ExtensionError(f"{path.name}: нет заголовка --- name/description/tools ---")
+    fields: dict[str, str] = {}
+    for line in parts[1].splitlines():
+        key, sep, value = line.partition(":")
+        if sep and not line.startswith(" "):
+            fields[key.strip()] = value.strip()
+    if fields.get("name") != expected:
+        raise ExtensionError(f"{path.name}: name субагента должен быть {expected}")
+    if not fields.get("description"):
+        raise ExtensionError(f"{path.name}: нет description субагента")
+    if len(parts[2].strip()) < 10:
+        raise ExtensionError(f"{path.name}: пустая подсказка субагента")
+
+
+# ---------------------------------------------------------------------------
+# config.toml
+# ---------------------------------------------------------------------------
+
+
+def load_config(project_root: Path) -> Config:
+    path = config_path(project_root)
+    if not path.is_file():
+        return Config()
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ExtensionError(f"{path} не читается: {exc}") from exc
+    enabled = data.get("enabled", [])
+    if not isinstance(enabled, list) or not all(isinstance(name, str) for name in enabled):
+        raise ExtensionError(f"{path}: enabled — список имён расширений")
+    settings = {key: value for key, value in data.items() if isinstance(value, dict)}
+    return Config(tuple(dict.fromkeys(enabled)), settings)
+
+
+def enabled_text(project_root: Path, name: str, on: bool) -> str | None:
+    """Preview the root enabled setting without writing config or agent files."""
+    config = load_config(project_root)
+    names = [item for item in config.enabled if item != name] + ([name] if on else [])
+    if list(config.enabled) == names:
+        return None
+    line = "enabled = [" + ", ".join(json.dumps(item) for item in names) + "]"
+    path = config_path(project_root)
+    text = path.read_text(encoding="utf-8") if path.is_file() else CONFIG_HEADER
+    # Корневой enabled — только до первой таблицы: в [<расширение>] может быть своя
+    # настройка с тем же именем.
+    table = _TABLE_RE.search(text)
+    cut = table.start() if table else len(text)
+    head, tail = text[:cut], text[cut:]
+    if _ENABLED_LINE_RE.search(head):
+        head = _ENABLED_LINE_RE.sub(lambda _: line, head, count=1)
+    elif _ENABLED_KEY_RE.search(head):
+        raise ExtensionError(
+            f"В {path} список enabled записан в несколько строк — его не переписать "
+            f"автоматически. Запиши его одной строкой: {line}"
+        )
+    else:
+        if head and not head.endswith("\n"):
+            head += "\n"
+        head += line + "\n" + ("\n" if tail else "")
+    updated = head + tail
+    _check_rewrite(path, text, updated, names)
+    return updated
+
+
+def _check_rewrite(path: Path, before: str, after: str, names: list[str]) -> None:
+    """Новый ``config.toml`` разбирается и отличается от прежнего только списком ``enabled``:
+    иначе файл не пишется (неожиданная разметка не должна портить настройки)."""
+    try:
+        old, new = tomllib.loads(before), tomllib.loads(after)
+    except tomllib.TOMLDecodeError as exc:
+        raise ExtensionError(f"{path} не читается: {exc}") from exc
+    old.pop("enabled", None)
+    if new.pop("enabled", None) != names or new != old:
+        raise ExtensionError(
+            f"Не удалось безопасно изменить enabled в {path} — поправь его вручную: "
+            f"enabled = [{', '.join(json.dumps(item) for item in names)}]"
+        )
+
+
+def resolved_settings(extension: Extension, config: Config) -> dict[str, Any]:
+    """Настройки манифеста с переопределениями из ``config.toml``; неверные — ``ExtensionError``."""
+    settings = dict(extension.settings)
+    for key, value in config.settings.get(extension.name, {}).items():
+        if key not in settings:
+            raise ExtensionError(
+                f"в {CONFIG_FILE} [{extension.name}] неизвестная настройка {key}; есть: "
+                + ", ".join(sorted(settings))
+            )
+        default = settings[key]
+        if type(value) is not type(default) or not _valid_setting(value):
+            raise ExtensionError(
+                f"в {CONFIG_FILE} [{extension.name}] {key} — нужен тот же тип, что {default!r}"
+            )
+        settings[key] = value
+    return settings
+
+
+@dataclass
+class Active:
+    """Включённые расширения проекта, готовые к работе, и что с остальными не так."""
+
+    extensions: list[tuple[Extension, dict[str, Any]]] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+
+
+def active(project_root: Path) -> Active:
+    result = Active()
+    try:
+        config = load_config(project_root)
+    except ExtensionError as exc:
+        result.problems.append(str(exc))
+        return result
+    if not config.enabled:
+        return result
+    try:
+        catalog = discover(project_root)
+    except Exception as exc:  # prepare, next и apply не должны падать из-за папки расширений
+        result.problems.append(f"расширения не прочитаны: {type(exc).__name__}: {exc}")
+        return result
+    commands: dict[str, str] = {}
+    for name in config.enabled:
+        extension = catalog.extensions.get(name)
+        if extension is None:
+            reason = catalog.errors.get(name, "не найдено")
+            result.problems.append(f"расширение {name} включено, но не работает: {reason}")
+            continue
+        taken = sorted(command for command in extension.commands if command in commands)
+        if taken:
+            result.problems.append(
+                f"расширение {name}: команда /alla:{taken[0]} уже есть у расширения "
+                f"{commands[taken[0]]} — выключи одно из них"
+            )
+            continue
+        try:
+            result.extensions.append((extension, resolved_settings(extension, config)))
+        except ExtensionError as exc:
+            result.problems.append(f"расширение {name}: {exc}")
+            continue
+        commands.update(dict.fromkeys(extension.commands, name))
+    return result
+
+
+def command_conflict(extension: Extension, catalog: Catalog, config: Config) -> str | None:
+    """Команда расширения, которая уже есть у другого включённого расширения, — что сказать.
+
+    ``enable`` ставит расширение последним, а ``active`` отдаёт команду первому: включение
+    поверх занятой команды затёрло бы её файл и само осталось бы неактивным.
+    """
+    for other in config.enabled:
+        found = catalog.extensions.get(other)
+        if other == extension.name or found is None:
+            continue
+        taken = sorted(set(extension.commands) & set(found.commands))
+        if taken:
+            return (f"команда /alla:{taken[0]} уже есть у включённого расширения {other} — "
+                    f"выключи его ({ws.skill_command('extensions', 'disable', other)}) или "
+                    "переименуй команду")
+    return None
+
+
+def find_active(project_root: Path, name: str) -> tuple[Extension, dict[str, Any]]:
+    current = active(project_root)
+    for extension, settings in current.extensions:
+        if extension.name == name:
+            return extension, settings
+    reason = next((problem for problem in current.problems if f" {name}" in problem), "")
+    raise ExtensionError(reason or f"расширение {name} не включено в {config_path(project_root)}")
+
+
+# ---------------------------------------------------------------------------
+# события
+# ---------------------------------------------------------------------------
+
+
+def out_dir(paths: ws.RunPaths, extension: Extension) -> Path:
+    return paths.root / "extensions" / extension.name
+
+
+def parse_params(raw: list[str]) -> dict[str, list[str]]:
+    """``--param ключ=значение`` → ключ → значения по порядку (ключ может повторяться)."""
+    params: dict[str, list[str]] = {}
+    for item in raw:
+        key, sep, value = item.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not PARAM_KEY_RE.fullmatch(key):
+            raise ExtensionError(
+                f"--param {item!r}: нужен вид ключ=значение, ключ — латиница в нижнем регистре, "
+                "цифры и _"
+            )
+        if not value or len(value) > PARAM_VALUE_LIMIT or any(ord(char) < 32 for char in value):
+            raise ExtensionError(
+                f"--param {key}: значение — одна строка до {PARAM_VALUE_LIMIT} символов"
+            )
+        params.setdefault(key, []).append(value)
+    return params
+
+
+def problem_tests(run: dict[str, Any], entry: dict[str, Any], *,
+                  limit: int | None = MAX_CONTEXT_TESTS) -> list[dict[str, Any]]:
+    """Тесты проблемы (представитель первым): имя, полное имя, ссылка в TestOps."""
+    clustering = run.get("clustering") or {}
+    cluster: dict[str, Any] = next((item for item in clustering.get("clusters", [])
+                                    if item.get("cluster_id") == entry.get("cluster_id")), {})
+    representative = cluster.get("representative_test_id")
+    members = sorted(cluster.get("member_test_ids", []), key=lambda item: item != representative)
+    tests = {test.get("test_result_id"): test
+             for test in (run.get("triage") or {}).get("failed_tests", [])}
+    return [{"name": tests[test_id].get("name"), "full_name": tests[test_id].get("full_name"),
+             "link": tests[test_id].get("link")}
+            for test_id in members[:limit] if test_id in tests]
+
+
+def problem_sources(paths: ws.RunPaths, entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Куски «Данных» задания проблемы (id ``S…``) — ровно то, что видела модель разбора."""
+    registry = load_registry(paths.sources(entry["file_id"])) or {}
+    result: list[dict[str, Any]] = []
+    budget = MAX_SOURCES_CHARS
+    for source_id, record in registry.items():
+        if budget <= 0:
+            break
+        text = str(record.get("text", ""))[:budget]
+        budget -= len(text)
+        result.append({"id": source_id, "kind": record.get("kind"), "title": describe(record),
+                       "test_name": record.get("test_name"), "text": text})
+    return result
+
+
+def problem_context(
+    paths: ws.RunPaths,
+    entry: dict[str, Any],
+    record: dict[str, Any] | None,
+    run: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Данные проблемы для расширения: метка, разбор, предложение правки, запись apply,
+    тесты и куски «Данных» задания."""
+    file_id = entry["file_id"]
+    analysis_path = paths.analysis(file_id)
+    analysis = parse_analysis(ws.read_text(analysis_path)) if analysis_path.is_file() else None
+    proposal_path = paths.proposal(file_id)
+    proposal = parse_proposal(ws.read_text(proposal_path)) if proposal_path.is_file() else None
+    return {
+        "number": int(file_id),
+        "file_id": file_id,
+        "label": " ".join(str(entry.get("label", "")).split()),
+        "category": analysis.category if analysis else None,
+        "cause": analysis.cause if analysis else "",
+        "fix": analysis.fix if analysis else "",
+        "analysis_path": str(analysis_path),
+        "proposal_path": str(proposal_path),
+        "patch_path": str(paths.proposal_patch(file_id)),
+        "proposal": {
+            "file": proposal.file if proposal else None,
+            "line": proposal.line if proposal else None,
+            "why": proposal.why if proposal else "",
+        },
+        "record": record,
+        "tests": problem_tests(run, entry) if run is not None else [],
+        "sources": problem_sources(paths, entry),
+    }
+
+
+def fire(
+    event: str,
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    data: dict[str, Any],
+    *,
+    only: Collection[str] | None = None,
+    deadline: float | None = None,
+) -> list[str]:
+    """Выполнить хуки события; строки блока «Расширения:» (пусто — расширений нет).
+
+    ``data`` — поля события: ``problem`` для событий проблемы, ``console`` и
+    ``problems`` для ``after_report``. ``only`` — хуки только этих расширений.
+    ``deadline`` — ``time.monotonic()``, до которого должны уложиться скрипты хуков этой
+    команды (по умолчанию — :data:`HOOK_BUDGET_S` от вызова); общий для нескольких вызовов.
+    """
+    project_root = Path(run["project_root"])
+    current = active(project_root)
+    lines = problem_lines(current.problems) if only is None else []
+    if deadline is None:
+        deadline = hook_deadline()
+    for extension, settings in current.extensions:
+        if only is not None and extension.name not in only:
+            continue
+        for hook in extension.hooks_for(event):
+            try:
+                lines += _fire_hook(extension, settings, hook, paths, run, data, deadline)
+            except Exception as exc:  # расширение не должно ронять команду скилла
+                lines.append(
+                    f"- {extension.title} ({extension.name}): не сработало — {type(exc).__name__}: "
+                    f"{exc}. Покажи пользователю эту строку."
+                )
+    return lines
+
+
+def hook_deadline() -> float:
+    """Срок для скриптов хуков одной команды скилла (см. :data:`HOOK_BUDGET_S`)."""
+    return time.monotonic() + HOOK_BUDGET_S
+
+
+def problem_lines(problems: list[str]) -> list[str]:
+    """Строки блока «Расширения:» о неисправных включённых расширениях."""
+    return [f"- Расширения не работают: {problem}. Покажи пользователю эту строку."
+            for problem in problems]
+
+
+def block(lines: list[str]) -> str:
+    """Блок для ответа команды: пусто, если расширениям нечего сказать."""
+    return "\n".join([BLOCK_HEADING, *lines]) if lines else ""
+
+
+def _fire_hook(
+    extension: Extension,
+    settings: dict[str, Any],
+    hook: Hook,
+    paths: ws.RunPaths,
+    run: dict[str, Any],
+    data: dict[str, Any],
+    deadline: float,
+) -> list[str]:
+    directory = out_dir(paths, extension)
+    directory.mkdir(parents=True, exist_ok=True)
+    problem = data.get("problem")
+    stem = hook.event + (f"-{problem['file_id']}" if problem else "")
+    if hook.event == MANY_REQUEST_EVENT:
+        stem += f"-{uuid.uuid4()}"
+    context_file = directory / f"{stem}.json"
+    context = {
+        "api": API_VERSION,
+        "event": hook.event,
+        "extension": extension.name,
+        "launch_id": run.get("launch_id"),
+        "launch_name": run.get("launch_name"),
+        "launch_created": run.get("launch_created"),
+        "run_dir": str(paths.root),
+        "project_root": str(run["project_root"]),
+        "report_path": str(paths.report),
+        "out_dir": str(directory),
+        "stem": stem,
+        "settings": settings,
+        "params": {},
+        **data,
+    }
+    from alla_skill_lib import extension_data
+
+    extension_data.decorate(context, paths, context_file)
+    if extension.snapshot:
+        extension_data.refresh_snapshot(context, paths)
+    context["budget_s"] = max(0, min(deadline - time.monotonic(), extension.timeout))
+    ws.write_json(context_file, context)
+    label = f"{extension.title} ({extension.name})"
+    if hook.script is not None:
+        left = deadline - time.monotonic()
+        if left < 1:
+            return [f"- {label}: не запущено — время команды скилла на расширения вышло. Покажи "
+                    "пользователю эту строку."]
+        code, output = run_script(extension, hook.script, context_file, Path(run["project_root"]),
+                                  timeout=min(extension.timeout, left))
+        if code != 0:
+            return [f"- {label}: не сработало ({output or f'код {code}'}). Покажи пользователю эту строку."]
+        if not output:
+            return []
+        return [f"- {label} — покажи пользователю как есть:", *_indent(output)]
+    assert hook.task is not None
+    task_file = directory / f"{stem}.md"
+    ws.write_text(task_file, render_task(extension, hook.task, context, context_file))
+    launch = (
+        f"запусти субагента инструментом agent: subagent_type «{extension.agent_name}», "
+        f"run_in_background: false, prompt дословно: «Выполни задание {task_file}». Нет такого "
+        "типа субагентов — тот же вызов без subagent_type. Ответ субагента покажи пользователю "
+        "как есть, кроме строк «Проблема скилла: …»."
+    )
+    if settings.get("confirm") and hook.event not in (REQUEST_EVENT, MANY_REQUEST_EVENT):
+        question = hook.ask or f"запустить «{extension.title}»"
+        return [f"- {label}: спроси пользователя: «{question}» Только после явного «да» {launch}"]
+    return [f"- {label}: {launch}"]
+
+
+def _indent(text: str) -> list[str]:
+    return [f"  {line}" if line else "" for line in text.splitlines()]
+
+
+def render_task(
+    extension: Extension,
+    template: Path,
+    context: dict[str, Any],
+    context_file: Path,
+) -> str:
+    """Задание субагенту: шаблон расширения с данными события (``$имя``)."""
+    problem = context.get("problem") or {}
+    proposal = problem.get("proposal") or {}
+    values: dict[str, Any] = {
+        "context": context_file,
+        "out_dir": context["out_dir"],
+        "stem": context["stem"],
+        "run_dir": context["run_dir"],
+        "project_root": context["project_root"],
+        "report_path": context["report_path"],
+        "launch_id": context.get("launch_id") or "",
+        "problem": problem.get("number", ""),
+        "label": problem.get("label", ""),
+        "category": problem.get("category") or "",
+        "cause": problem.get("cause", ""),
+        "fix": problem.get("fix", ""),
+        "file": proposal.get("file") or "",
+        "line": proposal.get("line") or "",
+        "why": proposal.get("why", ""),
+        "patch_path": problem.get("patch_path", ""),
+    }
+    for action in extension.actions:
+        arguments = ["extensions", "action", extension.name, action, "--context", str(context_file)]
+        if context.get("event") == MANY_REQUEST_EVENT:
+            arguments += ["--reports-dir", context["reports_dir"]]
+        values[f"action_{action.replace('-', '_')}"] = ws.skill_command(*arguments)
+    for key, value in context["settings"].items():
+        values[f"settings_{key.replace('-', '_')}"] = value
+    for key, items in (context.get("params") or {}).items():
+        values[f"param_{key}"] = ", ".join(items)
+    text = template.read_text(encoding="utf-8")
+    # Тексты разбора — одной строкой: перевод строки в них сломал бы разметку задания.
+    return Template(text).safe_substitute({key: " ".join(str(value).split())
+                                           for key, value in values.items()})
+
+
+# ---------------------------------------------------------------------------
+# скрипты расширения
+# ---------------------------------------------------------------------------
+
+
+def run_script(
+    extension: Extension,
+    script: Path,
+    context_file: Path,
+    project_root: Path,
+    args: list[str] | None = None,
+    *,
+    timeout: float | None = None,
+) -> tuple[int, str]:
+    """Запустить скрипт расширения отдельным процессом; (код возврата, вывод).
+
+    ``timeout`` — потолок времени, если он меньше ``timeout`` манифеста.
+    Наследуются только HOME/PATH/SSH_AUTH_SOCK, без расширения списка из манифеста.
+    """
+    limit = extension.timeout if timeout is None else min(extension.timeout, timeout)
+    env = {name: os.environ[name] for name in ("HOME", "PATH", "SSH_AUTH_SOCK")
+           if name in os.environ}
+    env.update({
+        "ALLA_CONTEXT": str(context_file),
+        "ALLA_EXTENSION_DIR": str(extension.root),
+        "ALLA_PROJECT_ROOT": str(project_root),
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "GIT_TERMINAL_PROMPT": "0",  # git не должен ждать пароль, которого никто не введёт
+    })
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), *(args or [])],
+            cwd=project_root,
+            env=env,
+            capture_output=True,
+            timeout=limit,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, f"скрипт {script.name} не уложился в {limit:.0f} с"
+    except OSError as exc:
+        return 126, f"скрипт {script.name} не запустился: {exc}"
+    output = result.stdout.decode("utf-8", "replace").strip()
+    if result.returncode != 0 and not output:
+        error = result.stderr.decode("utf-8", "replace").strip().splitlines()
+        output = error[-1] if error else ""
+    if len(output) > OUTPUT_LIMIT:
+        output = output[:OUTPUT_LIMIT] + "\n… (вывод обрезан)"
+    return result.returncode, output
+
+
+def run_action(
+    project_root: Path,
+    reports_dir: Path,
+    name: str,
+    action: str,
+    context: str | None,
+    args: list[str],
+    *,
+    run_dir: Path | None = None,
+) -> tuple[str, str]:
+    """Действие расширения (``extensions action``): статус и текст ответа."""
+    deadline = time.monotonic() + ACTION_LIMIT_S
+    extension, settings = find_active(project_root, name)
+    script = extension.actions.get(action)
+    if script is None:
+        raise ExtensionError(
+            f"у расширения {name} нет действия {action}; есть: {', '.join(extension.actions) or 'нет'}"
+        )
+    from alla_skill_lib import extension_data
+
+    reports = reports_dir.resolve()
+    paths: ws.RunPaths | None = None
+    temporary = context is None or extension.snapshot
+    if context is not None and run_dir is not None:
+        raise ExtensionError("Укажи только один из --context и --run")
+    if context is None:
+        if run_dir is not None:
+            paths = ws.RunPaths(run_dir.resolve())
+            if paths.reports_dir != reports:
+                raise ExtensionError("Папка разбора не принадлежит этому каталогу отчётов")
+            run = ws.read_run(paths)
+            if Path(run["project_root"]).resolve() != project_root.resolve():
+                raise ExtensionError("Разбор не принадлежит этому проекту")
+        content, context_file = extension_data.action_context(
+            name, action, reports, project_root, settings, paths=paths)
+    else:
+        # Контекст пишет только скилл, в папку разбора: чужой файл подсунул бы чужие данные.
+        source = Path(context).expanduser().resolve()
+        if (
+            not source.is_file() or source.suffix != ".json" or len(source.parents) < 4
+            or source.parents[2].parent != reports or source.parent.name != name
+            or source.parent.parent.name != "extensions"
+        ):
+            raise ExtensionError(
+                f"контекст {context} — не файл расширения {name} из папки разбора "
+                f"({reports}/<разбор>/extensions/{name}/…json)"
+            )
+        paths = ws.RunPaths(source.parents[2])
+        run = ws.read_run(paths)
+        if Path(run["project_root"]).resolve() != project_root.resolve():
+            raise ExtensionError("Контекст не принадлежит этому проекту")
+        content = ws.read_json(source)
+        if content.get("extension") != name:
+            raise ExtensionError("Контекст относится к другому расширению")
+        # Старые расширения привязывают результаты к имени контекста. Для нового
+        # снимка отдельная копия не даёт параллельным действиям менять вход друг друга.
+        context_file = (source.parent / f"action-{uuid.uuid4()}.json"
+                        if extension.snapshot else source)
+        content["settings"] = settings
+        extension_data.decorate(content, paths, context_file)
+    snapshot_file = context_file.with_suffix(".snapshot.json") if extension.snapshot and paths else None
+    try:
+        if snapshot_file is not None:
+            assert paths is not None
+            extension_data.refresh_snapshot(content, paths, snapshot_file)
+        content.pop("deadline_monotonic", None)
+        content["budget_s"] = max(0, min(deadline - 5 - time.monotonic(), extension.timeout))
+        ws.write_json(context_file, content)
+        remaining = deadline - time.monotonic()
+        if remaining < 1:
+            return "error", "Действие не запущено: время команды скилла на расширение вышло"
+        code, output = run_script(extension, script, context_file, project_root, args,
+                                  timeout=remaining)
+    finally:
+        if temporary:
+            with contextlib.suppress(OSError):
+                context_file.unlink(missing_ok=True)
+        if snapshot_file is not None:
+            with contextlib.suppress(OSError):
+                snapshot_file.unlink(missing_ok=True)
+    first, _, rest = output.partition("\n")
+    status = first.removeprefix("STATUS:").strip() if first.startswith("STATUS:") else ""
+    if status not in ("ok", "error"):
+        return "error", (
+            f"Расширение {name} ({action}) ответило без строки STATUS: ok|error"
+            f" (код {code}):\n{output}"
+        )
+    if code != 0 and status == "ok":
+        status = "error"
+    return status, rest.strip()

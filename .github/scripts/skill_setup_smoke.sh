@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Инженер вручную готовит синтетический проект и зависимости; команды скилла
-# setup/install-files/enable/disable только печатают проверку и инструкции.
+# Инженер вручную готовит синтетический проект и зависимости; команды расширения
+# setup и extensions enable/disable только печатают проверку и инструкции.
 # Нужны python3 (3.11+), git и заранее подготовленный ALLA_WHEELHOUSE.
-# Установка зависимостей ниже — явный шаг инженера в CI, вне команд скилла и без сети.
+# Установка зависимостей ниже — явный шаг инженера в CI, вне команд расширения и без сети.
 # ALLURE_* сбрасываются, чтобы check/prepare работали только с фейковым TestOps.
 set -euo pipefail
 
@@ -13,6 +13,7 @@ repo=$(cd "$(dirname "$0")/../.." && pwd)
 wheelhouse=$(cd "$ALLA_WHEELHOUSE" && pwd)
 work=$(mktemp -d)
 project="$work/project"
+ext="$work/extension"
 port=8777
 server_pid=""
 cleanup() {
@@ -32,16 +33,16 @@ expect_status() {
   grep -qx "STATUS: $expected" "$log" || fail "ожидался STATUS: $expected"
 }
 
-mkdir -p "$project/.qwen/skills"
-cp -R "$repo/qwen-skill/alla-launch" "$project/.qwen/skills/alla-launch"
-rm -rf "$project/.qwen/skills/alla-launch/.env" "$project/.qwen/skills/alla-launch/.venv"
-find "$project" -name __pycache__ -type d -prune -exec rm -rf {} +
+mkdir -p "$project" "$ext"
+for item in qwen-extension.json skills commands agents scripts extensions requirements.txt requirements.in .env.example; do
+  cp -R "$repo/$item" "$ext/$item"
+done
+find "$ext" -name __pycache__ -type d -prune -exec rm -rf {} +
 git -C "$project" init -q
-skill="$project/.qwen/skills/alla-launch"
-entry="$skill/scripts/alla_skill.py"
+entry="$ext/scripts/alla_skill.py"
 cd "$project"
 
-# Снимок содержимого, структуры и прав: в том числе игнорируемые .env, кэши и старый маркер.
+# Снимок содержимого, структуры и прав: в том числе игнорируемые .env/.qwen/alla.env, кэши и старый маркер.
 # Внутренности установленного venv не обходятся, кроме маркера, которым раньше управлял setup.
 cat > "$work/snapshot.py" <<'SNAPSHOT'
 import hashlib, json, os, pathlib, sys
@@ -76,10 +77,10 @@ python3 "$entry" setup | tee "$work/setup-missing.log"
 expect_status setup_required "$work/setup-missing.log"
 unchanged "check/setup без окружения"
 
-echo "== инженер создаёт окружение и ставит зависимости вне скилла"
+echo "== инженер создаёт окружение и ставит зависимости вне расширения"
 python3 -m venv .venv
 .venv/bin/python -I -m pip install --no-index --find-links "$wheelhouse" --only-binary=:all: \
-  --no-deps --require-hashes -r "$skill/requirements.txt"
+  --no-deps --require-hashes -r "$ext/requirements.txt"
 [ ! -e .venv/.alla-setup-complete ] || fail "появился старый маркер установки"
 
 echo "== setup проверяет готовое окружение без записи"
@@ -88,17 +89,14 @@ python3 "$entry" setup | tee "$work/setup.log"
 expect_status ready "$work/setup.log"
 python3 "$entry" setup | tee "$work/setup2.log"
 expect_status ready "$work/setup2.log"
-grep -q "install-files" "$work/setup.log" || fail "setup не подсказал install-files"
+grep -q "qwen extensions settings set alla" "$work/setup.log" || fail "setup не подсказал qwen extensions settings set alla"
 unchanged "setup готового окружения"
 
-echo "== install-files и enable печатают инструкции без записи"
-python3 "$entry" install-files | tee "$work/files.log"
-expect_status install_files "$work/files.log"
+echo "== extensions enable/disable печатают инструкции без записи"
 python3 "$entry" extensions enable git-publish | tee "$work/enable.log"
-expect_status install_files "$work/enable.log"
-unchanged "install-files/enable"
-for args in "install-files --yes" "install-files --diff abc" \
-            "extensions enable git-publish --yes" "extensions disable git-publish --diff abc" \
+expect_status ok "$work/enable.log"
+unchanged "extensions enable"
+for args in "extensions enable git-publish --yes" "extensions disable git-publish --diff abc" \
             "setup --wheelhouse $wheelhouse" "setup --python python3"; do
   if python3 "$entry" $args > "$work/removed-option.log"; then
     fail "удалённый режим принят: $args"
@@ -107,30 +105,27 @@ for args in "install-files --yes" "install-files --diff abc" \
   unchanged "удалённые флаги"
 done
 
-echo "== инженер размещает готовые файлы Qwen и конфигурацию расширения"
-mkdir -p .qwen/agents .qwen/commands/alla alla-extensions
-cp "$skill"/agents/*.md .qwen/agents/
-cp "$skill"/commands/alla/*.md .qwen/commands/alla/
-cp "$skill/extensions/git-publish/agent.md" .qwen/agents/alla-git-publish.md
+echo "== инженер настраивает конфигурацию расширения и .qwen/alla.env"
+mkdir -p .qwen alla-extensions
 printf 'enabled = ["git-publish"]\n' > alla-extensions/config.toml
 snapshot > "$work/before.json"
 python3 "$entry" extensions disable git-publish | tee "$work/disable.log"
-expect_status install_files "$work/disable.log"
+expect_status ok "$work/disable.log"
 unchanged "disable включённого расширения"
 
-# .env также размещает инженер; setup его не создавал.
-cp "$skill/.env.example" "$skill/.env"
-chmod 600 "$skill/.env"
+# .qwen/alla.env также размещает инженер; setup его не создавал.
+cp "$ext/.env.example" ".qwen/alla.env"
+chmod 600 ".qwen/alla.env"
 
-echo "== check с пустым .env"
+echo "== check с пустым .qwen/alla.env"
 code=0
 python3 "$entry" check > "$work/check-empty.log" || code=$?
 cat "$work/check-empty.log"
 expect_status error "$work/check-empty.log"
-[ "$code" = 2 ] || fail "check с пустым .env вернул $code, ждали 2"
+[ "$code" = 2 ] || fail "check с пустым .qwen/alla.env вернул $code, ждали 2"
 
 echo "== check с фейковым TestOps"
-.venv/bin/python "$repo/qwen-skill/alla-launch/tests/fake_testops_server.py" --port "$port" &
+.venv/bin/python "$repo/tests/fake_testops_server.py" --port "$port" &
 server_pid=$!
 for _ in $(seq 50); do
   if .venv/bin/python -c "import socket; socket.create_connection(('127.0.0.1', $port), 1)" 2>/dev/null; then
@@ -139,10 +134,9 @@ for _ in $(seq 50); do
   sleep 0.2
 done
 token=$(.venv/bin/python -c "import sys; sys.path.insert(0, sys.argv[1]); import skill_fake_testops as f; print(f.TOKEN)" \
-  "$repo/qwen-skill/alla-launch/tests")
-printf 'ALLURE_ENDPOINT=http://127.0.0.1:%s\nALLURE_PROJECT_ID=5\n' "$port" > "$skill/.env"
+  "$repo/tests")
+printf 'ALLURE_ENDPOINT=http://127.0.0.1:%s\nALLURE_PROJECT_ID=5\n' "$port" > ".qwen/alla.env"
 export ALLURE_TOKEN="$token"
-mkdir -p alla-extensions
 printf '[testops]\nallowed_origins = ["http://127.0.0.1:%s"]\n' "$port" > alla-extensions/config.toml
 python3 "$entry" check | tee "$work/check.log"
 expect_status ready "$work/check.log"
@@ -157,4 +151,4 @@ done
 expect_status analyze "$work/prepare.log"
 compgen -G "alla-reports/777-*/clusters/01.md" > /dev/null || fail "prepare не записал задание кластера"
 
-echo "OK: ручная подготовка и read-only setup скилла на $(uname -s) с $(python3 --version)"
+echo "OK: ручная подготовка и read-only setup расширения alla на $(uname -s) с $(python3 --version)"

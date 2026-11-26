@@ -1,18 +1,18 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_core/services/triage_service.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/services/retry_linking.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/services/image_attachments.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/models/testops.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/pipeline.py"
-  - "qwen-skill/alla-launch/tests/test_core_triage.py"
-  - "qwen-skill/alla-launch/tests/test_core_fetch.py"
-  - "qwen-skill/alla-launch/tests/test_core_retries.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/clients/testops_client.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/clients/mcp_client.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/exceptions.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/utils/text_normalization.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/services/log_extraction_service.py"
+  - "scripts/alla_core/services/triage_service.py"
+  - "scripts/alla_core/services/retry_linking.py"
+  - "scripts/alla_core/services/image_attachments.py"
+  - "scripts/alla_core/models/testops.py"
+  - "scripts/alla_skill_lib/pipeline.py"
+  - "tests/test_core_triage.py"
+  - "tests/test_core_fetch.py"
+  - "tests/test_core_retries.py"
+  - "scripts/alla_core/clients/testops_client.py"
+  - "scripts/alla_core/clients/mcp_client.py"
+  - "scripts/alla_core/exceptions.py"
+  - "scripts/alla_core/utils/text_normalization.py"
+  - "scripts/alla_core/services/log_extraction_service.py"
 ---
 
 # Ядро: сбор данных — выгрузка и триаж

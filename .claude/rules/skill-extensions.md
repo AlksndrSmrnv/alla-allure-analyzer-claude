@@ -1,10 +1,10 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/extensions.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/extension_data.py"
-  - "qwen-skill/alla-launch/extensions/**"
-  - "qwen-skill/alla-launch/commands/alla/extensions.md"
-  - "qwen-skill/alla-launch/tests/test_skill_extensions.py"
+  - "scripts/alla_skill_lib/extensions.py"
+  - "scripts/alla_skill_lib/extension_data.py"
+  - "extensions/**"
+  - "commands/alla/extensions.md"
+  - "tests/test_skill_extensions.py"
 ---
 
 # Расширения скилла (`extensions.py`, `extensions/`)
@@ -19,11 +19,11 @@ paths:
 
 ## Устройство
 
-- Расширение — папка с `extension.toml`: встроенные `<скилл>/extensions/<имя>/` (выключены),
+- Расширение — папка с `extension.toml`: встроенные `<extension>/extensions/<имя>/` (выключены),
   свои `<проект>/alla-extensions/<имя>/`; своё с тем же именем заменяет встроенное
   (`overrides_bundled`). Включение — `enabled = [...]` в `<проект>/alla-extensions/config.toml`
-  (общее для команды, в git; таблицы `[testops]` и `[update]` — политика адресов и локальный источник релиза для
-  `alla_skill.py update`, `skill-protocol-setup.md`); `enabled_text` готовит diff только этой строки и только в корне
+  (общее для команды, в git; таблица `[testops]` — политика адресов);
+  `enabled_text` готовит diff только этой строки и только в корне
   (до первой таблицы: в `[<имя>]` может быть своя настройка `enabled`); многострочный
   список — отказ; предлагаемый текст разбирается `tomllib` и должен отличаться только
   корневым `enabled`, иначе инструкция не выдаётся (`_check_rewrite`), настройки `[<имя>]` переопределяют `[settings]` манифеста того же типа,
@@ -85,20 +85,14 @@ paths:
   неисправная: удалённый манифест не возвращает встроенное.
 - Хук `task` — не больше одного на событие: задание пишется в `<событие>-NN.md`, второе
   затёрло бы первое. Хуков `script` на событие может быть несколько.
-- Агенты включённых расширений инженер размещает в `.qwen/agents/` по инструкции
-  `enable` или `install-files` (обновить после `update`); `disable` только печатает,
-  какой совпадающий с исходником файл можно убрать вручную. Чужие изменения отмечаются.
-- Слэш-команды расширения — `commands = ["commands/<имя>.md"]` в манифесте
-  (`_commands`/`_check_command`: `.md`, имя по `NAME_RE`, `description`,
-  `disable-model-invocation: true`, не пустой текст). Имена команд скилла заняты
-  (`skill_command_names` — из папки рядом с модулем, не из `ws.SKILL_DIR`), одна команда у двух
-  включённых расширений — второе в `Active.problems`. Размещаются инженером по инструкции
-  `enable`/`install-files` в `.qwen/commands/alla/<имя>.md`; `disable` печатает, какие
-  совпадающие с исходниками файлы можно убрать вручную.
-  Цикл по командам в `_extensions_toggle` — своей переменной (`command`): `name` там — имя
-  расширения, по нему подсказка называет таблицу настроек `[<имя>]`.
-  `enable` поверх занятой команды отказывает (`command_conflict`) до выдачи инструкции:
-  `active` отдаёт команду первому расширению, и второе осталось бы неактивным.
+- Агенты встроенных расширений (`alla-git-publish`, `alla-sut-code`, `alla-tickets`) лежат
+  в корневом `agents/` и поставляются самим расширением Qwen Code (`_bundled_agent`); у
+  своих расширений проекта `agent = "agent.md"` в `extension.toml` обязателен.
+- Слэш-команды `/alla:code` и `/alla:ticket` лежат в корневом `commands/alla/` и поставляются
+  расширением `alla`. Для своих расширений проекта поле `commands = ["commands/<имя>.md"]` в
+  манифесте проверяется прежними правилами (`_commands`/`_check_command`).
+  `enable`/`disable` печатает только строку `enabled` и diff `alla-extensions/config.toml`
+  со статусом `ok` (без `--yes`/`--diff`, без записи и без копирования агентов/команд).
 - Модель работу расширения не делает: субагент запускает только команду скилла из задания
   (правило «из shell только команды скилла» не ослаблено). `session_rules.WRITABLE_RE`
   разрешает субагенту только `extensions/<имя>/*.txt` (сообщение коммита).
@@ -111,7 +105,7 @@ paths:
 `test_skill_extensions.py`; если модель должна что-то сделать иначе — `SKILL.md` раздел 7 и
 `references/protocol.md`.
 
-Enable/disable и install-files никогда не пишут конфигурацию или файлы Qwen, не создают
+Enable и disable никогда не пишут конфигурацию или файлы Qwen, не создают
 блокировки, не применяют и не восстанавливают транзакции. Они только печатают инструкцию;
-корневой `enabled` и файлы устанавливает инженер. Старые `--yes`/`--diff` — ошибка аргументов.
+корневой `enabled` устанавливает инженер. Старые `--yes`/`--diff` — ошибка аргументов.
 Старый журнал не меняется и требует ручной проверки. Нет автоматического применения по «да».

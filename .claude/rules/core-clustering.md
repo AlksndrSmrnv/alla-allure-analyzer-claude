@@ -1,13 +1,13 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_core/services/clustering_service.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/models/clustering.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/utils/message_resources.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/utils/text_normalization.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/utils/step_paths.py"
-  - "qwen-skill/alla-launch/tests/test_core_clustering.py"
-  - "qwen-skill/alla-launch/tests/test_clustering_optimizations.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/utils/log_events.py"
+  - "scripts/alla_core/services/clustering_service.py"
+  - "scripts/alla_core/models/clustering.py"
+  - "scripts/alla_core/utils/message_resources.py"
+  - "scripts/alla_core/utils/text_normalization.py"
+  - "scripts/alla_core/utils/step_paths.py"
+  - "tests/test_core_clustering.py"
+  - "tests/test_clustering_optimizations.py"
+  - "scripts/alla_core/utils/log_events.py"
 ---
 
 # Ядро: кластеризация

@@ -1,9 +1,8 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/cli.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/batch_task.py"
-  - "qwen-skill/alla-launch/tests/test_skill_parallel.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/qwen_files.py"
+  - "scripts/alla_skill_lib/cli.py"
+  - "scripts/alla_skill_lib/batch_task.py"
+  - "tests/test_skill_parallel.py"
 ---
 
 # Протокол: пакетный разбор и шаг `relate`
@@ -26,9 +25,8 @@ paths:
 - `alla-batch` — свой субагент (`agents/alla-batch.md`, узкая роль, инструменты read_file,
   write_file, run_shell_command): встроенный `general-purpose` по своей системной подсказке
   осматривал проект (ls/find, чужие пакеты), и текстом prompt это не лечилось (стенд Qwen,
-  P04). Инженер размещает его в `<project>/.qwen/agents/` по инструкции `install-files`
-  (`skill-protocol-setup.md`);
-  Qwen видит агентов со старта сеанса, поэтому инструкция `next` даёт запасной путь — без
+  P04). Он входит прямо в состав расширения `alla` (`agents/` в `qwen-extension.json`),
+  поэтому доступен при установке расширения; инструкция `next` сохраняет запасной путь без
   `subagent_type`. Qwen молча пропускает невалидный файл агента: формат охраняет
   `test_batch_agent_file_is_valid_for_qwen_and_narrow`.
 - Субагент `next` не вызывает. `verify N [N…] --run DIR` — только читающая проверка (те же

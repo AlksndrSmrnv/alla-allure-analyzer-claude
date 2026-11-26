@@ -1,12 +1,12 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/cli.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/workspace.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/jobs.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/projects.py"
-  - "qwen-skill/alla-launch/tests/test_skill_projects.py"
-  - "qwen-skill/alla-launch/tests/test_skill_protocol.py"
-  - "qwen-skill/alla-launch/tests/test_skill_flow.py"
+  - "scripts/alla_skill_lib/cli.py"
+  - "scripts/alla_skill_lib/workspace.py"
+  - "scripts/alla_skill_lib/jobs.py"
+  - "scripts/alla_skill_lib/projects.py"
+  - "tests/test_skill_projects.py"
+  - "tests/test_skill_protocol.py"
+  - "tests/test_skill_flow.py"
 ---
 
 # Протокол: `prepare` и папка разбора

@@ -28,21 +28,25 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-          cache-dependency-path: qwen-skill/alla-launch/requirements*.txt
+          cache-dependency-path: requirements*.txt
       - name: Install dependencies
-        run: python -m pip install --require-hashes -r qwen-skill/alla-launch/requirements-dev.txt
+        run: python -m pip install --require-hashes -r requirements-dev.txt
       # -rs: причины пропусков в журнале (на Linux пропускаются проверки macOS и её системных ссылок).
-      - name: pytest
-        run: python -m pytest -rs
+      - name: pytest (without loopback)
+        id: offline
+        run: python -m pytest -m 'not loopback'
+      - name: pytest (real loopback HTTP)
+        if: ${{ !cancelled() && (success() || steps.offline.outcome == 'failure') }}
+        run: python -m pytest -m loopback
       - name: ruff
-        run: ruff check qwen-skill/alla-launch
+        run: ruff check scripts extensions tests
       # Версия — из матрицы: на 3.12 ставится numpy без поддержки 3.11, и его заглушки
       # с синтаксисом 3.12 не разбираются при python_version = "3.11" из pyproject.toml.
       - name: mypy
-        run: mypy --python-version ${{ matrix.python }} qwen-skill/alla-launch/scripts qwen-skill/alla-launch/extensions
+        run: mypy --python-version ${{ matrix.python }} scripts extensions
       # Только dev: holdout проверяет test_eval_quality, отдельно его не печатаем.
       - name: Eval (dev)
-        run: python qwen-skill/alla-launch/tests/eval/run_eval.py
+        run: python tests/eval/run_eval.py
 
   # Ручная подготовка инженером, read-only setup и синтетический разбор в Debian.
   setup-smoke:
@@ -55,7 +59,7 @@ jobs:
       - name: Prepare local wheelhouse explicitly
         run: >-
           python -m pip download --require-hashes --only-binary=:all:
-          -r qwen-skill/alla-launch/requirements.txt --dest /tmp/alla-wheelhouse
+          -r requirements.txt --dest /tmp/alla-wheelhouse
       - name: Manual environment, read-only instructions, check and prepare
         env:
           ALLA_WHEELHOUSE: /tmp/alla-wheelhouse

@@ -1,5 +1,22 @@
 # Что нового в alla
 
+## 26 ноября 2026
+
+### Перевод на нативное расширение Qwen Code CLI (`alla`)
+
+- Корень репозитория стал нативным расширением Qwen Code (`qwen-extension.json`,
+  `name: "alla"`, скилл `/alla:launch`, команды `/alla:*` в `commands/alla/`, встроенные
+  субагенты `alla-*` в `agents/`). Ручное копирование в `.qwen/skills/` и `.qwen/commands/`
+  больше не нужно: установка через `qwen extensions install <url-или-путь>` или
+  `qwen extensions link .`.
+- Несекретные настройки проекта перенесены в `<проект>/.qwen/alla.env` (с fallback
+  `<расширение>/.env`); `ALLURE_TOKEN` хранится через
+  `qwen extensions settings set alla ALLURE_TOKEN --scope workspace` (или переменную окружения
+  в CI) и запрещён во всех `.env` файлах.
+- Удалены команды ручного жизненного цикла `/alla:update` (`alla_release.py`) и
+  `install-files` (`qwen_files.py`); обновление расширения выполняется через
+  `qwen extensions update alla`.
+
 ## 23 ноября 2026
 
 ### Разбор в Qwen Code проще читать

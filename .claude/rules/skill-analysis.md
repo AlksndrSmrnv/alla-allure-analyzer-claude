@@ -1,10 +1,10 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/problem_state.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/report.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/related.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/known_issues.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/confirmed.py"
+  - "scripts/alla_skill_lib/problem_state.py"
+  - "scripts/alla_skill_lib/report.py"
+  - "scripts/alla_skill_lib/related.py"
+  - "scripts/alla_skill_lib/known_issues.py"
+  - "scripts/alla_skill_lib/confirmed.py"
 ---
 
 # Задания, разборы и отчёт

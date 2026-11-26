@@ -1,8 +1,8 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/confirmed.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/report.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/related.py"
+  - "scripts/alla_skill_lib/confirmed.py"
+  - "scripts/alla_skill_lib/report.py"
+  - "scripts/alla_skill_lib/related.py"
 ---
 
 # Отчёт: подтверждённый вывод расширения

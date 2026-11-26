@@ -1,8 +1,8 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/rerun.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/rerun_worker.py"
-  - "qwen-skill/alla-launch/tests/skill_fake_maven.py"
+  - "scripts/alla_skill_lib/rerun.py"
+  - "scripts/alla_skill_lib/rerun_worker.py"
+  - "tests/skill_fake_maven.py"
 ---
 
 # Перезапуск: план и фоновое задание

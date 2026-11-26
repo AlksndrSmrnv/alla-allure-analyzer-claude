@@ -1,14 +1,14 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/SKILL.md"
-  - "qwen-skill/alla-launch/references/**"
-  - "qwen-skill/alla-launch/scripts/alla_skill.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/cli.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/agent_rules.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/errors.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/session_rules.py"
-  - "qwen-skill/alla-launch/tests/test_skill_docs.py"
-  - "qwen-skill/alla-launch/tests/test_skill_protocol.py"
+  - "skills/launch/SKILL.md"
+  - "skills/launch/references/**"
+  - "scripts/alla_skill.py"
+  - "scripts/alla_skill_lib/cli.py"
+  - "scripts/alla_skill_lib/agent_rules.py"
+  - "scripts/alla_skill_lib/errors.py"
+  - "scripts/alla_skill_lib/session_rules.py"
+  - "tests/test_skill_docs.py"
+  - "tests/test_skill_protocol.py"
 ---
 
 # Протокол скилла: команды, статусы, пакетный разбор, правила исполнителя
@@ -25,8 +25,7 @@ paths:
 номеров — только с `--from-analysis`, `skill-memory-feedback.md`), `reject N <id> --run DIR`,
 `extensions [list|enable|disable|run|action]` (`skill-extensions.md`; action с --run строит
 контекст по папке разбора, без --context/--run и с явным --reports-dir работает после clean),
-`rerun [N…] --run DIR [--yes --plan ХЭШ | --wait]` (`skill-rerun.md`),
-`update [--source URL] [--ref REF]` (только `alla_skill.py`, `skill-protocol-setup.md`, «Точка входа и установка»).
+`rerun [N…] --run DIR [--yes --plan ХЭШ | --wait]` (`skill-rerun.md`).
 
 - Где в синтаксисе есть `--run DIR`, он обязателен: `.last_run` после нового `prepare`
   указывает на другой прогон.
@@ -39,7 +38,7 @@ paths:
 ## Статусы и коды возврата
 
 - Первая строка вывода — `STATUS: analyze|analyze_batch|fix|propose|relate|summary|done|diff|
-  applied|reverted|saved|rerun|running|rerun_done|ok|ready|reviewed|setup_required|update_ready|install_files|error`.
+  applied|reverted|saved|rerun|running|rerun_done|ok|ready|reviewed|setup_required|error`.
 - Ошибка аргументов и любое необработанное исключение тоже дают `STATUS: error`.
 - Код возврата 0 у всех статусов, кроме `error`: статус с инструкцией — не авария.
 
@@ -86,8 +85,8 @@ paths:
   (`agent_rules.record_problem`). Останавливать `remember` считает сам скрипт (модель отказы
   не сосчитает, см. `skill-memory-feedback.md`).
 - `errors.py` — подсказки по сбоям выгрузки: токен, TLS, таймаут, лимит страниц, 404. При
-  ошибке токена пользователь меняет sensitive setting `ALLURE_TOKEN` расширения
-  `alla-launch-credentials` или окружение CI; токен в `.env` запрещён. Агент хранилище
+  ошибке токена пользователь меняет sensitive setting `ALLURE_TOKEN` расширения `alla`
+  или окружение CI; токен в `.env` / `.qwen/alla.env` запрещён. Агент хранилище
   Qwen не читает и `qwen_credentials.mjs` напрямую не запускает.
   При ошибке сертификата сначала — корневой сертификат прокси в `SSL_CERT_FILE` (httpx читает её
   из окружения, не из `.env`). Отключить проверку TLS скилл не умеет (настройка

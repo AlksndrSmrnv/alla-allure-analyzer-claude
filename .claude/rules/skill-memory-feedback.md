@@ -1,10 +1,10 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/feedback.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/history.py"
-  - "qwen-skill/alla-launch/references/feedback.md"
-  - "qwen-skill/alla-launch/tests/test_skill_memory.py"
-  - "qwen-skill/alla-launch/tests/test_history_versions.py"
+  - "scripts/alla_skill_lib/feedback.py"
+  - "scripts/alla_skill_lib/history.py"
+  - "skills/launch/references/feedback.md"
+  - "tests/test_skill_memory.py"
+  - "tests/test_history_versions.py"
 ---
 
 # Память скилла: обратная связь и история

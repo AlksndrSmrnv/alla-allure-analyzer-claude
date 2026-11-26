@@ -1,12 +1,12 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/review.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/review_model.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/session_log.py"
-  - "qwen-skill/alla-launch/tests/test_skill_review.py"
-  - "qwen-skill/alla-launch/tests/test_skill_session_log.py"
-  - "qwen-skill/alla-launch/tests/qwen_stand.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/session_rules.py"
+  - "scripts/alla_skill_lib/review.py"
+  - "scripts/alla_skill_lib/review_model.py"
+  - "scripts/alla_skill_lib/session_log.py"
+  - "tests/test_skill_review.py"
+  - "tests/test_skill_session_log.py"
+  - "tests/qwen_stand.py"
+  - "scripts/alla_skill_lib/session_rules.py"
 ---
 
 # Протокол: проверка разбора для пилота
@@ -15,21 +15,21 @@ paths:
 токен окружения Qwen: агент читает `CONNECT-MCP.md` и останавливает подключение без правок,
 не предлагая восстановить токен через `adapter_env` или изменить фильтр окружения.
 
-Сценарии установки `I01`–`I03`, `I05` проверяют инструкцию инженеру без установки:
-`setup` не создаёт окружение, `install-files` и enable/disable не меняют файлы и config,
+Сценарии установки `I01`, `I03`, `I05` проверяют инструкцию инженеру без установки и записи:
+`setup` не создаёт окружение, `extensions enable/disable` не меняют `alla-extensions/config.toml`,
 в том числе после обычного «Да». `installation_unchanged` сравнивает снимок файлов установки;
 `no_dependency_install` проверяет команды и отсутствие нового venv. `P02` — остановка
 при неготовом окружении, `A04` — отрицательный запрос активации.
 
-Стенд не пишет `ALLURE_TOKEN` в `.env`: обычные готовые сценарии получают синтетический токен
-через окружение процесса, `env_ready=False` — без токена. `S01` проверяет зелёный прогон 778
-с native credential store установленного Qwen без фиксации версии: до старта модели настоящий CLI устанавливает
-`alla-launch-credentials` и сохраняет токен в отдельном HOME через PTY. Общая utility —
-`tests/qwen_credentials_support.py`, без pytest; `QWEN_CODE_FORCE_FILE_STORAGE=true`
-исключает личный keychain. Агенту токен через окружение не передаётся. Проверяются
-завершение, SAFE, отсутствие утечек и plaintext `.env`, права `0600` на encrypted file.
-Отсутствуют qwen/node — `not_run`; несовместимая версия или ошибка native установки —
-ошибка стенда, а не пропуск. `asks_for_env` требует адрес в `.env`, токен в хранилище Qwen.
+Стенд не пишет `ALLURE_TOKEN` в `.qwen/alla.env`: обычные готовые сценарии получают синтетический
+токен через окружение процесса, `env_ready=False` — без токена. Каждый сценарий стенда ставит
+расширение `alla` в отдельный `HOME` (`stage_extension` + `qwen extensions install --consent`);
+в `S01` (зелёный прогон 778) через PTY вводится синтетический `ALLURE_TOKEN`, а агенту токен
+через окружение не передаётся. Общая utility — `tests/qwen_credentials_support.py`, без pytest;
+`QWEN_CODE_FORCE_FILE_STORAGE=true` исключает личный keychain. Проверяются завершение, SAFE,
+отсутствие утечек и plaintext токена в `.env` / `.qwen/alla.env`, права `0600` на encrypted file.
+Отсутствуют qwen/node — `not_run`; несовместимая версия или ошибка native установки — ошибка
+стенда, а не пропуск. `asks_for_env` требует адрес в `.env`, токен в хранилище Qwen.
 
 ## Проверка разбора для пилота (`review`, `review.py`, `review_model.py`)
 

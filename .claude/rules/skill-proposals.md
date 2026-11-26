@@ -1,9 +1,9 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/proposals.py"
-  - "qwen-skill/alla-launch/references/proposal-format.md"
-  - "qwen-skill/alla-launch/tests/test_proposal_policy.py"
-  - "qwen-skill/alla-launch/tests/test_proposal_flow_policy.py"
+  - "scripts/alla_skill_lib/proposals.py"
+  - "skills/launch/references/proposal-format.md"
+  - "tests/test_proposal_policy.py"
+  - "tests/test_proposal_flow_policy.py"
 ---
 
 # Предложения правок автотестов (`proposals`, `apply`, `revert`)

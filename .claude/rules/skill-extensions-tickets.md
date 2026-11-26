@@ -1,7 +1,7 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/extensions/tickets/**"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/extension_data.py"
+  - "extensions/tickets/**"
+  - "scripts/alla_skill_lib/extension_data.py"
 ---
 
 # Расширения: tickets и публичный снимок

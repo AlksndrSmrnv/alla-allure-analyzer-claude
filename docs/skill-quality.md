@@ -7,19 +7,19 @@ Harness разделяет Python-протокол и поведение Qwen Co
 ## Локальный запуск
 
 Используй существующую `.venv` проекта с зависимостями из
-`qwen-skill/alla-launch/requirements-dev.txt` (lock с хешами, ставить с `--require-hashes`). Нового runtime или пакета нет.
+`requirements-dev.txt` (lock с хешами, ставить с `--require-hashes`). Нового runtime или пакета нет.
 
 ```bash
 .venv/bin/python scripts/skill_quality.py plan
 .venv/bin/python scripts/skill_quality.py run --output /tmp/alla-quality-001
 .venv/bin/python scripts/skill_quality.py run --case P03 --case P04 --output /tmp/alla-quality-002
-.venv/bin/python -m pytest qwen-skill/alla-launch/tests/test_quality_harness.py
+.venv/bin/python -m pytest tests/test_quality_harness.py
 ```
 
-Runner находится внутри самодостаточного скилла в `tests/quality_harness.py`;
-`scripts/skill_quality.py` в корне — только удобная точка входа. Копия скилла работает без
-корневого wrapper: из окружения с теми же зависимостями запускай
-`python /путь/alla-launch/tests/quality_harness.py run --output /tmp/alla-quality-003`.
+Runner находится внутри самодостаточного расширения в `tests/quality_harness.py`;
+`scripts/skill_quality.py` — удобная точка входа. Копия расширения работает без
+отдельного wrapper-скрипта: из окружения с теми же зависимостями запускай
+`python ~/.qwen/extensions/alla/tests/quality_harness.py run --output /tmp/alla-quality-003`.
 
 `plan` выводит сценарии и fingerprint без запуска тестов или Qwen. `run` запускает
 выбранные существующие тесты на синтетических данных. Папка `--output` должна быть новой:
@@ -72,7 +72,7 @@ Runner не вызывает Qwen, setup, живой TestOps или API-backed �
 
 ## Стенд Qwen
 
-`qwen-skill/alla-launch/tests/qwen_stand.py` прогоняет настоящий Qwen Code по сценариям
+`tests/qwen_stand.py` прогоняет настоящий Qwen Code по сценариям
 из `alla-cases.md` на синтетических данных. Нужны `qwen` в PATH и экспортированные
 `OPENAI_MODEL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY` (ключ не передавайте в чат).
 Модель, URL и имя переменной ключа можно задать флагами `--model`, `--base-url`,
@@ -85,9 +85,9 @@ Runner не вызывает Qwen, setup, живой TestOps или API-backed �
 вопросы проверяются интерактивным/ACP-прогоном и вручную по trace.
 
 ```bash
-.venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py list
-.venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case A01 --case A04 --output /tmp/alla-stand-001
-.venv/bin/python qwen-skill/alla-launch/tests/qwen_stand.py run --case E06 --repeat 3 --api-log --output /tmp/alla-stand-002
+.venv/bin/python tests/qwen_stand.py list
+.venv/bin/python tests/qwen_stand.py run --case A01 --case A04 --output /tmp/alla-stand-001
+.venv/bin/python tests/qwen_stand.py run --case E06 --repeat 3 --api-log --output /tmp/alla-stand-002
 ```
 
 Сценарии расширений: X01 — git-publish (bare-remote `.stand-remote.git` внутри проекта),
@@ -113,11 +113,11 @@ I06 — подключение MCP трекера, у которого дост�
 процессов проверяют регрессионные pytest с синтетическими токенами.
 
 S01 — зелёный прогон 778 с токеном из хранилища Qwen. До старта агента стенд настоящим
-`qwen extensions install` устанавливает `alla-launch-credentials` в отдельном HOME и
+`qwen extensions install` устанавливает `alla` в отдельном HOME и
 вводит синтетический токен через PTY. `QWEN_CODE_FORCE_FILE_STORAGE=true` выбирает native
 encrypted-file backend; личный keychain не используется. Модель и shell не получают
 `ALLURE_TOKEN` через окружение. Проверяются завершение разбора, SAFE, отсутствие утечек,
-зашифрованный файл секретов с правами `0600` и отсутствие токена в `.env`.
+зашифрованный файл секретов с правами `0600` и отсутствие токена в `.env` / `.qwen/alla.env`.
 Функции установки находятся в `tests/qwen_credentials_support.py`, общие со сквозным
 pytest хранилища. Для этого сценария нужны установленный Qwen Code, Node.js и POSIX PTY;
 отсутствие qwen/node даёт `not_run`, недоступный native API и ошибки установки останавливают
@@ -179,16 +179,17 @@ P05 — 9 кластеров (на один меньше порога пакет
   что в pytest (`default`, `green`, `info_only`, `injection`, `screenshot`, `wide`, `many:N`); каждый запрос
   пишется в `testops-requests.jsonl`;
 - собирает git-проект автотестов (в `~/.cache/alla-qwen-stand/work/`, вне папки результатов,
-  чтобы агент не нашёл trace и журнал стенда) с исходниками из `skill_fixtures.py` и копией скилла в
-  `.qwen/skills/alla-launch` (в `.env` только несекретные настройки фейка; обычным сценариям
-  синтетический `ALLURE_TOKEN` передаётся через окружение процесса, S01 — через хранилище Qwen).
+  чтобы агент не нашёл trace и журнал стенда) с исходниками из `skill_fixtures.py` и
+  установленным расширением `alla` в отдельном HOME (в `.qwen/alla.env` — только несекретные
+  настройки фейка; обычным сценариям синтетический `ALLURE_TOKEN` передаётся через окружение
+  процесса, S01 — через хранилище Qwen).
   Окружение скилла ставится настоящим
   из заранее подготовленного `ALLA_STAND_VENV` или кэша, проверяется без установки и подключается ссылкой; P02 проверяет
-  отсутствие окружения, I01 — запрос установки (`/alla-launch установи`, без `.venv` и
-  `.env`): остановка на `setup_required`, инструкция инженеру без pip и `prepare`.
-  I02/I03/I05 проверяют только печать файлов Qwen, включения и отключения расширения: даже
+  отсутствие окружения, I01 — запрос установки (`/alla:launch установи`, без `.venv` и
+  `.qwen/alla.env`): остановка на `setup_required`, инструкция инженеру без pip и `prepare`.
+  I03/I05 проверяют только preview diff для включения и отключения расширения в `alla-extensions/config.toml`: даже
   после обычного «да» нет записи. Снимок проверяет содержимое, структуру и права файлов
-  установки, включая игнорируемый `.env` и Python-кэши. Старый маркер готовности не нужен. Песочница
+  установки, включая игнорируемые `.env` / `.qwen/alla.env` и Python-кэши. Старый маркер готовности не нужен. Песочница
   разрешает чтение активного каталога разработчика (`xcode-select -p`): без него
   `/usr/bin/python3` не запускается;
 - запускает `qwen -o stream-json --approval-mode yolo --sandbox` с отдельным HOME: без
@@ -210,8 +211,8 @@ qwen завершился с ошибкой или у сценария есть 
 `pass` — всё проверено автоматически.
 
 Правила поведения (команды shell, поиск и чтение кода, чтение и запись файлов, дословный
-отчёт) живут в скилле — `scripts/alla_skill_lib/session_rules.py`: те же проверки `review`
-прогоняет у пилота по журналу сеанса Qwen (`references/setup.md`, «Пилот: проверка
+отчёт) живут в расширении — `scripts/alla_skill_lib/session_rules.py`: те же проверки `review`
+прогоняет у пилота по журналу сеанса Qwen (`skills/launch/references/setup.md`, «Пилот: проверка
 разбора»).
 
 Поиск по содержимому (`grep_search`) оценивается по области, а не по совпадениям: в trace у

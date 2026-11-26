@@ -1,0 +1,402 @@
+"""Рабочая папка разбора: пути, ``run.json``, ``state.json``, ``.last_run``.
+
+Весь прогресс хранится в файлах, поэтому разбор можно продолжить после
+сжатия контекста агента или прерывания: ``next`` каждый раз заново смотрит
+на диск.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import shlex
+import shutil
+import sys
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+REPORTS_DIRNAME = "alla-reports"
+LAST_RUN_FILE = ".last_run"
+SKILL_PROBLEMS_FILE = "skill-problems.md"
+RESUME_WINDOW_HOURS = 24  # неоконченный разбор того же прогона продолжается, а не дублируется
+# Версия папки разбора. Папку другой версии не продолжить: поддерживается только текущий
+# формат (8: ``fix_auto`` у кластера — проверенная правка из ``alla-kb/fixes/``,
+# ``rerun/learned.json``; 7: ``other_ids`` в ``rerun/plan.json`` — варианты метода для статуса passed в
+# TestOps; 6: скриншоты ``images/``; 5: ``launch_created`` — время запуска прогона, подтверждённые выводы расширений
+# ``confirmed/``; 4: лог только операции теста — ``operation_ids``, ``operation_logs``,
+# ``foreign_log_events`` у тестов; 3: наблюдения с реестром источников, примеры, повторы).
+RUN_SCHEMA = 8
+
+logger = logging.getLogger(__name__)
+
+SKILL_DIR = Path(__file__).resolve().parents[2]
+ENTRYPOINT = SKILL_DIR / "scripts" / "alla_skill.py"
+PROJECT_ENV_REL = Path(".qwen") / "alla.env"
+
+
+class RunNotFoundError(Exception):
+    """Рабочая папка разбора не найдена или повреждена."""
+
+
+def detect_project_root(_skill_dir: Path | None = None) -> Path:
+    """Корень проекта автотестов — текущая папка, из которой запускаются команды."""
+    return Path.cwd().resolve()
+
+
+def project_env_file(project_root: Path) -> Path:
+    """Проектный файл несекретных настроек: ``<project>/.qwen/alla.env``."""
+    return project_root / PROJECT_ENV_REL
+
+
+def extension_env_file() -> Path:
+    """Общий fallback-файл несекретных настроек в папке расширения: ``<extension>/.env``."""
+    return SKILL_DIR / ".env"
+
+
+def active_env_file(project_root: Path) -> Path:
+    """Файл настроек для подсказок пользователю."""
+    proj = project_env_file(project_root)
+    if proj.is_file():
+        return proj
+    ext_env = extension_env_file()
+    if ext_env.is_file():
+        return ext_env
+    return proj
+
+
+def references_dir() -> Path:
+    """Папка справочников скилла (``ws.SKILL_DIR`` читается при вызове)."""
+    return SKILL_DIR / "skills" / "launch" / "references"
+
+
+def skill_command(*args: str) -> str:
+    """Команда запуска скрипта скилла, которую агент может выполнить как есть."""
+    parts = ["python" if os.name == "nt" else "python3", str(ENTRYPOINT), *args]
+    if os.name == "nt":
+        return " ".join(f'"{part}"' if " " in part else part for part in parts)
+    return shlex.join(parts)
+
+
+@dataclass(frozen=True)
+class RunPaths:
+    """Пути внутри папки одного разбора."""
+
+    root: Path
+
+    @property
+    def run_json(self) -> Path:
+        return self.root / "run.json"
+
+    @property
+    def state_json(self) -> Path:
+        return self.root / "state.json"
+
+    @property
+    def clusters_dir(self) -> Path:
+        return self.root / "clusters"
+
+    @property
+    def analyses_dir(self) -> Path:
+        return self.root / "analyses"
+
+    @property
+    def summary_task(self) -> Path:
+        return self.root / "summary_task.md"
+
+    @property
+    def summary(self) -> Path:
+        return self.root / "summary.md"
+
+    @property
+    def relate_task(self) -> Path:
+        """Задание сравнить разборы похожих проблем (``related.py``)."""
+        return self.root / "relate_task.md"
+
+    @property
+    def related(self) -> Path:
+        """Решение модели: у каких похожих проблем одна причина."""
+        return self.root / "related.md"
+
+    @property
+    def report(self) -> Path:
+        return self.root / "report.md"
+
+    @property
+    def skill_problems(self) -> Path:
+        """Проблемы скилла, которые записал агент: пользователю не выводятся, их читает ``review``."""
+        return self.root / SKILL_PROBLEMS_FILE
+
+    @property
+    def reports_dir(self) -> Path:
+        return self.root.parent
+
+    def cluster_task(self, file_id: str) -> Path:
+        return self.clusters_dir / f"{file_id}.md"
+
+    def analysis(self, file_id: str) -> Path:
+        return self.analyses_dir / f"{file_id}.md"
+
+    def batch(self, number: int) -> Path:
+        """Задание субагенту на пакет кластеров (создаётся при первом пакетном ``next``)."""
+        return self.root / "batches" / f"{number}.md"
+
+    def evidence(self, file_id: str) -> Path:
+        return self.root / "evidence" / f"{file_id}.txt"
+
+    def images(self, file_id: str) -> Path:
+        """Скриншоты из вложений тестов-примеров кластера: их открывает модель (``images.py``)."""
+        return self.root / "images" / file_id
+
+    def sources(self, file_id: str) -> Path:
+        """Реестр источников задания кластера (``S1``, ``S2``…), см. ``sources.py``."""
+        return self.root / "evidence" / f"{file_id}.sources.json"
+
+    def proposal(self, file_id: str) -> Path:
+        return self.root / "proposals" / f"{file_id}.md"
+
+    def proposal_record(self, file_id: str) -> Path:
+        """Отметка, что предложение применено командой ``apply --yes``."""
+        return self.root / "proposals" / f"{file_id}.applied.json"
+
+    def proposal_backup(self, file_id: str) -> Path:
+        """Файл до правки: из него ``revert`` возвращает исходную версию."""
+        return self.root / "proposals" / f"{file_id}.orig"
+
+    def proposal_patch(self, file_id: str) -> Path:
+        """Показанный пользователю diff (unified, можно применить ``git apply``)."""
+        return self.root / "proposals" / f"{file_id}.patch"
+
+    def feedback(self, file_id: str) -> Path:
+        return self.root / "feedback" / f"{file_id}.md"
+
+    def extension_dir(self, name: str) -> Path:
+        """Папка расширения в разборе: контексты, задания и итоги его хуков."""
+        return self.root / "extensions" / name
+
+    def confirmed(self, file_id: str) -> Path:
+        """Вывод расширения, который пользователь подтвердил (``remember --from-extension``)."""
+        return self.root / "confirmed" / f"{file_id}.json"
+
+    @property
+    def rerun_dir(self) -> Path:
+        """Перезапуск тестов локально (``rerun.py``): план, ход, итог и логи Maven."""
+        return self.root / "rerun"
+
+    def next_command(self) -> str:
+        return skill_command("next", str(self.root))
+
+
+def ensure_reports_dir(reports_dir: Path) -> None:
+    """Папка отчётов с ``.gitignore``: разборы и задания в git не попадают."""
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    gitignore = reports_dir / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text("# Отчёты alla-launch не коммитятся\n*\n", encoding="utf-8")
+
+
+def create_run_dir(reports_dir: Path, launch_id: int, now: datetime) -> RunPaths:
+    """Создать новую папку ``<launch_id>-<YYYYmmdd-HHMMSS>`` в ``reports_dir``."""
+    ensure_reports_dir(reports_dir)
+
+    base = f"{launch_id}-{now.strftime('%Y%m%d-%H%M%S')}"
+    root = reports_dir / base
+    suffix = 1
+    while True:
+        try:
+            root.mkdir()  # без exist_ok: два prepare в одну секунду не должны делить папку
+            break
+        except FileExistsError:
+            suffix += 1
+            root = reports_dir / f"{base}-{suffix}"
+    paths = RunPaths(root.resolve())
+    run_uid(paths)
+    paths.clusters_dir.mkdir()
+    for name in ("analyses", "evidence", "proposals", "feedback"):
+        (paths.root / name).mkdir()
+    return paths
+
+
+def run_uid(paths: RunPaths) -> str:
+    """Назначить UUID ровно один раз, включая одновременное открытие старого разбора.
+
+    Публикуем уже полный файл через link, который не заменяет существующее имя.
+    os.replace здесь нельзя: второй процесс подменил бы UUID первого.
+    """
+    destination = paths.root / "run.uid"
+    if not destination.exists():
+        temporary = paths.root / f".run-uid-{uuid.uuid4().hex}.tmp"
+        try:
+            with temporary.open("xb") as handle:
+                handle.write((str(uuid.uuid4()) + "\n").encode("ascii"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(temporary, destination)
+            except FileExistsError:
+                pass
+            if os.name != "nt":
+                descriptor = os.open(paths.root, os.O_RDONLY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
+    try:
+        if destination.is_symlink():
+            raise ValueError("символическая ссылка")
+        value = destination.read_text(encoding="ascii").strip()
+        if str(uuid.UUID(value)) != value:
+            raise ValueError("не UUID")
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise RunNotFoundError(f"Идентификатор разбора повреждён: {destination}") from exc
+    return value
+
+
+def find_unfinished_run(
+    reports_dir: Path,
+    launch_id: int,
+    now: datetime | None = None,
+) -> RunPaths | None:
+    """Свежий разбор этого прогона без ``report.md`` — его стоит продолжить.
+
+    Повторный ``prepare`` после таймаута или сжатия контекста иначе создаёт
+    дубль и бросает уже сделанные разборы.
+    """
+    if not reports_dir.is_dir():
+        return None
+    limit = (now.timestamp() if now else time.time()) - RESUME_WINDOW_HOURS * 3600
+    candidates: list[tuple[float, RunPaths]] = []
+    for path in reports_dir.glob(f"{launch_id}-*"):
+        paths = RunPaths(path.resolve())
+        if not paths.run_json.is_file() or paths.report.exists():
+            continue
+        created = paths.run_json.stat().st_mtime
+        if created >= limit:
+            candidates.append((created, paths))
+    # Пустой или оборванный ``run.json`` (сбой на записи) продолжить нельзя:
+    # такая папка пропускается, берётся следующая свежая, иначе начнётся новый разбор.
+    for _, paths in sorted(candidates, key=lambda item: item[0], reverse=True):
+        try:
+            read_run(paths)
+        except RunNotFoundError as exc:
+            logger.warning("Пропускаю неоконченный разбор: %s", exc)
+            continue
+        return paths
+    return None
+
+
+def remember_last_run(reports_dir: Path, paths: RunPaths) -> None:
+    write_atomic(reports_dir / LAST_RUN_FILE, str(paths.root))
+
+
+def resolve_run(run_dir: str | None, reports_dir: Path) -> RunPaths:
+    """Найти папку разбора: явный путь или последняя из ``.last_run``."""
+    if run_dir:
+        root = Path(run_dir).expanduser().resolve()
+    else:
+        marker = reports_dir / LAST_RUN_FILE
+        if not marker.is_file():
+            raise RunNotFoundError(
+                f"Нет последнего разбора в {reports_dir}. Сначала выполни: "
+                f"{skill_command('prepare', '<launch_id>')}"
+            )
+        root = Path(marker.read_text(encoding="utf-8").strip())
+    paths = RunPaths(root)
+    if not paths.run_json.is_file():
+        if not root.exists():
+            raise RunNotFoundError(
+                f"Папка разбора {root} удалена. Выполни: {skill_command('prepare', '<launch_id>')}"
+            )
+        raise RunNotFoundError(f"В {root} нет run.json — это не папка разбора alla-launch")
+    read_run(paths)  # битый run.json — понятная ошибка, а не traceback в любой команде
+    return paths
+
+
+def read_run(paths: RunPaths) -> dict[str, Any]:
+    """Прочитать ``run.json``; пустой, оборванный или чужой файл — ``RunNotFoundError``."""
+    try:
+        run = read_json(paths.run_json)
+    except (OSError, ValueError) as exc:  # JSONDecodeError и UnicodeDecodeError — ValueError
+        reason = "пуст" if _is_empty(paths.run_json) else f"не читается ({type(exc).__name__}: {exc})"
+    else:
+        if not isinstance(run, dict) or not isinstance(run.get("clusters"), list):
+            reason = "не похож на разбор alla-launch"
+        elif run.get("schema") != RUN_SCHEMA:
+            raise RunNotFoundError(
+                f"Разбор {paths.root} создан прежней версией скилла — продолжить его нельзя. "
+                f"Выполни: {skill_command('prepare', _launch_of(paths), '--fresh')}"
+            )
+        else:
+            return run
+    raise RunNotFoundError(
+        f"run.json в {paths.root} {reason} — этот разбор не продолжить (скорее всего, запись "
+        f"прервалась). Выполни: {skill_command('prepare', _launch_of(paths), '--fresh')}"
+    )
+
+
+def _launch_of(paths: RunPaths) -> str:
+    prefix = paths.root.name.partition("-")[0]
+    return prefix if prefix.isdigit() else "<launch_id>"
+
+
+def _is_empty(path: Path) -> bool:
+    try:
+        return not path.read_bytes().strip()
+    except OSError:
+        return False
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """Записать текст (UTF-8, переводы строк как есть) атомарно — см. :func:`write_atomic_bytes`."""
+    write_atomic_bytes(path, text.encode("utf-8"))
+
+
+def write_atomic_bytes(path: Path, data: bytes, *, mode_from: Path | None = None) -> None:
+    """Записать файл целиком через временный файл рядом (без обрыва посередине).
+
+    ``mode_from`` — чьи права доступа перенести (исходник проекта при ``apply``).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        with open(tmp, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())  # иначе после сбоя ОС rename может пережить данные: файл на 0 байт
+        if mode_from is not None:
+            shutil.copymode(mode_from, tmp)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def write_json(path: Path, data: Any) -> None:
+    """Атомарно записать JSON (через временный файл)."""
+    write_atomic(path, json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_text(path: Path) -> str:
+    """Файл, написанный моделью: BOM и «битые» байты не должны ронять скрипт."""
+    return path.read_text(encoding="utf-8-sig", errors="replace")
+
+
+def write_text(path: Path, text: str) -> None:
+    path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+
+
+def configure_stdio() -> None:
+    """UTF-8 для stdout/stderr (консоль Windows по умолчанию не UTF-8)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")

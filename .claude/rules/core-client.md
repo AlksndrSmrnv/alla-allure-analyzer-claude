@@ -1,19 +1,18 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_core/clients/**"
-  - "qwen-skill/alla-launch/scripts/alla_core/config.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/credentials.py"
-  - "qwen-skill/alla-launch/scripts/qwen_credentials.mjs"
-  - "qwen-skill/alla-launch/tests/test_core_credentials.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/credentials.py"
-  - "qwen-skill/alla-launch/scripts/qwen_credentials.mjs"
-  - "qwen-skill/alla-launch/credentials/**"
-  - "qwen-skill/alla-launch/scripts/alla_core/exceptions.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/models/testops.py"
-  - "qwen-skill/alla-launch/tests/test_core_testops_client.py"
-  - "qwen-skill/alla-launch/tests/test_core_mcp_client.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/projects.py"
-  - "qwen-skill/alla-launch/tests/test_core_auth.py"
+  - "scripts/alla_core/clients/**"
+  - "scripts/alla_core/config.py"
+  - "scripts/alla_core/credentials.py"
+  - "scripts/qwen_credentials.mjs"
+  - "tests/test_core_credentials.py"
+  - "scripts/alla_core/credentials.py"
+  - "scripts/qwen_credentials.mjs"
+  - "scripts/alla_core/exceptions.py"
+  - "scripts/alla_core/models/testops.py"
+  - "tests/test_core_testops_client.py"
+  - "tests/test_core_mcp_client.py"
+  - "scripts/alla_skill_lib/projects.py"
+  - "tests/test_core_auth.py"
 ---
 
 # Ядро: клиент TestOps и настройки
@@ -124,10 +123,11 @@ REST API TestOps у пользователей закрыт (решение по
 
 ## Настройки (`config.py`)
 
-`Settings` читает `<skill>/.env` и переменные окружения `ALLURE_*` (окружение важнее файла),
-чужие ключи игнорирует. Непустой `ALLURE_TOKEN` в `.env` запрещён даже при токене окружения.
-Токен берётся из непустой переменной окружения (CI), иначе — из sensitive setting
-`ALLURE_TOKEN` расширения Qwen `alla-launch-credentials` (workspace важнее user).
+`Settings` читает `<project>/.qwen/alla.env` (fallback — `<extension>/.env`, приоритет:
+переменные окружения > `.qwen/alla.env` > `<extension>/.env`), чужие ключи игнорирует.
+Непустой `ALLURE_TOKEN` в `.env`, `.qwen/.env`, `.qwen/alla.env` и `<extension>/.env` запрещён
+даже при токене окружения. Токен берётся из непустой переменной окружения (CI), иначе — из
+sensitive setting `ALLURE_TOKEN` расширения Qwen `alla` (workspace важнее user).
 Границы значений — `BOUNDS` (ge/le). `load(require_testops=False)` — для команд без TestOps
 (`rerun`): адрес и токен не обязательны, хранилище не читается; запрет открытого токена
 в `.env` остаётся.

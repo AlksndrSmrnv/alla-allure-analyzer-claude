@@ -4,10 +4,9 @@ import { promises as fs } from "node:fs"
 import path from "node:path"
 
 const RULES_DIR = ".claude/rules"
-const SKILL_ROOT = "qwen-skill/alla-launch"
 const DOCS_TESTS = [
-  `${SKILL_ROOT}/tests/test_skill_docs.py`,
-  `${SKILL_ROOT}/tests/test_skill_prompts.py`,
+  "tests/test_skill_docs.py",
+  "tests/test_skill_prompts.py",
 ]
 const PRE_COMMIT = ".claude/hooks/pre_commit_check.sh"
 const HOLDOUT_FILE = "corpus_holdout.py"
@@ -240,11 +239,12 @@ function pathsFromTool(tool: string, input: unknown): string[] {
 }
 
 function shouldCheckDocs(relativePath: string): boolean {
-  if (relativePath === `${SKILL_ROOT}/SKILL.md`) return true
-  if (relativePath.startsWith(`${SKILL_ROOT}/references/`)) return true
-  if (relativePath === `${SKILL_ROOT}/tests/test_skill_docs.py`) return true
-  if (relativePath === `${SKILL_ROOT}/tests/test_skill_prompts.py`) return true
-  return relativePath.startsWith(`${SKILL_ROOT}/scripts/alla_skill_lib/`) && relativePath.endsWith(".py")
+  if (relativePath === "skills/launch/SKILL.md") return true
+  if (relativePath.startsWith("skills/launch/references/")) return true
+  if (relativePath.startsWith("commands/alla/") || relativePath.startsWith("agents/")) return true
+  if (relativePath === "tests/test_skill_docs.py") return true
+  if (relativePath === "tests/test_skill_prompts.py") return true
+  return relativePath.startsWith("scripts/alla_skill_lib/") && relativePath.endsWith(".py")
 }
 
 function tail(value: string, lines = 60): string {
@@ -473,7 +473,7 @@ export default Plugin.define({
         if (event.action === "read") {
           event.effect = "ask"
           event.message =
-            "Holdout: просмотр требует записи в qwen-skill/alla-launch/tests/eval/holdout_journal.md."
+            "Holdout: просмотр требует записи в tests/eval/holdout_journal.md."
         }
         if (event.action === "edit") {
           event.effect = "deny"

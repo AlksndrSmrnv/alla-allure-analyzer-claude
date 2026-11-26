@@ -1,10 +1,10 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_core/utils/log_events.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/services/attachment_handlers.py"
-  - "qwen-skill/alla-launch/tests/test_core_log_events.py"
-  - "qwen-skill/alla-launch/tests/test_core_attachment_handlers.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/utils/log_focus.py"
+  - "scripts/alla_core/utils/log_events.py"
+  - "scripts/alla_core/services/attachment_handlers.py"
+  - "tests/test_core_log_events.py"
+  - "tests/test_core_attachment_handlers.py"
+  - "scripts/alla_core/utils/log_focus.py"
 ---
 
 # Ядро: события лога

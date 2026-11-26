@@ -12,11 +12,12 @@ omitClaudeMd: true
 
 Что видит исполнитель (пути от корня репозитория):
 
-- `qwen-skill/alla-launch/SKILL.md` — загружается целиком при активации;
-- `qwen-skill/alla-launch/references/*.md` — читаются, когда SKILL.md или вывод скрипта
+- `skills/launch/SKILL.md` — загружается целиком при активации `/alla:launch`;
+- `skills/launch/references/*.md` — читаются, когда SKILL.md или вывод скрипта
   на них ссылается;
+- `commands/alla/*.md` и `agents/*.md` — слэш-команды `/alla:*` и встроенные субагенты расширения;
 - задания и подсказки, которые печатает скрипт: их тексты собираются в
-  `qwen-skill/alla-launch/scripts/alla_skill_lib/` (`cluster_task.py`, `batch_task.py`,
+  `scripts/alla_skill_lib/` (`cluster_task.py`, `batch_task.py`,
   `agent_rules.py`, `cli.py`, `errors.py`). Читай их только ради строк, которые уходят
   исполнителю; устройство Python не оценивай.
 

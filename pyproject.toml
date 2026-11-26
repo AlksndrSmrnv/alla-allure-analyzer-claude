@@ -1,5 +1,5 @@
-# Репозиторий содержит только скилл Qwen Code alla-launch (qwen-skill/alla-launch/);
-# пакета для установки нет. Зависимости: qwen-skill/alla-launch/requirements*.txt.
+# Репозиторий — нативный Qwen Code CLI extension `alla`;
+# пакета для установки нет. Зависимости: requirements*.txt.
 
 [tool.ruff]
 target-version = "py311"
@@ -16,16 +16,18 @@ module = ["ijson", "ijson.*", "scipy.*", "sklearn.*"]
 ignore_missing_imports = true
 
 # scripts/ попадает в sys.path только во время работы (alla_skill.py, skill_fixtures),
-# поэтому pyright указываются пути к пакетам скилла и к фикстурам тестов. Pyright нужен
+# поэтому pyright указываются пути к пакетам расширения и к фикстурам тестов. Pyright нужен
 # для навигации по коду; типы проверяет mypy, а режим basic даёт ложные ошибки на
 # алиасах pydantic (contentType) и argparse.
 [tool.pyright]
-include = ["qwen-skill/alla-launch"]
+include = ["scripts", "extensions", "tests"]
 venvPath = "."
 venv = ".venv"
 pythonVersion = "3.11"
 typeCheckingMode = "off"
-extraPaths = ["qwen-skill/alla-launch/scripts", "qwen-skill/alla-launch/tests"]
+extraPaths = ["scripts", "tests"]
 
 [tool.pytest.ini_options]
-testpaths = ["qwen-skill/alla-launch/tests"]
+testpaths = ["tests"]
+markers = ["loopback: starts a real HTTP server on 127.0.0.1"]
+addopts = "-rs"

@@ -1,15 +1,15 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/kb.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/modules.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/feedback.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/history.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/signature.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/flaky.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/fix_facts.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/learn.py"
-  - "qwen-skill/alla-launch/references/feedback.md"
-  - "qwen-skill/alla-launch/tests/test_skill_memory.py"
+  - "scripts/alla_skill_lib/kb.py"
+  - "scripts/alla_skill_lib/modules.py"
+  - "scripts/alla_skill_lib/feedback.py"
+  - "scripts/alla_skill_lib/history.py"
+  - "scripts/alla_skill_lib/signature.py"
+  - "scripts/alla_skill_lib/flaky.py"
+  - "scripts/alla_skill_lib/fix_facts.py"
+  - "scripts/alla_skill_lib/learn.py"
+  - "skills/launch/references/feedback.md"
+  - "tests/test_skill_memory.py"
 ---
 
 # Память скилла: база знаний, модули, обратная связь, история

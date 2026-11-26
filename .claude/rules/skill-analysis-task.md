@@ -1,15 +1,15 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/cluster_task.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/sources.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/retries.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/code_hints.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/services/prompt_builder_service.py"
-  - "qwen-skill/alla-launch/scripts/alla_core/utils/log_focus.py"
-  - "qwen-skill/alla-launch/tests/test_skill_prompts.py"
-  - "qwen-skill/alla-launch/tests/test_skill_sources.py"
-  - "qwen-skill/alla-launch/tests/test_code_references.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/analysis_format.py"
+  - "scripts/alla_skill_lib/cluster_task.py"
+  - "scripts/alla_skill_lib/sources.py"
+  - "scripts/alla_skill_lib/retries.py"
+  - "scripts/alla_skill_lib/code_hints.py"
+  - "scripts/alla_core/services/prompt_builder_service.py"
+  - "scripts/alla_core/utils/log_focus.py"
+  - "tests/test_skill_prompts.py"
+  - "tests/test_skill_sources.py"
+  - "tests/test_code_references.py"
+  - "scripts/alla_skill_lib/analysis_format.py"
 ---
 
 # Задания: задание кластера

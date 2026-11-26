@@ -1,10 +1,10 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_core/**"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/pipeline.py"
-  - "qwen-skill/alla-launch/tests/test_core_*.py"
-  - "qwen-skill/alla-launch/tests/test_clustering_optimizations.py"
-  - "qwen-skill/alla-launch/tests/test_log_selection.py"
+  - "scripts/alla_core/**"
+  - "scripts/alla_skill_lib/pipeline.py"
+  - "tests/test_core_*.py"
+  - "tests/test_clustering_optimizations.py"
+  - "tests/test_log_selection.py"
 ---
 
 # Ядро `alla_core`

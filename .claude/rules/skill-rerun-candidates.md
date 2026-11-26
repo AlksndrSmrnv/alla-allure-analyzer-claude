@@ -1,8 +1,8 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/flaky.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/rerun.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/learn.py"
+  - "scripts/alla_skill_lib/flaky.py"
+  - "scripts/alla_skill_lib/rerun.py"
+  - "scripts/alla_skill_lib/learn.py"
 ---
 
 # Перезапуск: кандидаты, проверка правки, база знаний
@@ -48,7 +48,7 @@ paths:
   прогону на сценарий — о разбросе не судим.
 - Строки нет (перезапуск выключен, уже идёт, не Maven, нет Maven) — прежняя «Тесты не
   запускай: предложи пользователю запустить исправленный тест.».
-- Стенд F02 (test_bug, фейковый Maven: createOrder проходит; реплики «/alla-launch 782» →
+- Стенд F02 (test_bug, фейковый Maven: createOrder проходит; реплики «/alla:launch 782» →
   «Да, применяй правку.» → «Да, перезапусти тесты.» → «Да, отметь в TestOps.»; проверки
   `fix_applied`, `rerun_started`, `fix_checked`, `testops_resolved` — POST resolve только для
   201). Первый прогон (838e562): всё прошло; вопрос задан отдельно, модель сама

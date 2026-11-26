@@ -1,8 +1,8 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/known_issues.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/report.py"
-  - "qwen-skill/alla-launch/tests/test_known_issues.py"
+  - "scripts/alla_skill_lib/known_issues.py"
+  - "scripts/alla_skill_lib/report.py"
+  - "tests/test_known_issues.py"
 ---
 
 # Отчёт: известные проблемы

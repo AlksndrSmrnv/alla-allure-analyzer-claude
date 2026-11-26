@@ -1,7 +1,7 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/extensions/git-publish/**"
-  - "qwen-skill/alla-launch/tests/test_ext_git_publish.py"
+  - "extensions/git-publish/**"
+  - "tests/test_ext_git_publish.py"
 ---
 
 # Расширения: git-publish

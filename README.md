@@ -4,11 +4,11 @@
 обычно приходится открывать каждый тест, читать стек и логи и гадать, кто виноват:
 приложение, автотест или стенд.
 
-**alla делает это за вас.** Это скилл для [Qwen Code](https://github.com/QwenLM/qwen-code):
+**alla делает это за вас.** Это нативное расширение для [Qwen Code CLI](https://github.com/QwenLM/qwen-code):
 вы пишете номер прогона, а он отвечает, что сломалось, почему и что делать.
 
 ```text
-/alla-launch 123456
+/alla:launch 123456
 ```
 
 ## Что вы получаете
@@ -110,45 +110,54 @@ TestOps: https://testops.example/launch/123456
 другую или конкретную версию для Аллы не нужно. Скрипт сам ходит в MCP TestOps (`<адрес TestOps>/api/mcp`);
 `mcp-remote` и настройка MCP в Qwen не нужны.
 
-**1. Скопируйте скилл в проект автотестов:** папку `qwen-skill/alla-launch/` — в
-`<проект>/.qwen/skills/alla-launch/`.
+**1. Установите расширение `alla` в Qwen Code:**
+
+```bash
+qwen extensions install https://github.com/<org>/alla-allure-analyzer-claude
+```
+
+Для локальной разработки можно подключить клон репозитория ссылкой:
+
+```bash
+qwen extensions link /путь/к/alla-allure-analyzer-claude
+```
+
+После установки `alla` автоматически регистрирует скилл `/alla:launch`, все команды
+`/alla:*` и встроенных субагентов `alla-*` — копировать файлы в `.qwen/` проекта не нужно.
 
 **2. Подготовьте окружение и проверьте его.** Зависимости устанавливает инженер по
 правилам команды, например из корня проекта:
 
 ```bash
 python3.11 -m venv .venv
-.venv/bin/python -m pip install --require-hashes -r .qwen/skills/alla-launch/requirements.txt
-python3 .qwen/skills/alla-launch/scripts/alla_skill.py setup
+.venv/bin/python -m pip install --require-hashes -r ~/.qwen/extensions/alla/requirements.txt
+python3 ~/.qwen/extensions/alla/scripts/alla_skill.py setup
 ```
 
-`setup` только проверяет готовую `.venv`, Python и точные версии зависимостей. Просьба
-`/alla-launch установи` вызывает эту проверку и показывает инструкцию инженеру. Скилл не
-создаёт окружение, не запускает установку пакетов и не пишет конфигурацию. При отсутствии
-окружения или несовпадении версий он останавливается с `STATUS: setup_required`.
-`install-files` только печатает пути, готовое содержимое файлов Qwen и diff; инженер
-размещает их вручную. Скилл не предлагает выполнить эти шаги после «да». Отдельно поручить
-Qwen выполнить ручные действия можно вне сценария скилла.
+`setup` только проверяет готовую `.venv`, Python и точные версии зависимостей. Команда
+`/alla:setup` (или `/alla:launch установи`) вызывает эту проверку и показывает инструкцию
+инженеру. Скилл не создаёт окружение, не запускает установку пакетов и не пишет
+конфигурацию. При отсутствии окружения или несовпадении версий он останавливается с
+`STATUS: setup_required`.
 
-**3. Настройте доступ.** Самостоятельно скопируйте `.qwen/skills/alla-launch/.env.example` в
-`.qwen/skills/alla-launch/.env` (права `600` на Linux/macOS), затем заполните:
+**3. Настройте доступ.** Самостоятельно скопируйте `~/.qwen/extensions/alla/.env.example` в
+`.qwen/alla.env` в корне проекта (права `600` на Linux/macOS), затем заполните:
 
 ```text
 ALLURE_ENDPOINT=https://testops.company.ru
 ```
 
-Токен в `.env` запрещён. Из корня проекта установите расширение для хранения токена
-и введите его в скрытом приглашении Qwen:
+Токен в `.env` / `.qwen/alla.env` запрещён. Сохраните токен во встроенном секрете
+расширения `alla` через скрытое приглашение Qwen:
 
 ```bash
-qwen extensions install .qwen/skills/alla-launch/credentials
-qwen extensions settings set alla-launch-credentials ALLURE_TOKEN --scope workspace
+qwen extensions settings set alla ALLURE_TOKEN --scope workspace
 ```
 
-Манифест `credentials/qwen-extension.json` объявляет `ALLURE_TOKEN` с `sensitive: true`;
+Манифест `qwen-extension.json` объявляет `ALLURE_TOKEN` с `sensitive: true`;
 самого токена в нём нет. Qwen использует системное хранилище секретов, а при его
 недоступности — зашифрованный файл. Ограничения этого fallback описаны в
-[справочнике по хранению токена](qwen-skill/alla-launch/references/setup.md#хранение-токена).
+[справочнике по хранению токена](skills/launch/references/setup.md#хранение-токена).
 Для CI токен можно передать переменной окружения `ALLURE_TOKEN`.
 
 В `alla-extensions/config.toml` проекта явно разрешите origin:
@@ -161,13 +170,13 @@ allowed_origins = ["https://testops.company.ru"]
 Схема, хост и порт проверяются для REST, MCP и обмена токена. Пустой список запрещает доступ;
 переменные окружения не расширяют политику, redirect не выполняется. Токен в чат не пишите.
 
-**4. Готово.** После `check` разбирайте прогоны командой `/alla-launch 123456`.
+**4. Готово.** После `check` разбирайте прогоны командой `/alla:launch 123456` или `/alla:run 123456`.
 
-**Обновление.** `update --source /local/release.zip` принимает локальный каталог или архив.
-Либо задайте `[update] source = "/local/release.zip"` в конфигурации проекта.
-Команда готовит новый каталог `.alla-releases/<sha256>/alla-launch` и diff, сохраняя активную
-версию. Просмотрите diff и активируйте вручную с сохранением старой папки для отката.
-Подробнее: [справочник по установке](qwen-skill/alla-launch/references/setup.md#обновление).
+**Обновление.** Используйте встроенную команду Qwen Code CLI:
+
+```bash
+qwen extensions update alla
+```
 
 ## Как пользоваться
 
@@ -177,7 +186,7 @@ allowed_origins = ["https://testops.company.ru"]
 своими словами:
 
 ```text
-/alla-launch 123456
+/alla:launch 123456
 ```
 
 ```text
@@ -239,7 +248,7 @@ TestOps прошёл или ошибка похожа на временный с
 
 | Команда | Что делает |
 |---|---|
-| `/alla:run 123456` | Разобрать прогон (номер или ссылка) — то же, что `/alla-launch 123456` |
+| `/alla:run 123456` | Разобрать прогон (номер или ссылка) — то же, что `/alla:launch 123456` |
 | `/alla:continue` | Продолжить прерванный разбор |
 | `/alla:apply 2` | Показать diff правки для проблемы 2 и спросить, применить ли её |
 | `/alla:revert 2` | Вернуть правку проблемы 2 |
@@ -251,12 +260,10 @@ TestOps прошёл или ошибка похожа на временный с
 | `/alla:ticket 2 3` | Подготовить тикет по проблемам 2 и 3, показать его целиком и создать в трекере только после вашего «да» (расширение `tickets`, нужен адаптер или MCP-сервер трекера, см. «Расширения») |
 | `/alla:extensions` | Показать расширения; `enable git-publish` / `disable git-publish` — инструкция для ручного включения или выключения, `run git-publish 2` — повторить его действие для проблемы 2 |
 | `/alla:setup` | Проверить окружение и показать инструкцию инженеру |
-| `/alla:update` | Подготовить локальный релиз с diff для ручной активации |
 
-Команды инженер размещает в `.qwen/commands/alla/` проекта. `install-files` печатает
-исходные и целевые пути, готовое содержимое и diff, ничего не записывая.
-Qwen Code видит команды со следующего сеанса; папку можно закоммитить, чтобы команды были у
-всей команды. Если в Qwen Code включено доверие к папкам, команды видны только в доверенном проекте.
+Команды `/alla:*` поставляются самим расширением `alla` — копировать их в `.qwen/commands/alla/`
+не нужно. Если в Qwen Code включено доверие к папкам, расширение и настройки workspace работают
+в доверенном проекте.
 
 ## Что ещё умеет
 
@@ -268,7 +275,7 @@ Qwen Code видит команды со следующего сеанса; па
   причину одного сбоя за общую.
 - **Работает с многомодульными проектами.** В Java/Kotlin-проекте на Gradle или Maven база
   знаний ведётся отдельно для каждого модуля.
-- **Продолжает прерванный разбор.** Повторный `/alla-launch` того же прогона в течение суток
+- **Продолжает прерванный разбор.** Повторный `/alla:launch` того же прогона в течение суток
   продолжает прерванный разбор, а не начинает заново.
 - **Оценивает качество разбора.** По просьбе «проверь разбор» смотрит, как прошёл разбор и
   подтверждаются ли диагнозы данными. Результат — в папке `review/`. В ней есть сводка из
@@ -310,11 +317,9 @@ Qwen Code видит команды со следующего сеанса; па
 /alla:extensions enable git-publish
 ```
 
-Команда только покажет предлагаемую строку `enabled`, путь `alla-extensions/config.toml`
-и файлы субагента для `.qwen/agents/`. Инженер сам меняет конфигурацию и размещает файлы.
-Закоммитьте оба: тогда выгрузка включится у всей команды. Qwen Code увидит
-субагента после перезапуска; до этого выгрузка тоже работает, через субагента общего
-назначения.
+Команда только покажет предлагаемый diff для `alla-extensions/config.toml` (строку `enabled`).
+Инженер сам меняет конфигурацию. Закоммитьте `alla-extensions/config.toml`: тогда выгрузка
+включится у всей команды. Субагент `alla-git-publish` уже поставляется расширением `alla`.
 
 Настройки — в том же файле:
 
@@ -373,7 +378,7 @@ confirm = true           # false — выгружать без вопроса
 ```
 
 Инженер вносит в `alla-extensions/config.toml` строку `enabled` и настройки, сохраняя
-другие уже включённые расширения, и размещает файлы из инструкции:
+другие уже включённые расширения:
 
 ```toml
 enabled = ["sut-code"]
@@ -383,9 +388,9 @@ repos = ["ssh://git@git.company/shop/orders.git"]  # несколько — сп
 default_branch = ""                                # основная ветка; пусто — ветка HEAD на сервере
 ```
 
-Команда `/alla:code` появится после перезапуска Qwen Code. То же можно попросить словами:
+Команда `/alla:code` и субагент `alla-sut-code` поставляются расширением `alla`. То же можно попросить словами:
 «разбери проблему 2 по коду приложения, стенд на 1.4.2». Остальные настройки — раздел
-«sut-code» в [`references/setup.md`](qwen-skill/alla-launch/references/setup.md).
+«sut-code» в [`references/setup.md`](skills/launch/references/setup.md).
 
 ### Свои расширения
 
@@ -394,47 +399,48 @@ default_branch = ""                                # основная ветка
 настройки у расширения. Например, заводить задачу в Jira на каждую проблему приложения или
 отправлять краткий отчёт в чат команды. Скилл передаёт расширению данные события (номер
 прогона, проблему, разбор, применённую правку) в JSON, его код не подгружает: обновление
-скилла ваше расширение не сломает.
+расширения ваше расширение не сломает.
 
 Чтобы поменять встроенное расширение, скопируйте его папку в `alla-extensions/` под тем же
 именем и правьте копию: ваша версия заменит встроенную. Сломанное расширение не мешает
 разбору — агент покажет, что с ним не так.
 
 Как написать расширение: события, поля данных, шаблон задания субагента, правила —
-[`extensions/README.md`](qwen-skill/alla-launch/extensions/README.md). Пример целиком —
-[`extensions/git-publish/`](qwen-skill/alla-launch/extensions/git-publish/). Если расширение
+[`extensions/README.md`](extensions/README.md). Пример целиком —
+[`extensions/git-publish/`](extensions/git-publish/). Если расширение
 пишет агент, попросите его следовать инструкции
-[`extensions/AUTHORING.md`](qwen-skill/alla-launch/extensions/AUTHORING.md):
+[`extensions/AUTHORING.md`](extensions/AUTHORING.md):
 
 ```text
 напиши расширение alla, которое заводит задачу в Jira на каждую проблему приложения;
-следуй .qwen/skills/alla-launch/extensions/AUTHORING.md
+следуй ~/.qwen/extensions/alla/extensions/AUTHORING.md
 ```
 
 Чтобы заводить дефекты и тикеты во внутреннем трекере, свое расширение писать не нужно:
 подключите MCP-сервер трекера к встроенному `tickets`. Агенту дайте
-[`extensions/tickets/CONNECT-MCP.md`](qwen-skill/alla-launch/extensions/tickets/CONNECT-MCP.md):
+[`extensions/tickets/CONNECT-MCP.md`](extensions/tickets/CONNECT-MCP.md):
 
 ```text
 подключи MCP нашего трекера к alla, чтобы она заводила тикеты по проблемам;
-следуй .qwen/skills/alla-launch/extensions/tickets/CONNECT-MCP.md
+следуй ~/.qwen/extensions/alla/extensions/tickets/CONNECT-MCP.md
 ```
 
 ## Что появится в проекте
 
 ```text
-alla-reports/   разборы и отчёты (локально, в git не попадает)
-alla-kb/        база знаний проекта — коммитьте, чтобы рецепты видела вся команда
-.qwen/agents/   субагенты: alla-batch для больших прогонов, субагенты расширений (можно закоммитить)
-alla-extensions/  включённые расширения и свои расширения команды — коммитьте
-.alla-sut/      копия кода приложения для sut-code (локально, в git не попадает)
+alla-reports/      разборы и отчёты (локально, в git не попадает)
+alla-kb/           база знаний проекта — коммитьте, чтобы рецепты видела вся команда
+.qwen/alla.env     несекретные настройки проекта (ALLURE_ENDPOINT)
+alla-extensions/   включённые расширения и свои расширения команды — коммитьте
+.alla-sut/         копия кода приложения для sut-code (локально, в git не попадает)
 ```
 
 ## Настройки
 
-Настройки задаются в `.env` скилла или переменными окружения; переменные окружения важнее
-файла. Исключение — токен: только хранилище Qwen или переменная окружения `ALLURE_TOKEN`
-(имеет приоритет). Непустой `ALLURE_TOKEN` в `.env` скилла отклоняется даже при заданной
+Настройки задаются в `<проект>/.qwen/alla.env` (или fallback `<расширение>/.env`) либо переменными окружения;
+переменные окружения важнее файла. Исключение — токен: только хранилище Qwen
+(`qwen extensions settings set alla ALLURE_TOKEN --scope workspace`) или переменная окружения `ALLURE_TOKEN`
+(имеет приоритет). Непустой `ALLURE_TOKEN` в `.qwen/alla.env` или `.env` отклоняется даже при заданной
 переменной окружения.
 
 | Переменная | По умолчанию | Зачем |
@@ -450,7 +456,7 @@ alla-extensions/  включённые расширения и свои расш
 `SSL_CERT_FILE`. В `.env` скилла эта переменная не читается. Файл заменяет встроенный список
 доверенных сертификатов, поэтому в нём должны быть все нужные корневые сертификаты.
 
-Полный список настроек — в [`references/setup.md`](qwen-skill/alla-launch/references/setup.md#настройки).
+Полный список настроек — в [`references/setup.md`](skills/launch/references/setup.md#настройки).
 
 ## Ограничения
 
@@ -479,19 +485,18 @@ Python-скрипт скилла выгружает прогон из TestOps, �
 <details>
 <summary>Команды скрипта (их вызывает агент, самому не нужно)</summary>
 
-Все команды выглядят так: `python3 .qwen/skills/alla-launch/scripts/alla_skill.py <команда>`.
+Все команды выглядят так: `python3 ~/.qwen/extensions/alla/scripts/alla_skill.py <команда>`.
 Первая строка вывода любой команды — `STATUS: …`.
 
 | Команда | Что делает |
 |---|---|
 | `setup` | Только проверяет окружение и печатает инструкцию инженеру |
-| `update [--source PATH]` | Готовит новый каталог локального релиза и diff без подмены активной папки |
 | `check` | Проверяет Python, настройки, базу знаний и доступ к TestOps |
 | `prepare <ID или ссылка> [--fresh]` | Выгружает прогон и готовит задания. Неоконченный разбор моложе суток продолжает, `--fresh` начинает заново. Разбор старше суток продолжает только `next <папка>` |
 | `next [папка] [--workers N \| --serial]` | Следующий шаг разбора. `--workers` — сколько субагентов (1–8), `--serial` — без них |
 | `apply N --run DIR [--yes --diff ХЭШ] [--repeat]` | Показывает diff правки автотеста. С `--yes --diff` записывает её. `--repeat` — повторить правку, состояние которой неизвестно (только по просьбе пользователя) |
 | `revert N --run DIR` | Отменяет правку, если файл после неё не трогали |
-| `remember N [N…] --run DIR [--entry ID] [--from-analysis \| --from-extension ИМЯ]` | Сохраняет причину и рецепт проблемы N в `alla-kb/` из `feedback/NN.md` ([формат](qwen-skill/alla-launch/references/feedback.md)). Без этого файла ничего не сохраняет и отвечает `STATUS: fix`. С `--from-analysis` сохраняет подтверждённый разбор агента (несколько номеров — только так); разбор со ссылкой на известную проблему подтверждает её запись |
+| `remember N [N…] --run DIR [--entry ID] [--from-analysis \| --from-extension ИМЯ]` | Сохраняет причину и рецепт проблемы N в `alla-kb/` из `feedback/NN.md` ([формат](skills/launch/references/feedback.md)). Без этого файла ничего не сохраняет и отвечает `STATUS: fix`. С `--from-analysis` сохраняет подтверждённый разбор агента (несколько номеров — только так); разбор со ссылкой на известную проблему подтверждает её запись |
 | `reject N <id> --run DIR` | Помечает, что запись базы знаний `<id>` не относится к проблеме N |
 | `skip N --run DIR [--reason …]` | Пропускает проблему N |
 | `clean [--older-than-days N] [--dry-run]` | Удаляет старые папки разборов (по умолчанию старше 14 дней) |
@@ -509,13 +514,14 @@ Python-скрипт скилла выгружает прогон из TestOps, �
 
 | Путь | Что там |
 |---|---|
-| [`qwen-skill/alla-launch/SKILL.md`](qwen-skill/alla-launch/SKILL.md), [`references/`](qwen-skill/alla-launch/references/) | Сценарий для модели, форматы её файлов, протокол |
-| `qwen-skill/alla-launch/scripts/` | Точка входа `alla_skill.py`, логика скилла `alla_skill_lib/`, ядро `alla_core/` |
-| [`qwen-skill/alla-launch/extensions/`](qwen-skill/alla-launch/extensions/) | Встроенные расширения и руководство для авторов расширений |
-| `qwen-skill/alla-launch/tests/` | Тесты на фейковом TestOps, стенд настоящего Qwen Code, эталон точности `eval/` |
+| [`qwen-extension.json`](qwen-extension.json), [`commands/`](commands/), [`agents/`](agents/) | Манифест расширения `alla`, слэш-команды и субагенты |
+| [`skills/launch/SKILL.md`](skills/launch/SKILL.md), [`references/`](skills/launch/references/) | Сценарий для модели, форматы её файлов, протокол |
+| [`scripts/`](scripts/) | Точка входа `alla_skill.py`, логика скилла `alla_skill_lib/`, ядро `alla_core/` |
+| [`extensions/`](extensions/) | Встроенные расширения и руководство для авторов расширений |
+| [`tests/`](tests/) | Тесты на фейковом TestOps, стенд настоящего Qwen Code, эталон точности `eval/` |
 
 ```bash
-python3.11 -m venv .venv && .venv/bin/pip install --require-hashes -r qwen-skill/alla-launch/requirements-dev.txt
+python3.11 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements-dev.txt
 ```
 
 ```bash
@@ -524,10 +530,9 @@ python3.11 -m venv .venv && .venv/bin/pip install --require-hashes -r qwen-skill
 
 Зависимости закреплены lock-файлами `requirements.txt` и `requirements-dev.txt` (точные версии
 и хеши всех колёс); руками их не правят. Меняйте диапазоны в `requirements.in` и
-`requirements-dev.in` и перегенерируйте:
+`requirements-dev.in` и перегенерируйте из корня репозитория:
 
 ```bash
-cd qwen-skill/alla-launch
 uv pip compile requirements.in --universal --python-version 3.11 --generate-hashes --only-binary :all: --exclude-newer <дата не новее 3 дней назад> -o requirements.txt
 uv pip compile requirements-dev.in -c requirements.txt --universal --python-version 3.11 --generate-hashes --only-binary :all: --exclude-newer <та же дата> -o requirements-dev.txt
 ```

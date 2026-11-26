@@ -29,7 +29,7 @@
   },
 
   // The holdout is a check-only corpus. Every view must be recorded in
-  // qwen-skill/alla-launch/tests/eval/holdout_journal.md.
+  // tests/eval/holdout_journal.md.
   "permissions": [
     { "action": "read", "resource": "**/corpus_holdout.py", "effect": "ask" },
     { "action": "edit", "resource": "**/corpus_holdout.py", "effect": "deny" },

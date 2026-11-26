@@ -1,17 +1,17 @@
 ---
 paths:
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/rerun.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/rerun_worker.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/flaky.py"
-  - "qwen-skill/alla-launch/scripts/alla_skill_lib/resolve.py"
-  - "qwen-skill/alla-launch/commands/alla/rerun.md"
-  - "qwen-skill/alla-launch/tests/test_skill_rerun.py"
-  - "qwen-skill/alla-launch/tests/skill_fake_maven.py"
+  - "scripts/alla_skill_lib/rerun.py"
+  - "scripts/alla_skill_lib/rerun_worker.py"
+  - "scripts/alla_skill_lib/flaky.py"
+  - "scripts/alla_skill_lib/resolve.py"
+  - "commands/alla/rerun.md"
+  - "tests/test_skill_rerun.py"
+  - "tests/skill_fake_maven.py"
 ---
 
 # Перезапуск тестов локально (`rerun`)
 
-Подробности — в файлах подобластей: `skill-rerun-candidates.md` (кандидаты, проверка правки, база знаний), `skill-rerun-worker.md` (план и фоновое задание), `skill-rerun-resolve.md` (статус в TestOps). Справочник для агента по статусам и ограничениям `rerun` — `qwen-skill/alla-launch/references/rerun.md` (вынесен из раздела 8 `SKILL.md`).
+Подробности — в файлах подобластей: `skill-rerun-candidates.md` (кандидаты, проверка правки, база знаний), `skill-rerun-worker.md` (план и фоновое задание), `skill-rerun-resolve.md` (статус в TestOps). Справочник для агента по статусам и ограничениям `rerun` — `skills/launch/references/rerun.md` (вынесен из раздела 8 `SKILL.md`).
 
 Решения пользователя (2026-10-24, план `rosy-wishing-walrus`): кандидатов предлагает скилл,
 плюс `/alla:rerun N`; только Maven (JUnit/TestNG через surefire); до 3 запусков до первого
@@ -74,7 +74,7 @@ paths:
 - Стенд Qwen — сценарий F01 (фикстура `flaky`: у createOrder повтор упал иначе, у updateOrder
   — прошёл; `pom.xml` и фейковый `mvn` в корне проекта, его Python и скрипт — от папки
   `mvn`: песочница не даёт JDK и `~/.m2`; `target/` и счётчик запусков в `.gitignore`).
-  Реплики «/alla-launch 793» → «Да, перезапусти.» → «Да, отметь их в базе знаний.» (до отметки
+  Реплики «/alla:launch 793» → «Да, перезапусти.» → «Да, отметь их в базе знаний.» (до отметки
   в TestOps);
   проверки `rerun_started`, `rerun_result_shown`, `flaky_saved`. Прогоны (qwen3.8-flash,
   2026-10-24/25): 36951b0, 5a32b93 и 2e69b44 — все автоматические проверки прошли. На
