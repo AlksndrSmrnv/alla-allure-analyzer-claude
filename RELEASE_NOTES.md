@@ -9,8 +9,9 @@
   субагенты `alla-*` в `agents/`). Ручное копирование в `.qwen/skills/` и `.qwen/commands/`
   больше не нужно: установка через `qwen extensions install <url-или-путь>` или
   `qwen extensions link .`.
-- Несекретные настройки проекта перенесены в `<проект>/.qwen/alla.env` (с fallback
-  `<расширение>/.env`); `ALLURE_TOKEN` хранится через
+- Несекретные настройки проекта перенесены в `<проект>/.qwen/alla.env` (с общим fallback
+  `<QWEN_HOME или ~/.qwen>/alla.env`; `.env` внутри папки расширения не используется, так как
+  `qwen extensions update` его перезаписывает); `ALLURE_TOKEN` хранится через
   `qwen extensions settings set alla ALLURE_TOKEN --scope workspace` (или переменную окружения
   в CI) и запрещён во всех `.env` файлах.
 - Удалены команды ручного жизненного цикла `/alla:update` (`alla_release.py`) и
@@ -26,8 +27,9 @@
 1. Проверьте свои локальные правки (`git diff`, `.qwen/commands/alla/`, `.qwen/agents/`).
    Файлы команд и субагентов ваших расширений из `alla-extensions/` сохраните (вызов
    `alla-launch` в своих командах замените на `alla:launch`).
-2. Перенесите несекретные настройки из `.qwen/skills/alla-launch/.env` в `.qwen/alla.env`
-   (права `600`, без `ALLURE_TOKEN`).
+2. Перенесите несекретные настройки из `.qwen/skills/alla-launch/.env` (а если ранее
+   использовали `~/.qwen/extensions/alla/.env` — и из него) в `.qwen/alla.env` или
+   общий `~/.qwen/alla.env` (права `600`, без `ALLURE_TOKEN`).
 3. Сохраните токен командой `qwen extensions settings set alla ALLURE_TOKEN --scope workspace`
    и удалите прежнее расширение секретов `qwen extensions uninstall alla-launch-credentials`.
 4. Удалите из проекта `.qwen/skills/alla-launch/`, встроенные команды в `.qwen/commands/alla/`

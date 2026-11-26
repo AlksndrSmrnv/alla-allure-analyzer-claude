@@ -123,9 +123,9 @@ REST API TestOps у пользователей закрыт (решение по
 
 ## Настройки (`config.py`)
 
-`Settings` читает `<project>/.qwen/alla.env` (fallback — `<extension>/.env`, приоритет:
-переменные окружения > `.qwen/alla.env` > `<extension>/.env`), чужие ключи игнорирует.
-Непустой `ALLURE_TOKEN` в `.env`, `.qwen/.env`, `.qwen/alla.env` и `<extension>/.env` запрещён
+`Settings` читает `<project>/.qwen/alla.env` (fallback — `<QWEN_HOME или ~/.qwen>/alla.env`, приоритет:
+переменные окружения > `.qwen/alla.env` > `<QWEN_HOME>/alla.env`), чужие ключи игнорирует.
+Непустой `ALLURE_TOKEN` в `.env`, `.qwen/.env`, `.qwen/alla.env` и `alla.env` запрещён
 даже при токене окружения. Токен берётся из непустой переменной окружения (CI), иначе — из
 sensitive setting `ALLURE_TOKEN` расширения Qwen `alla` (workspace важнее user).
 Границы значений — `BOUNDS` (ge/le). `load(require_testops=False)` — для команд без TestOps

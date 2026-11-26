@@ -91,6 +91,9 @@ def _isolate_skill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Сеанс Qwen того, кто запускает тесты, в папки разборов тестов не пишется.
     for name in ("QWEN_CODE_SESSION_ID", "QWEN_CODE_PROJECT_DIR", "QWEN_HOME"):
         monkeypatch.delenv(name, raising=False)
+    # Личный <~/.qwen>/alla.env того, кто запускает тесты, в настройки тестов не попадает.
+    user_env = tmp_path / "qwen-home" / "alla.env"
+    monkeypatch.setattr(workspace, "user_env_file", lambda: user_env)
 
 
 @pytest.fixture(name="project")

@@ -292,3 +292,32 @@ def test_setup_uses_real_venv_metadata_without_pip_or_marker(tmp_path: Path) -> 
     result = _run(entry, "setup", cwd=project)
     assert result.returncode == 0 and result.stdout.startswith("STATUS: setup_required"), result.stdout
     assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("use_equals", [False, True])
+def test_project_root_switches_the_venv_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, use_equals: bool
+) -> None:
+    """--project-root меняет и проверяемую .venv, и Python, который её запускает."""
+    first, second = tmp_path / "a", tmp_path / "b"
+    monkeypatch.setattr(alla_skill, "PROJECT_DIR", first)
+    monkeypatch.setattr(alla_skill, "VENV_DIR", first / ".venv")
+    probed: list[Path] = []
+    launched: list[list[str]] = []
+
+    def probe(python: Path, entries: object) -> tuple[str, tuple[int, int]]:
+        probed.append(python)
+        return "ok", alla_skill.MIN_VERSION
+
+    monkeypatch.setattr(alla_skill, "_probe_environment", probe)
+    monkeypatch.setattr(alla_skill, "running_in_venv", lambda: False)
+    monkeypatch.delenv(alla_skill.CHILD_MARKER, raising=False)
+    monkeypatch.setattr(alla_skill.subprocess, "call", lambda command, **kwargs: launched.append(command) or 0)
+    (second / ".venv").mkdir(parents=True)
+
+    args = ["check", f"--project-root={second}"] if use_equals else ["check", "--project-root", str(second)]
+    assert alla_skill.main(args) == 0
+    expected = alla_skill.venv_python(second.resolve() / ".venv")
+    assert probed == [expected]
+    assert launched and launched[0][0] == str(expected)
+    assert all(str(first) not in str(path) for path in probed)

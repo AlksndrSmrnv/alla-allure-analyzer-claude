@@ -157,7 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--module", help="модуль из ALLURE_PROJECT_ID, чей проект TestOps взять")
     parser.add_argument("--project", type=int, help="номер проекта TestOps прогона")
     args = parser.parse_args(argv)
-    settings = Settings.load(env_file=workspace.SKILL_DIR / ".env",
+    settings = Settings.load(env_file=workspace.project_env_file(args.project_root),
+                             fallback_env_file=workspace.user_env_file(),
                              project_root=args.project_root)
     try:
         choice = choose_project(settings, module=args.module, project=args.project)

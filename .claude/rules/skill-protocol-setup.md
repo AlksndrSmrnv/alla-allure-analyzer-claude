@@ -17,7 +17,7 @@ paths:
 ## Точка входа и установка
 
 - Корень репозитория является корнем нативного расширения Qwen Code CLI (`qwen-extension.json`, `name = "alla"`). Скилл лежит в `skills/launch/SKILL.md` (`name: launch` → `/alla:launch`), команды — в `commands/alla/*.md` (`/alla:*`), встроенные субагенты — в `agents/alla-*.md`.
-- Bootstrap `alla_skill.py` — stdlib, Python 3.8+; основная логика — 3.11+. `project_root()` определяет проект от текущей рабочей папки (`Path.cwd().resolve()`).
+- Bootstrap `alla_skill.py` — stdlib, Python 3.8+; основная логика — 3.11+. `project_root()` определяет проект от текущей рабочей папки (`Path.cwd().resolve()`). `venv_python()` читает актуальный `VENV_DIR` при каждом вызове, чтобы `--project-root` переключал и проверяемую `.venv`, и запускаемый Python.
 - `setup` только проверяет существующую `.venv` проекта, Python и точные версии всех применимых
   записей lock-файла; печатает инструкцию инженеру и ничего не записывает. Нет окружения
   или зависимостей — `setup_required`; сломанный или старый Python — `error`; готово —
@@ -30,8 +30,8 @@ paths:
   `cwd`); маркер `.venv/.alla-setup-complete` игнорируется и не меняется.
   Lock допускает точные hashed deps и применимые Python-маркеры. Проверка не создаёт
   Python-кэши в `.qwen/`. Окружение, `.qwen/alla.env` из образца и `.gitignore` готовит инженер.
-- `<project>/.qwen/alla.env` (fallback — `<extension>/.env`) содержит только несекретные настройки:
-  непустой `ALLURE_TOKEN` запрещён в обоих файлах и в `.env` / `.qwen/.env`.
+- `<project>/.qwen/alla.env` (fallback — `<QWEN_HOME или ~/.qwen>/alla.env`) содержит только несекретные настройки:
+  непустой `ALLURE_TOKEN` запрещён в обоих файлах и в `.env` / `.qwen/.env`. `<extension>/.env` не читается (его перезаписывает `qwen extensions update`), при обнаружении там `ALLURE_*` `check` печатает предупреждение о переносе.
   Токен хранится через нативную настройку расширения `alla`: `qwen extensions settings set
   alla ALLURE_TOKEN --scope workspace` из корня проекта. Для общего
   токена — scope user, для CI — окружение `ALLURE_TOKEN`. `setup` только показывает эти шаги,

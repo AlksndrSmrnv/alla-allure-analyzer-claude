@@ -42,7 +42,11 @@ MIN_VERSION = (3, 11)
 CHILD_MARKER = "ALLA_SKILL_IN_VENV"
 
 
-def venv_python(venv_dir: Path = VENV_DIR) -> Path:
+def venv_python(venv_dir: Path | None = None) -> Path:
+    # VENV_DIR читается при вызове: main() меняет его по --project-root, а значение по
+    # умолчанию в сигнатуре зафиксировалось бы при загрузке модуля (окружение другого проекта).
+    if venv_dir is None:
+        venv_dir = VENV_DIR
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
@@ -312,14 +316,18 @@ def engineer_instructions() -> None:
         return subprocess.list2cmdline(parts) if os.name == "nt" else shlex.join(parts)
 
     project_env = PROJECT_DIR / ".qwen" / "alla.env"
+    qwen_home = os.environ.get("QWEN_HOME")
+    user_env = (Path(qwen_home).expanduser() if qwen_home else Path.home() / ".qwen") / "alla.env"
     print("Дальнейшие действия выполняет инженер вручную; расширение их не запускает:")
     print("1. Если .venv отсутствует, создай её на Python {}.{}+:".format(*MIN_VERSION))
     print(command("python3.11", "-m", "venv", str(VENV_DIR)))
     print("   Существующее окружение проверь и при необходимости исправь вручную.")
     print("2. Установи зависимости из lock-файла разрешённым в вашей среде способом:")
     print(command(str(venv_python()), "-m", "pip", "install", "--require-hashes", "-r", str(REQUIREMENTS)))
-    print("3. Если файла настроек нет, скопируй {} в {} (или в {}) и заполни адрес; "
-          "токен в .env и в чат не пиши.".format(SKILL_DIR / ".env.example", project_env, SKILL_DIR / ".env"))
+    print("3. Если файла настроек нет, скопируй {} в {} (или в {} — общие значения для всех "
+          "проектов) и заполни адрес; токен в .env и в чат не пиши. Папку расширения для "
+          "настроек не используй: её .env перезаписывает qwen extensions update.".format(
+              SKILL_DIR / ".env.example", project_env, user_env))
     if os.name != "nt":
         print(command("mkdir", "-p", str(project_env.parent)))
         print(command("cp", str(SKILL_DIR / ".env.example"), str(project_env)))

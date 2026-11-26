@@ -469,6 +469,40 @@ def test_check_reports_missing_config_and_bad_token(project: Path, monkeypatch, 
     assert code == 2 and "ALLURE_TOKEN" in out
 
 
+def test_shared_settings_live_outside_the_extension_folder(
+    project: Path, testops: FakeTestOps, monkeypatch, capsys
+) -> None:
+    """Общие настройки — <QWEN_HOME>/alla.env; <extension>/.env (его перезаписывает Qwen) не читается."""
+    from alla_skill_lib import workspace
+
+    monkeypatch.delenv("ALLURE_ENDPOINT")
+    legacy = workspace.SKILL_DIR / ".env"
+    legacy.write_text("ALLURE_ENDPOINT=https://testops.example\nALLURE_PROJECT_ID=5\n", encoding="utf-8")
+    code, out = _run(["check", "--project-root", str(project)], capsys)
+    assert code == 2 and out.startswith("STATUS: error"), out
+    assert f"Внимание: {legacy} больше не читается" in out
+    assert "ALLURE_ENDPOINT, ALLURE_PROJECT_ID" in out
+
+    user_env = workspace.user_env_file()
+    user_env.parent.mkdir(parents=True, exist_ok=True)
+    user_env.write_text("ALLURE_ENDPOINT=https://testops.example\n", encoding="utf-8")
+    code, out = _run(["check", "--project-root", str(project)], capsys)
+    assert code == 0 and out.startswith("STATUS: ready"), out
+    assert f"Файл настроек: {user_env} — есть (общий для пользователя" in out
+
+
+def test_user_env_file_follows_qwen_home(tmp_path: Path, monkeypatch) -> None:
+    from alla_skill_lib import workspace
+
+    monkeypatch.undo()  # без подмены из фикстур: проверяется сама функция
+    monkeypatch.setenv("QWEN_HOME", str(tmp_path / "qh"))
+    assert workspace.user_env_file() == tmp_path / "qh" / "alla.env"
+    monkeypatch.delenv("QWEN_HOME")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert workspace.user_env_file() == tmp_path / "home" / ".qwen" / "alla.env"
+    assert workspace.SKILL_DIR not in workspace.user_env_file().parents
+
+
 def test_clean_removes_only_old_runs(project: Path, testops: FakeTestOps, capsys) -> None:
     old_dir, _, _ = _prepare(project, capsys, launch_id=777)
     reports = project / "alla-reports"

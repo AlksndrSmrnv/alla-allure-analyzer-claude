@@ -47,7 +47,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from alla_core.config import Settings
+from alla_core.config import Settings, read_env_file
 from alla_core.exceptions import AllaError, ConfigurationError
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
@@ -754,7 +754,7 @@ def cmd_prepare(
 def _prepare_settings(project_root: Path) -> Settings | int:
     """Настройки TestOps; неверные — ответ ``error`` напечатан, код возврата."""
     env_file = ws.project_env_file(project_root)
-    fallback = ws.extension_env_file()
+    fallback = ws.user_env_file()
     shown = ws.active_env_file(project_root)
     try:
         return Settings.load(env_file=env_file, fallback_env_file=fallback, project_root=project_root)
@@ -2110,7 +2110,7 @@ def _rerun_settings(project_root: Path | None = None) -> Settings | str:
     """Настройки перезапуска (TestOps не нужен); неверный ``.env`` — текст ошибки."""
     root = project_root or ws.detect_project_root()
     env_file = ws.project_env_file(root)
-    fallback = ws.extension_env_file()
+    fallback = ws.user_env_file()
     shown = ws.active_env_file(root)
     try:
         return Settings.load(
@@ -2310,7 +2310,7 @@ def _resolve_in_testops(
     assert state.result is not None
     project_root = Path(run["project_root"])
     env_file = ws.project_env_file(project_root)
-    fallback = ws.extension_env_file()
+    fallback = ws.user_env_file()
     shown = ws.active_env_file(project_root)
     try:
         settings = Settings.load(
@@ -2927,23 +2927,52 @@ def _report_data(paths: ws.RunPaths, run: dict[str, Any], body: str) -> dict[str
 # ---------------------------------------------------------------------------
 
 
+def _legacy_env_warnings(project_env: Path, user_env: Path) -> list[str]:
+    """Прежний ``<extension>/.env`` с настройками Аллы: он больше не читается — подсказка о переносе.
+
+    Файл принадлежит механизму настроек Qwen: ``qwen extensions update`` перезаписывает его
+    объявленными в манифесте настройками, поэтому общие значения из него теряются.
+    """
+    legacy = ws.legacy_extension_env_file()
+    if not legacy.is_file():
+        return []
+    try:
+        names = sorted(read_env_file(legacy))
+    except ConfigurationError:
+        return [
+            f"Внимание: {legacy} больше не читается — его перезаписывает qwen extensions update, "
+            f"а токен в .env запрещён. Перенесите несекретные настройки в {project_env} или "
+            f"{user_env}, токен — в настройки alla и удалите {legacy}."
+        ]
+    except (OSError, ValueError):
+        return []
+    keys = [name for name in names if name.startswith("ALLURE_") and name != "ALLURE_TOKEN"]
+    if not keys:
+        return []
+    return [
+        f"Внимание: {legacy} больше не читается — его перезаписывает qwen extensions update. "
+        f"Пользователю нужно перенести {', '.join(keys)} в {project_env} или {user_env}."
+    ]
+
+
 def cmd_check(project_root: Path, reports_dir: Path) -> int:
     """Проверить окружение и доступ к TestOps, ничего не создавая."""
     env_file = ws.project_env_file(project_root)
-    fallback = ws.extension_env_file()
+    fallback = ws.user_env_file()
     shown = ws.active_env_file(project_root)
     if env_file.is_file():
         env_status = f"Файл настроек: {env_file} — есть"
         if fallback.is_file():
             env_status += f" (общие умолчания: {fallback})"
     elif fallback.is_file():
-        env_status = f"Файл настроек: {fallback} — есть (общий для расширения; проектного {env_file} нет)"
+        env_status = f"Файл настроек: {fallback} — есть (общий для пользователя; проектного {env_file} нет)"
     else:
         env_status = f"Файл настроек: {env_file} — нет (значения берутся из переменных окружения)"
     lines = [
         f"Python: {sys.version.split()[0]} ({sys.executable})",
         f"Проект автотестов: {project_root}",
         env_status,
+        *_legacy_env_warnings(env_file, fallback),
     ]
     try:
         settings = Settings.load(

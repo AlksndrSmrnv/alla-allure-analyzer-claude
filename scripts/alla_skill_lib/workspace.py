@@ -53,8 +53,23 @@ def project_env_file(project_root: Path) -> Path:
     return project_root / PROJECT_ENV_REL
 
 
-def extension_env_file() -> Path:
-    """Общий fallback-файл несекретных настроек в папке расширения: ``<extension>/.env``."""
+def qwen_home() -> Path:
+    """Каталог Qwen Code: ``QWEN_HOME`` или ``~/.qwen``."""
+    home = os.environ.get("QWEN_HOME")
+    return Path(home).expanduser() if home else Path.home() / ".qwen"
+
+
+def user_env_file() -> Path:
+    """Общие несекретные настройки пользователя: ``<QWEN_HOME или ~/.qwen>/alla.env``.
+
+    Не в папке расширения: ``<extension>/.env`` принадлежит механизму настроек Qwen, и
+    ``qwen extensions update`` перезаписывает его только объявленными в манифесте настройками.
+    """
+    return qwen_home() / "alla.env"
+
+
+def legacy_extension_env_file() -> Path:
+    """Прежний общий файл ``<extension>/.env``: больше не читается, только подсказка о переносе."""
     return SKILL_DIR / ".env"
 
 
@@ -63,9 +78,9 @@ def active_env_file(project_root: Path) -> Path:
     proj = project_env_file(project_root)
     if proj.is_file():
         return proj
-    ext_env = extension_env_file()
-    if ext_env.is_file():
-        return ext_env
+    user_env = user_env_file()
+    if user_env.is_file():
+        return user_env
     return proj
 
 

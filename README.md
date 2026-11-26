@@ -144,13 +144,14 @@ python3 ~/.qwen/extensions/alla/scripts/alla_skill.py setup
 `STATUS: setup_required`.
 
 **3. Настройте доступ.** Самостоятельно скопируйте `~/.qwen/extensions/alla/.env.example` в
-`.qwen/alla.env` в корне проекта (права `600` на Linux/macOS), затем заполните:
+`.qwen/alla.env` в корне проекта (или в общий `~/.qwen/alla.env` / `$QWEN_HOME/alla.env` для всех проектов; права `600` на Linux/macOS), затем заполните:
 
 ```text
 ALLURE_ENDPOINT=https://testops.company.ru
 ```
 
-Токен в `.env` / `.qwen/alla.env` запрещён. Сохраните токен во встроенном секрете
+Не размещайте общие настройки в `~/.qwen/extensions/alla/.env`: этот файл перезаписывается
+при `qwen extensions update alla`. Токен в `.env` / `.qwen/alla.env` / `~/.qwen/alla.env` запрещён. Сохраните токен во встроенном секрете
 расширения `alla` через скрытое приглашение Qwen:
 
 ```bash
@@ -196,8 +197,10 @@ qwen extensions update alla
    к вашим собственным расширениям из `alla-extensions/` (если своя команда вызывает
    `alla-launch`, замените вызов на `alla:launch`).
 2. **Перенесите несекретные настройки:** скопируйте нужные значения из
-   `.qwen/skills/alla-launch/.env` в `.qwen/alla.env` (права `600` на Linux/macOS, без
-   `ALLURE_TOKEN`).
+   `.qwen/skills/alla-launch/.env` (или из `~/.qwen/extensions/alla/.env`, если вы хранили там
+   общие настройки) в `.qwen/alla.env` проекта либо в общий `~/.qwen/alla.env`
+   (`$QWEN_HOME/alla.env`) (права `600` на Linux/macOS, без `ALLURE_TOKEN`). Папкой расширения
+   для настроек не пользуйтесь — `qwen extensions update alla` её `.env` перезаписывает.
 3. **Перенесите токен TestOps** в настройки расширения `alla` и удалите старое расширение
    секретов:
 
@@ -477,8 +480,8 @@ alla-extensions/   включённые расширения и свои рас�
 
 ## Настройки
 
-Настройки задаются в `<проект>/.qwen/alla.env` (или fallback `<расширение>/.env`) либо переменными окружения;
-переменные окружения важнее файла. Исключение — токен: только хранилище Qwen
+Настройки задаются в `<проект>/.qwen/alla.env` (общий fallback — `<QWEN_HOME или ~/.qwen>/alla.env`) либо переменными окружения;
+переменные окружения важнее файла. `.env` в папке расширения не читается (перезаписывается при `qwen extensions update`). Исключение — токен: только хранилище Qwen
 (`qwen extensions settings set alla ALLURE_TOKEN --scope workspace`) или переменная окружения `ALLURE_TOKEN`
 (имеет приоритет). Непустой `ALLURE_TOKEN` в `.qwen/alla.env` или `.env` отклоняется даже при заданной
 переменной окружения.
