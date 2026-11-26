@@ -428,6 +428,49 @@ def test_cli_token_commands_and_check_with_keyring(
     assert code == 0 and capsys.readouterr().out.startswith("STATUS: ok")
 
 
+def test_cli_token_project_root_before_and_after_subcommand(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    items = _use_memory_os_keyring(monkeypatch)
+    monkeypatch.delenv("ALLURE_TOKEN", raising=False)
+    project_a = tmp_path / "project_a"
+    project_b = tmp_path / "project_b"
+    project_a.mkdir()
+    project_b.mkdir()
+    monkeypatch.chdir(project_a)
+
+    token_a = SYNTHETIC_TOKEN + "-A"
+    token_b = SYNTHETIC_TOKEN + "-B"
+    credentials.store_token(token_a, scope="workspace", project_root=project_a)
+
+    # Passing --project-root BEFORE the nested subcommand must target project B, not cwd (project A).
+    monkeypatch.setattr(sys, "stdin", io.StringIO(token_b))
+    code = cli.main(["token", "--project-root", str(project_b), "set", "--stdin"])
+    assert code == 0
+    assert capsys.readouterr().out.startswith("STATUS: saved")
+    assert credentials.load_token(project_a) == token_a
+    assert credentials.load_token(project_b) == token_b
+
+    code = cli.main(["token", "--project-root", str(project_b), "status"])
+    assert code == 0
+    out_status = capsys.readouterr().out
+    assert f"Проект: {project_b.resolve()}" in out_status
+    assert "keyring:workspace" in out_status or "системное хранилище ОС (workspace)" in out_status
+
+    code = cli.main(["token", "--project-root", str(project_b), "delete"])
+    assert code == 0
+    assert capsys.readouterr().out.startswith("STATUS: saved")
+    assert (credentials.KEYRING_SERVICE, credentials.workspace_account(project_b)) not in items
+    assert credentials.load_token(project_a) == token_a
+
+    # Passing --project-root AFTER the nested subcommand must also target project B.
+    monkeypatch.setattr(sys, "stdin", io.StringIO(token_b))
+    assert cli.main(["token", "set", "--stdin", "--project-root", str(project_b)]) == 0
+    assert capsys.readouterr().out.startswith("STATUS: saved")
+    assert credentials.load_token(project_b) == token_b
+    assert credentials.load_token(project_a) == token_a
+
+
 def test_subprocess_rejects_file_keyring_via_keyringrc_and_env_override(tmp_path: Path) -> None:
     if os.name == "nt":
         pytest.skip("POSIX subprocess keyring fixture")

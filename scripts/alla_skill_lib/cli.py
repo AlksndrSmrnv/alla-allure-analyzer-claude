@@ -413,16 +413,21 @@ def _positive_int(text: str) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     common = _Parser(add_help=False)
-    common.add_argument(
-        "--project-root",
-        help="корень проекта автотестов (по умолчанию текущая папка)",
-    )
-    common.add_argument(
-        "--reports-dir",
-        help="папка отчётов (по умолчанию <project>/alla-reports)",
-    )
-    # Служебный: команда идёт фоновым заданием этой папки (jobs.py), а не запускает его.
-    common.add_argument("--job", help=argparse.SUPPRESS)
+    sub_common = _Parser(add_help=False)
+    for target_parser, use_suppress in ((common, False), (sub_common, True)):
+        kw: dict[str, Any] = {"default": argparse.SUPPRESS} if use_suppress else {}
+        target_parser.add_argument(
+            "--project-root",
+            help="корень проекта автотестов (по умолчанию текущая папка)",
+            **kw,
+        )
+        target_parser.add_argument(
+            "--reports-dir",
+            help="папка отчётов (по умолчанию <project>/alla-reports)",
+            **kw,
+        )
+        # Служебный: команда идёт фоновым заданием этой папки (jobs.py), а не запускает его.
+        target_parser.add_argument("--job", help=argparse.SUPPRESS, **kw)
     parser = _Parser(prog="alla_skill.py", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     prepare = commands.add_parser(
@@ -566,12 +571,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "extensions", parents=[common], help="расширения скилла: список, включение, повтор, действия",
     )
     ext_commands = extensions.add_subparsers(dest="ext_command")
-    ext_commands.add_parser("list", parents=[common], help="показать расширения и их состояние")
+    ext_commands.add_parser("list", parents=[sub_common], help="показать расширения и их состояние")
     for verb, text in (("enable", "включить"), ("disable", "выключить")):
-        toggle = ext_commands.add_parser(verb, parents=[common], help=f"показать инженеру, как {text} расширение в проекте")
+        toggle = ext_commands.add_parser(verb, parents=[sub_common], help=f"показать инженеру, как {text} расширение в проекте")
         toggle.add_argument("name", help="имя расширения")
     again = ext_commands.add_parser(
-        "run", parents=[common],
+        "run", parents=[sub_common],
         help="запустить расширение по просьбе пользователя (on_request) или повторить его хук: "
              "с номером проблемы — after_apply, без — after_report",
     )
@@ -582,12 +587,12 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="параметр запроса для on_request (можно несколько)")
     again.add_argument("--text-file", action="append", nargs=2, default=[],
                        metavar=("KEY", "PATH"), help="полный UTF-8 текст из out_dir/*.txt")
-    reconciliation = ext_commands.add_parser("reconcile", parents=[common],
+    reconciliation = ext_commands.add_parser("reconcile", parents=[sub_common],
                                              help="сверить запрос после потери ответа или clean")
     reconciliation.add_argument("name")
     reconciliation.add_argument("--request-id", required=True)
     action = ext_commands.add_parser(
-        "action", parents=[common],
+        "action", parents=[sub_common],
         help="выполнить действие расширения (из его задания); аргументы скрипта — после --",
     )
     action.add_argument("name", help="имя расширения")
@@ -600,7 +605,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     token_commands = token.add_subparsers(dest="token_command", required=True)
     token_set = token_commands.add_parser(
-        "set", parents=[common],
+        "set", parents=[sub_common],
         help="сохранить ALLURE_TOKEN в системном хранилище ОС (скрытый ввод или --stdin)",
     )
     token_set.add_argument(
@@ -612,11 +617,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="прочитать токен из стандартного ввода вместо интерактивного запроса",
     )
     token_commands.add_parser(
-        "status", parents=[common],
+        "status", parents=[sub_common],
         help="показать источник ALLURE_TOKEN без вывода значения",
     )
     token_delete = token_commands.add_parser(
-        "delete", parents=[common],
+        "delete", parents=[sub_common],
         help="удалить ALLURE_TOKEN из системного хранилища ОС",
     )
     token_delete.add_argument(
