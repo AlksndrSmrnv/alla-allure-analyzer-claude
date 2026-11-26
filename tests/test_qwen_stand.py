@@ -606,6 +606,7 @@ def test_run_case_selects_synthetic_secret_channel(
     received: list[dict[str, str]] = []
     installed: list[Path] = []
     stored: list[tuple[Path, str]] = []
+    deleted: list[Path] = []
 
     def install(work: Path) -> Path:
         installed.append(work)
@@ -616,6 +617,9 @@ def test_run_case_selects_synthetic_secret_channel(
 
     def store(work: Path, project: Path, ext_dir: Path, venv: Path | None, token: str) -> None:
         stored.append((work, token))
+
+    def delete(work: Path, project: Path, ext_dir: Path, venv: Path | None) -> None:
+        deleted.append(work)
 
     def turn(project: Path, home: Path, secret_env: dict[str, str], prompt: str, *,
              trace: Path, **_: Any) -> int:
@@ -630,6 +634,7 @@ def test_run_case_selects_synthetic_secret_channel(
     monkeypatch.setattr(qwen_stand, "ensure_venv", lambda: None)
     monkeypatch.setattr(qwen_stand, "install_stand_extension", install)
     monkeypatch.setattr(qwen_stand, "store_stand_token", store)
+    monkeypatch.setattr(qwen_stand, "delete_stand_token", delete)
     monkeypatch.setattr(qwen_stand, "run_turn", turn)
     monkeypatch.setattr(qwen_stand, "evaluate", lambda case: case)
     qwen_stand.run_case(case_id, tmp_path / "out", model=None, max_wall="1m", sandbox=False,
@@ -639,9 +644,10 @@ def test_run_case_selects_synthetic_secret_channel(
     assert len(installed) == 1
     if case_id == "S01":
         assert stored == [(installed[0], TOKEN)]
-        assert all(env["XDG_CONFIG_HOME"] == str(installed[0] / "home/.config") for env in received)
+        assert deleted == [installed[0]]
     else:
         assert stored == []
+        assert deleted == []
 
 
 @pytest.mark.parametrize("unavailable", [True, False])
@@ -671,21 +677,16 @@ def test_secure_case_distinguishes_missing_runtime_from_failed_install(
 def test_secure_credential_check_rejects_plaintext_and_unprotected_store(tmp_path: Path) -> None:
     home = tmp_path / "home"
     project = tmp_path / "project"
+    home.mkdir()
     project.mkdir()
     ctx = Context(SCENARIOS["S01"], Trace(), project, [], home)
     check = CHECKS["secure_credentials"]
-    assert check(ctx)["status"] == "fail"
-    store = home / ".config" / "python_keyring" / "store.json"
-    store.parent.mkdir(parents=True)
-    store.write_text("synthetic-ciphertext")
-    store.chmod(0o600)
     assert check(ctx)["status"] == "pass"
-    store.chmod(0o644)
+    keyring_cfg = home / ".config" / "python_keyring" / "keyringrc.cfg"
+    keyring_cfg.parent.mkdir(parents=True)
+    keyring_cfg.write_text("[backend]\ndefault-keyring=keyrings.alt.file.PlaintextKeyring\n")
     assert check(ctx)["status"] == "fail"
-    store.chmod(0o600)
-    store.write_text(TOKEN)
-    assert check(ctx)["status"] == "fail"
-    store.write_text("synthetic-ciphertext")
+    keyring_cfg.unlink()
     env = project / ".qwen" / "alla.env"
     env.parent.mkdir(parents=True)
     env.write_text(f"ALLURE_TOKEN={TOKEN}\n")

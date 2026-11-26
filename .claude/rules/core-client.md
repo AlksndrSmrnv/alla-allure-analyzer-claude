@@ -132,12 +132,18 @@ REST API TestOps у пользователей закрыт (решение по
 `credentials.py` хранит и читает `ALLURE_TOKEN` через Python-библиотеку `keyring`
 (сервис `alla-allure-testops`, аккаунт `workspace:<sha256[:24]>` или `user`). Импорт `keyring`
 ленивый, чтобы команды разбора (`next`, `verify`, `apply`) не обращались к D-Bus/Keychain.
-`fail.Keyring`, `null.Keyring` и пустой `ChainerBackend` отклоняются через `ConfigurationError`.
-Токен без `\r`, `\n`, `\x00` и непустой; значение токена и сырые ошибки бэкенда не попадают
-в сообщения и логи. Происхождение `ALLURE_TOKEN` из `.env`/`settings.env` проверяется по
-служебной provenance Qwen; это не CI export. Проверка raw деклараций не даёт скрыть токен
-пустым повтором ключа. Загрузчик `.env` вообще не добавляет `ALLURE_TOKEN` в результат.
-В `child_env.py` `PYTHON_KEYRING_BACKEND` исключается из наследуемого окружения дочерних процессов.
+Допускаются **только** точные классы встроенных системных бэкендов ОС (`_allowed_backend_types`:
+`SecretService.Keyring`, `libsecret.Keyring`, `kwallet.DBusKeyring`, `kwallet.DBusKeyringKWallet4`,
+`macOS.Keyring`, `Windows.WinVaultKeyring`): `fail.Keyring`, `null.Keyring`, сторонние и
+файловые бэкенды (`keyrings.alt.*`, `keyringrc.cfg`, `PYTHON_KEYRING_BACKEND`), а также подклассы
+системных бэкендов отклоняются с `ConfigurationError`. `ChainerBackend` распаковывается и
+фильтруется до обращения к методам хранилища, а вызовы идут напрямую к проверенным бэкендам
+(без fallback в файловые звенья). Токен без `\r`, `\n`, `\x00` и непустой; значение токена и
+сырые ошибки бэкенда не попадают в сообщения и логи. Происхождение `ALLURE_TOKEN` из
+`.env`/`settings.env` проверяется по служебной provenance Qwen; это не CI export. Проверка
+raw деклараций не даёт скрыть токен пустым повтором ключа. Загрузчик `.env` вообще не добавляет
+`ALLURE_TOKEN` в результат. В `child_env.py` `PYTHON_KEYRING_BACKEND` исключается из
+наследуемого окружения дочерних процессов.
 
 | Переменная | Обязательная | По умолчанию | Описание |
 |---|:---:|---|---|

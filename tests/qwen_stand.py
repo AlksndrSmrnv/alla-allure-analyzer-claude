@@ -52,7 +52,6 @@ from skill_fake_testops import TOKEN, wide_sources  # noqa: E402
 from skill_fixtures import LOGIN_TEST_JAVA, ORDER_TEST_JAVA  # noqa: E402 — и scripts/ в sys.path
 from qwen_credentials_support import (  # noqa: E402
     QwenCredentialUnavailable,
-    install_isolated_keyring_backend,
     isolated_qwen_env,
     stage_extension,
 )
@@ -2143,15 +2142,12 @@ def check_asks_for_env(ctx: Context) -> dict[str, Any]:
 
 
 def check_secure_credentials(ctx: Context) -> dict[str, Any]:
-    """S01: setup used the isolated keyring store, without a plaintext fixture token."""
+    """S01: OS keyring store without file keyringrc.cfg fallback or plaintext token."""
     if ctx.home is None:
         return bad("неизвестен HOME сценария с хранилищем секретов")
-    store = ctx.home / ".config" / "python_keyring" / "store.json"
-    content = store.read_bytes() if store.is_file() else b""
-    if not content or TOKEN.encode() in content:
-        return bad("нет файла изолированного хранилища синтетического токена")
-    if store.stat().st_mode & 0o777 != 0o600:
-        return bad("у файла секретов права отличаются от 0600")
+    keyring_cfg = ctx.home / ".config" / "python_keyring" / "keyringrc.cfg"
+    if keyring_cfg.exists():
+        return bad("обнаружен файловый конфиг keyringrc.cfg вместо системного хранилища")
     for env in (
         ctx.project / ".qwen" / "alla.env",
         ctx.project / ".env",
@@ -2159,7 +2155,7 @@ def check_secure_credentials(ctx: Context) -> dict[str, Any]:
     ):
         if env.is_file() and TOKEN in env.read_text(encoding="utf-8"):
             return bad(f"синтетический токен записан в {env.name}")
-    return ok("изолированный keyring store, права 0600; токена в .env нет")
+    return ok("системное хранилище ОС; файлового fallback и токена в .env нет")
 
 
 RESOLVE_PATH_RE = re.compile(r"/api/testresult/\d+/resolve")
@@ -2480,16 +2476,40 @@ def install_stand_extension(work: Path) -> Path:
     return Path(qwen_env["QWEN_HOME"]) / "extensions" / "alla"
 
 
+def _stand_keyring_env(work: Path) -> dict[str, str]:
+    env = {**os.environ, **isolated_qwen_env(work)}
+    for key in list(env):
+        if key.startswith("ALLURE_"):
+            env.pop(key)
+    return env
+
+
 def store_stand_token(work: Path, project: Path, ext_dir: Path, venv: Path | None, token: str) -> None:
-    """Configure isolated keyring in ``work/home`` and store ``token`` via ``alla_skill.py token set``."""
+    """Store workspace-scoped ``token`` in the real OS keyring via ``alla_skill.py token set``."""
     if venv is None:
         raise StandError("secure_credentials требует подготовленный venv")
-    env = isolated_qwen_env(work)
-    install_isolated_keyring_backend(Path(env["HOME"]))
-    subprocess.run(
+    result = subprocess.run(
         [str(venv / "bin" / "python"), str(ext_dir / "scripts" / "alla_skill.py"),
          "token", "set", "--stdin", "--project-root", str(project)],
-        input=token, cwd=project, env=env, capture_output=True, text=True, check=True, timeout=30,
+        input=token, cwd=project, env=_stand_keyring_env(work),
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    if result.returncode != 0:
+        combined = result.stdout + result.stderr
+        if "недоступно системное хранилище" in combined:
+            raise QwenCredentialUnavailable("системное хранилище ключей ОС недоступно")
+        raise StandError(f"не удалось сохранить синтетический токен (код {result.returncode})")
+
+
+def delete_stand_token(work: Path, project: Path, ext_dir: Path, venv: Path | None) -> None:
+    """Remove the temporary workspace-scoped stand token from the OS keyring."""
+    if venv is None:
+        return
+    subprocess.run(
+        [str(venv / "bin" / "python"), str(ext_dir / "scripts" / "alla_skill.py"),
+         "token", "delete", "--project-root", str(project)],
+        cwd=project, env=_stand_keyring_env(work),
+        capture_output=True, text=True, check=False, timeout=30,
     )
 
 
@@ -2529,24 +2549,32 @@ def run_case(case_id: str, output: Path, *, model: str | None, max_wall: str,
                                 scenario.project_ids, ext_dir=ext_dir)
         turns = scenario.turns
         used_skill = fingerprint(ext_dir, skill_files(ext_dir))
-        if scenario.secure_credentials:
-            store_stand_token(work, project, ext_dir, venv, TOKEN)
-            secret_env = {**secret_env, "XDG_CONFIG_HOME": str(home / ".config")}
-        elif scenario.env_ready:
-            secret_env = {**secret_env, "ALLURE_TOKEN": TOKEN}
-        session: str | None = None
-        for number, prompt in enumerate(turns, start=1):
-            trace_path = case_dir / f"trace-{number}.jsonl"
-            try:
-                code = run_turn(project, home, secret_env, prompt, trace=trace_path,
-                                stderr=case_dir / f"stderr-{number}.txt", resume=session,
-                                max_wall=max_wall, sandbox=sandbox,
-                                api_log=case_dir / f"api-{number}" if api_log else None)
-            except subprocess.TimeoutExpired:
-                code = -9
-            exit_codes.append(code)
-            traces.append(trace_path)
-            session = parse_traces([trace_path]).session_id
+        stored_token = False
+        try:
+            if scenario.secure_credentials:
+                try:
+                    store_stand_token(work, project, ext_dir, venv, TOKEN)
+                except QwenCredentialUnavailable as error:
+                    return not_run_case(case_id, attempt, str(error))
+                stored_token = True
+            elif scenario.env_ready:
+                secret_env = {**secret_env, "ALLURE_TOKEN": TOKEN}
+            session: str | None = None
+            for number, prompt in enumerate(turns, start=1):
+                trace_path = case_dir / f"trace-{number}.jsonl"
+                try:
+                    code = run_turn(project, home, secret_env, prompt, trace=trace_path,
+                                    stderr=case_dir / f"stderr-{number}.txt", resume=session,
+                                    max_wall=max_wall, sandbox=sandbox,
+                                    api_log=case_dir / f"api-{number}" if api_log else None)
+                except subprocess.TimeoutExpired:
+                    code = -9
+                exit_codes.append(code)
+                traces.append(trace_path)
+                session = parse_traces([trace_path]).session_id
+        finally:
+            if stored_token:
+                delete_stand_token(work, project, ext_dir, venv)
     save_artifacts(case_dir, project, parse_traces(traces))
     return evaluate({
         "id": case_id,

@@ -90,11 +90,16 @@
 `keyring`, без привязки к каталогу и упаковке Qwen Code CLI (`qwen`, `qwencode` и любые
 корпоративные сборки работают одинаково):
 
+- **Linux:** встроенные системные бэкенды (`SecretService`, `libsecret`, `kwallet` / GNOME Keyring / KWallet);
+  проверить активный бэкенд можно командой `.venv/bin/python -m keyring diagnose`.
+  Если системного хранилища нет (headless-сессия без Secret Service / KWallet), передавайте токен в окружении CI;
 - **macOS:** macOS Keychain;
-- **Linux (десктоп):** Secret Service API (GNOME Keyring / KWallet); на headless-машинах
-  проверьте доступный бэкенд через `.venv/bin/python -m keyring diagnose` (или настройте
-  `keyringrc.cfg`) либо передавайте токен в окружении CI;
 - **Windows:** Windows Credential Manager.
+
+Допускаются **только** перечисленные встроенные системные бэкенды `keyring`: файловые и сторонние
+хранилища (включая `keyrings.alt.file.PlaintextKeyring`, `EncryptedKeyring`, сторонние плагины
+через `keyringrc.cfg` или `PYTHON_KEYRING_BACKEND`, а также файловые звенья внутри `ChainerBackend`)
+отклоняются до записи и чтения токена.
 
 Управление токеном выполняет инженер вручную в терминале (значения в argv и чат не передаются):
 

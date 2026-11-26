@@ -1,15 +1,16 @@
-"""Credential boundaries and OS keyring storage on synthetic secrets."""
+"""Credential boundaries, OS keyring allowlist, and CLI token commands on synthetic secrets."""
 from __future__ import annotations
 
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import keyring
+import keyring.backends.SecretService as secret_service_mod
 import keyring.backends.chainer as chainer_mod
 import keyring.backends.fail as fail_mod
 import keyring.backends.null as null_mod
@@ -27,34 +28,64 @@ from alla_core.exceptions import ConfigurationError
 from alla_skill_lib import cli
 from qwen_credentials_support import (
     SYNTHETIC_TOKEN,
-    install_isolated_keyring_backend,
     isolated_qwen_env,
     stage_extension,
 )
 
 
-class _MemoryKeyring(KeyringBackend):
-    priority = 10
+def _make_memory_os_keyring(
+    *,
+    fail_set_not_implemented: bool = False,
+) -> tuple[secret_service_mod.Keyring, dict[tuple[str, str], str]]:
+    """Construct a real allowed OS backend class with in-memory storage (never touches OS store)."""
+    items: dict[tuple[str, str], str] = {}
+    backend = object.__new__(secret_service_mod.Keyring)
+
+    def get_password(service: str, username: str) -> str | None:
+        return items.get((service, username))
+
+    def set_password(service: str, username: str, password: str) -> None:
+        if fail_set_not_implemented:
+            raise NotImplementedError("read-only")
+        items[(service, username)] = password
+
+    def delete_password(service: str, username: str) -> None:
+        if (service, username) not in items:
+            raise kr_errors.PasswordDeleteError("missing")
+        del items[(service, username)]
+
+    backend.get_password = get_password  # type: ignore[method-assign]
+    backend.set_password = set_password  # type: ignore[method-assign]
+    backend.delete_password = delete_password  # type: ignore[method-assign]
+    return backend, items
+
+
+class _RecordingPlaintextKeyring(KeyringBackend):
+    """Simulates keyrings.alt.file.PlaintextKeyring or any third-party file backend."""
+
+    priority = 0.5
 
     def __init__(self) -> None:
         self.items: dict[tuple[str, str], str] = {}
+        self.calls: list[str] = []
 
     def get_password(self, service: str, username: str) -> str | None:
+        self.calls.append(f"get:{service}:{username}")
         return self.items.get((service, username))
 
     def set_password(self, service: str, username: str, password: str) -> None:
+        self.calls.append(f"set:{service}:{username}")
         self.items[(service, username)] = password
 
     def delete_password(self, service: str, username: str) -> None:
-        if (service, username) not in self.items:
-            raise kr_errors.PasswordDeleteError("missing")
-        del self.items[(service, username)]
+        self.calls.append(f"delete:{service}:{username}")
+        self.items.pop((service, username), None)
 
 
-def _use_memory_keyring(monkeypatch: pytest.MonkeyPatch) -> _MemoryKeyring:
-    backend = _MemoryKeyring()
+def _use_memory_os_keyring(monkeypatch: pytest.MonkeyPatch) -> dict[tuple[str, str], str]:
+    backend, items = _make_memory_os_keyring()
     monkeypatch.setattr(keyring, "get_keyring", lambda: backend)
-    return backend
+    return items
 
 
 @pytest.mark.parametrize("override", [False, True])
@@ -171,7 +202,7 @@ def test_settings_use_keyring_only_when_no_environment_secret(
 def test_keyring_scope_precedence_project_isolation_and_delete(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    _use_memory_keyring(monkeypatch)
+    _use_memory_os_keyring(monkeypatch)
     project_a = tmp_path / "project a"
     project_b = tmp_path / "project b"
     project_a.mkdir()
@@ -181,7 +212,7 @@ def test_keyring_scope_precedence_project_isolation_and_delete(
     ws_token = SYNTHETIC_TOKEN + "-ws"
 
     backend_name = credentials.store_token(f"  {user_token}  ", scope="user", project_root=project_a)
-    assert backend_name.endswith("_MemoryKeyring")
+    assert backend_name == "keyring.backends.SecretService.Keyring"
     assert credentials.load_token(project_a) == user_token
     assert credentials.load_token(project_b) == user_token
     assert credentials.load_token(None) == user_token
@@ -214,68 +245,123 @@ def test_keyring_scope_precedence_project_isolation_and_delete(
 def test_store_token_rejects_empty_and_control_chars(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad_token: str,
 ) -> None:
-    _use_memory_keyring(monkeypatch)
+    _use_memory_os_keyring(monkeypatch)
     with pytest.raises(ConfigurationError) as error:
         credentials.store_token(bad_token, scope="workspace", project_root=tmp_path)
     assert SYNTHETIC_TOKEN not in str(error.value)
 
 
-def test_unavailable_and_chainer_backends_handled_safely(
+def test_file_and_spoofed_backends_are_rejected_without_calling_them(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    for bad_backend in (fail_mod.Keyring(), null_mod.Keyring()):
+    plaintext_backend = _RecordingPlaintextKeyring()
+    plaintext_backend.items[(credentials.KEYRING_SERVICE, "user")] = SYNTHETIC_TOKEN
+
+    class SpoofedSecretService(secret_service_mod.Keyring):
+        def get_password(self, service: str, username: str) -> str | None:
+            raise AssertionError("subclass must never be called")
+
+        def set_password(self, service: str, username: str, password: str) -> None:
+            raise AssertionError("subclass must never be called")
+
+        def delete_password(self, service: str, username: str) -> None:
+            raise AssertionError("subclass must never be called")
+
+    spoofed = object.__new__(SpoofedSecretService)
+    for bad_backend in (fail_mod.Keyring(), null_mod.Keyring(), plaintext_backend, spoofed):
         monkeypatch.setattr(keyring, "get_keyring", lambda b=bad_backend: b)
         with pytest.raises(ConfigurationError, match="недоступно системное хранилище"):
+            credentials.store_token(SYNTHETIC_TOKEN, scope="workspace", project_root=tmp_path)
+        with pytest.raises(ConfigurationError, match="недоступно системное хранилище"):
             credentials.load_token(tmp_path)
+        with pytest.raises(ConfigurationError, match="недоступно системное хранилище"):
+            credentials.delete_token(scope="user", project_root=tmp_path)
         status = credentials.token_status(tmp_path, {})
         assert status.backend_available is False
         assert status.active_source == ""
 
-    empty_chainer = chainer_mod.ChainerBackend()
-    monkeypatch.setattr(chainer_mod.ChainerBackend, "backends", property(lambda self: []))
-    monkeypatch.setattr(keyring, "get_keyring", lambda: empty_chainer)
+    assert plaintext_backend.calls == []
+
+
+def test_chainer_backend_filters_out_file_fallback_before_any_secret_op(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    plaintext_only = _RecordingPlaintextKeyring()
+    plaintext_only.items[(credentials.KEYRING_SERVICE, "user")] = SYNTHETIC_TOKEN
+    chainer = chainer_mod.ChainerBackend()
+    monkeypatch.setattr(chainer_mod.ChainerBackend, "backends", property(lambda self: [plaintext_only]))
+    monkeypatch.setattr(keyring, "get_keyring", lambda: chainer)
+
+    with pytest.raises(ConfigurationError, match="недоступно системное хранилище"):
+        credentials.store_token(SYNTHETIC_TOKEN, scope="workspace", project_root=tmp_path)
     with pytest.raises(ConfigurationError, match="недоступно системное хранилище"):
         credentials.load_token(tmp_path)
+    assert plaintext_only.calls == []
 
-    memory = _MemoryKeyring()
-    monkeypatch.setattr(chainer_mod.ChainerBackend, "backends", property(lambda self: [memory]))
-    monkeypatch.setattr(keyring, "get_keyring", lambda: empty_chainer)
+    # Chainer with an allowed OS backend AND a file fallback: only OS backend may be used.
+    os_backend, os_items = _make_memory_os_keyring()
+    plaintext_fallback = _RecordingPlaintextKeyring()
+    plaintext_fallback.items[(credentials.KEYRING_SERVICE, "user")] = SYNTHETIC_TOKEN + "-from-file"
+    monkeypatch.setattr(
+        chainer_mod.ChainerBackend,
+        "backends",
+        property(lambda self: [os_backend, plaintext_fallback]),
+    )
     described = credentials.store_token(SYNTHETIC_TOKEN, scope="workspace", project_root=tmp_path)
-    assert described.endswith("_MemoryKeyring")
-    assert credentials.load_token(tmp_path) == SYNTHETIC_TOKEN
+    assert described == "keyring.backends.SecretService.Keyring"
+    assert os_items[(credentials.KEYRING_SERVICE, credentials.workspace_account(tmp_path))] == SYNTHETIC_TOKEN
+    assert plaintext_fallback.calls == []
+
+    # Even if workspace/user are absent from OS backend, PlaintextKeyring must NEVER be queried.
+    os_items.clear()
+    with pytest.raises(ConfigurationError, match="токен не найден"):
+        credentials.load_token(tmp_path)
+    status = credentials.token_status(tmp_path, {})
+    assert status.backend_available is True
+    assert status.has_user is False
+    assert status.active_source == ""
+    assert plaintext_fallback.calls == []
+
+    # Even if OS backend raises NotImplementedError on set_password, never fall through to file fallback.
+    readonly_os, _ = _make_memory_os_keyring(fail_set_not_implemented=True)
+    monkeypatch.setattr(
+        chainer_mod.ChainerBackend,
+        "backends",
+        property(lambda self: [readonly_os, plaintext_fallback]),
+    )
+    with pytest.raises(ConfigurationError, match="не удалось сохранить"):
+        credentials.store_token(SYNTHETIC_TOKEN, scope="workspace", project_root=tmp_path)
+    assert plaintext_fallback.calls == []
 
 
 def test_keyring_errors_are_sanitized_without_leaking_secrets(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    class FailingKeyring(KeyringBackend):
-        priority = 10
+    os_backend, os_items = _make_memory_os_keyring()
 
-        def get_password(self, service: str, username: str) -> str | None:
-            raise kr_errors.KeyringError("boom " + SYNTHETIC_TOKEN)
+    def boom_get(service: str, username: str) -> str | None:
+        raise kr_errors.KeyringError("boom " + SYNTHETIC_TOKEN)
 
-        def set_password(self, service: str, username: str, password: str) -> None:
-            raise kr_errors.PasswordSetError(f"boom {password}")
+    def boom_set(service: str, username: str, password: str) -> None:
+        raise kr_errors.PasswordSetError(f"boom {password}")
 
-        def delete_password(self, service: str, username: str) -> None:
-            raise kr_errors.PasswordDeleteError(f"boom {SYNTHETIC_TOKEN}")
+    def boom_delete(service: str, username: str) -> None:
+        raise kr_errors.PasswordDeleteError(f"boom {SYNTHETIC_TOKEN}")
 
-    monkeypatch.setattr(keyring, "get_keyring", lambda: FailingKeyring())
+    monkeypatch.setattr(keyring, "get_keyring", lambda: os_backend)
+    os_backend.set_password = boom_set  # type: ignore[method-assign]
     with pytest.raises(ConfigurationError, match="не удалось сохранить") as set_err:
         credentials.store_token(SYNTHETIC_TOKEN, scope="workspace", project_root=tmp_path)
     assert SYNTHETIC_TOKEN not in str(set_err.value)
 
+    os_backend.get_password = boom_get  # type: ignore[method-assign]
     with pytest.raises(ConfigurationError, match="не удалось прочитать") as get_err:
         credentials.load_token(tmp_path)
     assert SYNTHETIC_TOKEN not in str(get_err.value)
 
-    class DeleteFailingKeyring(_MemoryKeyring):
-        def delete_password(self, service: str, username: str) -> None:
-            raise kr_errors.PasswordDeleteError(f"boom {SYNTHETIC_TOKEN}")
-
-    failing_del = DeleteFailingKeyring()
-    failing_del.set_password(credentials.KEYRING_SERVICE, credentials.workspace_account(tmp_path), SYNTHETIC_TOKEN)
-    monkeypatch.setattr(keyring, "get_keyring", lambda: failing_del)
+    os_items[(credentials.KEYRING_SERVICE, credentials.workspace_account(tmp_path))] = SYNTHETIC_TOKEN
+    os_backend.get_password = lambda service, username: os_items.get((service, username))  # type: ignore[method-assign]
+    os_backend.delete_password = boom_delete  # type: ignore[method-assign]
     with pytest.raises(ConfigurationError, match="не удалось удалить") as del_err:
         credentials.delete_token(scope="workspace", project_root=tmp_path)
     assert SYNTHETIC_TOKEN not in str(del_err.value)
@@ -284,7 +370,7 @@ def test_keyring_errors_are_sanitized_without_leaking_secrets(
 def test_cli_token_commands_and_check_with_keyring(
     project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _use_memory_keyring(monkeypatch)
+    _use_memory_os_keyring(monkeypatch)
     monkeypatch.delenv("ALLURE_TOKEN", raising=False)
     monkeypatch.setenv("QWEN_HOME", str(project / ".qwen-home"))
     FakeTestOps(default_launch()).install(monkeypatch)
@@ -342,7 +428,7 @@ def test_cli_token_commands_and_check_with_keyring(
     assert code == 0 and capsys.readouterr().out.startswith("STATUS: ok")
 
 
-def test_subprocess_token_lifecycle_uses_isolated_keyring_backend(tmp_path: Path) -> None:
+def test_subprocess_rejects_file_keyring_via_keyringrc_and_env_override(tmp_path: Path) -> None:
     if os.name == "nt":
         pytest.skip("POSIX subprocess keyring fixture")
     project = tmp_path / "project with spaces"
@@ -350,74 +436,56 @@ def test_subprocess_token_lifecycle_uses_isolated_keyring_backend(tmp_path: Path
     ext = stage_extension(tmp_path / "staged-alla-extension")
     env = isolated_qwen_env(tmp_path)
     home = Path(env["HOME"])
-    store_file = install_isolated_keyring_backend(home)
-    # Use the active test .venv inside project/.venv via symlink so alla_skill.py finds keyring.
+    config_dir = home / ".config" / "python_keyring"
+    backend_dir = config_dir / "backend"
+    backend_dir.mkdir(parents=True)
+    store_file = config_dir / "plaintext-store.json"
+    (backend_dir / "plaintext_test_backend.py").write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "from keyring.backend import KeyringBackend\n"
+        f"STORE = Path({str(store_file)!r})\n"
+        "class PlaintextTestKeyring(KeyringBackend):\n"
+        "    priority = 10\n"
+        "    def get_password(self, service, username):\n"
+        "        return None\n"
+        "    def set_password(self, service, username, password):\n"
+        "        STORE.write_text(json.dumps({username: password}))\n"
+        "    def delete_password(self, service, username):\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+    (config_dir / "keyringrc.cfg").write_text(
+        "[backend]\n"
+        "default-keyring=plaintext_test_backend.PlaintextTestKeyring\n"
+        f"keyring-path={backend_dir}\n",
+        encoding="utf-8",
+    )
+
     venv_dir = Path(sys.prefix)
     if not (venv_dir / "bin" / "python").exists():
         pytest.skip("Требуется .venv с установленным keyring")
     (project / ".venv").symlink_to(venv_dir)
 
     entry = ext / "scripts" / "alla_skill.py"
-    run_env = {**env, "PATH": os.environ.get("PATH", "")}
+    base_env: dict[str, str] = {**env, "PATH": os.environ.get("PATH", "")}
 
-    res_set = subprocess.run(
-        [sys.executable, str(entry), "token", "set", "--stdin", "--project-root", str(project)],
-        input=SYNTHETIC_TOKEN,
-        cwd=project,
-        env=run_env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert res_set.returncode == 0, res_set.stdout + res_set.stderr
-    assert res_set.stdout.startswith("STATUS: saved")
-    assert SYNTHETIC_TOKEN not in res_set.stdout + res_set.stderr
-    assert store_file.is_file()
-    assert store_file.stat().st_mode & 0o777 == 0o600
-    assert SYNTHETIC_TOKEN.encode("utf-8") not in store_file.read_bytes()
-
-    res_status = subprocess.run(
-        [sys.executable, str(entry), "token", "status", "--project-root", str(project)],
-        cwd=project,
-        env=run_env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert res_status.returncode == 0, res_status.stdout + res_status.stderr
-    assert "keyring:workspace" in res_status.stdout or "системное хранилище ОС (workspace)" in res_status.stdout
-    assert SYNTHETIC_TOKEN not in res_status.stdout + res_status.stderr
-
-    # Reading via load_token inside subprocess confirms full end-to-end retrieval.
-    res_load = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import sys; sys.path.insert(0, sys.argv[1]); "
-                "from pathlib import Path; from alla_core.credentials import load_token; "
-                "assert load_token(Path(sys.argv[2])) == sys.argv[3]"
-            ),
-            str(ext / "scripts"),
-            str(project),
-            SYNTHETIC_TOKEN,
-        ],
-        cwd=project,
-        env=run_env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert res_load.returncode == 0, res_load.stderr
-
-    res_del = subprocess.run(
-        [sys.executable, str(entry), "token", "delete", "--project-root", str(project)],
-        cwd=project,
-        env=run_env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert res_del.returncode == 0, res_del.stdout + res_del.stderr
-    assert res_del.stdout.startswith("STATUS: saved")
-    assert shutil.which("python3") is not None
+    scenarios: list[dict[str, Any]] = [
+        base_env,
+        {**base_env, "PYTHON_KEYRING_BACKEND": "keyring.backends.null.Keyring"},
+    ]
+    for run_env in scenarios:
+        res_set = subprocess.run(
+            [sys.executable, str(entry), "token", "set", "--stdin", "--project-root", str(project)],
+            input=SYNTHETIC_TOKEN,
+            cwd=project,
+            env=run_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert res_set.returncode == 2, res_set.stdout + res_set.stderr
+        assert res_set.stdout.startswith("STATUS: error")
+        assert "недоступно системное хранилище" in res_set.stdout
+        assert SYNTHETIC_TOKEN not in res_set.stdout + res_set.stderr
+        assert not store_file.exists()

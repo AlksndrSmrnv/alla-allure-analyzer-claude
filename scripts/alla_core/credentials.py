@@ -17,7 +17,9 @@ KEYRING_SERVICE = "alla-allure-testops"
 SCOPES = ("workspace", "user")
 _ENTRYPOINT = Path(__file__).resolve().parents[1] / "alla_skill.py"
 SETTING_COMMAND = (
-    f'python "{_ENTRYPOINT}" token set' if os.name == "nt" else shlex.join(["python3", str(_ENTRYPOINT), "token", "set"])
+    f'python "{_ENTRYPOINT}" token set'
+    if os.name == "nt"
+    else shlex.join(["python3", str(_ENTRYPOINT), "token", "set"])
 )
 PROVENANCE_KEY = "QWEN_CODE_PRIVATE_RELAUNCH_ENV_PROVENANCE"
 PLAINTEXT_NOTE = (
@@ -26,9 +28,11 @@ PLAINTEXT_NOTE = (
 )
 _NO_KEYRING_MESSAGE = (
     "ALLURE_TOKEN: недоступно системное хранилище ключей ОС "
-    "(на macOS — Keychain, на Linux — GNOME Keyring/KWallet через Secret Service, "
-    "на Windows — Credential Manager; проверьте `keyring diagnose`). "
-    "Для CI передайте токен переменной окружения ALLURE_TOKEN"
+    "(поддерживаются только встроенные системные бэкенды keyring: "
+    "на Linux — Secret Service / GNOME Keyring / KWallet / libsecret, "
+    "на macOS — Keychain, на Windows — Credential Manager; "
+    "файловые и сторонние бэкенды вроде keyrings.alt отклоняются; "
+    "проверьте `keyring diagnose`). Для CI передайте токен переменной окружения ALLURE_TOKEN"
 )
 
 
@@ -94,41 +98,88 @@ def account_for(scope: str, project_root: Path | None) -> str:
     raise ValueError(f"Unsupported token scope: {scope}")
 
 
-def _unwrap_backends(backend: Any, fail_cls: type[Any], null_cls: type[Any], chainer_cls: type[Any]) -> list[Any]:
-    if isinstance(backend, chainer_cls):
-        return [item for item in backend.backends if not isinstance(item, (fail_cls, null_cls))]
-    if isinstance(backend, (fail_cls, null_cls)):
-        return []
-    return [backend]
+def _allowed_backend_types() -> frozenset[type[Any]]:
+    """Return exact built-in OS keyring classes; exclude file/plaintext/third-party backends."""
+    allowed: set[type[Any]] = set()
+    try:
+        import keyring.backends.SecretService as secret_service_mod
+
+        allowed.add(secret_service_mod.Keyring)
+    except ImportError:
+        pass
+    try:
+        import keyring.backends.libsecret as libsecret_mod
+
+        allowed.add(libsecret_mod.Keyring)
+    except ImportError:
+        pass
+    try:
+        import keyring.backends.kwallet as kwallet_mod
+
+        allowed.add(kwallet_mod.DBusKeyring)
+        allowed.add(kwallet_mod.DBusKeyringKWallet4)
+    except ImportError:
+        pass
+    try:
+        import keyring.backends.macOS as macos_mod
+
+        allowed.add(macos_mod.Keyring)
+    except ImportError:
+        pass
+    try:
+        import keyring.backends.Windows as windows_mod
+
+        allowed.add(windows_mod.WinVaultKeyring)
+    except ImportError:
+        pass
+    return frozenset(allowed)
+
+
+def _resolve_allowed_backends(backend: Any) -> list[Any]:
+    """Unpack ChainerBackend and keep ONLY exact instances of built-in OS backends."""
+    import keyring.backends.chainer as chainer_mod
+
+    allowed = _allowed_backend_types()
+    chainer_cls = chainer_mod.ChainerBackend
+    result: list[Any] = []
+    seen: set[int] = set()
+
+    def visit(item: Any) -> None:
+        item_id = id(item)
+        if item_id in seen:
+            return
+        seen.add(item_id)
+        if isinstance(item, chainer_cls):
+            for child in item.backends:
+                visit(child)
+            return
+        if type(item) in allowed:
+            result.append(item)
+
+    visit(backend)
+    return result
 
 
 def describe_backend(backend: Any) -> str:
     """Return a concise, human-readable backend class path without secrets."""
-    import keyring.backends.chainer as chainer_mod
-    import keyring.backends.fail as fail_mod
-    import keyring.backends.null as null_mod
-
-    inner = _unwrap_backends(backend, fail_mod.Keyring, null_mod.Keyring, chainer_mod.ChainerBackend)
-    target = inner[0] if inner else backend
+    vetted = _resolve_allowed_backends(backend)
+    target = vetted[0] if vetted else backend
     return f"{type(target).__module__}.{type(target).__qualname__}"
 
 
-def _active_keyring() -> Any:
-    """Lazily import keyring and ensure a real OS credential backend is active."""
+def _active_backends() -> list[Any]:
+    """Lazily import keyring and return vetted OS backends (never Chainer/file fallbacks)."""
     import keyring
-    import keyring.backends.chainer as chainer_mod
-    import keyring.backends.fail as fail_mod
-    import keyring.backends.null as null_mod
     import keyring.errors as kr_errors
 
     try:
         backend = keyring.get_keyring()
+        vetted = _resolve_allowed_backends(backend)
     except (kr_errors.KeyringError, OSError, RuntimeError):
         raise ConfigurationError(_NO_KEYRING_MESSAGE) from None
-    inner = _unwrap_backends(backend, fail_mod.Keyring, null_mod.Keyring, chainer_mod.ChainerBackend)
-    if not inner:
+    if not vetted:
         raise ConfigurationError(_NO_KEYRING_MESSAGE)
-    return backend
+    return vetted
 
 
 def _clean_token(token: str) -> str:
@@ -151,13 +202,14 @@ def _get_password(backend: Any, account: str) -> str:
 
 
 def load_token(project_root: Path | None) -> str:
-    """Load ALLURE_TOKEN from OS keyring (workspace scope takes precedence over user)."""
-    backend = _active_keyring()
+    """Load ALLURE_TOKEN from vetted OS keyring backends (workspace takes precedence over user)."""
+    backends = _active_backends()
     accounts = [workspace_account(project_root), "user"] if project_root is not None else ["user"]
     for account in accounts:
-        token = _get_password(backend, account)
-        if token:
-            return token
+        for backend in backends:
+            token = _get_password(backend, account)
+            if token:
+                return token
     raise ConfigurationError(
         "ALLURE_TOKEN: токен не найден в системном хранилище ОС. "
         f"Сохраните его командой {SETTING_COMMAND} (или с --scope user); "
@@ -166,36 +218,39 @@ def load_token(project_root: Path | None) -> str:
 
 
 def store_token(token: str, *, scope: str = "workspace", project_root: Path | None = None) -> str:
-    """Store ALLURE_TOKEN in OS keyring under the requested scope and return backend name."""
+    """Store ALLURE_TOKEN in the primary vetted OS keyring backend and return its name."""
     import keyring.errors as kr_errors
 
     cleaned = _clean_token(token)
     account = account_for(scope, project_root)
-    backend = _active_keyring()
+    primary = _active_backends()[0]
     try:
-        backend.set_password(KEYRING_SERVICE, account, cleaned)
+        primary.set_password(KEYRING_SERVICE, account, cleaned)
     except (kr_errors.KeyringError, OSError, RuntimeError, NotImplementedError):
         raise ConfigurationError("ALLURE_TOKEN: не удалось сохранить токен в системном хранилище ОС") from None
-    return describe_backend(backend)
+    return describe_backend(primary)
 
 
 def delete_token(*, scope: str = "workspace", project_root: Path | None = None) -> bool:
-    """Delete ALLURE_TOKEN from OS keyring if present; return True when deleted."""
+    """Delete ALLURE_TOKEN from vetted OS keyring backends if present; return True when deleted."""
     import keyring.errors as kr_errors
 
     account = account_for(scope, project_root)
-    backend = _active_keyring()
-    try:
-        existing = backend.get_password(KEYRING_SERVICE, account)
-    except (kr_errors.KeyringError, OSError, RuntimeError, ValueError):
-        raise ConfigurationError("ALLURE_TOKEN: не удалось прочитать системное хранилище ключей ОС") from None
-    if existing is None:
-        return False
-    try:
-        backend.delete_password(KEYRING_SERVICE, account)
-    except (kr_errors.KeyringError, OSError, RuntimeError, NotImplementedError):
-        raise ConfigurationError("ALLURE_TOKEN: не удалось удалить токен из системного хранилища ОС") from None
-    return True
+    backends = _active_backends()
+    deleted = False
+    for backend in backends:
+        try:
+            existing = backend.get_password(KEYRING_SERVICE, account)
+        except (kr_errors.KeyringError, OSError, RuntimeError, ValueError):
+            raise ConfigurationError("ALLURE_TOKEN: не удалось прочитать системное хранилище ключей ОС") from None
+        if existing is None:
+            continue
+        try:
+            backend.delete_password(KEYRING_SERVICE, account)
+        except (kr_errors.KeyringError, OSError, RuntimeError, NotImplementedError):
+            raise ConfigurationError("ALLURE_TOKEN: не удалось удалить токен из системного хранилища ОС") from None
+        deleted = True
+    return deleted
 
 
 def token_status(project_root: Path | None, environ: Mapping[str, str]) -> TokenStatus:
@@ -207,15 +262,16 @@ def token_status(project_root: Path | None, environ: Mapping[str, str]) -> Token
     has_workspace = False
     has_user = False
     try:
-        backend = _active_keyring()
+        backends = _active_backends()
     except ConfigurationError:
-        backend = None
-    if backend is not None:
+        backends = []
+    if backends:
         backend_available = True
-        backend_name = describe_backend(backend)
+        backend_name = describe_backend(backends[0])
         if project_root is not None:
-            has_workspace = bool(_get_password(backend, workspace_account(project_root)))
-        has_user = bool(_get_password(backend, "user"))
+            ws_account = workspace_account(project_root)
+            has_workspace = any(bool(_get_password(backend, ws_account)) for backend in backends)
+        has_user = any(bool(_get_password(backend, "user")) for backend in backends)
     if has_env:
         active_source = "env"
     elif has_workspace:
