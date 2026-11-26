@@ -11,9 +11,31 @@ from pathlib import Path
 import pytest
 import skill_fixtures  # noqa: F401
 
-from qwen_credentials_support import (
-    SYNTHETIC_TOKEN, QwenCredentialUnavailable, isolated_qwen_env, native_qwen_package,
-)
+from qwen_credentials_support import SYNTHETIC_TOKEN, isolated_qwen_env
+
+
+def _qwen_env_loader() -> Path | None:
+    qwen = shutil.which("qwen")
+    if qwen is None:
+        return None
+    binary = Path(qwen).resolve()
+    candidates = [
+        binary.parent,
+        binary.parent / "node_modules" / "@qwen-code" / "qwen-code",
+        *list(binary.parents)[:4],
+    ]
+    for candidate in candidates:
+        for rel in ("chunks", "dist/chunks"):
+            chunks_dir = candidate / rel
+            if not chunks_dir.is_dir():
+                continue
+            loaders = [
+                path for path in chunks_dir.glob("*.js")
+                if "function loadEnvironment(" in path.read_text(encoding="utf-8", errors="ignore")
+            ]
+            if len(loaders) == 1:
+                return loaders[0]
+    return None
 
 
 @pytest.mark.parametrize("source", ["home_dotenv", "settings_env", "exported"])
@@ -22,15 +44,10 @@ def test_native_qwen_environment_provenance_reaches_settings(
 ) -> None:
     if os.name == "nt":
         pytest.skip("native Qwen credential fixture requires POSIX")
-    try:
-        package = native_qwen_package()
-    except QwenCredentialUnavailable as exc:
-        pytest.skip(str(exc))
-    # Locate the native environment loader by its definition, without binding a
-    # regression test to a generated chunk filename or importing the CLI entry.
-    loaders = [path for path in (package / "chunks").glob("*.js")
-               if "function loadEnvironment(" in path.read_text(encoding="utf-8")]
-    assert len(loaders) == 1
+    node = shutil.which("node")
+    loader = _qwen_env_loader()
+    if node is None or loader is None:
+        pytest.skip("Нужны node и Qwen CLI с модулем loadEnvironment")
     project = tmp_path / "project with spaces"
     project.mkdir()
     env = isolated_qwen_env(tmp_path)
@@ -59,7 +76,7 @@ def test_native_qwen_environment_provenance_reaches_settings(
         "print(json.dumps(outcome))\n"
     )
     javascript = (
-        f"import {{loadEnvironment}} from {json.dumps(loaders[0].as_uri())};\n"
+        f"import {{loadEnvironment}} from {json.dumps(loader.as_uri())};\n"
         "import {spawnSync} from 'node:child_process';\n"
         f"loadEnvironment({json.dumps(settings)}, process.cwd());\n"
         f"const child = spawnSync({json.dumps(sys.executable)}, "
@@ -69,8 +86,6 @@ def test_native_qwen_environment_provenance_reaches_settings(
         "process.stderr.write(child.stderr || '');\n"
         "process.exitCode = child.status ?? 1;\n"
     )
-    node = shutil.which("node")
-    assert node is not None
     result = subprocess.run([node, "--input-type=module", "-e", javascript],
                             cwd=project, env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0

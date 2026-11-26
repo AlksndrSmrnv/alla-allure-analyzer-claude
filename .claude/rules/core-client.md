@@ -3,10 +3,7 @@ paths:
   - "scripts/alla_core/clients/**"
   - "scripts/alla_core/config.py"
   - "scripts/alla_core/credentials.py"
-  - "scripts/qwen_credentials.mjs"
   - "tests/test_core_credentials.py"
-  - "scripts/alla_core/credentials.py"
-  - "scripts/qwen_credentials.mjs"
   - "scripts/alla_core/exceptions.py"
   - "scripts/alla_core/models/testops.py"
   - "tests/test_core_testops_client.py"
@@ -127,41 +124,25 @@ REST API TestOps у пользователей закрыт (решение по
 переменные окружения > `.qwen/alla.env` > `<QWEN_HOME>/alla.env`), чужие ключи игнорирует.
 Непустой `ALLURE_TOKEN` в `.env`, `.qwen/.env`, `.qwen/alla.env` и `alla.env` запрещён
 даже при токене окружения. Токен берётся из непустой переменной окружения (CI), иначе — из
-sensitive setting `ALLURE_TOKEN` расширения Qwen `alla` (workspace важнее user).
+системного хранилища ключей ОС через `keyring` (область `workspace` важнее `user`).
 Границы значений — `BOUNDS` (ge/le). `load(require_testops=False)` — для команд без TestOps
 (`rerun`): адрес и токен не обязательны, хранилище не читается; запрет открытого токена
 в `.env` остаётся.
 
-`credentials.py` вызывает `qwen_credentials.mjs` через subprocess без shell, с закрытым
-pipe и очищенным окружением. Адаптер проверяет доступность API, а не номер версии Qwen;
-пакет ищется по текущему QWEN_CODE_CLI/QWEN_CLI_ENTRY, затем по PATH, включая dist/bin layout.
-Внутренние API Qwen читают настройки и secret store, шифрование в Python не дублируется.
-QWEN_HOME учитывается. Не вызывать refreshCache/recovery, загрузку hooks/commands или
-полную загрузку расширений ради чтения токена. Токен из `.env` проекта/расширения Qwen
-отклоняется, чтобы не принять plaintext fallback Qwen. Значение и сырые ошибки адаптера
-не попадают в сообщения; отсутствие секрета, нужного API и сбой хранилища —
-ConfigurationError без продолжения запроса к TestOps.
-На macOS используем Bun из npm-установки Qwen, если он есть: в sandbox Node
-os.userInfo() недоступен, а native Bun-reader Qwen получает ту же OS identity через id.
-Runtime стартует из каталога пакета Qwen; для Bun отключены config, dotenv, auto-install
-и macros. Проект не должен выполнять preload до чтения секретов.
-Происхождение ALLURE_TOKEN из .env/settings.env проверяется по служебной provenance Qwen;
-это не CI export. Проверка raw деклараций не даёт скрыть токен пустым повтором ключа.
-Загрузчик .env вообще не добавляет ALLURE_TOKEN в результат: разрешённая пустая запись
-или комментарий после неё не должны стать токеном вместо хранилища Qwen.
-Не требовать установки конкретной версии или переустановки Qwen ради скилла.
-Если закрытая сборка не раскрывает native reader, остаётся переменная окружения;
-plaintext .env fallback не добавлять, cli.js/refreshCache ради совместимости не запускать.
-
-Qwen предпочитает keychain, иначе хранит AES-256-GCM в extension-secrets-v1.json (0600).
-Файловый ключ выводится из фиксированной строки и host/user: не обещать keychain-only
-или защиту от восстановления ключа при известных host/user. Штатный keychain-reader
-Qwen может создавать/удалять временную запись проверки доступности.
+`credentials.py` хранит и читает `ALLURE_TOKEN` через Python-библиотеку `keyring`
+(сервис `alla-allure-testops`, аккаунт `workspace:<sha256[:24]>` или `user`). Импорт `keyring`
+ленивый, чтобы команды разбора (`next`, `verify`, `apply`) не обращались к D-Bus/Keychain.
+`fail.Keyring`, `null.Keyring` и пустой `ChainerBackend` отклоняются через `ConfigurationError`.
+Токен без `\r`, `\n`, `\x00` и непустой; значение токена и сырые ошибки бэкенда не попадают
+в сообщения и логи. Происхождение `ALLURE_TOKEN` из `.env`/`settings.env` проверяется по
+служебной provenance Qwen; это не CI export. Проверка raw деклараций не даёт скрыть токен
+пустым повтором ключа. Загрузчик `.env` вообще не добавляет `ALLURE_TOKEN` в результат.
+В `child_env.py` `PYTHON_KEYRING_BACKEND` исключается из наследуемого окружения дочерних процессов.
 
 | Переменная | Обязательная | По умолчанию | Описание |
 |---|:---:|---|---|
 | `ALLURE_ENDPOINT` | да | — | URL Allure TestOps без `/api` |
-| `ALLURE_TOKEN` | да | хранилище Qwen | API token; env CI важнее Qwen, в `.env` запрещён |
+| `ALLURE_TOKEN` | да | системное хранилище (`keyring`) | API token; env CI важнее `keyring`, в `.env` запрещён |
 | `ALLURE_MCP_URL` | нет | `""` | Адрес MCP-сервера TestOps; пусто — `<ALLURE_ENDPOINT>/api/mcp`; иначе `http(s)://` |
 | `ALLURE_PROJECT_ID` | нет | `""` | Проект TestOps поиска результатов: `5` или по модулям `orders=5,payments/api=7` (`Settings.projects` → `ProjectRef`; номер > 0, модуль — папка без `..`, `\` → `/`, не повторяется; число вместе с парами — `ConfigurationError`) |
 | `ALLURE_REQUEST_TIMEOUT` | нет | `30` | HTTP timeout к TestOps |

@@ -151,18 +151,13 @@ ALLURE_ENDPOINT=https://testops.company.ru
 ```
 
 Не размещайте общие настройки в `~/.qwen/extensions/alla/.env`: этот файл перезаписывается
-при `qwen extensions update alla`. Токен в `.env` / `.qwen/alla.env` / `~/.qwen/alla.env` запрещён. Сохраните токен во встроенном секрете
-расширения `alla` через скрытое приглашение Qwen:
+при `qwen extensions update alla`. Токен в `.env` / `.qwen/alla.env` / `~/.qwen/alla.env` запрещён. Сохраните токен в системном хранилище ключей ОС (`keyring`) через скрытый ввод в терминале:
 
 ```bash
-qwen extensions settings set alla ALLURE_TOKEN --scope workspace
+python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token set
 ```
 
-Манифест `qwen-extension.json` объявляет `ALLURE_TOKEN` с `sensitive: true`;
-самого токена в нём нет. Qwen использует системное хранилище секретов, а при его
-недоступности — зашифрованный файл. Ограничения этого fallback описаны в
-[справочнике по хранению токена](skills/launch/references/setup.md#хранение-токена).
-Для CI токен можно передать переменной окружения `ALLURE_TOKEN`.
+Для общего токена во всех проектах используйте `--scope user`, для передачи из менеджера секретов по конвейеру — `--stdin`; проверить источник без вывода секрета можно командой `token status`, удалить — `token delete`. Подробности по ОС и headless Linux описаны в [справочнике по хранению токена](skills/launch/references/setup.md#хранение-токена). Для CI токен можно передать переменной окружения `ALLURE_TOKEN`.
 
 В `alla-extensions/config.toml` проекта явно разрешите origin:
 
@@ -201,11 +196,11 @@ qwen extensions update alla
    общие настройки) в `.qwen/alla.env` проекта либо в общий `~/.qwen/alla.env`
    (`$QWEN_HOME/alla.env`) (права `600` на Linux/macOS, без `ALLURE_TOKEN`). Папкой расширения
    для настроек не пользуйтесь — `qwen extensions update alla` её `.env` перезаписывает.
-3. **Перенесите токен TestOps** в настройки расширения `alla` и удалите старое расширение
-   секретов:
+3. **Перенесите токен TestOps** в системное хранилище ключей ОС и при наличии удалите старое
+   расширение секретов:
 
    ```bash
-   qwen extensions settings set alla ALLURE_TOKEN --scope workspace
+   python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token set
    qwen extensions uninstall alla-launch-credentials
    ```
 
@@ -481,15 +476,15 @@ alla-extensions/   включённые расширения и свои рас�
 ## Настройки
 
 Настройки задаются в `<проект>/.qwen/alla.env` (общий fallback — `<QWEN_HOME или ~/.qwen>/alla.env`) либо переменными окружения;
-переменные окружения важнее файла. `.env` в папке расширения не читается (перезаписывается при `qwen extensions update`). Исключение — токен: только хранилище Qwen
-(`qwen extensions settings set alla ALLURE_TOKEN --scope workspace`) или переменная окружения `ALLURE_TOKEN`
+переменные окружения важнее файла. `.env` в папке расширения не читается (перезаписывается при `qwen extensions update`). Исключение — токен: только системное хранилище ключей ОС (`keyring`:
+`python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token set`) или переменная окружения `ALLURE_TOKEN`
 (имеет приоритет). Непустой `ALLURE_TOKEN` в `.qwen/alla.env` или `.env` отклоняется даже при заданной
 переменной окружения.
 
 | Переменная | По умолчанию | Зачем |
 |---|---|---|
 | `ALLURE_ENDPOINT` | — | Адрес TestOps, без `/api` в конце (обязательно) |
-| `ALLURE_TOKEN` | хранилище Qwen | Личный API-токен TestOps; переменная окружения для CI, в `.env` запрещён |
+| `ALLURE_TOKEN` | системное хранилище ОС (`keyring`) | Личный API-токен TestOps; переменная окружения для CI, в `.env` запрещён |
 | `ALLURE_MCP_URL` | `<ALLURE_ENDPOINT>/api/mcp` | Адрес MCP-сервера TestOps, если он другой |
 | `ALLURE_IMAGES_PER_PROBLEM` | `3` | Сколько скриншотов из вложений показать агенту на проблему; `0` — не скачивать (если модель не принимает изображения) |
 | `ALLURE_CLUSTERING_THRESHOLD` | `0.60` | Насколько похожими должны быть падения, чтобы попасть в одну проблему. Чем ниже порог, тем больше падений объединяется |
@@ -534,6 +529,7 @@ Python-скрипт скилла выгружает прогон из TestOps, �
 | Команда | Что делает |
 |---|---|
 | `setup` | Только проверяет окружение и печатает инструкцию инженеру |
+| `token set \| status \| delete` | Управляет `ALLURE_TOKEN` в системном хранилище ОС (`--scope workspace\|user`, `--stdin`; запускает инженер) |
 | `check` | Проверяет Python, настройки, базу знаний и доступ к TestOps |
 | `prepare <ID или ссылка> [--fresh]` | Выгружает прогон и готовит задания. Неоконченный разбор моложе суток продолжает, `--fresh` начинает заново. Разбор старше суток продолжает только `next <папка>` |
 | `next [папка] [--workers N \| --serial]` | Следующий шаг разбора. `--workers` — сколько субагентов (1–8), `--serial` — без них |

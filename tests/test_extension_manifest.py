@@ -11,31 +11,10 @@ from pathlib import Path
 import pytest
 import skill_fixtures  # noqa: F401
 
-from alla_core import credentials
-from qwen_credentials_support import (
-    SYNTHETIC_TOKEN,
-    QwenCredentialUnavailable,
-    install_synthetic_credentials,
-)
+from qwen_credentials_support import isolated_qwen_env, stage_extension
 
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
-PROCESS_CONTROL_ENV_VARS = frozenset({
-    "PATH",
-    "NODE_OPTIONS",
-    "PYTHONPATH",
-    "PYTHONHOME",
-    "PYTHONSTARTUP",
-    "LD_PRELOAD",
-    "LD_LIBRARY_PATH",
-    "DYLD_INSERT_LIBRARIES",
-    "DYLD_LIBRARY_PATH",
-    "BUNFIG_TOML",
-    "ENV",
-    "BASH_ENV",
-    "HOME",
-    "QWEN_HOME",
-})
 
 
 def _frontmatter(text: str) -> dict[str, str]:
@@ -59,14 +38,8 @@ def test_extension_manifest_schema_and_safety() -> None:
     assert manifest["commands"] == "commands"
     assert manifest["skills"] == "skills"
     assert manifest["agents"] == "agents"
-
-    settings = manifest.get("settings")
-    assert isinstance(settings, list) and settings
-    env_vars = {item.get("envVar"): item for item in settings if isinstance(item, dict)}
-    assert "ALLURE_TOKEN" in env_vars
-    assert env_vars["ALLURE_TOKEN"].get("sensitive") is True
-    for env_var in env_vars:
-        assert env_var not in PROCESS_CONTROL_ENV_VARS
+    assert "settings" not in manifest
+    assert not (ROOT / "scripts" / "qwen_credentials.mjs").exists()
 
     # Context file at repo root is intentionally absent so instructions load lazily via /alla:launch.
     assert not (ROOT / "QWEN.md").exists()
@@ -97,18 +70,27 @@ def test_extension_skill_and_agents_frontmatter() -> None:
         assert agent_fm.get("description")
 
 
-def test_native_qwen_cli_install_and_token_resolution(tmp_path: Path) -> None:
+def test_native_qwen_cli_install(tmp_path: Path) -> None:
     if os.name == "nt":
-        pytest.skip("Native Qwen extension install test requires POSIX PTY")
+        pytest.skip("Native Qwen extension install test requires POSIX")
+    qwen = shutil.which("qwen")
+    if qwen is None:
+        pytest.skip("Нужен qwen в PATH")
+
     project = tmp_path / "project"
     project.mkdir(parents=True)
-    try:
-        env = install_synthetic_credentials(tmp_path, project)
-    except QwenCredentialUnavailable as exc:
-        pytest.skip(str(exc))
+    env = isolated_qwen_env(tmp_path)
+    staged = stage_extension(tmp_path / "staged-alla-extension")
 
-    qwen = shutil.which("qwen")
-    assert qwen is not None
+    install = subprocess.run(
+        [qwen, "extensions", "install", str(staged), "--consent"],
+        cwd=project,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert install.returncode == 0, install.stderr
 
     ext_list = subprocess.run(
         [qwen, "extensions", "list"],
@@ -120,17 +102,3 @@ def test_native_qwen_cli_install_and_token_resolution(tmp_path: Path) -> None:
     )
     assert ext_list.returncode == 0, ext_list.stderr
     assert "alla" in ext_list.stdout
-
-    settings_list = subprocess.run(
-        [qwen, "extensions", "settings", "list", "alla"],
-        cwd=project,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert settings_list.returncode == 0, settings_list.stderr
-    assert "ALLURE_TOKEN" in settings_list.stdout
-    assert SYNTHETIC_TOKEN not in settings_list.stdout + settings_list.stderr
-
-    assert credentials.load_qwen_token(project, env) == SYNTHETIC_TOKEN

@@ -15,6 +15,7 @@ import httpx
 
 from alla_core.config import Settings
 from alla_core.exceptions import AllureApiError, AuthenticationError, McpError, PaginationLimitError
+from alla_skill_lib import workspace as ws
 
 
 def _chain(exc: BaseException) -> Iterator[BaseException]:
@@ -30,8 +31,9 @@ def _chain(exc: BaseException) -> Iterator[BaseException]:
 # иначе сама правила бы файл с токеном.
 USER_ACTION_NOTE = (
     "Это настройка пользователя: скажи ему, что нужно сделать, и остановись. "
-    "Не меняй .qwen/alla.env, .env и переменные окружения сам. Хранилище Qwen не меняй; "
-    "секреты не читай и не выводи, адаптер qwen_credentials.mjs напрямую не запускай."
+    "Не меняй .qwen/alla.env, .env и переменные окружения сам. "
+    "Системное хранилище ключей не меняй, секреты не читай и не выводи, "
+    "`token set` / `token delete` не запускай и токен в чате не проси."
 )
 
 
@@ -104,8 +106,8 @@ def fetch_error_hint(exc: BaseException, settings: Settings, env_file: Path) -> 
         or (api is not None and api.status_code in (401, 403))
     ):
         return (
-            "Проверь ALLURE_TOKEN в хранилище Qwen (или в окружении CI): токен "
-            "неверный, просрочен или у него нет доступа к проекту."
-            " Обновить: qwen extensions settings set alla ALLURE_TOKEN --scope workspace."
+            "Проверь ALLURE_TOKEN в системном хранилище ОС (или в окружении CI): токен "
+            "неверный, просрочен или у него нет доступа к проекту. "
+            f"Обновить: {ws.skill_command('token', 'set')} (или с --scope user)."
         )
     return ""

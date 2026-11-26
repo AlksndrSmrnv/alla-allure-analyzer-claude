@@ -4,7 +4,7 @@
 кластеризация, лимиты промптов. Значения читаются из проектного ``<project>/.qwen/alla.env``
 (с fallback на общий ``<QWEN_HOME или ~/.qwen>/alla.env``) и переменных окружения ``ALLURE_*``
 (окружение важнее файла). ``<extension>/.env`` не читается: его перезаписывает Qwen.
-Токен — только окружение или хранилище Qwen, не ``.env``. Чужие ключи игнорируются: расширение
+Токен — только окружение или системное хранилище ключей ОС (keyring), не ``.env``. Чужие ключи игнорируются: расширение
 работает с чужим проектом, где рядом могут быть любые переменные.
 """
 
@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from alla_core.exceptions import ConfigurationError
-from alla_core.credentials import load_qwen_token, reject_plaintext_token, validate_environment_token
+from alla_core.credentials import load_token, reject_plaintext_token, validate_environment_token
 from alla_core.origins import load_allowed_origins, origin, require_allowed_origin
 
 ENV_PREFIX = "ALLURE_"
@@ -117,7 +117,7 @@ class Settings:
         if require_testops:
             kwargs["allowed_origins"] = load_allowed_origins(project_root)
             if values.get("ALLURE_ENDPOINT", "").strip() and not values.get("ALLURE_TOKEN", "").strip():
-                kwargs["token"] = load_qwen_token(project_root, process_env)
+                kwargs["token"] = load_token(project_root)
         settings = cls(**kwargs)  # type: ignore[arg-type]
         settings.validate(require_testops=require_testops)
         return settings

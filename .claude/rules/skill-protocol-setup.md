@@ -32,10 +32,13 @@ paths:
   Python-кэши в `.qwen/`. Окружение, `.qwen/alla.env` из образца и `.gitignore` готовит инженер.
 - `<project>/.qwen/alla.env` (fallback — `<QWEN_HOME или ~/.qwen>/alla.env`) содержит только несекретные настройки:
   непустой `ALLURE_TOKEN` запрещён в обоих файлах и в `.env` / `.qwen/.env`. `<extension>/.env` не читается (его перезаписывает `qwen extensions update`), при обнаружении там `ALLURE_*` `check` печатает предупреждение о переносе.
-  Токен хранится через нативную настройку расширения `alla`: `qwen extensions settings set
-  alla ALLURE_TOKEN --scope workspace` из корня проекта. Для общего
-  токена — scope user, для CI — окружение `ALLURE_TOKEN`. `setup` только показывает эти шаги,
-  не устанавливает расширение и не спрашивает токен.
+  Токен хранится в системном хранилище ключей ОС через `keyring`: инженер сохраняет его
+  командой `python3 <extension>/scripts/alla_skill.py token set` (скрытый ввод или `--stdin`)
+  из корня проекта. Для общего токена — `--scope user`, для CI — окружение `ALLURE_TOKEN`.
+  `setup` только показывает эти шаги, не устанавливает расширение и не спрашивает токен.
+  `alla_skill.py` поддерживает универсальные PEP-508 маркеры `requirements.txt` (ограниченный
+  разбор без `eval`: `python_full_version`, `python_version`, `sys_platform`, `os_name`,
+  `platform_python_implementation`, `implementation_name`, `and`/`or`).
 - Обновление и управление жизнью расширения выполняются штатно через `qwen extensions update alla` / `qwen extensions uninstall alla`; прежние `update` (`alla_release.py`) и `install-files` (`qwen_files.py`) удалены.
 - CI smoke готовит окружение, расширение и конфигурацию явными командами инженера;
   проверяет отсутствие записи у `setup` и `extensions enable|disable`, затем synthetic `check`/`prepare`.

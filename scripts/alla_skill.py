@@ -13,6 +13,7 @@ Python 3.8+ bootstrap. setup только проверяет готовое ок
 from __future__ import annotations
 
 import os
+import platform
 import re
 import shlex
 import subprocess
@@ -105,8 +106,37 @@ def venv_needs_ignore(root: Path) -> bool:
     return code == 1  # 0 — уже игнорируется, 128 — не репозиторий
 
 
+_VERSION_CLAUSE_RE = re.compile(
+    r"^(python_full_version|python_version)\s*(<=|>=|==|!=|<|>)\s*(['\"])([0-9]+(?:\.[0-9]+){0,2})\3$"
+)
+_STRING_CLAUSE_RE = re.compile(
+    r"^(sys_platform|os_name|platform_python_implementation|implementation_name)\s*(==|!=)\s*(['\"])([A-Za-z0-9_.-]+)\3$"
+)
+
+
+def _parse_marker(marker: str) -> list[list[tuple[str, str, str]]] | None:
+    """Parse a restricted PEP-508 environment marker without eval()."""
+    cleaned = marker.strip()
+    if not cleaned:
+        return []
+    or_branches: list[list[tuple[str, str, str]]] = []
+    for branch in re.split(r"\s+or\s+", cleaned):
+        part = branch.strip()
+        if not part:
+            return None
+        and_clauses: list[tuple[str, str, str]] = []
+        for raw_clause in re.split(r"\s+and\s+", part):
+            clause = raw_clause.strip()
+            match = _VERSION_CLAUSE_RE.fullmatch(clause) or _STRING_CLAUSE_RE.fullmatch(clause)
+            if match is None:
+                return None
+            and_clauses.append((match.group(1), match.group(2), match.group(4)))
+        or_branches.append(and_clauses)
+    return or_branches
+
+
 def locked_requirements() -> list[tuple[str, str, str]]:
-    """Accept only exact hashed distributions and the lock's Python version markers.
+    """Accept only exact hashed distributions and the lock's supported environment markers.
 
     A restricted grammar prevents requirements options, URLs and nested files from
     changing which installed dependencies are checked.
@@ -120,12 +150,16 @@ def locked_requirements() -> list[tuple[str, str, str]]:
             continue
         match = re.fullmatch(
             r"([A-Za-z0-9][A-Za-z0-9_.-]*)==([A-Za-z0-9_.+!-]+)"
-            r"(?:\s*;\s*(python_full_version\s*(?:<|>=|==|<=|>|!=)\s*['\"][0-9.]+['\"]))?"
-            r"((?:\s+--hash=sha256:[a-fA-F0-9]{64})+)", line,
+            r"(?:\s*;\s*([^;]+?))?"
+            r"((?:\s+--hash=sha256:[a-fA-F0-9]{64})+)",
+            line,
         )
         if match is None:
-            raise ValueError("requirements.txt: разрешены только точные версии с SHA256 и Python-маркеры")
-        result.append((match.group(1), match.group(2), match.group(3) or ""))
+            raise ValueError("requirements.txt: разрешены только точные версии с SHA256 и поддерживаемые маркеры")
+        marker = (match.group(3) or "").strip()
+        if marker and _parse_marker(marker) is None:
+            raise ValueError("requirements.txt: разрешены только точные версии с SHA256 и поддерживаемые маркеры")
+        result.append((match.group(1), match.group(2), marker))
     if not result:
         raise ValueError("requirements.txt пуст")
     return result
@@ -135,29 +169,48 @@ def _normalize_dist_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def _marker_applies(marker: str, version_info: tuple[int, int, int]) -> bool:
-    if not marker:
-        return True
-    match = re.fullmatch(
-        r"python_full_version\s*(<|>=|==|<=|>|!=)\s*['\"]([0-9.]+)['\"]",
-        marker,
-    )
-    if match is None:
+def _marker_applies(
+    marker: str,
+    version_info: tuple[int, int, int],
+    env_values: dict[str, str] | None = None,
+) -> bool:
+    parsed = _parse_marker(marker)
+    if parsed is None:
         return False
-    op, raw = match.groups()
-    wanted = tuple(int(part) for part in raw.split("."))
-    wanted = wanted + (0,) * (3 - len(wanted))
-    if op == "<":
-        return version_info < wanted
-    if op == ">=":
-        return version_info >= wanted
-    if op == "==":
-        return version_info == wanted
-    if op == "<=":
-        return version_info <= wanted
-    if op == ">":
-        return version_info > wanted
-    return version_info != wanted
+    if not parsed:
+        return True
+    if env_values is None:
+        env_values = {
+            "sys_platform": sys.platform,
+            "os_name": os.name,
+            "platform_python_implementation": platform.python_implementation(),
+            "implementation_name": sys.implementation.name,
+        }
+    for branch in parsed:
+        branch_ok = True
+        for var, op, raw in branch:
+            if var in ("python_full_version", "python_version"):
+                size = 3 if var == "python_full_version" else 2
+                actual = version_info[:size]
+                wanted = tuple(int(part) for part in raw.split("."))[:size]
+                wanted = wanted + (0,) * (size - len(wanted))
+                ok = {
+                    "<": actual < wanted,
+                    "<=": actual <= wanted,
+                    "==": actual == wanted,
+                    "!=": actual != wanted,
+                    ">=": actual >= wanted,
+                    ">": actual > wanted,
+                }[op]
+            else:
+                actual_str = env_values[var]
+                ok = (actual_str == raw) if op == "==" else (actual_str != raw)
+            if not ok:
+                branch_ok = False
+                break
+        if branch_ok:
+            return True
+    return False
 
 
 def _validate_dependencies_in_process(entries: list[tuple[str, str, str]]) -> bool:
@@ -196,7 +249,7 @@ def _validate_dependencies_in_process(entries: list[tuple[str, str, str]]) -> bo
 
 # Keep `print` in the inline probe so minimal mock wrappers in tests (`*print*`) still respond.
 _PROBE_CODE = r"""
-import json, re, sys
+import json, os, platform, re, sys
 if len(sys.argv) > 2 and sys.argv[2]:
     min_ver = tuple(int(v) for v in sys.argv[2].split('.'))
     if sys.version_info[:2] < min_ver:
@@ -204,15 +257,50 @@ if len(sys.argv) > 2 and sys.argv[2]:
         sys.exit(0)
 import importlib.metadata as m
 entries = json.loads(sys.argv[1])
+_VER_RE = re.compile(r"^(python_full_version|python_version)\s*(<=|>=|==|!=|<|>)\s*(['\"])([0-9]+(?:\.[0-9]+){0,2})\3$")
+_STR_RE = re.compile(r"^(sys_platform|os_name|platform_python_implementation|implementation_name)\s*(==|!=)\s*(['\"])([A-Za-z0-9_.-]+)\3$")
+_ENV = {
+    "sys_platform": sys.platform,
+    "os_name": os.name,
+    "platform_python_implementation": platform.python_implementation(),
+    "implementation_name": sys.implementation.name,
+}
 def applies(marker):
-    if not marker:
+    cleaned = marker.strip()
+    if not cleaned:
         return True
-    op, raw = re.fullmatch(r"python_full_version\s*(<|>=|==|<=|>|!=)\s*['\"]([0-9.]+)['\"]", marker).groups()
-    wanted = tuple(int(v) for v in raw.split('.'))
+    branches = []
+    for branch in re.split(r"\s+or\s+", cleaned):
+        part = branch.strip()
+        if not part:
+            return False
+        clauses = []
+        for raw_clause in re.split(r"\s+and\s+", part):
+            clause = raw_clause.strip()
+            match = _VER_RE.fullmatch(clause) or _STR_RE.fullmatch(clause)
+            if match is None:
+                return False
+            clauses.append((match.group(1), match.group(2), match.group(4)))
+        branches.append(clauses)
     current = tuple(sys.version_info[:3])
-    wanted = wanted + (0,) * (3 - len(wanted))
-    return {'<': current < wanted, '>=': current >= wanted, '==': current == wanted,
-            '<=': current <= wanted, '>': current > wanted, '!=': current != wanted}[op]
+    for branch in branches:
+        branch_ok = True
+        for var, op, raw in branch:
+            if var in ("python_full_version", "python_version"):
+                size = 3 if var == "python_full_version" else 2
+                actual = current[:size]
+                wanted = tuple(int(v) for v in raw.split('.'))[:size]
+                wanted = wanted + (0,) * (size - len(wanted))
+                ok = {'<': actual < wanted, '>=': actual >= wanted, '==': actual == wanted,
+                      '<=': actual <= wanted, '>': actual > wanted, '!=': actual != wanted}[op]
+            else:
+                ok = (_ENV[var] == raw) if op == "==" else (_ENV[var] != raw)
+            if not ok:
+                branch_ok = False
+                break
+        if branch_ok:
+            return True
+    return False
 for name, version, marker in entries:
     if applies(marker):
         try:
@@ -334,10 +422,9 @@ def engineer_instructions() -> None:
         print(command("chmod", "600", str(project_env)))
     print("   Разрешённый адрес TestOps задаётся инженером в [testops].allowed_origins файла {}.".format(
         PROJECT_DIR / "alla-extensions" / "config.toml"))
-    print("   Сохрани личный API-токен TestOps в хранилище Qwen Code (из корня проекта):")
-    print(command("qwen", "extensions", "settings", "set", "alla",
-                  "ALLURE_TOKEN", "--scope", "workspace"))
-    print("   Введи токен в запросе Qwen; для общего токена используй --scope user, "
+    print("   Сохрани личный API-токен TestOps в системном хранилище ОС (из корня проекта):")
+    print(self_command("token", "set"))
+    print("   Введи токен в скрытом запросе; для общего токена во всех проектах используй --scope user, "
           "для CI передай ALLURE_TOKEN переменной окружения.")
     print("4. Повтори проверку окружения и проверь настройки и доступ к TestOps:")
     print(self_command("setup"))

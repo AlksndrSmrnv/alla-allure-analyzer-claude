@@ -132,7 +132,6 @@ def skill_files(root: Path) -> list[Path]:
         ("agents", "*.md"),
         ("commands", "*.md"),
         ("scripts", "*.py"),
-        ("scripts", "*.mjs"),
         ("extensions", "*.md"),
         ("extensions", "*.toml"),
         ("extensions", "*.py"),

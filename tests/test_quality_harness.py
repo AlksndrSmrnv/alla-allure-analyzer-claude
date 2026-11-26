@@ -128,7 +128,7 @@ def test_fingerprint_detects_uncommitted_bytes_and_file_names(quality, tmp_path:
     assert len({before, after, renamed}) == 3
 
 
-@pytest.mark.parametrize("relative", ["scripts/qwen_credentials.mjs", "qwen-extension.json"])
+@pytest.mark.parametrize("relative", ["scripts/alla_core/credentials.py", "qwen-extension.json"])
 def test_credential_runtime_changes_are_in_skill_fingerprint(quality, tmp_path: Path, relative: str) -> None:
     skill = tmp_path / "skills" / "launch" / "SKILL.md"
     skill.parent.mkdir(parents=True)

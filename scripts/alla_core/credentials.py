@@ -1,38 +1,47 @@
-"""Read Qwen's sensitive extension setting through a private subprocess pipe.
-
-Qwen owns encryption and keychain access. The adapter checks available reader
-capabilities, not the installed CLI version. The reader is an internal Qwen API.
-"""
+"""Read and manage ALLURE_TOKEN via OS keyring without plaintext files or Qwen internals."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import platform
 import re
-import shutil
-import subprocess
-import sys
+import shlex
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from alla_core.exceptions import ConfigurationError
 
-EXTENSION_NAME = "alla"
-SETTING_COMMAND = f"qwen extensions settings set {EXTENSION_NAME} ALLURE_TOKEN --scope workspace"
-BRIDGE = Path(__file__).resolve().parents[1] / "qwen_credentials.mjs"
+KEYRING_SERVICE = "alla-allure-testops"
+SCOPES = ("workspace", "user")
+_ENTRYPOINT = Path(__file__).resolve().parents[1] / "alla_skill.py"
+SETTING_COMMAND = (
+    f'python "{_ENTRYPOINT}" token set' if os.name == "nt" else shlex.join(["python3", str(_ENTRYPOINT), "token", "set"])
+)
 PROVENANCE_KEY = "QWEN_CODE_PRIVATE_RELAUNCH_ENV_PROVENANCE"
 PLAINTEXT_NOTE = (
-    "ALLURE_TOKEN в .env запрещён. Сохраните токен через "
-    "qwen extensions settings set alla ALLURE_TOKEN "
-    "--scope workspace и удалите его из .env; для CI используйте окружение"
+    "ALLURE_TOKEN в .env запрещён. Сохраните токен в системном хранилище ОС командой "
+    f"{SETTING_COMMAND} и удалите его из .env; для CI используйте окружение"
 )
-# No model credentials, Node injection flags or debug logging reach the bridge.
-BRIDGE_ENV_KEYS = frozenset({
-    "HOME", "PATH", "USER", "USERNAME", "SYSTEMROOT", "SystemRoot", "WINDIR",
-    "APPDATA", "LOCALAPPDATA", "QWEN_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR",
-    "DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "GNOME_KEYRING_CONTROL",
-    "QWEN_CODE_FORCE_FILE_STORAGE",
-})
+_NO_KEYRING_MESSAGE = (
+    "ALLURE_TOKEN: недоступно системное хранилище ключей ОС "
+    "(на macOS — Keychain, на Linux — GNOME Keyring/KWallet через Secret Service, "
+    "на Windows — Credential Manager; проверьте `keyring diagnose`). "
+    "Для CI передайте токен переменной окружения ALLURE_TOKEN"
+)
+
+
+@dataclass(frozen=True)
+class TokenStatus:
+    """Sanitized summary of token availability without holding any secret value."""
+
+    backend: str
+    backend_available: bool
+    has_env: bool
+    has_workspace: bool
+    has_user: bool
+    active_source: str
 
 
 def reject_plaintext_token(text: str) -> None:
@@ -63,97 +72,163 @@ def validate_environment_token(environ: Mapping[str, str]) -> None:
             if any(key.upper() == "ALLURE_TOKEN" for key in keys):
                 raise ConfigurationError(
                     "ALLURE_TOKEN получен Qwen из .env или settings.json.env. "
-                    "Перенесите токен в хранилище Qwen и удалите открытую копию; "
-                    "для CI экспортируйте переменную до запуска Qwen"
+                    f"Перенесите токен в системное хранилище ОС ({SETTING_COMMAND}) "
+                    "и удалите открытую копию; для CI экспортируйте переменную до запуска Qwen"
                 )
     except (ValueError, KeyError, TypeError):
         raise ConfigurationError("ALLURE_TOKEN: не удалось проверить источник окружения Qwen") from None
 
 
-def qwen_package(environ: Mapping[str, str]) -> Path:
-    entries = [Path(value) for key in ("QWEN_CODE_CLI", "QWEN_CLI_ENTRY")
-               if (value := environ.get(key)) and Path(value).is_absolute()]
-    executable = shutil.which("qwen", path=environ.get("PATH", ""))
-    if executable is not None:
-        entries.append(Path(executable))
-    for entry in entries:
-        try:
-            binary = entry.resolve()
-        except (OSError, ValueError):
-            continue
-        # Active CLI/IDE entries may be under dist/ or bin/. npm's Windows shim
-        # instead sits next to node_modules. Do not invoke or reinstall the CLI.
-        parents = list(binary.parents)[:4]
-        candidates = [binary.parent, binary.parent / "node_modules/@qwen-code/qwen-code",
-                      *parents[1:]]
-        for candidate in candidates:
-            try:
-                metadata = json.loads((candidate / "package.json").read_text(encoding="utf-8"))
-                if isinstance(metadata, dict) and metadata.get("name") == "@qwen-code/qwen-code":
-                    return candidate
-            except (OSError, ValueError):
-                continue
+def workspace_account(project_root: Path) -> str:
+    """Return a stable keyring account key scoped to a project directory."""
+    digest = hashlib.sha256(str(project_root.resolve()).encode("utf-8")).hexdigest()[:24]
+    return f"workspace:{digest}"
+
+
+def account_for(scope: str, project_root: Path | None) -> str:
+    """Resolve keyring account name for ``workspace`` or ``user`` scope."""
+    if scope == "user":
+        return "user"
+    if scope == "workspace":
+        return workspace_account(project_root or Path.cwd())
+    raise ValueError(f"Unsupported token scope: {scope}")
+
+
+def _unwrap_backends(backend: Any, fail_cls: type[Any], null_cls: type[Any], chainer_cls: type[Any]) -> list[Any]:
+    if isinstance(backend, chainer_cls):
+        return [item for item in backend.backends if not isinstance(item, (fail_cls, null_cls))]
+    if isinstance(backend, (fail_cls, null_cls)):
+        return []
+    return [backend]
+
+
+def describe_backend(backend: Any) -> str:
+    """Return a concise, human-readable backend class path without secrets."""
+    import keyring.backends.chainer as chainer_mod
+    import keyring.backends.fail as fail_mod
+    import keyring.backends.null as null_mod
+
+    inner = _unwrap_backends(backend, fail_mod.Keyring, null_mod.Keyring, chainer_mod.ChainerBackend)
+    target = inner[0] if inner else backend
+    return f"{type(target).__module__}.{type(target).__qualname__}"
+
+
+def _active_keyring() -> Any:
+    """Lazily import keyring and ensure a real OS credential backend is active."""
+    import keyring
+    import keyring.backends.chainer as chainer_mod
+    import keyring.backends.fail as fail_mod
+    import keyring.backends.null as null_mod
+    import keyring.errors as kr_errors
+
+    try:
+        backend = keyring.get_keyring()
+    except (kr_errors.KeyringError, OSError, RuntimeError):
+        raise ConfigurationError(_NO_KEYRING_MESSAGE) from None
+    inner = _unwrap_backends(backend, fail_mod.Keyring, null_mod.Keyring, chainer_mod.ChainerBackend)
+    if not inner:
+        raise ConfigurationError(_NO_KEYRING_MESSAGE)
+    return backend
+
+
+def _clean_token(token: str) -> str:
+    if "\r" in token or "\n" in token or "\x00" in token:
+        raise ConfigurationError("ALLURE_TOKEN: токен не должен содержать переводы строк или NUL")
+    cleaned = token.strip()
+    if not cleaned:
+        raise ConfigurationError("ALLURE_TOKEN: пустой токен не сохранён")
+    return cleaned
+
+
+def _get_password(backend: Any, account: str) -> str:
+    import keyring.errors as kr_errors
+
+    try:
+        raw = backend.get_password(KEYRING_SERVICE, account)
+    except (kr_errors.KeyringError, OSError, RuntimeError, ValueError):
+        raise ConfigurationError("ALLURE_TOKEN: не удалось прочитать системное хранилище ключей ОС") from None
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def load_token(project_root: Path | None) -> str:
+    """Load ALLURE_TOKEN from OS keyring (workspace scope takes precedence over user)."""
+    backend = _active_keyring()
+    accounts = [workspace_account(project_root), "user"] if project_root is not None else ["user"]
+    for account in accounts:
+        token = _get_password(backend, account)
+        if token:
+            return token
     raise ConfigurationError(
-        "ALLURE_TOKEN: не удалось найти модуль хранилища текущего Qwen Code. "
-        "Можно передать токен переменной окружения; переустановка Qwen не требуется"
+        "ALLURE_TOKEN: токен не найден в системном хранилище ОС. "
+        f"Сохраните его командой {SETTING_COMMAND} (или с --scope user); "
+        "для CI передайте переменную окружения ALLURE_TOKEN"
     )
 
 
-def credential_runtime(package: Path, node: str | None) -> str:
-    """Use Qwen's bundled Bun on macOS, whose native reader works in Seatbelt.
+def store_token(token: str, *, scope: str = "workspace", project_root: Path | None = None) -> str:
+    """Store ALLURE_TOKEN in OS keyring under the requested scope and return backend name."""
+    import keyring.errors as kr_errors
 
-    Node's os.userInfo() cannot query the account database inside Qwen's macOS
-    sandbox. Qwen's Bun branch resolves the same OS identity through /usr/bin/id.
-    No encryption or key derivation is implemented by this adapter.
-    """
-    if sys.platform == "darwin":
-        arch = {"arm64": "aarch64", "x86_64": "x64"}.get(platform.machine())
-        if arch:
-            bun = package / "node_modules" / "@oven" / f"bun-darwin-{arch}" / "bin" / "bun"
-            if bun.is_file() and os.access(bun, os.X_OK):
-                return str(bun)
-    if node is not None:
-        return node
-    raise ConfigurationError("ALLURE_TOKEN: не найден JS runtime текущего Qwen Code; "
-                             "можно передать токен переменной окружения")
-
-
-def load_qwen_token(project_root: Path | None, environ: Mapping[str, str]) -> str:
-    package = qwen_package(environ)
-    node = shutil.which("node", path=environ.get("PATH", ""))
-    root = (project_root or Path.cwd()).resolve()
-    env = {key: value for key, value in environ.items() if key in BRIDGE_ENV_KEYS}
-    runtime = credential_runtime(package, node)
-    flags = [f"--config={os.devnull}", "--no-env-file", "--no-install", "--no-macros"] if runtime != node else []
+    cleaned = _clean_token(token)
+    account = account_for(scope, project_root)
+    backend = _active_keyring()
     try:
-        result = subprocess.run(
-            [runtime, *flags, str(BRIDGE), str(package), str(root)],
-            # Never let a workspace configure the credential runtime at startup.
-            # The helper changes cwd to root before reading workspace secrets.
-            cwd=package, env=env, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, encoding="utf-8", timeout=30, check=False,
-        )
-    except (OSError, subprocess.SubprocessError, UnicodeError):
-        raise ConfigurationError("ALLURE_TOKEN: не удалось прочитать хранилище Qwen") from None
-    if result.returncode:
-        messages = {
-            "QWEN_UNSUPPORTED": "текущая сборка Qwen не предоставляет совместимый интерфейс "
-                "чтения хранилища; можно передать токен переменной окружения",
-            "QWEN_NOT_INSTALLED": f"установите расширение {EXTENSION_NAME} (qwen extensions install ...)",
-            "QWEN_PLAINTEXT": "удалите ALLURE_TOKEN из .env проекта и расширения Qwen после переноса в хранилище",
-            "QWEN_SECRET_MISSING": f"сохраните токен через {SETTING_COMMAND}",
-            "QWEN_IDENTITY_UNAVAILABLE": "sandbox не разрешает Node.js узнать имя пользователя; "
-                "для macOS нужен Bun из установки Qwen или токен окружения CI",
-        }
-        message = messages.get(result.stderr.strip(), "не удалось прочитать хранилище Qwen")
-        raise ConfigurationError(f"ALLURE_TOKEN: {message}")
+        backend.set_password(KEYRING_SERVICE, account, cleaned)
+    except (kr_errors.KeyringError, OSError, RuntimeError, NotImplementedError):
+        raise ConfigurationError("ALLURE_TOKEN: не удалось сохранить токен в системном хранилище ОС") from None
+    return describe_backend(backend)
+
+
+def delete_token(*, scope: str = "workspace", project_root: Path | None = None) -> bool:
+    """Delete ALLURE_TOKEN from OS keyring if present; return True when deleted."""
+    import keyring.errors as kr_errors
+
+    account = account_for(scope, project_root)
+    backend = _active_keyring()
     try:
-        payload = json.loads(result.stdout)
-        if (not isinstance(payload, dict)
-                or payload.get("source") not in {"qwen:user", "qwen:workspace"}
-                or not isinstance(payload.get("token"), str)
-                or not payload["token"].strip()):
-            raise ValueError
-        return str(payload["token"]).strip()
-    except (ValueError, TypeError):
-        raise ConfigurationError("ALLURE_TOKEN: некорректный ответ адаптера хранилища Qwen") from None
+        existing = backend.get_password(KEYRING_SERVICE, account)
+    except (kr_errors.KeyringError, OSError, RuntimeError, ValueError):
+        raise ConfigurationError("ALLURE_TOKEN: не удалось прочитать системное хранилище ключей ОС") from None
+    if existing is None:
+        return False
+    try:
+        backend.delete_password(KEYRING_SERVICE, account)
+    except (kr_errors.KeyringError, OSError, RuntimeError, NotImplementedError):
+        raise ConfigurationError("ALLURE_TOKEN: не удалось удалить токен из системного хранилища ОС") from None
+    return True
+
+
+def token_status(project_root: Path | None, environ: Mapping[str, str]) -> TokenStatus:
+    """Inspect where ALLURE_TOKEN is configured without returning its value."""
+    validate_environment_token(environ)
+    has_env = bool(environ.get("ALLURE_TOKEN", "").strip())
+    backend_available = False
+    backend_name = ""
+    has_workspace = False
+    has_user = False
+    try:
+        backend = _active_keyring()
+    except ConfigurationError:
+        backend = None
+    if backend is not None:
+        backend_available = True
+        backend_name = describe_backend(backend)
+        if project_root is not None:
+            has_workspace = bool(_get_password(backend, workspace_account(project_root)))
+        has_user = bool(_get_password(backend, "user"))
+    if has_env:
+        active_source = "env"
+    elif has_workspace:
+        active_source = "keyring:workspace"
+    elif has_user:
+        active_source = "keyring:user"
+    else:
+        active_source = ""
+    return TokenStatus(
+        backend=backend_name,
+        backend_available=backend_available,
+        has_env=has_env,
+        has_workspace=has_workspace,
+        has_user=has_user,
+        active_source=active_source,
+    )

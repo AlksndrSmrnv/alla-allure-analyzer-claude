@@ -37,10 +37,10 @@
    Папку расширения (`~/.qwen/extensions/alla/.env`) не используйте: ею управляет механизм
    настроек Qwen, и `qwen extensions update` перезаписывает этот файл.
    Заполните `ALLURE_ENDPOINT` и остальные несекретные настройки.
-   `ALLURE_TOKEN` в `.env` запрещён. Из корня проекта сохраните токен в скрытом приглашении Qwen;
-   ключ в чат не передавайте:
+   `ALLURE_TOKEN` в `.env` запрещён. Из корня проекта сохраните токен в системном хранилище ключей ОС
+   через скрытый запрос; ключ в чат не передавайте:
 
-       qwen extensions settings set alla ALLURE_TOKEN --scope workspace
+       python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token set
 4. В `alla-extensions/config.toml` явно разрешите точные origin TestOps:
 
        [testops]
@@ -73,8 +73,10 @@
 2. Перенесите несекретные настройки из `.qwen/skills/alla-launch/.env` (и, если ранее
    использовался общий файл в папке расширения, из `~/.qwen/extensions/alla/.env`) в
    `<project>/.qwen/alla.env` или в общий `~/.qwen/alla.env` (права `600`, без `ALLURE_TOKEN`).
-3. Перенесите токен: `qwen extensions settings set alla ALLURE_TOKEN --scope workspace`, затем
-   `qwen extensions uninstall alla-launch-credentials`.
+3. Перенесите токен в системное хранилище ключей ОС и при наличии удалите прежнее расширение секретов:
+
+       python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token set
+       qwen extensions uninstall alla-launch-credentials
 4. Удалите `.qwen/skills/alla-launch/`, встроенные команды в `.qwen/commands/alla/` (`run.md`,
    `continue.md`, `apply.md`, `revert.md`, `remember.md`, `reject.md`, `rerun.md`, `review.md`,
    `extensions.md`, `setup.md`, `update.md`, `code.md`, `ticket.md` — или всю папку, если нет
@@ -84,45 +86,36 @@
 
 ### Хранение токена
 
-Манифест `qwen-extension.json` расширения `alla` объявляет настройку `ALLURE_TOKEN` с `sensitive: true`;
-значение токена в манифесте не хранится. Ввод токена выполняет инженер (при установке расширения
-или командой `qwen extensions settings set alla ALLURE_TOKEN`); `setup` лишь печатает инструкцию.
+Личный `ALLURE_TOKEN` хранится напрямую в системном хранилище ключей ОС через Python-библиотеку
+`keyring`, без привязки к каталогу и упаковке Qwen Code CLI (`qwen`, `qwencode` и любые
+корпоративные сборки работают одинаково):
 
-`--scope workspace` сохраняет токен для текущего проекта. Для общего токена во всех
-проектах используйте `--scope user`; значение workspace важнее user. После изменения
-проверьте доступ командой `check`. В CI передайте `ALLURE_TOKEN` через окружение
-процесса средствами хранилища секретов CI; непустая переменная окружения важнее Qwen.
+- **macOS:** macOS Keychain;
+- **Linux (десктоп):** Secret Service API (GNOME Keyring / KWallet); на headless-машинах
+  проверьте доступный бэкенд через `.venv/bin/python -m keyring diagnose` (или настройте
+  `keyringrc.cfg`) либо передавайте токен в окружении CI;
+- **Windows:** Windows Credential Manager.
 
-Qwen предпочитает системное хранилище секретов. Если оно недоступно, Qwen автоматически
-использует файл `~/.qwen/extension-secrets-v1.json` с AES-256-GCM и правами `0600`.
-При заданном `QWEN_HOME` используется этот каталог вместо `~/.qwen`. Ключ файлового
-шифрования выводится из фиксированной строки, имени компьютера и пользователя, поэтому
-его можно восстановить при известности этих данных. Этот fallback слабее системного
-хранилища; `sensitive: true` не обеспечивает режим «только keychain». Источники:
-[настройки расширений Qwen](https://github.com/QwenLM/qwen-code/blob/main/docs/users/extension/introduction.md),
-[выбор хранилища](https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/mcp/token-storage/hybrid-token-storage.ts),
-[файловое шифрование](https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/mcp/token-storage/file-token-storage.ts).
+Управление токеном выполняет инженер вручную в терминале (значения в argv и чат не передаются):
 
-Python получает секрет через `scripts/qwen_credentials.mjs` по закрытому каналу дочернего
-процесса. Шифрование и доступ к системному хранилищу выполняет сам Qwen. Адаптер работает
-с интерфейсом хранилища установленного Qwen Code, не вызывает загрузку команд, хуков или
-миграции расширений. Точная версия не фиксируется. Пакет определяется по пути текущего
-Qwen (`QWEN_CODE_CLI` / `QWEN_CLI_ENTRY`), затем по `qwen` в PATH. Отсутствие нужного
-интерфейса, токена или ошибка хранилища останавливают обращение к TestOps.
-Если сборка не раскрывает интерфейс чтения хранилища, используйте переменную окружения
-`ALLURE_TOKEN`; переустанавливать Qwen ради Аллы не требуется. Новый MCP-сервер не нужен.
-На macOS адаптер использует Bun из установки Qwen, если он доступен: в sandbox
-Node.js не может получить системное имя пользователя для файлового хранилища.
-Для чтения хранилища внутри macOS sandbox требуется этот Bun; вне sandbox можно Node.js.
+- `python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token set` — интерактивный скрытый
+  ввод (`getpass`) для текущего проекта (`--scope workspace`, по умолчанию); для общего токена
+  во всех проектах добавьте `--scope user`, для передачи по конвейеру из менеджера секретов —
+  `--stdin`. Приоритет: переменная окружения `ALLURE_TOKEN` (CI) > `workspace` > `user`.
+- `python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token status` — проверка источника
+  токена и бэкенда `keyring` без вывода секрета.
+- `python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token delete [--scope workspace|user]` —
+  удаление сохранённого токена.
 
-Непустой `ALLURE_TOKEN` в `.qwen/alla.env` и `~/.qwen/alla.env` отклоняется даже при заданном токене окружения.
-Адаптер также отклоняет токен в `.env` проекта или расширения Qwen, чтобы Qwen не
-подхватил открытую копию при отсутствии секрета в хранилище.
-Qwen-метаданные происхождения окружения также проверяются: токен, загруженный Qwen
-из `.env` или `settings.json.env`, не принимается за экспорт CI. При переходе со старой версии
-сохраните токен через `qwen extensions settings set alla ALLURE_TOKEN --scope workspace`, удалите открытую
+После сохранения проверьте доступ командой `check`. В CI передайте `ALLURE_TOKEN` через
+окружение процесса средствами хранилища секретов CI; непустая переменная окружения важнее `keyring`.
+
+Непустой `ALLURE_TOKEN` в `.env`, `.qwen/.env`, `.qwen/alla.env` и `~/.qwen/alla.env` отклоняется
+даже при заданном токене окружения. Qwen-метаданные происхождения окружения также проверяются:
+токен, загруженный Qwen из `.env` или `settings.json.env`, не принимается за экспорт CI. При
+переходе со старой версии сохраните токен через `alla_skill.py token set`, удалите открытую
 копию из `.env` и проверьте `check`. Скрипт не переносит и не удаляет секрет автоматически.
-Агент не читает файлы секретов, не просит токен в чате и не запускает адаптер напрямую.
+Агент не читает хранилище ключей, не просит токен в чате и не запускает `token set` / `token delete`.
 
 **Слэш-команды `/alla:*`.** Кроме `/alla:launch` в расширение входят команды Qwen Code:
 `/alla:run <номер или ссылка>`, `/alla:continue`, `/alla:apply N`, `/alla:revert N`,
@@ -607,7 +600,7 @@ default_branch = ""   # основная ветка; пусто — ветка H
 Скилл читает TestOps через его встроенный MCP-сервер (`<ALLURE_ENDPOINT>/api/mcp`, свой адрес —
 `ALLURE_MCP_URL`); REST API TestOps не используется. Подключается сам скрипт (Streamable HTTP,
 заголовок `Authorization: api-token <ALLURE_TOKEN>`), поэтому настраивать MCP в Qwen Code
-или ставить `mcp-remote` не нужно. Node.js нужен только адаптеру хранилища токена.
+или ставить `mcp-remote` не нужно.
 Вызывается один инструмент — поиск результатов
 `testops_find_testresults`:
 
@@ -641,13 +634,13 @@ default_branch = ""   # основная ветка; пусто — ветка H
 Несекретные `ALLURE_*` берутся из проектного `.qwen/alla.env`, общего `~/.qwen/alla.env`
 (или `$QWEN_HOME/alla.env`) и окружения (окружение важнее проектного файла, проектный важнее
 общего пользовательского; `.env` внутри папки расширения не читается).
-Токен берётся из хранилища Qwen или переменной окружения `ALLURE_TOKEN` (она важнее);
+Токен берётся из системного хранилища ключей ОС (`keyring`) или переменной окружения `ALLURE_TOKEN` (она важнее);
 непустой токен в `.env`/`.qwen/alla.env` запрещён. См. «Хранение токена» выше.
 
 | Переменная | По умолчанию | Назначение |
 |---|---|---|
 | `ALLURE_ENDPOINT` | — | URL Allure TestOps (обязательно) |
-| `ALLURE_TOKEN` | хранилище Qwen | Личный API-токен; переменная окружения для CI, в `.env` запрещён |
+| `ALLURE_TOKEN` | системное хранилище ОС (`keyring`) | Личный API-токен; переменная окружения для CI, в `.env` запрещён |
 | `ALLURE_MCP_URL` | `<ALLURE_ENDPOINT>/api/mcp` | Адрес MCP-сервера TestOps, если он не встроенный по умолчанию |
 | `ALLURE_PROJECT_ID` | — | Проект TestOps: `5`, а в многомодульном проекте — по модулям, `orders=5,payments/api=7` (см. «Проект TestOps»). Нужен, если поиск результатов TestOps требует проект |
 | `ALLURE_REQUEST_TIMEOUT` | `30` | Таймаут HTTP-запроса, сек |

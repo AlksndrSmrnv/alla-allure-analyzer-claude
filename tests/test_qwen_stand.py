@@ -604,14 +604,18 @@ def test_run_case_selects_synthetic_secret_channel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case_id: str, environment_token: bool,
 ) -> None:
     received: list[dict[str, str]] = []
-    installed: list[tuple[Path, str]] = []
+    installed: list[Path] = []
+    stored: list[tuple[Path, str]] = []
 
-    def install(work: Path, token: str = "") -> Path:
-        installed.append((work, token))
+    def install(work: Path) -> Path:
+        installed.append(work)
         assert (work / "home/.qwen/settings.json").is_file()
         ext = work / "home/.qwen/extensions/alla"
         ext.mkdir(parents=True, exist_ok=True)
         return ext
+
+    def store(work: Path, project: Path, ext_dir: Path, venv: Path | None, token: str) -> None:
+        stored.append((work, token))
 
     def turn(project: Path, home: Path, secret_env: dict[str, str], prompt: str, *,
              trace: Path, **_: Any) -> int:
@@ -625,15 +629,19 @@ def test_run_case_selects_synthetic_secret_channel(
     monkeypatch.setattr(qwen_stand, "model_settings", lambda *args: ({}, {"MODEL_KEY": "model-key"}))
     monkeypatch.setattr(qwen_stand, "ensure_venv", lambda: None)
     monkeypatch.setattr(qwen_stand, "install_stand_extension", install)
+    monkeypatch.setattr(qwen_stand, "store_stand_token", store)
     monkeypatch.setattr(qwen_stand, "run_turn", turn)
     monkeypatch.setattr(qwen_stand, "evaluate", lambda case: case)
     qwen_stand.run_case(case_id, tmp_path / "out", model=None, max_wall="1m", sandbox=False,
                        attempt=1)
     assert received and all(env["MODEL_KEY"] == "model-key" for env in received)
     assert all((env.get("ALLURE_TOKEN") == TOKEN) == environment_token for env in received)
-    assert installed == [(installed[0][0], TOKEN if case_id == "S01" else "")]
+    assert len(installed) == 1
     if case_id == "S01":
-        assert all(env["QWEN_CODE_FORCE_FILE_STORAGE"] == "true" for env in received)
+        assert stored == [(installed[0], TOKEN)]
+        assert all(env["XDG_CONFIG_HOME"] == str(installed[0] / "home/.config") for env in received)
+    else:
+        assert stored == []
 
 
 @pytest.mark.parametrize("unavailable", [True, False])
@@ -643,7 +651,7 @@ def test_secure_case_distinguishes_missing_runtime_from_failed_install(
 ) -> None:
     def install(*args: Any) -> Path:
         if unavailable:
-            raise qwen_stand.QwenCredentialUnavailable("node unavailable")
+            raise qwen_stand.QwenCredentialUnavailable("qwen unavailable")
         raise RuntimeError("native install failed")
 
     monkeypatch.setattr(qwen_stand, "CACHE_DIR", tmp_path / "cache")
@@ -653,7 +661,7 @@ def test_secure_case_distinguishes_missing_runtime_from_failed_install(
     if unavailable:
         case = qwen_stand.run_case("S01", tmp_path / "out", model=None, max_wall="1m", sandbox=False,
                                   attempt=1)
-        assert case["status"] == "not_run" and "node unavailable" in case["reason"]
+        assert case["status"] == "not_run" and "qwen unavailable" in case["reason"]
     else:
         with pytest.raises(qwen_stand.StandError, match="native install failed"):
             qwen_stand.run_case("S01", tmp_path / "out", model=None, max_wall="1m", sandbox=False,
@@ -667,7 +675,7 @@ def test_secure_credential_check_rejects_plaintext_and_unprotected_store(tmp_pat
     ctx = Context(SCENARIOS["S01"], Trace(), project, [], home)
     check = CHECKS["secure_credentials"]
     assert check(ctx)["status"] == "fail"
-    store = home / ".qwen/extension-secrets-v1.json"
+    store = home / ".config" / "python_keyring" / "store.json"
     store.parent.mkdir(parents=True)
     store.write_text("synthetic-ciphertext")
     store.chmod(0o600)
@@ -686,7 +694,7 @@ def test_secure_credential_check_rejects_plaintext_and_unprotected_store(tmp_pat
 
 def test_setup_access_instruction_requires_secure_token_storage(tmp_path: Path) -> None:
     secure = context(tmp_path, events(final=("Адрес ALLURE_ENDPOINT заполните в .qwen/alla.env; "
-        "токен сохраните командой qwen extensions settings set alla ALLURE_TOKEN --scope workspace.")))
+        "токен сохраните командой python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token set.")))
     assert CHECKS["asks_for_env"](secure)["status"] == "pass"
     plain = context(tmp_path, events(final="Адрес и ALLURE_TOKEN впишите в .env."))
     assert CHECKS["asks_for_env"](plain)["status"] == "fail"

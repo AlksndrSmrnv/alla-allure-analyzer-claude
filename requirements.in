@@ -9,3 +9,4 @@ scipy>=1.10
 scikit-learn>=1.4,<2.0
 ijson>=3.2
 charset-normalizer>=3.0
+keyring>=25.0

@@ -22,14 +22,15 @@ paths:
 при неготовом окружении, `A04` — отрицательный запрос активации.
 
 Стенд не пишет `ALLURE_TOKEN` в `.qwen/alla.env`: обычные готовые сценарии получают синтетический
-токен через окружение процесса, `env_ready=False` — без токена. Каждый сценарий стенда ставит
-расширение `alla` в отдельный `HOME` (`stage_extension` + `qwen extensions install --consent`);
-в `S01` (зелёный прогон 778) через PTY вводится синтетический `ALLURE_TOKEN`, а агенту токен
-через окружение не передаётся. Общая utility — `tests/qwen_credentials_support.py`, без pytest;
-`QWEN_CODE_FORCE_FILE_STORAGE=true` исключает личный keychain. Проверяются завершение, SAFE,
-отсутствие утечек и plaintext токена в `.env` / `.qwen/alla.env`, права `0600` на encrypted file.
-Отсутствуют qwen/node — `not_run`; несовместимая версия или ошибка native установки — ошибка
-стенда, а не пропуск. `asks_for_env` требует адрес в `.env`, токен в хранилище Qwen.
+токен через окружение процесса, `env_ready=False` — без токена. Каждый сценарий стенда ставит расширение `alla` в отдельный `HOME` (`stage_extension` +
+`qwen extensions install --consent`); в `S01` (зелёный прогон 778) до старта агента
+подключается изолированный тестовый бэкенд `keyring` (файл с правами `0600` через `keyringrc.cfg`
+в отдельном `XDG_CONFIG_HOME`, личный keychain не используется) и токен записывается через
+`alla_skill.py token set --stdin`, а агенту `ALLURE_TOKEN` через окружение не передаётся.
+Общая utility — `tests/qwen_credentials_support.py`, без pytest. Проверяются завершение, SAFE,
+отсутствие утечек, права `0600` на изолированный файл и отсутствие токена в `.env` / `.qwen/alla.env`.
+Отсутствует `qwen` — `not_run`; ошибки установки останавливают стенд с ошибкой.
+`asks_for_env` требует адрес в `.env`/`.qwen/alla.env`, токен в системном хранилище или `token set`.
 
 ## Проверка разбора для пилота (`review`, `review.py`, `review_model.py`)
 

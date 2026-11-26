@@ -5,13 +5,5 @@
   "description": "Разбор упавших прогонов Allure TestOps: кластеризация падений, анализ причин, предложения правок автотестов, база знаний и перезапуск тестов.",
   "commands": "commands",
   "skills": "skills",
-  "agents": "agents",
-  "settings": [
-    {
-      "name": "TestOps API token",
-      "description": "Личный API-токен Allure TestOps для расширения alla",
-      "envVar": "ALLURE_TOKEN",
-      "sensitive": true
-    }
-  ]
+  "agents": "agents"
 }

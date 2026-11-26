@@ -176,6 +176,54 @@ def test_python_markers_use_target_environment(tmp_path: Path, monkeypatch: pyte
     assert not alla_skill.validate_dependencies(Path(sys.executable), entries)
 
 
+def test_universal_environment_markers_are_locked_and_validated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requirements = configure(tmp_path, monkeypatch)
+    h = "0" * 64
+    requirements.write_text(
+        f"missing-other-os==1.0 ; sys_platform == 'nonexistent-os' --hash=sha256:{h}\n"
+        f"missing-or-branch==1.0 ; sys_platform == 'nonexistent-os' or os_name == 'nonexistent' --hash=sha256:{h}\n"
+        f"missing-cffi-other==1.0 ; platform_python_implementation == 'PyPy' and sys_platform == 'linux' --hash=sha256:{h}\n"
+        f"missing-impl-other==1.0 ; implementation_name == 'nonexistent' and python_version >= '3.0' --hash=sha256:{h}\n",
+        encoding="utf-8",
+    )
+    entries = alla_skill.locked_requirements()
+    assert len(entries) == 4
+    assert alla_skill.validate_dependencies(Path(sys.executable), entries)
+    assert alla_skill._marker_applies(
+        "platform_python_implementation != 'PyPy' and sys_platform == 'linux'",
+        (3, 11, 9),
+        {"sys_platform": "linux", "os_name": "posix",
+         "platform_python_implementation": "CPython", "implementation_name": "cpython"},
+    )
+    assert not alla_skill._marker_applies(
+        "platform_python_implementation != 'PyPy' and sys_platform == 'linux'",
+        (3, 11, 9),
+        {"sys_platform": "darwin", "os_name": "posix",
+         "platform_python_implementation": "CPython", "implementation_name": "cpython"},
+    )
+    assert alla_skill.validate_dependencies(
+        Path(sys.executable),
+        [("missing-active-os", "1.0", f"sys_platform == {sys.platform!r}")],
+    ) is False
+
+
+@pytest.mark.parametrize("bad_line", [
+    "httpx==1.0 ; unknown_var == 'x' --hash=sha256:" + "0" * 64,
+    "httpx==1.0 ; sys_platform in 'linux' --hash=sha256:" + "0" * 64,
+    "httpx==1.0 ; os_name == 'posix' and __import__('os') --hash=sha256:" + "0" * 64,
+    "httpx==1.0 ; (sys_platform == 'linux') --hash=sha256:" + "0" * 64,
+])
+def test_lock_rejects_unsupported_or_unsafe_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_line: str,
+) -> None:
+    requirements = configure(tmp_path, monkeypatch)
+    requirements.write_text(bad_line + "\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        alla_skill.locked_requirements()
+
+
 def _snapshot(root: Path) -> dict[str, tuple[int, int, bytes | None]]:
     return {
         str(path.relative_to(root)): (path.lstat().st_mode, path.lstat().st_mtime_ns,
@@ -242,7 +290,7 @@ def test_setup_real_process_is_read_only(tmp_path: Path, state: str, old_marker:
             expected = "setup_required"
         assert result.stdout.startswith("STATUS: " + expected + "\n"), result
         assert result.returncode == (2 if expected == "error" else 0), result
-        assert "инженер" in result.stdout and "qwen extensions settings set alla" in result.stdout
+        assert "инженер" in result.stdout and "token set" in result.stdout
         assert _snapshot(tmp_path) == before
 
 

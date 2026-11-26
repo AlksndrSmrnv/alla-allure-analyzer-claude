@@ -2,6 +2,24 @@
 
 ## 26 ноября 2026
 
+### Хранение `ALLURE_TOKEN` в системном хранилище ОС (`keyring`)
+
+- Секрет `ALLURE_TOKEN` больше не зависит от каталога установки и раскладки Qwen Code CLI
+  (`qwen_credentials.mjs` и настройка `settings` в `qwen-extension.json` удалены): расширение
+  хранит и читает токен напрямую в системном хранилище ключей ОС через Python-пакет `keyring`
+  (macOS Keychain, Linux Secret Service / GNOME Keyring / KWallet, Windows Credential Manager).
+- Добавлена команда для инженера: `python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token
+  set|status|delete` (`--scope workspace` по умолчанию или `--scope user`, а также `--stdin`
+  для передачи из менеджера секретов по конвейеру). Хранение токена в `.env` / `.qwen/alla.env`
+  по-прежнему запрещено; для CI сохранена переменная окружения `ALLURE_TOKEN`.
+
+**После обновления:**
+1. Обновите зависимости в `.venv` проекта:
+   `.venv/bin/python -m pip install --require-hashes -r ~/.qwen/extensions/alla/requirements.txt`.
+2. Сохраните токен в системном хранилище командой
+   `python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token set` (или `--scope user`)
+   и проверьте доступ командой `check`.
+
 ### Перевод на нативное расширение Qwen Code CLI (`alla`)
 
 - Корень репозитория стал нативным расширением Qwen Code (`qwen-extension.json`,

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import hashlib
 import json
 import logging
@@ -48,6 +49,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from alla_core.config import Settings, read_env_file
+from alla_core.credentials import delete_token, reject_plaintext_token, store_token, token_status
 from alla_core.exceptions import AllaError, ConfigurationError
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
@@ -344,6 +346,8 @@ def _dispatch(argv: list[str] | None) -> int:
                           in_job=_JOB_DIR is not None)
     if args.command == "check":
         return cmd_check(project_root, reports_dir)
+    if args.command == "token":
+        return cmd_token(args, project_root)
     if args.command == "clean":
         return cmd_clean(reports_dir, args.older_than_days, dry_run=args.dry_run)
     if args.command == "remember":
@@ -590,6 +594,35 @@ def _build_parser() -> argparse.ArgumentParser:
     action.add_argument("action", help="имя действия")
     action.add_argument("--context", help="файл задания; без него — постоянный контекст")
     action.add_argument("--run", help="папка разбора: свежий контекст действия по ней")
+    token = commands.add_parser(
+        "token", parents=[common],
+        help="управление личным ALLURE_TOKEN в системном хранилище ключей ОС (запускает инженер)",
+    )
+    token_commands = token.add_subparsers(dest="token_command", required=True)
+    token_set = token_commands.add_parser(
+        "set", parents=[common],
+        help="сохранить ALLURE_TOKEN в системном хранилище ОС (скрытый ввод или --stdin)",
+    )
+    token_set.add_argument(
+        "--scope", choices=("workspace", "user"), default="workspace",
+        help="область хранения: текущий проект (workspace) или все проекты пользователя (user)",
+    )
+    token_set.add_argument(
+        "--stdin", action="store_true",
+        help="прочитать токен из стандартного ввода вместо интерактивного запроса",
+    )
+    token_commands.add_parser(
+        "status", parents=[common],
+        help="показать источник ALLURE_TOKEN без вывода значения",
+    )
+    token_delete = token_commands.add_parser(
+        "delete", parents=[common],
+        help="удалить ALLURE_TOKEN из системного хранилища ОС",
+    )
+    token_delete.add_argument(
+        "--scope", choices=("workspace", "user"), default="workspace",
+        help="область хранения: workspace или user",
+    )
     return parser
 
 
@@ -762,8 +795,10 @@ def _prepare_settings(project_root: Path) -> Settings | int:
         print("STATUS: error")
         print(f"Ошибка конфигурации: {exc}")
         print(
-            f"Пользователю нужно проверить несекретные настройки {shown} по образцу .env.example или задать "
-            "переменные окружения ALLURE_ENDPOINT и ALLURE_TOKEN. " + USER_ACTION_NOTE
+            f"Пользователю нужно проверить несекретные настройки {shown} по образцу .env.example, "
+            f"сохранить токен в системном хранилище ОС командой {ws.skill_command('token', 'set')} "
+            "или задать переменные окружения ALLURE_ENDPOINT и ALLURE_TOKEN (для CI). "
+            + USER_ACTION_NOTE
         )
         return 2
 
@@ -2942,7 +2977,7 @@ def _legacy_env_warnings(project_env: Path, user_env: Path) -> list[str]:
         return [
             f"Внимание: {legacy} больше не читается — его перезаписывает qwen extensions update, "
             f"а токен в .env запрещён. Перенесите несекретные настройки в {project_env} или "
-            f"{user_env}, токен — в настройки alla и удалите {legacy}."
+            f"{user_env}, токен сохраните командой {ws.skill_command('token', 'set')} и удалите {legacy}."
         ]
     except (OSError, ValueError):
         return []
@@ -2982,8 +3017,8 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
         print("STATUS: error")
         print(*lines, sep="\n")
         print(f"Ошибка конфигурации: {exc}")
-        print(f"Несекретные настройки — в {env_file}; токен сохраняется через "
-              "qwen extensions settings set alla ALLURE_TOKEN --scope workspace "
+        print(f"Несекретные настройки — в {env_file}; токен сохраняется командой "
+              f"{ws.skill_command('token', 'set')} (или --scope user) "
               "или передаётся окружением CI. " + USER_ACTION_NOTE)
         return 2
     lines += [
@@ -3020,6 +3055,97 @@ def cmd_check(project_root: Path, reports_dir: Path) -> int:
     print(*lines, sep="\n")
     print("Доступ к TestOps: MCP-сервер ответил, токен принят.")
     return 0
+
+
+def cmd_token(args: argparse.Namespace, project_root: Path) -> int:
+    """Управление личным ``ALLURE_TOKEN`` в системном хранилище ключей ОС."""
+    if args.token_command == "set":
+        if args.stdin:
+            raw = sys.stdin.read()
+            if raw.endswith("\n"):
+                raw = raw[:-1]
+            if raw.endswith("\r"):
+                raw = raw[:-1]
+        elif not sys.stdin.isatty():
+            print("STATUS: error")
+            print(
+                "Команду token set инженер запускает вручную в интерактивном терминале "
+                "(или передаёт токен через --stdin из менеджера секретов). "
+                "Агент не должен запускать её и не должен спрашивать токен в чате."
+            )
+            return 2
+        else:
+            try:
+                raw = getpass.getpass("Введите ALLURE_TOKEN (ввод скрыт): ")
+            except (EOFError, KeyboardInterrupt):
+                print("\nSTATUS: error")
+                print("Ввод ALLURE_TOKEN отменён.")
+                return 2
+        try:
+            backend = store_token(raw, scope=args.scope, project_root=project_root)
+        except ConfigurationError as exc:
+            print("STATUS: error")
+            print(exc)
+            return 2
+        scope_label = "текущий проект (workspace)" if args.scope == "workspace" else "пользователь (user)"
+        print("STATUS: saved")
+        print(f"ALLURE_TOKEN сохранён в системном хранилище ОС ({backend}); область: {scope_label}.")
+        print(f"Проверьте доступ к TestOps: {ws.skill_command('check')}")
+        return 0
+
+    if args.token_command == "status":
+        candidates: list[Path] = []
+        for path in (
+            project_root / ".env",
+            project_root / ".qwen" / ".env",
+            ws.project_env_file(project_root),
+            ws.user_env_file(),
+        ):
+            if path not in candidates:
+                candidates.append(path)
+        try:
+            for candidate in candidates:
+                if candidate.is_file():
+                    reject_plaintext_token(candidate.read_text(encoding="utf-8-sig"))
+            status = token_status(project_root, os.environ)
+        except ConfigurationError as exc:
+            print("STATUS: error")
+            print(exc)
+            return 2
+        source_labels = {
+            "env": "переменная окружения ALLURE_TOKEN (CI)",
+            "keyring:workspace": "системное хранилище ОС (workspace)",
+            "keyring:user": "системное хранилище ОС (user)",
+            "": "не задан",
+        }
+        print("STATUS: ok")
+        print(f"Активный источник ALLURE_TOKEN: {source_labels[status.active_source]}")
+        print(f"Проект: {project_root}")
+        if status.backend_available:
+            print(f"Хранилище ОС (keyring): {status.backend}")
+        else:
+            print("Хранилище ОС (keyring): недоступно (можно передать ALLURE_TOKEN через окружение CI)")
+        print(f"Запись workspace: {'есть' if status.has_workspace else 'нет'}")
+        print(f"Запись user: {'есть' if status.has_user else 'нет'}")
+        print(f"Переменная окружения ALLURE_TOKEN: {'задана' if status.has_env else 'нет'}")
+        return 0
+
+    if args.token_command == "delete":
+        try:
+            deleted = delete_token(scope=args.scope, project_root=project_root)
+        except ConfigurationError as exc:
+            print("STATUS: error")
+            print(exc)
+            return 2
+        if deleted:
+            print("STATUS: saved")
+            print(f"ALLURE_TOKEN удалён из системного хранилища ОС (область: {args.scope}).")
+        else:
+            print("STATUS: ok")
+            print(f"ALLURE_TOKEN в системном хранилище ОС не найден (область: {args.scope}) — удалять нечего.")
+        return 0
+
+    raise AssertionError(f"неизвестная подкоманда token {args.token_command}")
 
 
 def _projects_line(settings: Settings) -> str:
