@@ -945,6 +945,18 @@ def test_sandbox_check_stops_the_stand_when_reads_leak(tmp_path: Path) -> None:
         qwen_stand.check_sandbox(leaky, project, home, venv=None)
 
 
+@needs_seatbelt
+def test_stand_profile_allows_node_and_blocks_outside_reads(tmp_path: Path) -> None:
+    import qwen_stand
+
+    project, home = tmp_path / "project", tmp_path / "home"
+    (home / "tmp").mkdir(parents=True)
+    (project / ".gitignore").parent.mkdir(parents=True)
+    (project / ".gitignore").write_text("x")
+    profile = qwen_stand.write_stand_profile(project)
+    qwen_stand.check_sandbox(profile, project, home, venv=None)
+
+
 def _scant_run(tmp_path: Path, analysis: str | None, attempts: int = 0, *,
                skipped: bool = False, written_by_model: bool = True) -> Context:
     run_dir = tmp_path / "p" / "alla-reports" / "781-20261004-100000"
@@ -1426,6 +1438,25 @@ def test_model_configuration_uses_only_explicit_exported_credentials(
     assert entry == {"id": "explicit-model", "baseUrl": "https://models.example/v1", "envKey": "MY_MODEL_KEY"}
     home = qwen_stand.build_home(tmp_path, settings)
     assert (home / ".qwen/settings.json").is_file()
+
+
+def test_model_configuration_enables_opencode_go_session_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+    settings, _ = qwen_stand.model_settings("deepseek-v4.1-flash", "https://opencode.ai/zen/go/v1")
+    assert settings["outboundCorrelation"] == {"allowDynamicHeaderValues": True}
+    entry = settings["modelProviders"]["openai"][0]
+    assert entry["generationConfig"]["customHeaders"] == {"x-opencode-session": "${session_id}"}
+
+    windowed = qwen_stand.with_window(settings, 260_000, 0.7)
+    windowed_entry = windowed["modelProviders"]["openai"][0]
+    assert windowed_entry["generationConfig"]["customHeaders"] == {"x-opencode-session": "${session_id}"}
+    assert windowed_entry["generationConfig"]["contextWindowSize"] == 260_000
+
+    other, _ = qwen_stand.model_settings("qwen/qwen3.8-flash", "https://openrouter.ai/api/v1")
+    assert "outboundCorrelation" not in other
+    assert "generationConfig" not in other["modelProviders"]["openai"][0]
 
 
 @pytest.mark.parametrize("base_url", ["http://models.example/v1", "https://user:pw@models.example/v1",

@@ -868,14 +868,21 @@ def model_settings(model: str | None, base_url: str | None = None,
         valid = False
     if not valid:
         raise StandError("Адрес модели: HTTPS или HTTP loopback, без userinfo")
-    settings = {
-        "modelProviders": {"openai": [{"id": name, "baseUrl": endpoint, "envKey": api_key_env}]},
+    provider_entry: dict[str, Any] = {"id": name, "baseUrl": endpoint, "envKey": api_key_env}
+    settings: dict[str, Any] = {
+        "modelProviders": {"openai": [provider_entry]},
         "security": {"auth": {"selectedType": "openai"}}, "model": {"name": name},
         "telemetry": {"enabled": False}, "ui": {"autoModeAcknowledged": True},
         "general": {"enableAutoUpdate": False},
         "memory": {"enableManagedAutoMemory": False, "enableManagedAutoDream": False,
                    "enableAutoSkill": False, "enableTeamMemory": False, "enableTeamMemorySync": False},
     }
+    # OpenCode Go требует стабильный per-session заголовок маршрутизации (документация
+    # Qwen Code «Dynamic values in customHeaders»): включаем только для https://opencode.ai/zen/go*.
+    if (url.scheme == "https" and (url.hostname or "").lower() == "opencode.ai"
+            and (url.path == "/zen/go" or url.path.startswith("/zen/go/"))):
+        provider_entry["generationConfig"] = {"customHeaders": {"x-opencode-session": "${session_id}"}}
+        settings["outboundCorrelation"] = {"allowDynamicHeaderValues": True}
     return settings, {api_key_env: os.environ[api_key_env]}
 
 
@@ -931,6 +938,68 @@ def qwen_package_dir() -> Path:
     return Path(os.path.realpath(qwen)).parent
 
 
+def _linked_dylib_dirs(binary: Path) -> set[Path]:
+    """Каталоги несистемных dylib-зависимостей бинарника (например, Homebrew node на macOS)."""
+    otool = shutil.which("otool")
+    if otool is None:
+        return set()
+    root_lib = binary.parent.parent / "lib"
+    system_prefixes = tuple(d.rstrip("/") + "/" for d in SYSTEM_READ_DIRS)
+    dirs: set[Path] = set()
+    seen: set[Path] = set()
+    queue: list[Path] = [binary]
+    while queue:
+        current = queue.pop()
+        real_current = Path(os.path.realpath(current))
+        if real_current in seen or not real_current.is_file():
+            continue
+        seen.add(real_current)
+        done = subprocess.run([otool, "-L", str(real_current)], capture_output=True, text=True)
+        if done.returncode != 0:
+            continue
+        for raw_line in done.stdout.splitlines()[1:]:
+            dep = raw_line.strip().split(" (", 1)[0].strip()
+            if not dep:
+                continue
+            if dep.startswith("@rpath/"):
+                rel = dep.removeprefix("@rpath/")
+                candidate = real_current.parent.parent / "lib" / rel
+                if not candidate.exists():
+                    candidate = root_lib / rel
+            elif dep.startswith("@loader_path/"):
+                candidate = real_current.parent / dep.removeprefix("@loader_path/")
+            elif dep.startswith("/"):
+                if dep.startswith(system_prefixes):
+                    continue
+                candidate = Path(dep)
+            else:
+                continue
+            if not candidate.exists():
+                continue
+            resolved = Path(os.path.realpath(candidate))
+            if str(resolved).startswith(system_prefixes):
+                continue
+            pkg_root = resolved.parent.parent if resolved.parent.name == "lib" else resolved.parent
+            dirs.add(candidate.parent)
+            dirs.add(pkg_root)
+            openssl_bin = candidate.parent.parent / "bin" / "openssl"
+            if openssl_bin.is_file():
+                ssl_info = subprocess.run([str(openssl_bin), "version", "-d"],
+                                          capture_output=True, text=True)
+                match = re.search(r'OPENSSLDIR:\s*"([^"]+)"', ssl_info.stdout)
+                if match:
+                    ssl_dir = Path(match.group(1))
+                    if ssl_dir.is_dir():
+                        dirs.add(ssl_dir)
+                        dirs.add(Path(os.path.realpath(ssl_dir)))
+                        cert = ssl_dir / "cert.pem"
+                        if cert.exists():
+                            dirs.add(Path(os.path.realpath(cert)).parent)
+            if resolved not in seen:
+                queue.append(resolved)
+    return dirs
+
+
 def runtime_reads() -> tuple[list[Path], list[Path]]:
     """Каталоги и файлы вне проекта, без которых не запустятся node, qwen и Python скилла."""
     dirs: set[Path] = {Path(d) for d in SYSTEM_READ_DIRS}
@@ -938,14 +1007,18 @@ def runtime_reads() -> tuple[list[Path], list[Path]]:
     node = shutil.which("node")
     if node is None:
         raise StandError("node не найден в PATH")
-    dirs.add(Path(os.path.realpath(node)).parent.parent)
+    node_real = Path(os.path.realpath(node))
+    dirs.add(node_real.parent.parent)
+    dirs.update(_linked_dylib_dirs(node_real))
     dirs.add(qwen_package_dir())
     files.update(Path(p) for p in (node, shutil.which("qwen")) if p)
     for name in PYTHON_CANDIDATES:
         found = shutil.which(name)
         if found:
             files.add(Path(found))
-            dirs.add(Path(os.path.realpath(found)).parent.parent)
+            py_real = Path(os.path.realpath(found))
+            dirs.add(py_real.parent.parent)
+            dirs.update(_linked_dylib_dirs(py_real))
     dirs.update(Path(os.path.realpath(venv)) for venv in CACHE_DIR.glob("venv-*"))
     # /usr/bin/python3 и git — заглушки xcrun: они грузят libxcrun из активного каталога
     # разработчика (/Library/Developer/CommandLineTools или Xcode.app/Contents/Developer),
