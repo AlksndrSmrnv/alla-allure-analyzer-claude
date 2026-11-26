@@ -20,7 +20,10 @@ paths:
   `ready`. STATUS — первая строка. Параметров установки нет; прежние `--wheelhouse` и
   `--python` отклоняются. Pip/ensurepip, создание venv и `.env` удалены из реализации.
 - Перед запуском CLI готовность проверяется по установленным версиям через stdlib
-  `importlib.metadata`; маркер `.venv/.alla-setup-complete` игнорируется и не меняется.
+  `importlib.metadata`: вне `.venv` — одним изолированным подпроцессом `_probe_environment`
+  (версия Python и зависимости разом), внутри `.venv` (`running_in_venv()`) — в том же
+  процессе без подпроцессов строго по путям site-packages самого `.venv` (без `PYTHONPATH` и
+  `cwd`); маркер `.venv/.alla-setup-complete` игнорируется и не меняется.
   Lock допускает точные hashed deps и применимые Python-маркеры. Проверка не создаёт
   Python-кэши в `.qwen/`. Окружение, `.env` из образца и `.gitignore` готовит инженер.
 - `.env` содержит только несекретные настройки: непустой ALLURE_TOKEN запрещён.

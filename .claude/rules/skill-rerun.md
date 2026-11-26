@@ -11,7 +11,7 @@ paths:
 
 # Перезапуск тестов локально (`rerun`)
 
-Подробности — в файлах подобластей: `skill-rerun-candidates.md` (кандидаты, проверка правки, база знаний), `skill-rerun-worker.md` (план и фоновое задание), `skill-rerun-resolve.md` (статус в TestOps).
+Подробности — в файлах подобластей: `skill-rerun-candidates.md` (кандидаты, проверка правки, база знаний), `skill-rerun-worker.md` (план и фоновое задание), `skill-rerun-resolve.md` (статус в TestOps). Справочник для агента по статусам и ограничениям `rerun` — `qwen-skill/alla-launch/references/rerun.md` (вынесен из раздела 8 `SKILL.md`).
 
 Решения пользователя (2026-10-24, план `rosy-wishing-walrus`): кандидатов предлагает скилл,
 плюс `/alla:rerun N`; только Maven (JUnit/TestNG через surefire); до 3 запусков до первого

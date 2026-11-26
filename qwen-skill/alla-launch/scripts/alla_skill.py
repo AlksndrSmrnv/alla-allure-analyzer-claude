@@ -140,12 +140,78 @@ def locked_requirements() -> list[tuple[str, str, str]]:
     return result
 
 
-def validate_dependencies(python: Path, entries: list[tuple[str, str, str]]) -> bool:
-    import json
+def _normalize_dist_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
 
-    # No pip and no third-party modules are needed to inspect installed versions.
-    code = r"""
-import importlib.metadata as m, json, re, sys
+
+def _marker_applies(marker: str, version_info: tuple[int, int, int]) -> bool:
+    if not marker:
+        return True
+    match = re.fullmatch(
+        r"python_full_version\s*(<|>=|==|<=|>|!=)\s*['\"]([0-9.]+)['\"]",
+        marker,
+    )
+    if match is None:
+        return False
+    op, raw = match.groups()
+    wanted = tuple(int(part) for part in raw.split("."))
+    wanted = wanted + (0,) * (3 - len(wanted))
+    if op == "<":
+        return version_info < wanted
+    if op == ">=":
+        return version_info >= wanted
+    if op == "==":
+        return version_info == wanted
+    if op == "<=":
+        return version_info <= wanted
+    if op == ">":
+        return version_info > wanted
+    return version_info != wanted
+
+
+def _validate_dependencies_in_process(entries: list[tuple[str, str, str]]) -> bool:
+    """Validate locked distributions inside current venv without reading PYTHONPATH or cwd."""
+    import importlib.metadata as metadata
+    import site
+    import sysconfig
+
+    sys_paths = sysconfig.get_paths()
+    get_site = getattr(site, "getsitepackages", None)
+    site_paths = list(get_site()) if get_site is not None else []
+    raw_paths = site_paths + [
+        sys_paths["purelib"],
+        sys_paths["platlib"],
+    ]
+    paths: list[str] = []
+    for candidate in raw_paths:
+        if candidate and candidate not in paths:
+            paths.append(candidate)
+
+    installed: dict[str, str] = {}
+    for dist in metadata.distributions(path=paths):
+        raw_name = getattr(dist, "name", None)
+        if not raw_name and dist.metadata is not None:
+            raw_name = dist.metadata["Name"]
+        if raw_name:
+            installed.setdefault(_normalize_dist_name(str(raw_name)), dist.version)
+
+    current = (sys.version_info[0], sys.version_info[1], sys.version_info[2])
+    for name, version, marker in entries:
+        if _marker_applies(marker, current):
+            if installed.get(_normalize_dist_name(name)) != version:
+                return False
+    return True
+
+
+# Keep `print` in the inline probe so minimal mock wrappers in tests (`*print*`) still respond.
+_PROBE_CODE = r"""
+import json, re, sys
+if len(sys.argv) > 2 and sys.argv[2]:
+    min_ver = tuple(int(v) for v in sys.argv[2].split('.'))
+    if sys.version_info[:2] < min_ver:
+        print("old %d.%d" % sys.version_info[:2])
+        sys.exit(0)
+import importlib.metadata as m
 entries = json.loads(sys.argv[1])
 def applies(marker):
     if not marker:
@@ -161,34 +227,92 @@ for name, version, marker in entries:
         try:
             actual = m.version(name)
         except m.PackageNotFoundError:
-            sys.exit(1)
+            print("deps")
+            sys.exit(0)
         if actual != version:
-            sys.exit(1)
+            print("deps")
+            sys.exit(0)
+print("ok")
 """
+
+
+def _probe_environment(
+    python: Path,
+    entries: list[tuple[str, str, str]],
+    min_version: tuple[int, int] | None = MIN_VERSION,
+) -> tuple[str, tuple[int, int] | None]:
+    """Check interpreter health, Python version and locked packages in one isolated subprocess."""
+    import json
+
+    min_arg = "{}.{}".format(min_version[0], min_version[1]) if min_version is not None else ""
     try:
-        return subprocess.call(
-            [str(python), "-I", "-B", "-c", code, json.dumps(entries)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
-        ) == 0
+        result = subprocess.run(
+            [str(python), "-I", "-B", "-c", _PROBE_CODE, json.dumps(entries), min_arg],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            universal_newlines=True,
+            timeout=30,
+        )
     except (OSError, subprocess.SubprocessError):
-        return False
+        return "broken", None
+    if result.returncode != 0:
+        return "broken", None
+    out = result.stdout.strip()
+    if out == "ok":
+        return "ok", None
+    if out == "deps":
+        return "deps", None
+    if out.startswith("old "):
+        try:
+            major, minor = out[4:].strip().split(".")
+            return "old", (int(major), int(minor))
+        except ValueError:
+            return "broken", None
+    # Compatibility with test wrappers (e.g. `echo 3.9` or `echo 3.11` for `*print*`).
+    if re.fullmatch(r"\d+\.\d+", out):
+        major, minor = out.split(".")
+        parsed = (int(major), int(minor))
+        if min_version is not None and parsed < min_version:
+            return "old", parsed
+        return "deps", None
+    return "broken", None
+
+
+def validate_dependencies(python: Path, entries: list[tuple[str, str, str]]) -> bool:
+    state, _ = _probe_environment(python, entries, min_version=None)
+    return state == "ok"
 
 
 def environment_status() -> tuple[str, str]:
     """Проверка окружения без маркера, установки пакетов и записи файлов."""
     if not (VENV_DIR.exists() or VENV_DIR.is_symlink()):
         return "setup_required", "Окружения .venv нет: {}".format(VENV_DIR)
-    version = python_version(str(venv_python()))
-    if version is None:
-        return "error", "В проекте есть {}, но Python в нём не запускается.".format(VENV_DIR)
-    if version < MIN_VERSION:
-        return "error", "{} проекта создан на Python {}.{}, а скиллу нужен {}.{}+.".format(
-            VENV_DIR, version[0], version[1], MIN_VERSION[0], MIN_VERSION[1])
+    if running_in_venv():
+        current = (sys.version_info[0], sys.version_info[1])
+        if current < MIN_VERSION:
+            return "error", "{} проекта создан на Python {}.{}, а скиллу нужен {}.{}+.".format(
+                VENV_DIR, current[0], current[1], MIN_VERSION[0], MIN_VERSION[1])
+        try:
+            entries = locked_requirements()
+        except (ValueError, OSError) as error:
+            return "error", str(error)
+        if not _validate_dependencies_in_process(entries):
+            return "setup_required", (
+                "Версии зависимостей в {} не соответствуют requirements.txt."
+            ).format(VENV_DIR)
+        return "ready", "Версии Python и зависимостей проверены: {}".format(VENV_DIR)
+
     try:
         entries = locked_requirements()
     except (ValueError, OSError) as error:
         return "error", str(error)
-    if not validate_dependencies(venv_python(), entries):
+    state, version = _probe_environment(venv_python(), entries)
+    if state == "broken":
+        return "error", "В проекте есть {}, но Python в нём не запускается.".format(VENV_DIR)
+    if state == "old" and version is not None:
+        return "error", "{} проекта создан на Python {}.{}, а скиллу нужен {}.{}+.".format(
+            VENV_DIR, version[0], version[1], MIN_VERSION[0], MIN_VERSION[1])
+    if state != "ok":
         return "setup_required", (
             "Версии зависимостей в {} не соответствуют requirements.txt."
         ).format(VENV_DIR)

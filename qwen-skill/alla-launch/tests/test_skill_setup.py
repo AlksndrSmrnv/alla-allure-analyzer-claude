@@ -31,17 +31,120 @@ def configure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_existing_environment_validation_never_calls_pip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     configure(tmp_path, monkeypatch)
     calls = []
-    original = alla_skill.subprocess.call
+    original_call = alla_skill.subprocess.call
+    original_run = alla_skill.subprocess.run
 
     def call(command, **kwargs):
         calls.append(command)
         assert "pip" not in command and "ensurepip" not in command
-        return original(command, **kwargs)
+        return original_call(command, **kwargs)
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert "pip" not in command and "ensurepip" not in command
+        return original_run(command, **kwargs)
 
     monkeypatch.setattr(alla_skill.subprocess, "call", call)
+    monkeypatch.setattr(alla_skill.subprocess, "run", run)
     assert alla_skill.setup([]) == 0
     assert calls
     assert not (tmp_path / ".venv/.alla-setup-complete").exists()
+
+
+def test_probe_uses_single_subprocess_outside_venv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    configure(tmp_path, monkeypatch)
+    calls = []
+    original_run = alla_skill.subprocess.run
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return original_run(command, **kwargs)
+
+    def fail_call(*args, **kwargs):
+        raise AssertionError(f"unexpected subprocess.call: {args}")
+
+    monkeypatch.setattr(alla_skill.subprocess, "run", run)
+    monkeypatch.setattr(alla_skill.subprocess, "call", fail_call)
+    status, _ = alla_skill.environment_status()
+    assert status == "ready"
+    assert len(calls) == 1
+
+
+def test_in_venv_validation_uses_zero_subprocesses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    requirements = configure(tmp_path, monkeypatch)
+    monkeypatch.setattr(alla_skill, "running_in_venv", lambda: True)
+
+    def fail_subprocess(*args, **kwargs):
+        raise AssertionError(f"unexpected subprocess launch inside venv: {args}")
+
+    monkeypatch.setattr(alla_skill.subprocess, "run", fail_subprocess)
+    monkeypatch.setattr(alla_skill.subprocess, "call", fail_subprocess)
+
+    status, _ = alla_skill.environment_status()
+    assert status == "ready"
+
+    requirements.write_text("httpx==0.0.0 --hash=sha256:" + "0" * 64 + "\n")
+    status, _ = alla_skill.environment_status()
+    assert status == "setup_required"
+
+    requirements.write_text("missing-alla-distribution==1.0 --hash=sha256:" + "0" * 64 + "\n")
+    status, _ = alla_skill.environment_status()
+    assert status == "setup_required"
+
+
+def test_in_venv_validation_ignores_pythonpath(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    requirements = configure(tmp_path, monkeypatch)
+    extra_site = tmp_path / "extra_site"
+    dist_info = extra_site / "alla_spoofed_pkg-1.0.dist-info"
+    dist_info.mkdir(parents=True)
+    (dist_info / "METADATA").write_text("Metadata-Version: 2.1\nName: alla-spoofed-pkg\nVersion: 1.0\n")
+    monkeypatch.syspath_prepend(str(extra_site))
+    monkeypatch.setattr(alla_skill, "running_in_venv", lambda: True)
+    requirements.write_text("alla-spoofed-pkg==1.0 --hash=sha256:" + "0" * 64 + "\n")
+
+    status, _ = alla_skill.environment_status()
+    assert status == "setup_required"
+
+
+def test_reexec_inside_real_venv_runs_no_inner_subprocesses(tmp_path: Path) -> None:
+    """Inside a real .venv, bootstrap validates in-process without probing subprocesses."""
+    import json
+
+    project, entry = _project(tmp_path)
+    venv = project / ".venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+    python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    paths = json.loads(subprocess.check_output(
+        [str(python), "-I", "-B", "-c", "import json, sysconfig; print(json.dumps(sysconfig.get_paths()))"],
+        text=True,
+    ))
+    metadata = Path(paths["purelib"]) / "alla_synthetic_probe-1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text("Metadata-Version: 2.1\nName: alla-synthetic-probe\nVersion: 1.0\n")
+    requirements = entry.parent.parent / "requirements.txt"
+    requirements.write_text("alla-synthetic-probe==1.0 --hash=sha256:" + "0" * 64 + "\n")
+
+    probe_count = subprocess.check_output(
+        [
+            str(python),
+            "-B",
+            "-c",
+            (
+                "import importlib.util, subprocess, sys; "
+                "spec = importlib.util.spec_from_file_location('alla_skill', sys.argv[1]); "
+                "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); "
+                "calls = []; orig_run = subprocess.run; orig_call = subprocess.call; "
+                "subprocess.run = lambda *a, **kw: (calls.append(a), orig_run(*a, **kw))[1]; "
+                "subprocess.call = lambda *a, **kw: (calls.append(a), orig_call(*a, **kw))[1]; "
+                "status, _ = mod.environment_status(); "
+                "assert status == 'ready', status; "
+                "print(len(calls))"
+            ),
+            str(entry),
+        ],
+        text=True,
+    )
+    assert probe_count.strip() == "0"
 
 
 def test_validation_requires_every_applicable_locked_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

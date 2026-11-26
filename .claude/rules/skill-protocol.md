@@ -68,8 +68,9 @@ paths:
   повторён в `SKILL.md`.
 - Форматы файлов, которые пишет агент, — в `references/`: `analysis-format.md`
   (`analyses/NN.md`), `proposal-format.md` (`proposals/NN.md`), `related-format.md`
-  (`related.md`), `summary-format.md` (`summary.md`), `feedback.md` (`feedback/NN.md`); `protocol.md` — статусы, лимиты попыток и
-  разграничение файлов.
+  (`related.md`), `summary-format.md` (`summary.md`), `feedback.md` (`feedback/NN.md`);
+  `protocol.md` — статусы, лимиты попыток и разграничение файлов; `rerun.md` — статусы и
+  ограничения перезапуска тестов.
 - Шаблоны из констант кода (`EXPECTED_FORMAT`, `PROPOSAL_FORMAT`, `FEEDBACK_FORMAT`,
   `RELATED_FORMAT`) вставлены в
   справочники дословно; примеры с пометкой `<!-- example: … -->` прогоняет через настоящие
