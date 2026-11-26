@@ -318,7 +318,12 @@ def skill_fingerprint() -> str:
     """Отпечаток версии скилла (манифест, инструкции, справочники, код, зависимости): по нему
     разработчик узнаёт, на какой версии шёл пилот, — в копии расширения git нет."""
     root = Path(__file__).resolve().parents[2]
-    files = [root / "qwen-extension.json", root / "skills" / "launch" / "SKILL.md", root / "requirements.txt"]
+    files = [
+        root / "qwen-extension.json",
+        root / "QWENCODE.md",
+        root / "skills" / "launch" / "SKILL.md",
+        root / "requirements.txt",
+    ]
     for pattern in (
         "skills/launch/references/*.md",
         "commands/alla/*.md",

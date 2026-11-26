@@ -4,17 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
 import skill_fixtures
-from alla_core.clients.auth import AllureAuthManager
 from alla_core.clients.mcp_client import TestOpsMcpClient
-from alla_core.clients.testops_client import AllureTestOpsClient
 from alla_core.config import Settings
-from alla_core.exceptions import AllureApiError, AuthenticationError, ConfigurationError
+from alla_core.exceptions import AllureApiError, ConfigurationError
 from alla_core.origins import load_allowed_origins, origin, require_allowed_origin
 
 
@@ -94,8 +91,6 @@ def test_local_settings_do_not_require_or_read_testops_policy(tmp_path: Path) ->
 
 @pytest.mark.parametrize("factory", [
     lambda: TestOpsMcpClient(Settings(endpoint="https://evil.example", token="secret")),
-    lambda: AllureTestOpsClient(Settings(endpoint="https://evil.example", token="secret"), AsyncMock()),
-    lambda: AllureAuthManager("https://evil.example", "secret"),
     lambda: TestOpsMcpClient(Settings(endpoint="https://allowed.example", token="secret",
                                     mcp_url="https://evil.example/mcp",
                                     allowed_origins=("https://allowed.example",))),
@@ -109,8 +104,7 @@ def test_direct_construction_fails_before_http_client(monkeypatch: pytest.Monkey
         factory()
 
 
-@pytest.mark.parametrize("kind", ["mcp", "auth", "resolve"])
-def test_redirect_is_an_error_and_never_forwards_credentials(kind: str) -> None:
+def test_redirect_is_an_error_and_never_forwards_credentials() -> None:
     calls: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -121,36 +115,14 @@ def test_redirect_is_an_error_and_never_forwards_credentials(kind: str) -> None:
         settings = Settings(endpoint="https://allowed.example", token="canary-secret",
                             allowed_origins=("https://allowed.example",))
         transport = httpx.MockTransport(handler)
-        if kind == "auth":
-            auth = AllureAuthManager(settings.endpoint, settings.token,
-                                    allowed_origins=settings.allowed_origins)
-            await auth._http.aclose()
-            auth._http = httpx.AsyncClient(transport=transport, follow_redirects=False)
-            try:
-                with pytest.raises(AuthenticationError, match="перенаправление"):
-                    await auth.get_auth_header()
-            finally:
-                await auth.close()
-        elif kind == "mcp":
-            client = TestOpsMcpClient(settings)
-            await client._http.aclose()
-            client._http = httpx.AsyncClient(transport=transport, follow_redirects=False)
-            try:
-                with pytest.raises(AllureApiError, match="перенаправление"):
-                    await client.connect()
-            finally:
-                await client.close()
-        else:
-            auth = AsyncMock()
-            auth.get_auth_header.return_value = {"Authorization": "Bearer canary-secret"}
-            rest = AllureTestOpsClient(settings, auth)
-            await rest._http.aclose()
-            rest._http = httpx.AsyncClient(transport=transport, follow_redirects=False)
-            try:
-                with pytest.raises(AllureApiError, match="перенаправление"):
-                    await rest.resolve_test_result(1, "passed", "checked")
-            finally:
-                await rest.close()
+        client = TestOpsMcpClient(settings)
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(transport=transport, follow_redirects=False)
+        try:
+            with pytest.raises(AllureApiError, match="перенаправление"):
+                await client.connect()
+        finally:
+            await client.close()
 
     asyncio.run(run())
     assert len(calls) == 1

@@ -5,8 +5,8 @@ GitLab / YouTrack к Алле». Что делает `tickets` и как уст�
 рядом; общая инструкция по расширениям — [../AUTHORING.md](../AUTHORING.md). Здесь — порядок
 работы, вопросы инженеру, проверка и разбор ошибок.
 
-Пути в командах даны для Qwen Code: расширение `alla` установлено в `<extension>`
-(обычно `~/.qwen/extensions/alla/`), Python — в `.venv/bin/python` корня проекта. Подставь
+Пути в командах даны для Qwen Code: расширение `allure-alla-extension` установлено в `<extension>`
+(обычно `~/.qwen/extensions/allure-alla-extension/`), Python — в `.venv/bin/python` корня проекта. Подставь
 фактический путь к `<extension>` (`python3 <extension>/scripts/alla_skill.py …`). Все команды
 запускай из корня проекта автотестов. Расширение tickets работает только на macOS и Linux.
 

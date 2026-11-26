@@ -54,7 +54,7 @@ from alla_core.exceptions import AllaError, ConfigurationError
 from alla_core.models.clustering import FailureCluster
 from alla_core.models.testops import FailedTestSummary
 from alla_skill_lib import extensions as ext
-from alla_skill_lib import fix_facts, flaky, jobs, rerun, resolve
+from alla_skill_lib import fix_facts, flaky, jobs, rerun
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.agent_rules import (
     ANALYSIS_FORMAT_REF,
@@ -555,17 +555,9 @@ def _build_parser() -> argparse.ArgumentParser:
     mode_rerun.add_argument(
         "--wait", action="store_true", help="показать ход или итог идущего перезапуска",
     )
-    mode_rerun.add_argument(
-        "--testops", action="store_true",
-        help="отметить прошедшие тесты успешными (статус passed) в TestOps (только после "
-             "согласия пользователя); нужен --result",
-    )
     again_tests.add_argument(
         "--plan", dest="plan_hash",
         help="хэш плана, который только что показала команда без --yes (запускается ровно он)",
-    )
-    again_tests.add_argument(
-        "--result", dest="result_id", help="id итога перезапуска из ответа rerun_done",
     )
     extensions = commands.add_parser(
         "extensions", parents=[common], help="расширения скилла: список, включение, повтор, действия",
@@ -2073,8 +2065,6 @@ def _rerun(
 ) -> tuple[str, str]:
     files = rerun.job_files(paths)
     state = rerun.job_state(files)
-    if args.testops:
-        return _rerun_testops(paths, run, state, args.result_id, started)
     if args.wait or (not args.clusters and not args.yes and state.state != "none"):
         # Без номеров после перезапуска — его ход или итог: «итог покажет /alla:rerun».
         if state.state == "none":
@@ -2261,147 +2251,7 @@ def _rerun_state(
     told = render_learned(learned)
     if told:
         lines.append(told)
-    question = _testops_question(paths, run, state, _testops_items(run, state))
-    if question:
-        lines.append(question)
     return "rerun_done", "\n".join(lines)
-
-
-def _testops_question(
-    paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, marks: list[resolve.Mark],
-) -> str:
-    """Вопрос об отметке passed в TestOps с командой; показанный состав — в ``save-offer.json``."""
-    assert state.result is not None
-    files = rerun.job_files(paths)
-    job = str(state.result["job"])
-    rerun.write_save_offer(files, job, {"testops": {value for mark in marks for value in mark.ids}})
-    if not marks:
-        return ""
-    text = (f"отметить успешными в TestOps (статус passed в прогоне {run['launch_id']}) "
-            f"{rerun.tests_phrase(len(marks))} ({resolve.names(marks)})")
-    changed = [mark for mark in marks if mark.changed]
-    if changed and len(changed) == len(marks):
-        text += (" — " + ("прошёл" if len(marks) == 1 else "прошли")
-                 + " на изменённом коде теста, в CI этого изменения ещё нет")
-    elif changed:
-        text += (f", из них на изменённом коде теста — {resolve.names(changed)}: в CI "
-                 "этого изменения ещё нет")
-    command = ws.skill_command("rerun", "--run", str(paths.root), "--testops", "--result", job)
-    return (
-        "После итога задай пользователю один вопрос — " + text + "?"
-        + " На «нет» ничего не выполняй."
-        + (" Согласие только с частью («только первый тест») — не «да»: ничего не выполняй и "
-           "скажи, что команда отмечает все эти тесты сразу." if len(marks) > 1 else "")
-        + " Прежние «да» (на перезапуск, на правку) сюда не относятся. Только после явного "
-        f"«да» на этот вопрос выполни: {command}"
-    )
-
-
-def _testops_items(run: dict[str, Any], state: rerun.JobState) -> list[resolve.Mark]:
-    """Результаты для статуса passed в TestOps по итогу; отметка выключена — пусто."""
-    assert state.result is not None and state.plan is not None
-    settings = _rerun_settings(Path(run["project_root"]))
-    if isinstance(settings, str) or not settings.rerun_resolve:
-        return []
-    messages = {int(test["test_result_id"]): str(test.get("status_message") or "")
-                for test in (run.get("triage") or {}).get("failed_tests", [])}
-    return resolve.plan_marks(state.result, state.plan, state.resolved, messages)
-
-
-def _rerun_testops(
-    paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, job_id: str | None,
-    started: float,
-) -> tuple[str, str]:
-    """Статус passed прошедшим тестам в TestOps (``resolve.py``) — после «да» на вопрос."""
-    if state.state != "done" or state.result is None or state.plan is None \
-            or state.result.get("job") != job_id:
-        return "error", (f"Итога перезапуска «{job_id}» в разборе {paths.root} нет — отмечать "
-                         "нечего. Команду не повторяй; id итога — из ответа rerun_done.")
-    marks = _testops_items(run, state)
-    if not marks:
-        return "ok", "Отмечать в TestOps нечего. Покажи это пользователю."
-    # Согласие — на показанный вопрос: больше него (настройки изменились после вопроса) команда
-    # не делает; меньше — можно (повтор для оставшегося).
-    offered = rerun.read_save_offer(rerun.job_files(paths), str(job_id))
-    if not {value for mark in marks for value in mark.ids} <= offered["testops"]:
-        return "ok", ("После вопроса изменилось, что отметится в TestOps (настройки скилла) — "
-                      "ничего не отмечено. Задай пользователю вопрос заново. "
-                      + _testops_question(paths, run, state, marks))
-    lines, resolved, repeat = _resolve_in_testops(paths, run, state, marks, started)
-    # Отметки показывает отчёт: после записи он пересобирается (хуки не повторяются).
-    if resolved and _refresh_report(paths):
-        lines.append(f"Полный разбор обновлён: {paths.report}")
-    lines.append("Скажи это пользователю. `next` не выполняй.")
-    if repeat:
-        lines.append(repeat)
-    return ("saved" if resolved else "ok"), "\n".join(lines)
-
-
-def _resolve_in_testops(
-    paths: ws.RunPaths, run: dict[str, Any], state: rerun.JobState, marks: list[resolve.Mark],
-    started: float,
-) -> tuple[list[str], bool, str]:
-    """Статус passed прошедшим тестам в TestOps.
-
-    Возвращает строки ответа, отмечен ли хоть один результат, и строку повтора — если не всё
-    успело уйти за один ответ (Qwen обрывает команду через 120 с): повтор той же команды
-    отправит только остальное.
-    """
-    assert state.result is not None
-    project_root = Path(run["project_root"])
-    env_file = ws.project_env_file(project_root)
-    fallback = ws.user_env_file()
-    shown = ws.active_env_file(project_root)
-    try:
-        settings = Settings.load(
-            env_file=env_file, fallback_env_file=fallback, project_root=project_root,
-        )
-    except ConfigurationError as exc:
-        return [f"В TestOps не отмечены ({resolve.names(marks)}): настройки TestOps в {shown} "
-                f"неверны: {exc}. {USER_ACTION_NOTE}"], False, ""
-    # id результатов — этого TestOps: адрес в .env сменился — запрос задел бы чужие результаты.
-    if not str(run.get("launch_url") or "").startswith(settings.endpoint.rstrip("/") + "/launch/"):
-        return [f"В TestOps не отмечены ({resolve.names(marks)}): прогон разбирался на другом "
-                f"TestOps, чем ALLURE_ENDPOINT сейчас ({settings.endpoint}). Отметить можно, "
-                "вернув прежний адрес."], False, ""
-    files = rerun.job_files(paths)
-    job = str(state.result["job"])
-    today = date.today().isoformat()
-
-    def keep(test_id: int) -> None:  # сразу: оборванная команда не теряет отмеченное
-        rerun.add_resolved(files, job, {test_id: today})
-
-    outcome = asyncio.run(resolve.send(
-        settings, marks, shown, today,
-        deadline=started + rerun.WAIT_BUDGET, on_done=keep))
-    command = ws.skill_command("rerun", "--run", str(paths.root), "--testops", "--result", job)
-    lines = []
-    done = outcome.done_marks(marks)
-    if done:
-        lines.append(f"Отмечены успешными в TestOps (статус passed в прогоне {run['launch_id']}): "
-                     f"{resolve.names(done)}.")
-    partly = outcome.partly(marks)
-    if partly:
-        lines.append("Отмечены в TestOps частично (у метода с параметрами — не все варианты): "
-                     + "; ".join(f"{mark.full_name} — passed у {count} из {len(mark.variants)}"
-                                 for mark, count in partly) + ".")
-    # Автоматический повтор — только без отказов: тогда каждый круг отмечает хоть один
-    # результат и повторы конечны; отказы съели бы срок каждого круга заново (ревью Codex).
-    if outcome.left and outcome.failed:
-        lines.append(f"Не успели уйти в TestOps за один ответ: {resolve.names(outcome.left)}.")
-    if outcome.failed:
-        lines.append("Не отмечены в TestOps: "
-                     + "; ".join(f"{mark.full_name} — {reason}" for mark, reason in outcome.failed)
-                     + ". Сам команду не повторяй: когда пользователь устранит причину, повторить "
-                     f"можно той же командой ({command}) — она отправит неотмеченное, уже "
-                     f"отмеченные не тронет. {USER_ACTION_NOTE}")
-    repeat = ""
-    if outcome.left and not outcome.failed:
-        repeat = (f"Не успели уйти в TestOps за один ответ: {resolve.names(outcome.left)}. "
-                  "Согласие пользователя на них уже есть: скажи ему, что отправка продолжается, и "
-                  "сразу, в том же ходе, выполни ту же команду ещё раз — она отправит только "
-                  f"остальное: {command}")
-    return lines, bool(outcome.done), repeat
 
 
 def _refresh_report(paths: ws.RunPaths) -> bool:

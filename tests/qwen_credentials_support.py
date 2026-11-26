@@ -9,6 +9,7 @@ SYNTHETIC_TOKEN = "alla-synthetic-credential-not-a-real-token"
 SKILL = Path(__file__).resolve().parents[1]
 EXTENSION_RUNTIME_ITEMS = (
     "qwen-extension.json",
+    "QWENCODE.md",
     "skills",
     "commands",
     "agents",

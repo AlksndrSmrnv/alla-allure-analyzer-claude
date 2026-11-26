@@ -57,7 +57,7 @@ def fetch_error_hint(exc: BaseException, settings: Settings, env_file: Path) -> 
             f"(сейчас {settings.request_timeout} с) в {env_file}."
         )
     if any(isinstance(item, httpx.ConnectError) for item in causes):
-        # Чтение идёт через MCP (ошибки клиента — с endpoint «mcp…»), запись статуса — REST.
+        # Взаимодействие с TestOps идёт только через MCP (ошибки клиента — с endpoint «mcp…»).
         via_mcp = any(
             isinstance(item, McpError)
             or (isinstance(item, AllureApiError) and item.endpoint.startswith("mcp"))

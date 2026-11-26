@@ -779,7 +779,7 @@ def test_params_need_on_request_hook(project: Path, testops: FakeTestOps, capsys
 
 COMMAND = (
     "---\ndescription: Демо-команда расширения\nargument-hint: <номер проблемы>\n"
-    "disable-model-invocation: true\n---\nВызови скилл alla:launch и запусти demo для {{args}}.\n"
+    "disable-model-invocation: true\n---\nВызови скилл allure-alla-extension:launch и запусти demo для {{args}}.\n"
 )
 
 

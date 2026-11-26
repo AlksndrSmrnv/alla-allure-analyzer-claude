@@ -33,15 +33,45 @@ def test_extension_manifest_schema_and_safety() -> None:
     assert manifest_path.is_file()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    assert manifest["name"] == "alla"
+    assert manifest["name"] == "allure-alla-extension"
     assert SEMVER_RE.fullmatch(str(manifest.get("version", "")))
     assert manifest["commands"] == "commands"
     assert manifest["skills"] == "skills"
     assert manifest["agents"] == "agents"
+    assert manifest["contextFileName"] == "QWENCODE.md"
     assert "settings" not in manifest
     assert not (ROOT / "scripts" / "qwen_credentials.mjs").exists()
 
-    # Context file at repo root is intentionally absent so instructions load lazily via /alla:launch.
+    qwencode_md = ROOT / "QWENCODE.md"
+    assert qwencode_md.is_file()
+    rules_text = qwencode_md.read_text(encoding="utf-8")
+    assert "обязательны к выполнению" in rules_text
+    assert "на русском языке" in rules_text
+    assert "allure-alla-extension:launch" in rules_text
+    assert "Правильный вызов скилла" in rules_text
+    assert "Неправильный вызов скилла" in rules_text
+    assert "Только чтение TestOps" in rules_text
+
+    mcp_servers = manifest.get("mcpServers")
+    assert isinstance(mcp_servers, dict)
+    allure_mcp = mcp_servers.get("allure-testops")
+    assert isinstance(allure_mcp, dict)
+    assert allure_mcp.get("httpUrl") == "undefined"
+    assert allure_mcp.get("includeTools") == ["testops_find_testresults"]
+    exclude_tools = allure_mcp.get("excludeTools")
+    assert isinstance(exclude_tools, list) and len(exclude_tools) > 0
+    for write_tool in (
+        "testops_create_testcase",
+        "testops_update_testcase",
+        "testops_delete_testcase",
+        "testops_create_mute",
+        "testops_delete_mute",
+    ):
+        assert write_tool in exclude_tools
+    assert set(allure_mcp["includeTools"]).isdisjoint(exclude_tools)
+    assert "trust" not in allure_mcp
+
+    # QWEN.md is not used; global rules live in QWENCODE.md referenced via contextFileName.
     assert not (ROOT / "QWEN.md").exists()
 
     for directory_key in ("commands", "skills", "agents"):
@@ -101,4 +131,4 @@ def test_native_qwen_cli_install(tmp_path: Path) -> None:
         timeout=30,
     )
     assert ext_list.returncode == 0, ext_list.stderr
-    assert "alla" in ext_list.stdout
+    assert "allure-alla-extension" in ext_list.stdout

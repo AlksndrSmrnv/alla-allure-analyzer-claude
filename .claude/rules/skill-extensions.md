@@ -91,7 +91,7 @@ paths:
   манифесте используется тот же `_bundled_agent(name)`, а для своих расширений проекта
   `agent = "agent.md"` при хуке с `task` обязателен.
 - Слэш-команды `/alla:code` и `/alla:ticket` лежат в корневом `commands/alla/` и поставляются
-  расширением `alla`. Свои расширения проекта не могут занимать команды скилла и чужих
+  расширением `allure-alla-extension`. Свои расширения проекта не могут занимать команды скилла и чужих
   плагинов, но своя замена `sut-code`/`tickets` (`api = 1`) по `BUNDLED_PLUGIN_COMMANDS`
   по-прежнему может объявлять `commands/code.md` или `commands/ticket.md`. Поле
   `commands = ["commands/<имя>.md"]` в манифесте проверяется `_commands`/`_check_command`.

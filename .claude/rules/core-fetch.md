@@ -8,7 +8,6 @@ paths:
   - "tests/test_core_triage.py"
   - "tests/test_core_fetch.py"
   - "tests/test_core_retries.py"
-  - "scripts/alla_core/clients/testops_client.py"
   - "scripts/alla_core/clients/mcp_client.py"
   - "scripts/alla_core/exceptions.py"
   - "scripts/alla_core/utils/text_normalization.py"

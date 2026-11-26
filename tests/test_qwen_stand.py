@@ -203,7 +203,7 @@ SKILL = str(qwen_stand.SKILL_ROOT / "scripts/alla_skill.py")
 def events(*calls: tuple[str, dict[str, Any], str], final: str = "",
            subagent: bool = False) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = [
-        {"type": "system", "subtype": "init", "slash_commands": ["alla:launch"]}]
+        {"type": "system", "subtype": "init", "slash_commands": ["allure-alla-extension:launch"]}]
     for number, (name, tool_input, result) in enumerate(calls):
         parent = "call_parent" if subagent else None
         out.append({"type": "assistant", "parent_tool_use_id": parent, "message": {
@@ -529,24 +529,15 @@ def test_testops_writes_fail(tmp_path: Path) -> None:
     assert CHECKS["testops_read_only"](ctx)["status"] == "fail"
 
 
-def test_testops_resolve_is_allowed_only_after_the_skill_command(tmp_path: Path) -> None:
-    """Статус passed — единственная запись, и только командой rerun --testops."""
+def test_testops_resolve_is_always_rejected(tmp_path: Path) -> None:
+    """TestOps читается строго только через MCP; любая запись по REST запрещена."""
     resolve = {"method": "POST", "path": "/api/testresult/101/resolve", "status": 202}
-    bare = context(tmp_path, events(), case="F01")
-    bare.requests = [resolve]
-    assert CHECKS["testops_read_only"](bare)["status"] == "fail"
-    assert CHECKS["testops_resolved"](bare)["status"] == "fail"
-
-    remember = f"python3 {SKILL} rerun --run {tmp_path}/p/alla-reports/793-run --testops --result j1"
-    ctx = context(tmp_path, events(("run_shell_command", {"command": remember}, "STATUS: saved")),
-                  case="F01")
+    ctx = context(tmp_path, events(), case="F01")
     ctx.requests = [resolve]
-    assert CHECKS["testops_read_only"](ctx)["status"] == "pass"
-    assert CHECKS["testops_resolved"](ctx)["status"] == "pass"
-    ctx.requests = [resolve, {**resolve, "path": "/api/testresult/102/resolve"}]
-    assert CHECKS["testops_resolved"](ctx)["status"] == "fail"  # updateOrder воспроизвёлся
-    ctx.requests = [resolve, {"method": "PATCH", "path": "/api/testresult/101"}]
     assert CHECKS["testops_read_only"](ctx)["status"] == "fail"
+    ctx.requests = [{"method": "POST", "path": "/api/uaa/oauth/token"}]
+    assert CHECKS["testops_read_only"](ctx)["status"] == "fail"
+    assert "testops_resolved" not in CHECKS
 
 
 def test_cd_to_project_root_is_noted_but_cd_elsewhere_fails(tmp_path: Path) -> None:
@@ -573,9 +564,9 @@ def test_run_case_keeps_project_outside_results(tmp_path: Path,
         return 0
 
     def fake_install(work: Path, token: str = "") -> Path:
-        ext = work / "home/.qwen/extensions/alla"
+        ext = work / "home/.qwen/extensions/allure-alla-extension"
         ext.mkdir(parents=True, exist_ok=True)
-        (ext / "qwen-extension.json").write_text('{"name":"alla"}')
+        (ext / "qwen-extension.json").write_text('{"name":"allure-alla-extension"}')
         return ext
 
     monkeypatch.setattr(qwen_stand, "CACHE_DIR", tmp_path / "cache")
@@ -611,7 +602,7 @@ def test_run_case_selects_synthetic_secret_channel(
     def install(work: Path) -> Path:
         installed.append(work)
         assert (work / "home/.qwen/settings.json").is_file()
-        ext = work / "home/.qwen/extensions/alla"
+        ext = work / "home/.qwen/extensions/allure-alla-extension"
         ext.mkdir(parents=True, exist_ok=True)
         return ext
 
@@ -695,7 +686,7 @@ def test_secure_credential_check_rejects_plaintext_and_unprotected_store(tmp_pat
 
 def test_setup_access_instruction_requires_secure_token_storage(tmp_path: Path) -> None:
     secure = context(tmp_path, events(final=("Адрес ALLURE_ENDPOINT заполните в .qwen/alla.env; "
-        "токен сохраните командой python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token set.")))
+        "токен сохраните командой python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py token set.")))
     assert CHECKS["asks_for_env"](secure)["status"] == "pass"
     plain = context(tmp_path, events(final="Адрес и ALLURE_TOKEN впишите в .env."))
     assert CHECKS["asks_for_env"](plain)["status"] == "fail"
@@ -854,7 +845,7 @@ def test_skill_version_covers_subagent_instructions() -> None:
     from quality_harness import skill_files
     from qwen_stand import SKILL_ROOT
     names = {path.relative_to(SKILL_ROOT).as_posix() for path in skill_files(SKILL_ROOT)}
-    assert {"qwen-extension.json", "skills/launch/SKILL.md", "agents/alla-batch.md",
+    assert {"qwen-extension.json", "QWENCODE.md", "skills/launch/SKILL.md", "agents/alla-batch.md",
             "skills/launch/references/analysis-format.md", "scripts/alla_skill.py"} <= names
 
 
@@ -1463,7 +1454,6 @@ def test_flaky_checks_need_the_commands_and_the_mark(tmp_path: Path) -> None:
     ctx = context(tmp_path, events(
         ("run_shell_command", {"command": f"{rerun_cmd} --yes --plan abcd1234"},
          "STATUS: rerun_done"),
-        ("run_shell_command", {"command": f"{rerun_cmd} --testops --result j1"}, "STATUS: saved"),
         final="Нестабильные — упали в CI, а при перезапуске прошли (1):"), case="F01")
     assert CHECKS["rerun_started"](ctx)["status"] == "fail"  # итога на диске нет
     (run_dir / "rerun").mkdir(parents=True)

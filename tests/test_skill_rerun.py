@@ -6,13 +6,12 @@ Maven — фейковый ``mvn`` в PATH (``skill_fake_maven``): он пише
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import shutil
 import subprocess
 import time
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -28,9 +27,7 @@ from skill_fixtures import (  # noqa: F401
 )
 from test_skill_flow import MARKDOWN_ANALYSIS, _finish, _prepare, _run
 
-from alla_core.clients.testops_client import AllureTestOpsClient
-from alla_core.config import Settings
-from alla_skill_lib import flaky, rerun, resolve
+from alla_skill_lib import flaky, rerun
 from alla_skill_lib import workspace as ws
 from alla_skill_lib.rerun import (
     JobFiles,
@@ -66,17 +63,6 @@ def fake_maven_path(monkeypatch: pytest.MonkeyPatch) -> None:
         return result
 
     monkeypatch.setattr(skill_fake_maven, "install", install)
-
-
-@pytest.fixture(autouse=True)
-def _resolve_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Запись статуса passed по умолчанию выключена (REST закрыт, в MCP её нет); здесь её
-    проверяют включённой."""
-    monkeypatch.setenv("ALLURE_RERUN_RESOLVE", "true")
-
-
-def test_status_in_testops_is_off_by_default() -> None:
-    assert Settings().rerun_resolve is False
 
 
 @pytest.fixture(name="flaky_testops")
@@ -635,11 +621,6 @@ def test_problem_with_a_proposed_fix_is_not_offered(
 # ---------------------------------------------------------------------------
 
 
-def _remember_command(out: str) -> list[str]:
-    command = out.split("Только после явного «да» на этот вопрос выполни: ", 1)[1].split("\n")[0]
-    return command.split(" rerun ", 1)[1].split()
-
-
 def test_flaky_tests_are_remembered_without_a_question_offered_next_time_and_unmarked(
     nested_project: Path, flaky_testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -660,6 +641,7 @@ def test_flaky_tests_are_remembered_without_a_question_offered_next_time_and_unm
             f"агента):\n- Отмечены в базе знаний нестабильными: {ORDER}.createOrder.") in told
     assert "напомни закоммитить папку базы знаний alla-kb" in told
     assert "Спрашивать, сохранять ли это, не нужно" in told
+    assert "--testops" not in out and "отметить успешными в TestOps" not in told
     marks = list((nested_project / "alla-kb" / "flaky").glob("*.json"))
     assert [path.name.split("_")[:2] for path in marks] == [["OrderTest", "createOrder"]]
     mark = json.loads(marks[0].read_text(encoding="utf-8"))
@@ -668,36 +650,13 @@ def test_flaky_tests_are_remembered_without_a_question_offered_next_time_and_unm
     assert "Папка `flaky/`" in (nested_project / "alla-kb" / "README.md").read_text(encoding="utf-8")
     report = (run_dir / "report.md").read_text(encoding="utf-8")
     assert f"- Нестабильные по базе знаний: {ORDER}.createOrder (с " in report
-    # Вопрос — только про TestOps (updateOrder воспроизвёлся).
-    assert (f"задай пользователю один вопрос — отметить успешными в TestOps (статус passed в "
-            f"прогоне 777) 1 тест ({ORDER}.createOrder)?") in told
-    args = _remember_command(out)
-    assert args[:3] == ["--run", str(run_dir), "--testops"]
 
     # Повторный показ итога ничего не дописывает, но говорит то же.
     marks[0].write_text(json.dumps({**mark, "owner": "qa"}), encoding="utf-8")
     again = _rerun(run_dir, capsys, "--wait")
     assert f"Отмечены в базе знаний нестабильными: {ORDER}.createOrder." in again
     assert json.loads(marks[0].read_text(encoding="utf-8"))["owner"] == "qa"
-
-    saved = _run(["rerun", *args], capsys)[1]
-
-    assert saved.startswith(f"STATUS: saved\nОтмечены успешными в TestOps (статус passed в "
-                            f"прогоне 777): {ORDER}.createOrder.")
-    assert f"Полный разбор обновлён: {run_dir / 'report.md'}" in saved
-    report = (run_dir / "report.md").read_text(encoding="utf-8")
-    assert f"{ORDER}.createOrder — прошёл на запуске 2 из 3; в TestOps — passed" in report
-    assert list(flaky_testops.resolved) == [101]
-    assert flaky_testops.resolved[101] == {
-        "status": "passed",
-        "message": "alla: тест прошёл при перезапуске на машине инженера (запуск 2 из 3). "
-                   "Ошибка в CI: expected: <200> but was: <500>"}
-    # Повтор команды: в TestOps уже отмечено — запрос не уходит снова.
-    again = _run(["rerun", *args], capsys)[1]
-    assert again.startswith("STATUS: ok\nОтмечать в TestOps нечего")
-    assert "--testops" not in _rerun(run_dir, capsys, "--wait")  # вопрос не повторяется
-    assert [method for method, path in flaky_testops.requests if path.endswith("/resolve")] \
-        == ["POST"]
+    assert not [path for _, path in flaky_testops.requests if path.endswith("/resolve")]
 
     # Следующий прогон: повторов нет, но тест отмечен — его снова предлагают, отчёт его помечает.
     FakeTestOps(default_launch(778)).install(monkeypatch)
@@ -820,229 +779,25 @@ def test_failed_write_restores_a_removed_flaky_mark(
     assert "Сняты в базе знаний отметки" in _rerun(run_dir, capsys, "--wait")
 
 
-def test_passed_test_without_a_ci_signal_is_marked_only_in_testops(
+def test_passed_test_without_a_ci_signal_is_not_marked_in_kb_or_testops(
     nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     skill_fake_maven.install(nested_project / "autotests", {
         f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
     run_dir, run, _ = _prepare(nested_project, capsys)
-    monkeypatch.setenv("ALLURE_RERUN_RESOLVE", "false")
+    monkeypatch.setenv("ALLURE_RERUN_RESOLVE", "true")
 
     out = _start(run_dir, capsys, _problem_of(run, 101))  # 500 без повторов: стенд мог лежать
     out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
 
     assert "Нестабильные — упали в CI, а при перезапуске прошли (2):" in out
-    assert "--testops" not in out and "базу знаний" not in out  # нечего: признака из CI нет
+    assert "--testops" not in out and "в TestOps" not in out and "базу знаний" not in out
     assert not (nested_project / "alla-kb" / "flaky").exists()
-    job = json.loads((run_dir / "rerun" / "result.json").read_text(encoding="utf-8"))["job"]
-    assert _rerun(run_dir, capsys, "--testops", "--result", job).startswith(
-        "STATUS: ok\nОтмечать в TestOps нечего")
-
-    monkeypatch.setenv("ALLURE_RERUN_RESOLVE", "true")
-    # Отметку включили после вопроса без TestOps: та же команда TestOps не трогает, спрашивает.
-    stale = _rerun(run_dir, capsys, "--testops", "--result", job)
-    assert stale.startswith("STATUS: ok\nПосле вопроса изменилось, что отметится в TestOps")
-    assert "отметить успешными в TestOps" in stale and testops.resolved == {}
-    out = _rerun(run_dir, capsys, "--wait")
-    question = out.split(rerun.RESULT_END, 1)[1]
-    assert "в базе знаний" not in question
-    assert (f"один вопрос — отметить успешными в TestOps (статус passed в прогоне 777) "
-            f"2 теста ({ORDER}.createOrder; {ORDER}.updateOrder)?") in question
-    assert "Согласие только с частью («только первый тест») — не «да»" in question
-    assert _rerun(run_dir, capsys, "--testops", "--result", "other").startswith("STATUS: error")
-
-    saved = _run(["rerun", *_remember_command(out)], capsys)[1]
-
-    assert saved.startswith("STATUS: saved\nОтмечены успешными в TestOps (статус passed в "
-                            f"прогоне 777): {ORDER}.createOrder; {ORDER}.updateOrder.")
-    assert "базы знаний" not in saved and saved.rstrip().endswith(
-        "Скажи это пользователю. `next` не выполняй.")
-    assert sorted(testops.resolved) == [101, 102]
-    assert _rerun(run_dir, capsys, "--testops", "--result", job).startswith(
-        "STATUS: ok\nОтмечать в TestOps нечего")
-    assert "--testops" not in _rerun(run_dir, capsys, "--wait")  # всё отмечено — не спрашивает
-
-
-def _testops_only(project: Path, capsys: pytest.CaptureFixture[str]) -> tuple[Path, str]:
-    """Оба теста проблемы прошли без признака в CI: сохранять — только статус в TestOps."""
-    skill_fake_maven.install(project / "autotests", {
-        f"{ORDER}#createOrder": ["passed"], f"{ORDER}#updateOrder": ["passed"]})
-    run_dir, run, _ = _prepare(project, capsys)
-    out = _start(run_dir, capsys, _problem_of(run, 101))
-    out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
-    return run_dir, out
-
-
-def test_redirect_is_not_taken_for_a_changed_status(
-    nested_project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-) -> None:
-    fake = FakeTestOps(default_launch(777), resolve_status=302)
-    fake.install(monkeypatch)
-    run_dir, out = _testops_only(nested_project, capsys)
-
-    saved = _run(["rerun", *_remember_command(out)], capsys)[1]
-
-    assert saved.startswith("STATUS: ok\nНе отмечены в TestOps: ")
-    assert "TestOps ответил перенаправлением (HTTP 302)" in saved
-    assert len([path for _, path in fake.requests if path.endswith("/resolve")]) == 1
-    assert not (run_dir / "rerun" / "resolved.json").exists()
-
-
-def test_marks_beyond_the_answer_budget_are_sent_by_the_repeat(
-    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    run_dir, out = _testops_only(nested_project, capsys)
-    args = _remember_command(out)
-    monkeypatch.setattr(rerun, "WAIT_BUDGET", 0.0)  # время ответа вышло после первого запроса
-
-    first = _run(["rerun", *args], capsys)[1]
-
-    assert first.startswith("STATUS: saved\nОтмечены успешными в TestOps (статус passed в "
-                            f"прогоне 777): {ORDER}.createOrder.\n")
-    assert list(testops.resolved) == [101]
-    marks = json.loads((run_dir / "rerun" / "resolved.json").read_text(encoding="utf-8"))
-    assert list(marks["tests"]) == ["101"]  # записано сразу, а не в конце команды
-    repeat = first.rstrip().splitlines()[-1]
-    assert repeat.startswith(f"Не успели уйти в TestOps за один ответ: {ORDER}.updateOrder. ")
-    assert "сразу, в том же ходе, выполни ту же команду ещё раз" in repeat
-    assert repeat.endswith(" ".join(["--run", str(run_dir), "--testops", "--result", args[-1]]))
-
-    monkeypatch.setattr(rerun, "WAIT_BUDGET", 75.0)
-    second = _run(["rerun", *args], capsys)[1]
-    assert second.startswith(f"STATUS: saved\nОтмечены успешными в TestOps (статус passed в "
-                             f"прогоне 777): {ORDER}.updateOrder.")
-    assert sorted(testops.resolved) == [101, 102] and "Не успели" not in second
-
-
-def test_send_reports_part_of_the_variants_and_stops_on_a_silent_testops(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake = FakeTestOps(default_launch(777))
-    fake.resolve_status_of = {102: 404}
-    fake.install(monkeypatch)
-    settings = Settings(endpoint="https://testops.example", token="t",
-                        allowed_origins=("https://testops.example",))
-    mark = resolve.Mark([101, 102], [100, 101, 102], f"{ORDER}.createOrder", "01", "",
-                        {101: "n1", 102: "n2"})  # 100 отмечен прежней командой
-    done: list[int] = []
-
-    outcome = asyncio.run(resolve.send(settings, [mark], Path(".env"), "d",
-                                       deadline=time.monotonic() + 75, on_done=done.append))
-
-    assert done == [101] and fake.resolved[101]["message"] == "n1"
-    assert outcome.partly([mark]) == [(mark, 2)] and outcome.done_marks([mark]) == []
-    assert "не знает запрос resolve" in outcome.failed[0][1]
-
-    # 404 у одного варианта, затем 403: остановку объясняет 403, и у метода, и у остальных.
-    fake.resolve_status_of = {101: 404, 102: 403}
-    later = resolve.Mark([104], [104], f"{ORDER}.updateOrder", "01", "", {104: "n4"})
-    refused = asyncio.run(resolve.send(settings, [mark, later], Path(".env"), "d",
-                                       deadline=time.monotonic() + 75, on_done=done.append))
-    assert [reason.split(":")[0] for _, reason in refused.failed] == [
-        "у токена нет права менять результаты тестов в проекте TestOps"] * 2
-
-    # TestOps молчит: запрос с обменом токена ограничен сроком ответа, остальные не идут.
-    async def silent(*_args: object) -> dict[str, Any]:
-        await asyncio.sleep(30)
-        return {}
-
-    monkeypatch.setattr(AllureTestOpsClient, "resolve_test_result", silent)
-    other = resolve.Mark([103], [103], f"{ORDER}.login", "02", "", {103: "n3"})
-    outcome = asyncio.run(resolve.send(settings, [mark, other], Path(".env"), "d",
-                                       deadline=time.monotonic() - resolve.HARD_MARGIN_S,
-                                       on_done=done.append))
-    assert [(item.full_name, reason) for item, reason in outcome.failed] == [
-        (mark.full_name, resolve.NO_ANSWER), (other.full_name, resolve.NO_ANSWER)]
-    assert outcome.done == {} and outcome.left == []
-
-
-def test_refusal_turns_the_automatic_repeat_off(
-    nested_project: Path, testops: FakeTestOps, capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Отказ съел срок ответа: повтор тратил бы его на тот же отказ и не дошёл бы до остальных."""
-    run_dir, out = _testops_only(nested_project, capsys)
-    testops.resolve_status_of = {101: 404}
-    monkeypatch.setattr(rerun, "WAIT_BUDGET", 0.0)
-
-    answer = _run(["rerun", *_remember_command(out)], capsys)[1]
-
-    assert answer.startswith(f"STATUS: ok\nНе успели уйти в TestOps за один ответ: "
-                             f"{ORDER}.updateOrder.\nНе отмечены в TestOps: {ORDER}.createOrder")
-    assert "Сам команду не повторяй" in answer and "в том же ходе" not in answer
-    assert list(testops.resolved) == []
-
-
-def test_resolved_marks_are_merged_not_overwritten(tmp_path: Path) -> None:
-    """Два --testops с прежним видом файла: второй дописывает, а не затирает первый."""
-    files = JobFiles(tmp_path)
-    rerun.add_resolved(files, "j", {101: "d"})
-    rerun.add_resolved(files, "j", {102: "d"})
-    assert rerun.read_resolved(files, "j") == {101: "d", 102: "d"}
-    assert rerun.read_resolved(files, "other") == {}
-
-
-def test_report_marks_a_method_passed_only_when_every_variant_is(tmp_path: Path) -> None:
-    plan = {"job": "j", "tests": [{"test_result_id": 101, "other_ids": [102]}]}
-    item = {"test_result_id": 101, "outcome": "passed", "attempt": 1, "file_id": "01",
-            "full_name": f"{ORDER}.createOrder"}
-    state = rerun.JobState("done", plan, result={"job": "j", "attempts": 3, "tests": [item]})
-
-    assert "TestOps" not in "\n".join(rerun.RerunView.of(state).lines())  # type: ignore[union-attr]
-    state.resolved = {101: "d"}
-    assert "в TestOps — passed у 1 из 2 вариантов" in "\n".join(
-        rerun.RerunView.of(state).lines())  # type: ignore[union-attr]
-    state.resolved = {101: "d", 102: "d"}
-    assert f"{ORDER}.createOrder — прошёл на запуске 1 из 3; в TestOps — passed" in "\n".join(
-        rerun.RerunView.of(state).lines())  # type: ignore[union-attr]
-
-
-def test_testops_refusal_can_be_repeated_by_the_same_command(
-    nested_project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-) -> None:
-    fake = FakeTestOps(flaky_launch(777), resolve_status=403)
-    fake.install(monkeypatch)
-    skill_fake_maven.install(nested_project / "autotests", {
-        f"{ORDER}#createOrder": [FAILED_500, "passed"], f"{ORDER}#updateOrder": ["passed"]})
-    run_dir, run, _ = _prepare(nested_project, capsys)
-    _finish(run_dir, capsys, {f"{int(_problem_of(run, 101)):02d}": UNKNOWN_500,
-                              f"{int(_problem_of(run, 103)):02d}": MARKDOWN_ANALYSIS})
-    out = _rerun(run_dir, capsys, "--yes", "--plan", _plan_hash(_rerun(run_dir, capsys)))
-    out = _wait_done(run_dir, capsys) if out.startswith("STATUS: running") else out
-    args = _remember_command(out)
-
-    saved = _run(["rerun", *args], capsys)[1]
-
-    # Отказ TestOps (403) на первом результате — второй запрос не уходит; база знаний записана
-    # ещё итогом, без вопроса.
-    assert "Отмечены в базе знаний нестабильными" in out
-    assert len(list((nested_project / "alla-kb" / "flaky").glob("*.json"))) == 2  # оба с повтором
-    assert saved.startswith(f"STATUS: ok\nНе отмечены в TestOps: {ORDER}.createOrder — у токена "
-                            "нет права менять результаты тестов в проекте TestOps")
-    assert f"{ORDER}.updateOrder — у токена нет права" in saved
-    assert "Сам команду не повторяй" in saved
-    assert "Не меняй .qwen/alla.env, .env и переменные окружения сам" in saved
-    assert [path for _, path in fake.requests if path.endswith("/resolve")] == [
-        "/api/testresult/101/resolve"]
-    assert not (run_dir / "rerun" / "resolved.json").exists()
-    assert "в TestOps — passed" not in (run_dir / "report.md").read_text(encoding="utf-8")
-
-    # Оба origin разрешены, но id принадлежат прежнему серверу: запроса нет.
-    from skill_fixtures import allow_testops
-    allow_testops(nested_project, "https://testops.example", "https://other.example")
-    monkeypatch.setenv("ALLURE_ENDPOINT", "https://other.example")
-    moved = _run(["rerun", *args], capsys)[1]
-    assert "прогон разбирался на другом TestOps, чем ALLURE_ENDPOINT сейчас" in moved
-    assert len([path for _, path in fake.requests if path.endswith("/resolve")]) == 1
-
-    monkeypatch.setenv("ALLURE_ENDPOINT", "https://testops.example")
-    fake.resolve_status = 202
-    fixed = _run(["rerun", *args], capsys)[1]
-    assert (f"Отмечены успешными в TestOps (статус passed в прогоне 777): {ORDER}.createOrder; "
-            f"{ORDER}.updateOrder.") in fixed
-    assert sorted(fake.resolved) == [101, 102]
+    with pytest.raises(SystemExit) as exc:
+        _run(["rerun", "--run", str(run_dir), "--testops", "--result", "j1"], capsys)
+    assert exc.value.code == 2
+    assert capsys.readouterr().out.startswith("STATUS: error")
 
 
 def test_partly_skipped_method_is_not_a_pass(tmp_path: Path) -> None:
@@ -1316,20 +1071,6 @@ def test_variants_of_a_method_keep_every_ci_error_and_each_problem_its_own_test(
         (int(order), "createOrder"), (int(login), "createOrder")]
     assert plan.tests[0].other_messages == ["boom 2"]
     assert plan.tests[0].other_ids == [102]
-    # Метод прошёл — passed нужен результатам всех его вариантов, а отмеченные не повторяются.
-    result = {"attempts": 3, "tests": [{"test_result_id": 101, "outcome": "passed", "attempt": 1,
-                                        "full_name": f"{ORDER}.createOrder", "file_id": order}]}
-    planned = {"tests": [asdict(test) for test in plan.tests]}
-    assert [mark.ids for mark in resolve.plan_marks(result, planned, {})] == [[101, 102]]
-    notes = resolve.plan_marks(result, planned, {}, {101: "boom 1", 102: "boom 2"})[0].notes
-    assert notes[101].endswith("Ошибка в CI: boom 1") and notes[102].endswith("Ошибка в CI: boom 2")
-    empty_note = resolve.plan_marks(result, planned, {}, {101: "boom 1", 102: ""})[0].notes[102]
-    assert "Ошибка в CI:" not in empty_note
-    assert "boom 1" not in empty_note
-    missing_note = resolve.plan_marks(result, planned, {}, {})[0].notes[102]
-    assert missing_note.endswith(f"Ошибка в CI: {plan.tests[0].message}")
-    assert [mark.ids for mark in resolve.plan_marks(result, planned, {101: "d"})] == [[102]]
-    assert resolve.plan_marks(result, planned, {101: "d", 102: "d"}) == []
     signals = {int(t["test_result_id"]): codes for t, codes in ((tests[101], []),
                                                                  (tests[102], ["retry_passed"]))}
     merged = rerun.build_plan(rerun.ws.RunPaths(run_dir), run, picks, attempts=3, max_tests=20,
@@ -1399,16 +1140,7 @@ def test_applied_fix_offers_to_rerun_the_problem_tests_with_one_yes(
     assert f"{ORDER}.updateOrder — упал 3 из 3" in done
     question = done.split(rerun.RESULT_END, 1)[1]
     assert "в базе знаний" not in done  # проверка правки — не отметка «нестабильный»
-    assert (f"отметить успешными в TestOps (статус passed в прогоне 777) 1 тест "
-            f"({ORDER}.createOrder) — прошёл на изменённом коде теста, в CI этого изменения ещё "
-            "нет? На «нет» ничего не выполняй. Прежние «да» (на перезапуск, на правку) сюда не "
-            "относятся.") in question  # один пункт — без оговорки о части
-
-    saved = _run(["rerun", *_remember_command(done)], capsys)[1]
-    assert saved.startswith("STATUS: saved\nОтмечены успешными в TestOps")
-    assert testops.resolved[101]["message"].startswith(
-        "alla: тест прошёл при перезапуске на машине инженера (запуск 1 из 3). Прошёл на "
-        "изменённом коде теста (правка агента применена); в CI этого изменения ещё нет.")
+    assert "--testops" not in done and "в TestOps" not in question
 
 
 def test_applied_fix_without_maven_asks_the_user_to_run_the_test(

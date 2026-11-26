@@ -1,9 +1,8 @@
 """Фейковый Allure TestOps на ``httpx.MockTransport``.
 
 Подменяется ``httpx.AsyncClient``, поэтому клиент MCP скилла (сеанс, пагинация, полный
-результат с вложениями) работает как с настоящим сервером. Чтение — только встроенный
-MCP (``POST /api/mcp``, инструмент ``testops_find_testresults``); из REST остались обмен
-токена и resolve (запись статуса, по умолчанию выключена).
+результат с вложениями) работает как с настоящим сервером. Взаимодействие с TestOps —
+только чтение через встроенный MCP (``POST /api/mcp``, инструмент ``testops_find_testresults``).
 """
 
 from __future__ import annotations
@@ -636,22 +635,17 @@ class FakeTestOps:
 
     ``calls`` — аргументы каждого ``tools/call``. ``sse`` — отвечать на JSON-RPC потоком SSE,
     ``tools`` — инструменты ``tools/list``. ``auth_status`` — ответ на любой запрос с чужим
-    токеном или при отказе (401/403). ``resolved`` — тела ``POST /api/testresult/{id}/resolve``
-    по id; ``resolve_status`` — код ответа на них (202 — принят, иначе ошибка без смены
-    статуса), ``resolve_status_of`` — свой код для отдельных id. ``also_launches`` — другие
+    токеном или при отказе (401/403). ``also_launches`` — другие
     номера прогона с теми же падениями («следующий прогон» в одном сеансе стенда).
     """
 
     def __init__(self, fixture: LaunchFixture, *, auth_status: int = 200,
-                 resolve_status: int = 202, also_launches: tuple[int, ...] = ()) -> None:
+                 also_launches: tuple[int, ...] = ()) -> None:
         self.fixture = fixture
         self.also_launches = also_launches
         self.auth_status = auth_status
-        self.resolve_status = resolve_status
         self.requests: list[tuple[str, str]] = []
         self.calls: list[dict[str, Any]] = []
-        self.resolved: dict[int, dict[str, Any]] = {}
-        self.resolve_status_of: dict[int, int] = {}
         self.sse = False
         # Поток SSE: перед ответом — запрос сервера ping; строки — через \r (тоже по SSE).
         self.sse_ping = False
@@ -674,13 +668,6 @@ class FakeTestOps:
         self.requests.append((request.method, path))
         if path == MCP_PATH and request.method == "POST":
             return self._mcp(request)
-        if path == "/api/uaa/oauth/token":
-            if self.auth_status != 200:
-                return httpx.Response(self.auth_status, json={"error": "unauthorized"})
-            return httpx.Response(200, json={"access_token": "jwt-1", "expires_in": 3600})
-        if request.method == "POST" and path.startswith("/api/testresult/") \
-                and path.endswith("/resolve"):
-            return self._resolve(int(path.split("/")[-2]), json.loads(request.content))
         return httpx.Response(404, text=json.dumps({"path": path}))
 
     # --- MCP ---
@@ -812,13 +799,3 @@ class FakeTestOps:
             attachments[str(meta.get("id"))] = entry
         return {**result, "scenario": {"steps": fixture.executions.get(result_id, [])},
                 "fixtures": [], "attachments": attachments}
-
-    # --- REST: запись статуса ---
-
-    def _resolve(self, test_id: int, body: dict[str, Any]) -> httpx.Response:
-        status = self.resolve_status_of.get(test_id, self.resolve_status)
-        if status != 202:
-            return httpx.Response(status, json={"message": "Access denied"})
-        self.resolved[test_id] = body
-        return httpx.Response(202, json={"id": test_id, "name": f"test {test_id}",
-                                         "status": body.get("status")})

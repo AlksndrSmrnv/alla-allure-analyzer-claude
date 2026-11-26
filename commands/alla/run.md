@@ -3,7 +3,7 @@ description: Разобрать упавший прогон Allure TestOps по 
 argument-hint: <номер прогона или ссылка на запуск> [модуль]
 disable-model-invocation: true
 ---
-Вызови скилл alla:launch (инструмент skill) и разбери прогон Allure TestOps по его
+Вызови скилл allure-alla-extension:launch (инструмент skill) и разбери прогон Allure TestOps по его
 разделам «1. Старт», «2. Цикл» и «3. Результат».
 
 Прогон: {{args}}

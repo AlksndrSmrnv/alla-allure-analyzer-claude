@@ -34,7 +34,7 @@ expect_status() {
 }
 
 mkdir -p "$project" "$ext"
-for item in qwen-extension.json skills commands agents scripts extensions requirements.txt requirements.in .env.example; do
+for item in qwen-extension.json QWENCODE.md skills commands agents scripts extensions requirements.txt requirements.in .env.example; do
   cp -R "$repo/$item" "$ext/$item"
 done
 find "$ext" -name __pycache__ -type d -prune -exec rm -rf {} +

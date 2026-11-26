@@ -1,4 +1,4 @@
-# Установка и настройка расширения alla
+# Установка и настройка расширения allure-alla-extension
 
 ## Что нужно
 
@@ -12,18 +12,18 @@
 
 ## Установка
 
-1. Установите расширение `alla` в Qwen Code (из Git-репозитория, локального каталога или архива):
+1. Установите расширение `allure-alla-extension` в Qwen Code (из Git-репозитория, локального каталога или архива):
 
        qwen extensions install <git-url-или-путь-к-расширению>
 
    Для локальной разработки из корня этого репозитория: `qwen extensions link .`.
-   После установки расширение лежит в `~/.qwen/extensions/alla` (или `$QWEN_HOME/extensions/alla`).
+   После установки расширение лежит в `~/.qwen/extensions/allure-alla-extension` (или `$QWEN_HOME/extensions/allure-alla-extension`).
 2. Подготовьте `.venv` проекта и установите зависимости самостоятельно по правилам команды.
    Например, из корня проекта (эти команды выполняет инженер, расширение их не запускает):
 
        python3.11 -m venv .venv
-       .venv/bin/python -m pip install --require-hashes -r ~/.qwen/extensions/alla/requirements.txt
-       python3 ~/.qwen/extensions/alla/scripts/alla_skill.py setup
+       .venv/bin/python -m pip install --require-hashes -r ~/.qwen/extensions/allure-alla-extension/requirements.txt
+       python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py setup
 
    `setup` только проверяет Python 3.11+ и точные версии всех применимых зависимостей
    lock-файла. Если окружения нет или версии не совпадают, он печатает
@@ -31,16 +31,16 @@
    `STATUS: error`. Готовое окружение — `STATUS: ready`. Первая строка — всегда статус.
    Команда не создаёт и не пересоздаёт окружение, не вызывает pip/ensurepip, не пишет
    настройки или маркер готовности; установочных параметров у неё нет.
-3. Скопируйте `~/.qwen/extensions/alla/.env.example` в `<project>/.qwen/alla.env` самостоятельно
+3. Скопируйте `~/.qwen/extensions/allure-alla-extension/.env.example` в `<project>/.qwen/alla.env` самостоятельно
    (или в `~/.qwen/alla.env` — при заданном `QWEN_HOME` в `$QWEN_HOME/alla.env` — для общих
    значений во всех проектах); на Linux/macOS задайте права `600`.
-   Папку расширения (`~/.qwen/extensions/alla/.env`) не используйте: ею управляет механизм
+   Папку расширения (`~/.qwen/extensions/allure-alla-extension/.env`) не используйте: ею управляет механизм
    настроек Qwen, и `qwen extensions update` перезаписывает этот файл.
    Заполните `ALLURE_ENDPOINT` и остальные несекретные настройки.
    `ALLURE_TOKEN` в `.env` запрещён. Из корня проекта сохраните токен в системном хранилище ключей ОС
    через скрытый запрос; ключ в чат не передавайте:
 
-       python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token set
+       python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py token set
 4. В `alla-extensions/config.toml` явно разрешите точные origin TestOps:
 
        [testops]
@@ -52,12 +52,12 @@
 5. Выполните `check`. `.qwen/alla.env` можно не коммитить; корневой `.gitignore`
    проекта не меняется: добавьте `/.venv` и `.qwen/alla.env`, если они ещё не игнорируются.
 
-`/alla:launch установи` или `/alla:setup` проверяет окружение, показывает инструкцию инженеру
+`/allure-alla-extension:launch установи` или `/alla:setup` проверяет окружение, показывает инструкцию инженеру
 и завершает ход. Шаги установки расширение не запускает и не предлагает применить после «да».
 Вы можете отдельно поручить Qwen выполнить ручные шаги вне сценария скилла; обычное «да» после
 инструкции не запускает их автоматически.
 
-Скилл вызывается командой `/alla:launch 12345`, `/alla:run 12345` (можно вставить ссылку на
+Скилл вызывается командой `/allure-alla-extension:launch 12345`, `/alla:run 12345` (можно вставить ссылку на
 запуск) или фразой «разбери прогон 12345».
 
 ### Переход со старой версии (`.qwen/skills/alla-launch/`)
@@ -69,13 +69,13 @@
 
 1. Проверьте свои изменения (`git diff`, `.qwen/commands/alla/`, `.qwen/agents/`). Сохраните
    команды и субагентов ваших расширений из `alla-extensions/`, при необходимости заменив
-   в своих командах `alla-launch` на `alla:launch`.
+   в своих командах `alla-launch` на `allure-alla-extension:launch`.
 2. Перенесите несекретные настройки из `.qwen/skills/alla-launch/.env` (и, если ранее
-   использовался общий файл в папке расширения, из `~/.qwen/extensions/alla/.env`) в
+   использовался общий файл в папке расширения, из `~/.qwen/extensions/allure-alla-extension/.env`) в
    `<project>/.qwen/alla.env` или в общий `~/.qwen/alla.env` (права `600`, без `ALLURE_TOKEN`).
 3. Перенесите токен в системное хранилище ключей ОС и при наличии удалите прежнее расширение секретов:
 
-       python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token set
+       python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py token set
        qwen extensions uninstall alla-launch-credentials
 4. Удалите `.qwen/skills/alla-launch/`, встроенные команды в `.qwen/commands/alla/` (`run.md`,
    `continue.md`, `apply.md`, `revert.md`, `remember.md`, `reject.md`, `rerun.md`, `review.md`,
@@ -103,13 +103,13 @@
 
 Управление токеном выполняет инженер вручную в терминале (значения в argv и чат не передаются):
 
-- `python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token set` — интерактивный скрытый
+- `python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py token set` — интерактивный скрытый
   ввод (`getpass`) для текущего проекта (`--scope workspace`, по умолчанию); для общего токена
   во всех проектах добавьте `--scope user`, для передачи по конвейеру из менеджера секретов —
   `--stdin`. Приоритет: переменная окружения `ALLURE_TOKEN` (CI) > `workspace` > `user`.
-- `python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token status` — проверка источника
+- `python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py token status` — проверка источника
   токена и бэкенда `keyring` без вывода секрета.
-- `python3 ~/.qwen/extensions/alla/scripts/alla_skill.py token delete [--scope workspace|user]` —
+- `python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py token delete [--scope workspace|user]` —
   удаление сохранённого токена.
 
 После сохранения проверьте доступ командой `check`. В CI передайте `ALLURE_TOKEN` через
@@ -122,13 +122,13 @@
 копию из `.env` и проверьте `check`. Скрипт не переносит и не удаляет секрет автоматически.
 Агент не читает хранилище ключей, не просит токен в чате и не запускает `token set` / `token delete`.
 
-**Слэш-команды `/alla:*`.** Кроме `/alla:launch` в расширение входят команды Qwen Code:
+**Слэш-команды `/alla:*`.** Кроме `/allure-alla-extension:launch` в расширение входят команды Qwen Code:
 `/alla:run <номер или ссылка>`, `/alla:continue`, `/alla:apply N`, `/alla:revert N`,
 `/alla:remember N <причина>`, `/alla:reject N [id]`, `/alla:rerun [N…]`, `/alla:review`,
 `/alla:extensions`, `/alla:code N`, `/alla:ticket N`, `/alla:setup`. Каждая —
 короткая просьба к модели действовать по своему разделу `SKILL.md`, поэтому правила и
 подтверждения те же, что у просьбы словами. Все команды поставляются самим расширением
-`alla` (папка `commands/alla/`) и доступны сразу после установки без копирования в проект.
+`allure-alla-extension` (папка `commands/alla/`) и доступны сразу после установки без копирования в проект.
 Модель сама эти команды не вызывает (`disable-model-invocation: true`).
 
 **Подтверждения.** Чтобы Qwen Code не спрашивал подтверждение на каждый вызов
@@ -163,12 +163,12 @@
 расширения): узкая роль «прочитай свой пакет и делай только его» и инструменты read_file,
 write_file, run_shell_command. Встроенный `general-purpose` по своей роли сначала осматривает
 проект, и субагенты лезли в папки вопреки правилам скилла. Субагент `alla-batch` загружается
-Qwen Code автоматически вместе с расширением `alla`.
+Qwen Code автоматически вместе с расширением `allure-alla-extension`.
 
 **Правила исполнителя.** Агент ведёт разбор строго по сценарию: не правит файлы расширения,
 не пишет своих скриптов и неполадки скилла записывает в `skill-problems.md` папки разбора, а
 не в ответ (`SKILL.md`, `references/problem-report.md`); их показывает проверка разбора. Это текстовые правила: они есть в
-`SKILL.md` и повторяются в каждом задании (`clusters/NN.md`, `batches/N.md`,
+`QWENCODE.md`, `SKILL.md` и повторяются в каждом задании (`clusters/NN.md`, `batches/N.md`,
 `relate_task.md`, `summary_task.md`), но технически ничем не подкреплены. Хотите жёсткой защиты — запретите
 в настройках разрешений Qwen Code правку папки установленного расширения и не включайте режим
 автоматического принятия правок.
@@ -180,7 +180,7 @@ Qwen Code автоматически вместе с расширением `all
 
 Проверить настройки и доступ к TestOps без модели и без создания файлов:
 
-    python3 ~/.qwen/extensions/alla/scripts/alla_skill.py check
+    python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py check
 
 Если после `check` нужно убедиться и в самом запуске — `prepare 12345`.
 
@@ -418,9 +418,8 @@ Gradle/Maven) — в корне git-репозитория. В многомод�
 
 **Сохранение итога.** Отметки «нестабильный» в базе знаний скилл пишет сам, сразу по итогу,
 без вопроса: это проверенный факт, а не догадка агента. Агент говорит, что записано, и
-напоминает закоммитить папку базы знаний; не согласны — удалите файл отметки. Статус passed в
-TestOps — только после «да» на отдельный вопрос: `rerun --run DIR --testops --result <id
-итога>`.
+напоминает закоммитить папку базы знаний; не согласны — удалите файл отметки. Статус
+результатов в TestOps не меняется: обращение к TestOps работает только на чтение через MCP.
 
 **Отметки в базе знаний.** Прошедший тест отмечается
 нестабильным файлом `alla-kb/flaky/<Класс>_<метод>_<хэш>.json` (в многомодульном проекте — в
@@ -432,22 +431,6 @@ TestOps, временный сбой, прежняя отметка), и тол�
 следующих разборах у всех в команде отчёт пометит такую проблему «нестабильные по базе
 знаний», а скилл снова предложит перезапуск, даже если в TestOps повторов не было. Снять
 отметку руками — удалить файл.
-
-**Статус в TestOps.** По умолчанию выключен (`ALLURE_RERUN_RESOLVE=false`): статус меняется
-только через REST API TestOps, а в MCP такого инструмента нет. Включайте, только если REST
-API вам открыт. Тогда каждому прошедшему тесту — и нестабильному, и проверке правки — скилл
-ставит в прогоне статус passed: `POST /api/testresult/{id}/resolve` на каждый результат
-отдельно (у параметризованного теста — на все его варианты из проблемы), с пометкой «alla:
-тест прошёл при перезапуске на машине инженера (запуск k из N)», ошибкой из CI и, для
-проверки правки, «в CI этого ещё нет». Других записей в TestOps нет. Токену нужно право
-менять результаты тестов в проекте: без него TestOps отвечает 403, и скилл называет причину,
-а отметки базы знаний всё равно сохраняются. Отмеченные результаты — в `rerun/resolved.json`
-(каждый — сразу после ответа TestOps): повтор команды отправляет только то, что TestOps не
-принял. Если TestOps отвечает медленно и за один ответ команды (75 с) ушло не всё, агент сам
-сразу повторяет ту же команду — когда TestOps ничего не отклонил; при отказе повтор за вами. Успехом считается только ответ 2xx: перенаправление прокси или
-страницы входа — нет. Если `ALLURE_ENDPOINT` с тех пор
-указывает на другой TestOps, скилл ничего не отправляет. Отметка видна и в разделе
-«Перезапуск локально» `report.md` («в TestOps — passed»).
 
 Не поддерживаются: Gradle и pytest, вложенные классы (`Outer$Inner`), интеграционные тесты
 failsafe; набор TestNG из `suiteXmlFiles` при `-Dtest` не применяется (тест с параметрами
@@ -470,18 +453,18 @@ MCP агенту — дайте ему
 Расширение добавляет Алле функцию без правки кода основного расширения: на событие
 («правка применена», «правка откатана», «отчёт готов») или по просьбе
 пользователя (своя команда `/alla:…`) оно запускает своего субагента или свой
-скрипт. Встроенные плагины лежат в `extensions/` расширения `alla`
+скрипт. Встроенные плагины лежат в `extensions/` расширения `allure-alla-extension`
 и выключены; свои команда кладёт в `alla-extensions/<имя>/` в корне проекта
 (своё с тем же именем заменяет встроенное — так меняют встроенное, не трогая
-расширение `alla`). Как написать своё — `extensions/README.md` в корне расширения.
+расширение `allure-alla-extension`). Как написать своё — `extensions/README.md` в корне расширения.
 
 Включение общее для проекта — файл `alla-extensions/config.toml` (его стоит
 закоммитить). Для инструкции используйте CLI или `/alla:extensions`:
 
 ```bash
-python3 ~/.qwen/extensions/alla/scripts/alla_skill.py extensions list
-python3 ~/.qwen/extensions/alla/scripts/alla_skill.py extensions enable git-publish
-python3 ~/.qwen/extensions/alla/scripts/alla_skill.py extensions disable git-publish
+python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py extensions list
+python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py extensions enable git-publish
+python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py extensions disable git-publish
 ```
 
 `enable/disable` проверяют манифест, настройки и конфликты команд, затем только печатают
@@ -530,7 +513,7 @@ confirm = true           # false — выгружать без вопроса
 нужно ли заводить дефект.
 
 ```bash
-python3 ~/.qwen/extensions/alla/scripts/alla_skill.py extensions enable sut-code
+python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py extensions enable sut-code
 ```
 
 ```toml
@@ -542,7 +525,7 @@ repos = ["ssh://git@git.company/shop/orders.git"]   # или https://…; нес
 default_branch = ""   # основная ветка; пусто — ветка HEAD на сервере
 ```
 
-Команда `/alla:code` (доступна сразу после установки расширения `alla`):
+Команда `/alla:code` (доступна сразу после установки расширения `allure-alla-extension`):
 
 ```text
 /alla:code 2                  — проблема 2; версия — основная ветка на момент запуска прогона (приблизительно)
@@ -583,7 +566,7 @@ default_branch = ""   # основная ветка; пусто — ветка H
 | `skip N --run DIR [--reason …]` | Пропускает кластер N (только по просьбе пользователя) |
 | `apply N --run DIR [--yes --diff ХЭШ] [--repeat]` | Показывает diff правки автотеста; с `--yes --diff` применяет его; `--repeat` — повтор правки с неизвестным состоянием (только по явной просьбе) |
 | `revert N --run DIR` | Возвращает файл, изменённый `apply`, если его не меняли |
-| `rerun [N…] --run DIR [--yes --plan ХЭШ \| --wait \| --testops --result ID]` | Перезапуск тестов проблем локально (Maven), без N — похожих на нестабильные: план; с `--yes --plan` — запуск после «да»; `--wait` — ход и итог (отметки «нестабильный» в базе знаний записываются сами); `--testops` — статус passed в TestOps после «да» (см. «Перезапуск тестов») |
+| `rerun [N…] --run DIR [--yes --plan ХЭШ \| --wait]` | Перезапуск тестов проблем локально (Maven), без N — похожих на нестабильные: план; с `--yes --plan` — запуск после «да»; `--wait` — ход и итог (отметки «нестабильный» в базе знаний записываются сами) (см. «Перезапуск тестов») |
 | `remember N --run DIR [--entry ID] [--from-analysis \| --from-extension ИМЯ]` | Сохраняет причину и рецепт проблемы N в `alla-kb/` из `feedback/NN.md` (или подтверждённый разбор с `--from-analysis`, или подтверждённый вывод расширения — тогда и в отчёт) |
 | `reject N <id> --run DIR` | Запись `<id>` не относится к ошибке N; `fix:<id>` — проверенная правка не та (факт помечается `rejected` и больше не используется и не перезаписывается; вернуть — удалить файл) |
 | `clean [--older-than-days N] [--dry-run]` | Удаляет старые папки разборов |
@@ -670,7 +653,6 @@ default_branch = ""   # основная ветка; пусто — ветка H
 | `ALLURE_RERUN_MAX_TESTS` | `20` | Сколько тестов перезапускать за раз (0–100); `0` выключает перезапуск |
 | `ALLURE_RERUN_TIMEOUT` | `1800` | Общий потолок времени перезапуска, сек (60–14400); дальше Maven останавливается |
 | `ALLURE_RERUN_MAVEN_ARGS` | — | Свои аргументы Maven для перезапуска (профиль, свойства стенда), как в shell: `-Pstand -Denv=ift`. В ответах скилла значения не показываются |
-| `ALLURE_RERUN_RESOLVE` | `false` | Прошедшим при перезапуске тестам после «да» пользователя ставить статус passed в прогоне TestOps. Идёт через REST API (в MCP этого нет): включайте, только если он открыт (см. «Перезапуск тестов») |
 | `ALLURE_OPERATION_ID_KEYS` | — | Свои ключи id операции через запятую (`businessId,bizRqId`) — к встроенным `operUID`, `rqUID`, `requestId`, `correlationId`, `traceId`. Общий лог сервиса, где есть такие id, отбирается по id операции теста: в разбор идут только её записи. Свой id тест должен нести в сообщении, трейсе или вложении-запросе/ответе — иначе из такого лога ничего не возьмётся |
 
 ## Пилот: проверка разбора
@@ -681,7 +663,7 @@ default_branch = ""   # основная ветка; пусто — ветка H
 
 - из терминала, в корне проекта автотестов — сеанс разбора не затрагивается вовсе:
 
-      python3 ~/.qwen/extensions/alla/scripts/alla_skill.py review
+      python3 ~/.qwen/extensions/allure-alla-extension/scripts/alla_skill.py review
 
   (последний разбор; другой — `review --run alla-reports/<папка>`);
 - в том же сеансе Qwen Code — фразой «проверь разбор».
@@ -745,9 +727,7 @@ Qwen Code 0.26; в старых версиях таких записей мож�
 ## Ограничения
 
 - База знаний только проектная (`alla-kb/`); нет merge rules, HTML-отчёта и
-  записи комментариев или ссылок в TestOps. TestOps скилл читает через MCP; писать может
-  только статус passed тестов, прошедших при перезапуске, после «да» пользователя и только
-  с `ALLURE_RERUN_RESOLVE=true` (через REST API).
+  записи комментариев, статусов или ссылок в TestOps. TestOps скилл только читает через MCP.
 - MCP TestOps не отдаёт данные запуска: закрыт ли прогон, неизвестно (предупреждения о
   незакрытом прогоне нет), несуществующий прогон выглядит как пустой, время прогона —
   время самого раннего результата.
@@ -777,10 +757,10 @@ Qwen Code 0.26; в старых версиях таких записей мож�
 
 Обновление выполняется штатным CLI Qwen Code:
 
-    qwen extensions update alla
+    qwen extensions update allure-alla-extension
 
 При обновлении `requirements.txt` инженер вручную обновляет зависимости в `.venv` проекта
-(`pip install --require-hashes -r ~/.qwen/extensions/alla/requirements.txt`) и проверяет
+(`pip install --require-hashes -r ~/.qwen/extensions/allure-alla-extension/requirements.txt`) и проверяет
 окружение командой `setup`. Перед запуском основной CLI всегда проверяются установленные
 версии зависимостей; старый `.venv/.alla-setup-complete` игнорируется и не меняется.
 Если расширение подключено через `qwen extensions link`, достаточно обновить локальный

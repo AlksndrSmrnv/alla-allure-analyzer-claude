@@ -26,7 +26,7 @@ RECORD_PROBLEM = (
 EXECUTOR_RULES = f"""\
 - Ты исполнитель сценария скилла: делай только то, что сказано в задании и в ответе
   скрипта, по порядку; ничего не добавляй, не пропускай и не обходи.
-- Файлы расширения (qwen-extension.json, skills/, commands/, agents/, scripts/,
+- Файлы расширения (qwen-extension.json, QWENCODE.md, skills/, commands/, agents/, scripts/,
   extensions/) только читай; код скилла читать незачем — что проверяет скрипт, сказано в
   справочнике и в его ответе.
 - Своих скриптов не пиши: ни файлов Python/bash/node, ни `python -c`, ни heredoc, ни

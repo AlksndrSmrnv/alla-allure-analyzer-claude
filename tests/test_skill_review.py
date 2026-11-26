@@ -44,7 +44,7 @@ def _finished_run(project: Path, capsys, monkeypatch: pytest.MonkeyPatch,
 
 def _journal(project: Path, run_dir: Path, done: str, final: str | None = None) -> Journal:
     j = Journal("pilot-1", project)
-    j.user("/alla:launch 777")
+    j.user("/allure-alla-extension:launch 777")
     j.skill("prepare 777", f"STATUS: analyze\nПапка разбора: {run_dir}")
     j.call("read_file", {"file_path": str(run_dir / "clusters" / "01.md")}, "# Кластер 1")
     j.call("write_file", {"file_path": str(run_dir / "analyses" / "01.md"), "content": "…"}, "ok")
@@ -89,7 +89,7 @@ def test_review_shows_context_peak_and_compressions(
     run_dir, done, qdir = _finished_run(project, capsys, monkeypatch, tmp_path)
     clock = Clock()
     main = Journal("pilot-1", project, clock)
-    main.user("/alla:launch 777")
+    main.user("/allure-alla-extension:launch 777")
     main.skill("prepare 777", f"STATUS: analyze_batch\nПапка разбора: {run_dir}", tokens=20_000)
     sub = Journal("sub", project, clock)
     sub.call("read_file", {"file_path": str(run_dir / "batches" / "1.md")}, "пакет", tokens=24_000)

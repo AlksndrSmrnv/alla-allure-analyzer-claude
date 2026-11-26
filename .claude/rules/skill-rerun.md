@@ -3,7 +3,6 @@ paths:
   - "scripts/alla_skill_lib/rerun.py"
   - "scripts/alla_skill_lib/rerun_worker.py"
   - "scripts/alla_skill_lib/flaky.py"
-  - "scripts/alla_skill_lib/resolve.py"
   - "commands/alla/rerun.md"
   - "tests/test_skill_rerun.py"
   - "tests/skill_fake_maven.py"
@@ -11,12 +10,11 @@ paths:
 
 # Перезапуск тестов локально (`rerun`)
 
-Подробности — в файлах подобластей: `skill-rerun-candidates.md` (кандидаты, проверка правки, база знаний), `skill-rerun-worker.md` (план и фоновое задание), `skill-rerun-resolve.md` (статус в TestOps). Справочник для агента по статусам и ограничениям `rerun` — `skills/launch/references/rerun.md` (вынесен из раздела 8 `SKILL.md`).
+Подробности — в файлах подобластей: `skill-rerun-candidates.md` (кандидаты, проверка правки, база знаний), `skill-rerun-worker.md` (план и фоновое задание). Справочник для агента по статусам и ограничениям `rerun` — `skills/launch/references/rerun.md` (вынесен из раздела 8 `SKILL.md`).
 
 Решения пользователя (2026-10-24, план `rosy-wishing-walrus`): кандидатов предлагает скилл,
 плюс `/alla:rerun N`; только Maven (JUnit/TestNG через surefire); до 3 запусков до первого
-успеха; итог — в отчёт и, после «да», в базу знаний. 2026-10-26 (план
-`quiet-beaming-waterfall`): прошедшим — статус passed в TestOps, тем же «да».
+успеха; итог — в отчёт и в базу знаний. (Запись статуса passed в TestOps через REST удалена в 2026-11-26: взаимодействие с TestOps только на чтение через MCP.)
 
 ## Команда и статусы (`cli.cmd_rerun`)
 
@@ -74,19 +72,12 @@ paths:
 - Стенд Qwen — сценарий F01 (фикстура `flaky`: у createOrder повтор упал иначе, у updateOrder
   — прошёл; `pom.xml` и фейковый `mvn` в корне проекта, его Python и скрипт — от папки
   `mvn`: песочница не даёт JDK и `~/.m2`; `target/` и счётчик запусков в `.gitignore`).
-  Реплики «/alla:launch 793» → «Да, перезапусти.» → «Да, отметь их в базе знаний.» (до отметки
-  в TestOps);
+  Реплики «/allure-alla-extension:launch 793» → «Да, перезапусти.» → «Да, отметь их в базе знаний.»;
   проверки `rerun_started`, `rerun_result_shown`, `flaky_saved`. Прогоны (qwen3.8-flash,
   2026-10-24/25): 36951b0, 5a32b93 и 2e69b44 — все автоматические проверки прошли. На
   36951b0 модель вместо прямого вопроса написала «ответа получить нельзя» и показала команду
   `--yes --plan` в тексте; на 2e69b44 (после ревью исполнителя) — один прямой вопрос с числом
   тестов, проблемой, временем и «на этой машине», итог дословно, вопрос о базе знаний
   отдельно. Трёх прогонов мало, чтобы судить о разбросе. Регрессии A01, C01, X01, C02 на
-  ddc45be: автоматические проверки прошли. С отметкой в TestOps третья реплика — «Да,
-  сохрани.», плюс `testops_resolved` (POST resolve только для 101; `testops_read_only`
-  пропускает POST resolve и обмен токена, только если в сеансе была `rerun --remember`, с
-  2026-11-05 — `rerun --testops`;
-  чтение — только вызовы MCP `initialize`/`tools/list`/`testops_find_testresults`). Прогон 2026-10-26
-  (рабочее дерево поверх f9cac82, после ревью исполнителя): все автоматические проверки
-  прошли; один вопрос после итога — база знаний и TestOps, «частичное согласие не
-  применяется», `.env` правит пользователь; после «да» модель назвала ровно записанное.
+  ddc45be: автоматические проверки прошли. Чтение TestOps — только вызовы MCP
+  `initialize`/`tools/list`/`testops_find_testresults`.

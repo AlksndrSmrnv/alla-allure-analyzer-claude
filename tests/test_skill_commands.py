@@ -69,7 +69,7 @@ def test_command_file_is_valid_for_qwen(path: Path) -> None:
     assert ("{{args}}" in body) is (path.stem in WITH_ARGS)
     assert ("argument-hint" in fields) is (path.stem in WITH_ARGS)
     assert "!{" not in body and "@{" not in body  # только просьба к модели, без инъекций
-    assert "скилл alla:launch (инструмент skill)" in " ".join(body.split())
+    assert "скилл allure-alla-extension:launch (инструмент skill)" in " ".join(body.split())
 
 
 @pytest.mark.parametrize("path", _commands(), ids=lambda path: path.stem)

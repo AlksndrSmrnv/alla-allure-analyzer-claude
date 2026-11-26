@@ -25,7 +25,7 @@ paths:
 - `alla-batch` — свой субагент (`agents/alla-batch.md`, узкая роль, инструменты read_file,
   write_file, run_shell_command): встроенный `general-purpose` по своей системной подсказке
   осматривал проект (ls/find, чужие пакеты), и текстом prompt это не лечилось (стенд Qwen,
-  P04). Он входит прямо в состав расширения `alla` (`agents/` в `qwen-extension.json`),
+  P04). Он входит прямо в состав расширения `allure-alla-extension` (`agents/` в `qwen-extension.json`),
   поэтому доступен при установке расширения; инструкция `next` сохраняет запасной путь без
   `subagent_type`. Qwen молча пропускает невалидный файл агента: формат охраняет
   `test_batch_agent_file_is_valid_for_qwen_and_narrow`.

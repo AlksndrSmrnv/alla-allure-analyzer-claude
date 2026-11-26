@@ -77,7 +77,7 @@ class RuleContext:
     def resolved_extension_dir(self) -> Path:
         if self.extension_dir is not None:
             return canonical(self.extension_dir)
-        installed = (self.qwen_dir or self.home / ".qwen") / "extensions" / "alla"
+        installed = (self.qwen_dir or self.home / ".qwen") / "extensions" / "allure-alla-extension"
         if installed.exists():
             return canonical(installed)
         return canonical(Path(__file__).resolve().parents[2])
@@ -425,7 +425,8 @@ def check_allowed_reads(ctx: RuleContext) -> dict[str, Any]:
                 if call.name == "read_file" and path.is_file() and (
                         any(path.is_relative_to(saved) for saved in tool_results)
                         or (path.suffix == ".md" and (
-                            path.is_relative_to(ext_dir / "skills")
+                            path == ext_dir / "QWENCODE.md"
+                            or path.is_relative_to(ext_dir / "skills")
                             or path.is_relative_to(ext_dir / "extensions")
                         ))):
                     continue

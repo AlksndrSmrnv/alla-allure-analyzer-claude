@@ -6,10 +6,8 @@ paths:
   - "tests/test_core_credentials.py"
   - "scripts/alla_core/exceptions.py"
   - "scripts/alla_core/models/testops.py"
-  - "tests/test_core_testops_client.py"
   - "tests/test_core_mcp_client.py"
   - "scripts/alla_skill_lib/projects.py"
-  - "tests/test_core_auth.py"
 ---
 
 # Ядро: клиент TestOps и настройки
@@ -111,13 +109,6 @@ REST API TestOps у пользователей закрыт (решение по
   `fixtures`, входят ли hidden-попытки в `launch = <id>`, транспорт сервера. Проверка —
   `check` и `prepare` у пользователя.
 
-## REST-клиент — только resolve (`clients/testops_client.py`)
-
-`AllureTestOpsClient` оставлен для единственной записи, которой в MCP нет, — статуса passed
-(`skill-rerun-resolve.md`), по умолчанию выключенной. Обмен API-токена на JWT
-(`AllureAuthManager`, `POST /api/uaa/oauth/token`, повторы как у чтения) и один повтор при 401
-с новым JWT; resolve не повторяется (запись).
-
 ## Настройки (`config.py`)
 
 `Settings` читает `<project>/.qwen/alla.env` (fallback — `<QWEN_HOME или ~/.qwen>/alla.env`, приоритет:
@@ -174,7 +165,6 @@ raw деклараций не даёт скрыть токен пустым по
 | `ALLURE_RERUN_MAX_TESTS` | нет | `20` | Тестов за раз (0–100); `0` выключает перезапуск |
 | `ALLURE_RERUN_TIMEOUT` | нет | `1800` | Общий потолок времени перезапуска, с (60–14400) |
 | `ALLURE_RERUN_MAVEN_ARGS` | нет | `""` | Свои аргументы Maven (`shlex`), значения не печатаются |
-| `ALLURE_RERUN_RESOLVE` | нет | `false` | Статус passed в TestOps прошедшим при перезапуске (после «да»), через REST; по умолчанию выключен: REST закрыт, в MCP записи нет |
 | `ALLURE_OPERATION_ID_KEYS` | нет | `""` | Ключи id операции проекта через запятую (`businessId`), к реестру; имя — `[A-Za-z][A-Za-z0-9_.-]{0,63}`, иначе `ConfigurationError` |
 
 ## Политика адресов TestOps

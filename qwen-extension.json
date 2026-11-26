@@ -1,9 +1,28 @@
 {
-  "name": "alla",
+  "name": "allure-alla-extension",
   "version": "1.0.0",
   "displayName": "Alla — Allure TestOps Triage",
   "description": "Разбор упавших прогонов Allure TestOps: кластеризация падений, анализ причин, предложения правок автотестов, база знаний и перезапуск тестов.",
+  "contextFileName": "QWENCODE.md",
   "commands": "commands",
   "skills": "skills",
-  "agents": "agents"
+  "agents": "agents",
+  "mcpServers": {
+    "allure-testops": {
+      "httpUrl": "undefined",
+      "includeTools": [
+        "testops_find_testresults"
+      ],
+      "excludeTools": [
+        "testops_create_testcase",
+        "testops_update_testcase",
+        "testops_delete_testcase",
+        "testops_restore_testcase",
+        "testops_create_sharedstep",
+        "testops_update_sharedstep",
+        "testops_create_mute",
+        "testops_delete_mute"
+      ]
+    }
+  }
 }

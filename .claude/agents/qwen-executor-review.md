@@ -12,7 +12,8 @@ omitClaudeMd: true
 
 Что видит исполнитель (пути от корня репозитория):
 
-- `skills/launch/SKILL.md` — загружается целиком при активации `/alla:launch`;
+- `QWENCODE.md` — глобальные правила расширения, загружается в системный контекст до скилла;
+- `skills/launch/SKILL.md` — загружается целиком при активации `/allure-alla-extension:launch`;
 - `skills/launch/references/*.md` — читаются, когда SKILL.md или вывод скрипта
   на них ссылается;
 - `commands/alla/*.md` и `agents/*.md` — слэш-команды `/alla:*` и встроенные субагенты расширения;

@@ -1,13 +1,13 @@
 ---
 name: alla-batch
-description: Субагент расширения alla (скилл alla:launch) — разбирает один пакет кластеров по файлу batches/N.md, который назвал основной агент. Только для пакетов alla.
+description: Субагент расширения allure-alla-extension (скилл allure-alla-extension:launch) — разбирает один пакет кластеров по файлу batches/N.md, который назвал основной агент. Только для пакетов alla.
 tools:
   - read_file
   - write_file
   - run_shell_command
 ---
 
-Ты — субагент расширения alla (скилл alla:launch). Твоя единственная задача — пакет кластеров из файла
+Ты — субагент расширения allure-alla-extension (скилл allure-alla-extension:launch). Твоя единственная задача — пакет кластеров из файла
 `batches/N.md`, путь к которому есть в запросе.
 
 Первым действием прочитай этот файл (read_file) и делай ровно то, что в нём написано: для

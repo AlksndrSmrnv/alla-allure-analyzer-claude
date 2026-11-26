@@ -1,6 +1,7 @@
 ---
 paths:
   - "qwen-extension.json"
+  - "QWENCODE.md"
   - "skills/launch/SKILL.md"
   - "skills/launch/references/setup.md"
   - "scripts/alla_skill.py"
@@ -16,7 +17,7 @@ paths:
 
 ## Точка входа и установка
 
-- Корень репозитория является корнем нативного расширения Qwen Code CLI (`qwen-extension.json`, `name = "alla"`). Скилл лежит в `skills/launch/SKILL.md` (`name: launch` → `/alla:launch`), команды — в `commands/alla/*.md` (`/alla:*`), встроенные субагенты — в `agents/alla-*.md`.
+- Корень репозитория является корнем нативного расширения Qwen Code CLI (`qwen-extension.json`, `name = "allure-alla-extension"`, `contextFileName = "QWENCODE.md"`, `mcpServers` с `httpUrl: "undefined"` и `includeTools`/`excludeTools`). Скилл лежит в `skills/launch/SKILL.md` (`name: launch` → `/allure-alla-extension:launch`), команды — в `commands/alla/*.md` (`/alla:*`), встроенные субагенты — в `agents/alla-*.md`.
 - Bootstrap `alla_skill.py` — stdlib, Python 3.8+; основная логика — 3.11+. `project_root()` определяет проект от текущей рабочей папки (`Path.cwd().resolve()`). `venv_python()` читает актуальный `VENV_DIR` при каждом вызове, чтобы `--project-root` переключал и проверяемую `.venv`, и запускаемый Python.
 - `setup` только проверяет существующую `.venv` проекта, Python и точные версии всех применимых
   записей lock-файла; печатает инструкцию инженеру и ничего не записывает. Нет окружения
@@ -39,7 +40,7 @@ paths:
   `alla_skill.py` поддерживает универсальные PEP-508 маркеры `requirements.txt` (ограниченный
   разбор без `eval`: `python_full_version`, `python_version`, `sys_platform`, `os_name`,
   `platform_python_implementation`, `implementation_name`, `and`/`or`).
-- Обновление и управление жизнью расширения выполняются штатно через `qwen extensions update alla` / `qwen extensions uninstall alla`; прежние `update` (`alla_release.py`) и `install-files` (`qwen_files.py`) удалены.
+- Обновление и управление жизнью расширения выполняются штатно через `qwen extensions update allure-alla-extension` / `qwen extensions uninstall allure-alla-extension`; прежние `update` (`alla_release.py`) и `install-files` (`qwen_files.py`) удалены.
 - CI smoke готовит окружение, расширение и конфигурацию явными командами инженера;
   проверяет отсутствие записи у `setup` и `extensions enable|disable`, затем synthetic `check`/`prepare`.
 
@@ -49,11 +50,11 @@ paths:
   `alla:<файл>`): `run`, `continue`, `apply`, `revert`, `remember`, `reject`, `review`,
   `setup`, `extensions`, `rerun`, `code`, `ticket`. Frontmatter — `description`, `argument-hint` (у команд с аргументами, тогда в теле
   `{{args}}`), `disable-model-invocation: true` (без него команду может вызвать сама модель).
-- Тело — короткая просьба «вызови скилл alla:launch (инструмент skill) и действуй по разделу
+- Тело — короткая просьба «вызови скилл allure-alla-extension:launch (инструмент skill) и действуй по разделу
   N»: шаги и правила не копируются, источник — `skills/launch/SKILL.md`. Папку разбора для `apply`,
   `revert`, `remember`, `reject`, `review`, `code`, `ticket` команда не знает — правило в разделе
   «Слэш-команды» скилла.
-- Qwen загружает команды, скиллы и агентов расширения `alla` напрямую из установленного расширения.
+- Qwen загружает команды, скиллы и агентов расширения `allure-alla-extension` напрямую из установленного расширения.
   `extensions enable/disable` только проверяет манифест/настройки и печатает строку `enabled`
   и diff для `alla-extensions/config.toml` со статусом `ok` (без `--yes`/`--diff` и без записи).
 - Старый журнал незавершённой транзакции требует ручной проверки, не выполняется и не удаляется.

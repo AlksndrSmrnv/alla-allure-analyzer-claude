@@ -7,17 +7,6 @@ RETRY_BASE_DELAY_S = 1.0
 RETRY_MAX_DELAY_S = 30.0
 
 
-def header(resp: object, name: str) -> object:
-    """Заголовок ответа или ``None`` (у заглушек ответа в тестах заголовков может не быть)."""
-    headers = getattr(resp, "headers", None)
-    if headers is None:
-        return None
-    try:
-        return headers.get(name)
-    except AttributeError:
-        return None
-
-
 def retry_delay(retry_after: object, attempt: int) -> float:
     """Пауза перед повтором: ``Retry-After`` в секундах, иначе 1, 2, 4… с; не больше 30 с."""
     if isinstance(retry_after, str):

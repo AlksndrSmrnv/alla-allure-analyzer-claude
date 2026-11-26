@@ -19,7 +19,7 @@ Harness разделяет Python-протокол и поведение Qwen Co
 Runner находится внутри самодостаточного расширения в `tests/quality_harness.py`;
 `scripts/skill_quality.py` — удобная точка входа. Копия расширения работает без
 отдельного wrapper-скрипта: из окружения с теми же зависимостями запускай
-`python ~/.qwen/extensions/alla/tests/quality_harness.py run --output /tmp/alla-quality-003`.
+`python ~/.qwen/extensions/allure-alla-extension/tests/quality_harness.py run --output /tmp/alla-quality-003`.
 
 `plan` выводит сценарии и fingerprint без запуска тестов или Qwen. `run` запускает
 выбранные существующие тесты на синтетических данных. Папка `--output` должна быть новой:
@@ -180,12 +180,12 @@ P05 — 9 кластеров (на один меньше порога пакет
   пишется в `testops-requests.jsonl`;
 - собирает git-проект автотестов (в `~/.cache/alla-qwen-stand/work/`, вне папки результатов,
   чтобы агент не нашёл trace и журнал стенда) с исходниками из `skill_fixtures.py` и
-  установленным расширением `alla` в отдельном HOME (в `.qwen/alla.env` — только несекретные
+  установленным расширением `allure-alla-extension` в отдельном HOME (в `.qwen/alla.env` — только несекретные
   настройки фейка; обычным сценариям синтетический `ALLURE_TOKEN` передаётся через окружение
   процесса, S01 — через системное хранилище ОС `keyring`).
   Окружение скилла ставится настоящим
   из заранее подготовленного `ALLA_STAND_VENV` или кэша, проверяется без установки и подключается ссылкой; P02 проверяет
-  отсутствие окружения, I01 — запрос установки (`/alla:launch установи`, без `.venv` и
+  отсутствие окружения, I01 — запрос установки (`/allure-alla-extension:launch установи`, без `.venv` и
   `.qwen/alla.env`): остановка на `setup_required`, инструкция инженеру без pip и `prepare`.
   I03/I05 проверяют только preview diff для включения и отключения расширения в `alla-extensions/config.toml`: даже
   после обычного «да» нет записи. Снимок проверяет содержимое, структуру и права файлов

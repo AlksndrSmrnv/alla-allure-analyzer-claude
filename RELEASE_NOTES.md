@@ -2,6 +2,17 @@
 
 ## 26 ноября 2026
 
+### Соответствие требованиям безопасности: переименование в `allure-alla-extension`, `QWENCODE.md`, `mcpServers` и удаление REST-записи в TestOps
+
+- Расширение переименовано в `allure-alla-extension` (`qwen-extension.json`, `name: "allure-alla-extension"`, каталог установки `~/.qwen/extensions/allure-alla-extension`): скилл регистрируется как `/allure-alla-extension:launch`, слэш-команды `/alla:*` сохранены.
+- В корень расширения добавлен файл глобальных правил `QWENCODE.md`, подключённый в `qwen-extension.json` через `"contextFileName": "QWENCODE.md"` (ответы на русском языке, точный вызов `allure-alla-extension:launch`, запрет обхода скилла и прямых операций записи/чтения секретов).
+- В `qwen-extension.json` добавлена секция `mcpServers` для `allure-testops` (`"httpUrl": "undefined"`, `includeTools`: `["testops_find_testresults"]`, `excludeTools` для инструментов записи).
+- Полностью удалена запись статуса `passed` в Allure TestOps по REST API (`rerun --testops`, `ALLURE_RERUN_RESOLVE`, `resolve.py`, `AllureTestOpsClient`, `AllureAuthManager`): взаимодействие с TestOps теперь строго только на чтение через MCP. Локальный перезапуск тестов (`rerun`) и автоматическая запись проверенных отметок в `alla-kb/` сохранены.
+
+**После обновления:**
+1. Если расширение было установлено под прежним именем `alla`, переустановите его (`qwen extensions uninstall alla` и `qwen extensions install ...`) и обновляйте дальше командой `qwen extensions update allure-alla-extension`.
+2. Обновите ссылки в своих проектных командах, если они явно вызывали `alla:launch`, на `allure-alla-extension:launch`.
+
 ### Хранение `ALLURE_TOKEN` в системном хранилище ОС (`keyring`)
 
 - Секрет `ALLURE_TOKEN` больше не зависит от каталога установки и раскладки Qwen Code CLI

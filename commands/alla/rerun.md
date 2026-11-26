@@ -3,7 +3,7 @@ description: Перезапустить локально тесты пробле
 argument-hint: "[номера проблем]"
 disable-model-invocation: true
 ---
-Вызови скилл alla:launch (инструмент skill) и действуй по разделу «8. Перезапуск тестов» для
+Вызови скилл allure-alla-extension:launch (инструмент skill) и действуй по разделу «8. Перезапуск тестов» для
 проблем:
 
 {{args}}

@@ -69,9 +69,6 @@ class Settings:
     rerun_max_tests: int = 20
     rerun_timeout: int = 1800
     rerun_maven_args: str = ""
-    # Прошедшим при перезапуске — статус passed в прогоне TestOps (после «да» пользователя).
-    # Выключено: запись идёт через REST API, а у пользователей открыт только MCP (в нём её нет).
-    rerun_resolve: bool = False
 
     @classmethod
     def load(

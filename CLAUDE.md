@@ -6,17 +6,15 @@
 ссылке на запуск он получает результаты, извлекает ошибки и логи, кластеризует активные
 failed/broken падения; анализ пишет модель Qwen Code по заданиям скилла, Python готовит
 данные. Результат — краткий разбор в терминале, `report.md` и предложения правок
-автотестов. Скилл читает TestOps через его встроенный MCP-сервер (REST API у пользователей
-закрыт); писать туда может только статус passed тестов, прошедших при локальном перезапуске,
-через REST, после «да» пользователя и только с `ALLURE_RERUN_RESOLVE=true` (`resolve.py`,
-по умолчанию выключено). База знаний — проектная (`alla-kb/` в репозитории
-автотестов), наполняется обратной связью пользователя и сама — проверенными фактами разбора
-(отметки перезапуска, проверенные правки; `learn.py`).
+автотестов. Скилл работает с TestOps строго на чтение через его встроенный MCP-сервер
+(REST API у пользователей закрыт, запись статуса в TestOps удалена). База знаний — проектная
+(`alla-kb/` в репозитории автотестов), наполняется обратной связью пользователя и сама —
+проверенными фактами разбора (отметки перезапуска, проверенные правки; `learn.py`).
 
 ## Состояние репозитория
 
-- Корень репозитория — нативное **расширение Qwen Code CLI `alla`** (`qwen-extension.json`,
-  скилл `skills/launch/SKILL.md` → `/alla:launch`, команды `commands/alla/`, агенты `agents/`).
+- Корень репозитория — нативное **расширение Qwen Code CLI `allure-alla-extension`** (`qwen-extension.json`,
+  глобальные правила `QWENCODE.md`, скилл `skills/launch/SKILL.md` → `/allure-alla-extension:launch`, команды `commands/alla/`, агенты `agents/`).
 - Серверный инструмент (CLI `alla`, FastAPI `alla-server`, MCP, PostgreSQL, GigaChat,
   HTML-отчёт, dashboard, Docker/Jenkins) удалён и есть только в истории git: последний
   коммит с ним — `e100909` (`git show e100909:src/alla/<файл>`). Серверный код и пакет
@@ -27,13 +25,14 @@ failed/broken падения; анализ пишет модель Qwen Code п�
 
 | Путь (от корня репозитория) | Что там |
 |---|---|
-| `qwen-extension.json` | манифест расширения Qwen Code (`name: "alla"`, `settings: ALLURE_TOKEN`, пути `skills/`, `commands/`, `agents/`) |
-| `skills/launch/` | скилл `alla:launch`: `SKILL.md` и `references/` (сценарий, правила модели, форматы, протокол, установка) |
+| `qwen-extension.json` | манифест расширения Qwen Code (`name: "allure-alla-extension"`, `contextFileName: "QWENCODE.md"`, `mcpServers`, пути `skills/`, `commands/`, `agents/`) |
+| `QWENCODE.md` | глобальные правила расширения (читаются агентом до выполнения навыка) |
+| `skills/launch/` | скилл `allure-alla-extension:launch`: `SKILL.md` и `references/` (сценарий, правила модели, форматы, протокол, установка) |
 | `agents/alla-*.md` | встроенные субагенты расширения (`alla-batch`, `alla-git-publish`, `alla-sut-code`, `alla-tickets`) |
 | `commands/alla/*.md` | слэш-команды расширения Qwen `/alla:run`, `/alla:apply`, `/alla:continue`…; в `.qwen/` проекта копировать не нужно |
 | `extensions/` | расширения скилла: `README.md` (контракт для авторов), встроенные `git-publish/`, `sut-code/`, `tickets/`; пользовательские — `<проект>/alla-extensions/` |
 | `scripts/alla_skill.py` | точка входа (Python 3.8+), перезапускает себя в `.venv` проекта автотестов |
-| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `learn`, `fix_facts`, `resolve`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `projects`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `jobs`, `retries`, `images`, `extension_data` |
+| `scripts/alla_skill_lib/` | логика скилла: `cli`, `workspace`, `pipeline`, `rerun`, `rerun_worker`, `flaky`, `learn`, `fix_facts`, `batch_task`, `agent_rules`, `extensions`, `confirmed`, `cluster_task`, `sources`, `analysis_format`, `code_hints`, `report`, `known_issues`, `projects`, `related`, `problem_state`, `kb`, `signature`, `modules`, `feedback`, `history`, `proposals`, `errors`, `session_rules`, `session_log`, `review`, `review_model`, `jobs`, `retries`, `images`, `extension_data` |
 | `scripts/alla_core/` | ядро: клиент MCP TestOps (`clients/mcp_client.py`), настройки (`config.py`), секреты (`credentials.py`), триаж, логи, кластеризация, блок «Данные» |
 | `tests/` | `test_skill_*` — скилл на фейковом TestOps, `test_core_*` — ядро, `test_extension_manifest.py` — манифест и установка расширения; `qwen_stand.py` + `fake_testops_server.py` — стенд настоящего Qwen |
 | `tests/eval/` | эталон точности: кассеты прогонов (`record.py` пишет у команды), размеченный корпус dev/holdout, метрики склеек, дробления, скрытых групп и потери доказательств (`run_eval.py`), см. `README.md` там же |
@@ -164,16 +163,15 @@ pyright настроен для навигации (`typeCheckingMode = "off"`),
 | `skill-extensions-git-publish.md` | git-publish | `extensions/git-publish/` |
 | `skill-extensions-sut-code.md` | sut-code | `extensions/sut-code/` |
 | `skill-extensions-tickets.md` | tickets и публичный снимок | `extensions/tickets/`, `extension_data.py` |
-| `skill-rerun.md` | перезапуск тестов локально (`rerun`): команда и статусы, отчёт, проверка | `rerun.py`, `rerun_worker.py`, `flaky.py`, `resolve.py`, `commands/alla/rerun.md` |
+| `skill-rerun.md` | перезапуск тестов локально (`rerun`): команда и статусы, отчёт, проверка | `rerun.py`, `rerun_worker.py`, `flaky.py`, `commands/alla/rerun.md` |
 | `skill-rerun-candidates.md` | кандидаты-флаки, предложение после отчёта, проверка правки после `apply`, отметки без вопроса (`learn.py`) | `flaky.py`, `rerun.py`, `learn.py` |
 | `skill-rerun-worker.md` | план, Maven фоновым заданием, отчёты surefire, попытки | `rerun.py`, `rerun_worker.py` |
-| `skill-rerun-resolve.md` | статус passed в TestOps | `resolve.py`, `rerun.py` |
 | `core.md` | ядро: состав, происхождение, только чтение TestOps, тесты ядра | `alla_core/`, `pipeline.py` |
-| `core-fetch.md` | сбор данных: полнота выгрузки, повторы, попытки, вложения, изображения | `triage_service.py`, `retry_linking.py`, `image_attachments.py`, `models/testops.py`, `pipeline.py`, `clients/testops_client.py`, `exceptions.py`, `text_normalization.py`, `log_extraction_service.py` |
+| `core-fetch.md` | сбор данных: полнота выгрузки, повторы, попытки, вложения, изображения | `triage_service.py`, `retry_linking.py`, `image_attachments.py`, `models/testops.py`, `pipeline.py`, `exceptions.py`, `text_normalization.py`, `log_extraction_service.py` |
 | `core-log-events.md` | события лога, поля ошибки ответа, NDJSON, префикс сборщика | `log_events.py`, `attachment_handlers.py`, `log_focus.py` |
 | `core-logs.md` | операция теста, происхождение, id операции, отбор логов | `log_utils.py`, `log_events.py`, `log_focus.py`, `text_normalization.py`, `log_extraction_service.py`, `attachment_handlers.py`, `config.py` |
 | `core-clustering.md` | кластеризация: gates, счётчики, близкие пары, примеры | `clustering_service.py`, `models/clustering.py`, `message_resources.py`, `text_normalization.py`, `step_paths.py`, `log_events.py` |
-| `core-client.md` | клиент MCP TestOps, REST-resolve, настройки `ALLURE_*` | `clients/`, `config.py`, `exceptions.py`, `models/testops.py` |
+| `core-client.md` | клиент MCP TestOps, настройки `ALLURE_*` | `clients/`, `config.py`, `exceptions.py`, `models/testops.py` |
 
 ## Инструменты Claude Code
 
